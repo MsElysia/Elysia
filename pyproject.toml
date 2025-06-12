@@ -1,0 +1,26 @@
+[tool.poetry]
+name = "elysia"
+version = "0.1.0"
+description = ""
+authors = ["Nate Hyland <mrnatehyland@gmail.com>"]
+packages = [
+    { include = "architect_core" },
+    { include = "modules" }
+]
+
+[project]
+name = "elysia"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Nate Hyland",email = "mrnatehyland@gmail.com"}
+]
+readme = "README.md"
+requires-python = "^3.11"
+dependencies = [
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

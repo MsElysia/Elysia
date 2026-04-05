@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Diff Viewer - Project Guardian</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #f1f5f9;
+            padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 30px; }
+        .card {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+        }
+        .card h2 { color: #8b5cf6; margin-bottom: 15px; font-size: 1.2em; }
+        .diff-viewer {
+            background: #0f172a;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            white-space: pre;
+            word-wrap: normal;
+            line-height: 1.4;
+        }
+        .diff-line {
+            padding: 2px 0;
+        }
+        .diff-line.added {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+        .diff-line.removed {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+        .diff-line.context {
+            color: #cbd5e1;
+        }
+        .diff-line.header {
+            color: #8b5cf6;
+            font-weight: bold;
+        }
+        .truncation-warning {
+            background: #f59e0b;
+            color: #0f172a;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            font-weight: 500;
+        }
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #6366f1;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 1em;
+            margin-right: 10px;
+            margin-top: 10px;
+        }
+        .btn:hover { background: #4f46e5; }
+        .btn-secondary { background: #8b5cf6; }
+        .btn-secondary:hover { background: #7c3aed; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Diff Viewer</h1>
+        
+        <div class="card">
+            <h2>Mutation: {{ mutation }} | Path: {{ path }}</h2>
+            {% if legacy_payload %}
+            <div style="background: #f59e0b; color: #0f172a; padding: 10px; border-radius: 6px; margin-top: 15px; font-weight: 500;">
+                ⚠️ No base recorded (legacy payload). Cannot verify if file changed since payload creation.
+            </div>
+            {% elif mismatch_warning %}
+            <div style="background: #ef4444; color: #fff; padding: 15px; border-radius: 6px; margin-top: 15px;">
+                <strong>⚠️ Base mismatch: file changed since payload creation</strong>
+                <div style="margin-top: 10px; font-size: 0.9em; font-family: monospace;">
+                    <div>Base SHA256 (at creation): <code>{{ mismatch_warning.base_sha256[:16] }}...</code></div>
+                    <div>Current SHA256: <code>{{ mismatch_warning.current_sha256[:16] }}...</code></div>
+                    <div>Captured at: {{ mismatch_warning.captured_at }}</div>
+                </div>
+                <div style="margin-top: 10px; font-size: 0.85em;">
+                    The file has been modified since this mutation payload was created. The diff below shows changes from the <strong>current</strong> file state, not the original base.
+                </div>
+            </div>
+            {% endif %}
+            {% if truncated %}
+            <div class="truncation-warning">
+                ⚠️ Diff truncated to {{ total_lines }} lines. Full diff may be larger.
+            </div>
+            {% endif %}
+        </div>
+        
+        <div class="card">
+            <h2>Unified Diff</h2>
+            <div class="diff-viewer" id="diff-content">{{ diff_text }}</div>
+        </div>
+        
+        <div style="margin-top: 20px;">
+            <a href="/mutations/{{ mutation }}" class="btn btn-secondary">Back to Mutation</a>
+            <a href="/mutations" class="btn btn-secondary">Back to Mutations</a>
+            <a href="/" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
+    </div>
+    
+    <script>
+        // Color-code diff lines
+        const diffContent = document.getElementById('diff-content');
+        const lines = diffContent.textContent.split('\n');
+        diffContent.innerHTML = '';
+        
+        lines.forEach(line => {
+            const div = document.createElement('div');
+            div.className = 'diff-line';
+            div.textContent = line;
+            
+            if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) {
+                div.className += ' header';
+            } else if (line.startsWith('+') && !line.startsWith('+++')) {
+                div.className += ' added';
+            } else if (line.startsWith('-') && !line.startsWith('---')) {
+                div.className += ' removed';
+            } else {
+                div.className += ' context';
+            }
+            
+            diffContent.appendChild(div);
+        });
+    </script>
+</body>
+</html>

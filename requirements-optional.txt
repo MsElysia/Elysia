@@ -1,0 +1,11 @@
+# Optional dependencies for Elysia - install for better embeddings and search
+# See OPTIONAL_DEPENDENCIES.md for details
+
+# Better embeddings (avoids OpenAI API cost, improves semantic search)
+sentence-transformers>=2.2.0
+
+# Fast vector search (recommended with sentence-transformers)
+faiss-cpu>=1.7.4
+
+# System monitoring (resource limits, auto-cleanup)
+psutil>=5.9.0

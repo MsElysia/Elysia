@@ -1,0 +1,41 @@
+{
+  "trust": {
+    "memory_core": 0.6,
+    "task_engine": 0.7,
+    "safety_system": 0.4
+  },
+  "trust_history": {
+    "memory_core": [
+      {
+        "timestamp": "2025-07-14T21:05:03.475312",
+        "old_trust": 0.5,
+        "new_trust": 0.6,
+        "delta": 0.1,
+        "reason": "Successfully stored categorized memories",
+        "action_type": "memory_operation"
+      }
+    ],
+    "task_engine": [
+      {
+        "timestamp": "2025-07-14T21:05:03.475823",
+        "old_trust": 0.5,
+        "new_trust": 0.7,
+        "delta": 0.2,
+        "reason": "Created complex task with deadline",
+        "action_type": "task_creation"
+      }
+    ],
+    "safety_system": [
+      {
+        "timestamp": "2025-07-14T21:05:03.476313",
+        "old_trust": 0.5,
+        "new_trust": 0.4,
+        "delta": -0.1,
+        "reason": "Failed to validate critical operation",
+        "action_type": "safety_check"
+      }
+    ]
+  },
+  "decay_rate": 0.01,
+  "last_updated": "2025-07-14T21:05:03.476321"
+}

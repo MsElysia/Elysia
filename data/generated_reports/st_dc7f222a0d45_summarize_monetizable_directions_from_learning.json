@@ -1,0 +1,17 @@
+{
+  "task_id": "st_dc7f222a0d45",
+  "archetype": "summarize_monetizable_directions_from_learning",
+  "contract_id": "learned_digest",
+  "execution_tier": "strong",
+  "payload": {
+    "top_insights": [
+      "Local income snapshot keys: ['total_earned', 'active_projects', 'revenue_streams', 'last_updated', 'top_strategies']",
+      "Cross-check idle financial modules vs stated opportunities"
+    ],
+    "why_they_matter": "Operators need monetizable directions without outbound transactions.",
+    "recommended_followup_tasks": [
+      "generate_revenue_shortlist",
+      "create_small_dry_run_offer_ideas"
+    ]
+  }
+}

@@ -1,0 +1,292 @@
+2026-04-01 06:26:05,086 - project_guardian.core - INFO - [Mistral] Decision requested (candidates=6)
+2026-04-01 06:26:05,187 - project_guardian.self_task_queue - INFO - [SelfTask] finished st_b814ef5f6a9f tier=failed success=False useful=False adv=False op_ready=False arch=summarize_monetizable_directions_from_learning
+2026-04-01 06:26:05,303 - project_guardian.guardian_singleton - INFO - Monitoring started via singleton guard
+2026-04-01 06:26:05,304 - project_guardian.prompt_evolver - INFO - [AutoPromptEvolution] Started (interval=6.0h, min_records=5)
+2026-04-01 06:26:05,314 - project_guardian.planner_readiness - INFO - [Guardian] canonical_ollama_effective=mistral:7b exact_tag_match=True installed_tags=['mistral:7b'] suggested_close=[]
+2026-04-01 06:26:05,874 - project_guardian.ollama_health - INFO - [Ollama] healthy: /api/chat OK (model=mistral:7b base=http://127.0.0.1:11434 tags=200)
+2026-04-01 06:26:05,875 - project_guardian.core - INFO - [Autonomy] planner_startup readiness=ready exact_tag_match=True health_ok=True
+2026-04-01 06:26:05,875 - project_guardian.startup_verification - INFO - ============================================================
+2026-04-01 06:26:05,875 - project_guardian.startup_verification - INFO - Startup Verification Summary
+2026-04-01 06:26:05,875 - project_guardian.startup_verification - INFO - ============================================================
+2026-04-01 06:26:05,875 - project_guardian.startup_verification - INFO - Total Checks: 12
+2026-04-01 06:26:05,875 - project_guardian.startup_verification - INFO - Successes: 11
+2026-04-01 06:26:05,875 - project_guardian.startup_verification - INFO - Warnings: 1
+2026-04-01 06:26:05,875 - project_guardian.startup_verification - INFO - Failures: 0
+2026-04-01 06:26:05,876 - project_guardian.startup_verification - INFO - Critical Failures: 0
+2026-04-01 06:26:05,876 - project_guardian.startup_verification - WARNING - ============================================================
+2026-04-01 06:26:05,876 - project_guardian.startup_verification - WARNING - [WARN] Startup completed with warnings
+2026-04-01 06:26:05,876 - project_guardian.startup_verification - WARNING -   - deferred_init_pending: Deferred initialization not yet started
+2026-04-01 06:26:05,876 - project_guardian.startup_verification - WARNING - ============================================================
+2026-04-01 06:26:05,876 - project_guardian.startup_verification - INFO - Startup duration: 152.72s (status=success_with_warnings)
+2026-04-01 06:26:05,876 - project_guardian.core - INFO - [OK] All components initialized successfully
+2026-04-01 06:26:12,718 - project_guardian.adversarial_self_learning - INFO - [Adversarial Self-Learning] Event startup_warnings: findings=1 top=Startup completed with warnings tasks=0
+2026-04-01 06:26:12,719 - project_guardian.runtime_health - INFO - Runtime health monitoring started
+2026-04-01 06:26:12,719 - project_guardian.core - INFO - Runtime health monitoring started
+2026-04-01 06:26:12,719 - project_guardian.core - INFO - [Startup] Phase A end — dashboard path ready; JSON/FAISS load and startup cleanup deferred
+2026-04-01 06:26:12,719 - elysia_sub_guardian - INFO -   [OK] Guardian Core initialized (singleton)
+2026-04-01 06:26:12,719 - elysia_sub_guardian - INFO -   [Config] Memory limit: 92% (set via config or ELYSIA_MEMORY_LIMIT)
+2026-04-01 06:26:12,719 - elysia_sub_architect - INFO - [2/5] Initializing Architect-Core...
+2026-04-01 06:26:12,729 - project_guardian.proposal_system - INFO - Proposal system initialized
+2026-04-01 06:26:13,042 - project_guardian.webscout_agent - INFO - Elysia-WebScout using WebReader from GuardianCore singleton
+2026-04-01 06:26:13,042 - project_guardian.webscout_agent - INFO - Elysia-WebScout initialized with LLM access
+2026-04-01 06:26:13,042 - project_guardian.webscout_agent - INFO - Elysia-WebScout initialized
+2026-04-01 06:26:13,042 - architect_core - INFO - Elysia-WebScout agent initialized and registered
+2026-04-01 06:26:13,043 - elysia_sub_architect - INFO -   [OK] Architect-Core initialized
+2026-04-01 06:26:13,043 - elysia_sub_runtime_loop - INFO - [3/5] Initializing Elysia Runtime Loop...
+2026-04-01 06:26:13,061 - project_guardian.elysia_loop_core - INFO - Timeline memory initialized: elysia_timeline.db
+2026-04-01 06:26:13,061 - elysia_sub_runtime_loop - INFO -   [OK] RuntimeLoop (project_guardian) initialized
+2026-04-01 06:26:13,061 - elysia_sub_modules - INFO - [4/5] Initializing Integrated Modules...
+2026-04-01 06:26:13,063 - hestia_bridge - INFO - Initialized Hestia bridge (path: C:\Users\mrnat\Hestia)
+2026-04-01 06:26:15,735 - project_guardian.core - INFO - [Orchestration] Pre-decision caps (top 5): ['mutation_engine:2.111', 'safety_engine:2.111', 'trust_matrix:1.011', 'rollback_engine:1.011', 'task_engine:1.011']
+2026-04-01 06:26:15,736 - project_guardian.core - INFO - [Mistral] Removed consider_dream_cycle from candidates (memory pressure; avoids futile selection)
+2026-04-01 06:26:15,737 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=simple chosen=local_mistral reason=simple task + cost-sensitive → local rejected=1
+2026-04-01 06:26:15,737 - project_guardian.core - INFO - [Mistral] Decision requested (candidates=6)
+2026-04-01 06:26:15,796 - project_guardian.self_task_queue - INFO - [SelfTask] finished st_da1f9ecfa102 tier=failed success=False useful=False adv=False op_ready=False arch=create_small_dry_run_offer_ideas
+2026-04-01 06:26:15,817 - project_guardian.monitoring - INFO - [SystemMonitor] First autonomy cycle completed (modules/agents auto-activated)
+2026-04-01 06:26:15,817 - project_guardian.monitoring - INFO - [SystemMonitor] Post-startup adversarial self-learning completed
+2026-04-01 06:26:17,182 - elysia_sub_modules - INFO -   [WARN] Hestia not running (can start manually)
+2026-04-01 06:26:17,182 - elysia_sub_modules - INFO -   [OK] TrustEvalContent using GuardianCore instance
+2026-04-01 06:26:17,455 - elysia_sub_modules - INFO -   [OK] FractalMind initialized
+2026-04-01 06:26:17,458 - elysia_sub_modules - INFO -   [OK] Harvest Engine initialized
+2026-04-01 06:26:17,466 - elysia_sub_modules - INFO -   [OK] Identity Mutation Verifier initialized
+2026-04-01 06:26:17,470 - elysia_sub_modules - INFO -   [OK] AI Tool Registry initialized
+2026-04-01 06:26:17,509 - longterm_planner - INFO - Loaded 25 objectives and 1 tasks
+2026-04-01 06:26:17,509 - elysia_sub_modules - INFO -   [OK] Long Term Planner initialized
+2026-04-01 06:26:17,509 - elysia_sub_modules - INFO -   [OK] 8 modules initialized
+2026-04-01 06:26:17,510 - elysia_sub_income - INFO -   Initializing Income Generation Modules...
+2026-04-01 06:26:17,776 - launcher.api_manager - INFO - OpenAI client initialized
+2026-04-01 06:26:17,776 - elysia_sub_income - INFO -   [OK] API Manager initialized for income modules
+2026-04-01 06:26:17,779 - launcher.multi_api_router - INFO - [API] Available APIs: openai, openrouter, cohere, huggingface
+2026-04-01 06:26:17,780 - launcher.elysia_income_generator - INFO - [API] Multi-API Router initialized for income generation - 4 APIs available
+2026-04-01 06:26:17,795 - elysia_sub_income - INFO -   [OK] Income Generator initialized
+2026-04-01 06:26:17,808 - launcher.elysia_financial_manager - INFO - Financial Manager initialized
+2026-04-01 06:26:17,808 - elysia_sub_income - INFO -   [OK] Financial Manager initialized
+2026-04-01 06:26:17,810 - elysia_sub_income - INFO -   [OK] Revenue Creator initialized
+2026-04-01 06:26:17,821 - elysia_sub_income - INFO -   [OK] Wallet initialized
+2026-04-01 06:26:17,832 - project_guardian.api_key_manager - INFO - API keys loaded. LLM available: True
+2026-04-01 06:26:17,833 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=embedding chosen=local_mistral reason=openai_embedding_long_cooldown_active rejected=1
+2026-04-01 06:26:17,833 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openai reason=reasoning/longform → OpenAI rejected=1
+2026-04-01 06:26:17,833 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=simple chosen=local_mistral reason=simple task + cost-sensitive → local rejected=1
+2026-04-01 06:26:17,835 - project_guardian.capability_registry - INFO - [Orchestration] capability map refreshed: modules=9 plugins=12 tools=0 agents=10
+2026-04-01 06:26:17,835 - elysia_sub_registration - INFO - [5/5] Registering modules with Architect-Core...
+2026-04-01 06:26:17,835 - elysia_sub_registration - INFO -   [OK] Registered TrustEvalContent
+2026-04-01 06:26:17,836 - elysia_sub_registration - INFO -   [OK] Registered FractalMind
+2026-04-01 06:26:17,836 - elysia_sub_registration - INFO -   [OK] Registered HarvestEngine
+2026-04-01 06:26:17,836 - elysia_sub_registration - INFO -   [OK] Registered IdentityMutationVerifier
+2026-04-01 06:26:17,836 - elysia_sub_registration - INFO -   [OK] Registered AIToolRegistry
+2026-04-01 06:26:17,836 - elysia_sub_registration - INFO -   [OK] Registered LongTermPlanner
+2026-04-01 06:26:17,836 - elysia_sub_registration - INFO -   [OK] Registered IncomeGenerator
+2026-04-01 06:26:17,836 - elysia_sub_registration - INFO -   [OK] Registered FinancialManager
+2026-04-01 06:26:17,836 - elysia_sub_registration - INFO -   [OK] Registered RevenueCreator
+2026-04-01 06:26:17,836 - elysia_sub_registration - INFO -   [OK] Registered Wallet
+2026-04-01 06:26:17,836 - elysia_sub_registration - INFO -   [OK] Module registration complete
+2026-04-01 06:26:17,837 - elysia - INFO - ======================================================================
+2026-04-01 06:26:17,837 - elysia - INFO - Starting Unified Elysia System
+2026-04-01 06:26:17,837 - elysia - INFO - ======================================================================
+2026-04-01 06:26:17,837 - elysia - INFO - [Startup] Dashboard ready — spawning deferred initialization
+2026-04-01 06:26:17,838 - elysia - INFO - Runtime loop started
+2026-04-01 06:26:17,838 - project_guardian.core - INFO - [Startup] Beginning deferred initialization...
+2026-04-01 06:26:17,841 - project_guardian.elysia_loop_core - INFO - ElysiaLoop-Core started
+2026-04-01 06:26:17,841 - project_guardian.memory - INFO - MemoryCore: Embeddings enabled (startup complete)
+2026-04-01 06:26:17,841 - project_guardian.runtime_loop_core - INFO - RuntimeLoop started
+2026-04-01 06:26:17,841 - project_guardian.core - INFO - [Startup] Deferred initialization complete (0.0s)
+2026-04-01 06:26:17,842 - project_guardian.core - INFO - [Startup] Deferred vector rebuild recovery skipped: no rebuild pending or degraded
+2026-04-01 06:26:17,845 - project_guardian.elysia_loop_core - INFO - ElysiaLoop-Core event loop started
+2026-04-01 06:26:17,846 - project_guardian.auto_learning - INFO - [Auto-Learning] Started (interval=6.0h, storage=F:\ProjectGuardian\memory\learned)
+2026-04-01 06:26:17,846 - elysia - INFO - Auto-learning started (AI, income, etc. -> thumb drive)
+2026-04-01 06:26:17,847 - elysia - INFO - Unified Elysia System is running
+2026-04-01 06:26:17,847 - elysia - INFO - ======================================================================
+2026-04-01 06:26:17,855 - elysia - INFO - Status endpoint: http://127.0.0.1:8888/status
+2026-04-01 06:26:17,890 - project_guardian.proposal_domains - INFO - Loaded 0 extended domains from config
+2026-04-01 06:26:17,914 - project_guardian.startup_runtime_guard - INFO - [Startup] memory-thin mode OFF (operational); routine remembers / ST embed path enabled
+2026-04-01 06:26:21,289 - project_guardian.ollama_health - INFO - [Ollama] healthy: /api/chat OK (model=mistral:7b base=http://127.0.0.1:11434 tags=200)
+2026-04-01 06:26:43,296 - project_guardian.mistral_engine - WARNING - [Mistral] suggest_learning_targets failed: HTTPConnectionPool(host='127.0.0.1', port=11434): Read timed out. (read timeout=22.0)
+2026-04-01 06:26:43,297 - project_guardian.auto_learning - INFO - [Chained learning] round 1/3 Mistral: 
+2026-04-01 06:26:43,297 - project_guardian.auto_learning - INFO - [Chained learning] using seed fallback for round 1
+2026-04-01 06:26:43,297 - project_guardian.auto_learning - INFO - [Twitter] Recent search clamping max_results to 10 (API v2 valid range 10–100)
+2026-04-01 06:26:45,811 - project_guardian.api_key_manager - INFO - API keys loaded. LLM available: True
+2026-04-01 06:26:45,811 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=embedding chosen=local_mistral reason=openai_embedding_long_cooldown_active rejected=1
+2026-04-01 06:26:45,811 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openai reason=reasoning/longform → OpenAI rejected=1
+2026-04-01 06:26:45,812 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=simple chosen=local_mistral reason=simple task + cost-sensitive → local rejected=1
+2026-04-01 06:26:45,813 - project_guardian.capability_registry - INFO - [Orchestration] capability map refreshed: modules=9 plugins=12 tools=0 agents=10
+2026-04-01 06:26:45,854 - project_guardian.unified_llm_route - INFO - [UnifiedLLM] chat_capability_execute kind=module name=financial_manager success=True match_score=4.26 latency_ms=0.0
+2026-04-01 06:26:45,854 - project_guardian.unified_llm_route - INFO - [UnifiedLLM] backend=capability latency_ms=58.3
+2026-04-01 06:26:45,882 - project_guardian.unified_llm_route - INFO - [UnifiedLLM] chat_capability_execute kind=module name=financial_manager success=True match_score=5.71 latency_ms=0.0
+2026-04-01 06:26:45,883 - project_guardian.unified_llm_route - INFO - [UnifiedLLM] backend=capability latency_ms=27.6
+2026-04-01 06:26:45,912 - project_guardian.unified_llm_route - INFO - [UnifiedLLM] chat_capability_execute kind=module name=financial_manager success=True match_score=5.36 latency_ms=0.0
+2026-04-01 06:26:45,912 - project_guardian.unified_llm_route - INFO - [UnifiedLLM] backend=capability latency_ms=28.8
+2026-04-01 06:26:47,248 - project_guardian.ui_control_panel - INFO - Client connected to control panel
+2026-04-01 06:26:51,596 - root - INFO - [2026-04-01 06:26:51.596660] Routed task 'routing_probe' to tool: No suitable tool found
+2026-04-01 06:26:51,603 - project_guardian.unified_llm_route - INFO - [UnifiedLLM] chat_capability_execute kind=module name=task_router success=False match_score=7.36 latency_ms=0.3
+2026-04-01 06:26:51,625 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openai reason=reasoning/longform → OpenAI rejected=1
+2026-04-01 06:26:51,626 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openai reason=reasoning/longform → OpenAI rejected=1
+2026-04-01 06:26:54,544 - project_guardian.openai_degraded - WARNING - [OpenAI degraded] entering cooldown=162s strikes=1 status=429 detail=Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/doc; embeddings/chat will prefer local until expiry
+2026-04-01 06:26:55,648 - project_guardian.ollama_health - INFO - [Ollama] healthy: /api/chat OK (model=mistral:7b base=http://127.0.0.1:11434 tags=200)
+2026-04-01 06:27:09,922 - project_guardian.resource_limits - WARNING - Resource limit exceeded: memory at 99.5% (limit: 92.0%)
+2026-04-01 06:27:10,035 - project_guardian.resource_limits - WARNING - Resource limit exceeded: cpu at 100.0% (limit: 95.0%)
+2026-04-01 06:27:15,730 - project_guardian.unified_llm_route - INFO - [UnifiedLLM] backend=ollama latency_ms=24162.6 reason=reasoning/longform → OpenAI → fallback ollama
+2026-04-01 06:27:19,829 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:27:19,838 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=[Guardian
+2026-04-01 06:27:19,839 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:27:19,841 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=Trust]
+2026-04-01 06:27:19,842 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:27:19,844 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=safety_engine:
+2026-04-01 06:27:19,847 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:27:19,849 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=0.500
+2026-04-01 06:27:19,850 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:27:19,852 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=1.000
+2026-04-01 06:27:19,939 - project_guardian.core - INFO - [Orchestration] Pre-decision caps (top 5): ['harvest_engine:4.361', 'financial_manager:3.261', 'fractalmind:3.261', 'income_generator:3.261', 'task_router:3.261']
+2026-04-01 06:27:19,940 - project_guardian.core - INFO - [Mistral] Removed consider_dream_cycle from candidates (memory pressure; avoids futile selection)
+2026-04-01 06:27:19,941 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=simple chosen=local_mistral reason=simple task + cost-sensitive → local rejected=3
+2026-04-01 06:27:19,941 - project_guardian.core - INFO - [Mistral] Decision requested (candidates=12)
+2026-04-01 06:27:20,814 - project_guardian.self_task_queue - INFO - [SelfTask] enqueued st_524b91447dc8 (Generate ranked revenue shortlist (local))
+2026-04-01 06:27:20,863 - project_guardian.self_task_queue - INFO - [SelfTask] enqueued st_06350abbd27d (Small dry-run offer ideas (local))
+2026-04-01 06:27:20,908 - project_guardian.self_task_queue - INFO - [SelfTask] enqueued st_215617d671c2 (Monetizable directions from learning + income snapshot)
+2026-04-01 06:27:21,004 - project_guardian.self_task_queue - INFO - [SelfTask] enqueued st_08ffdf1854d3 (Evaluate planner objectives for monetization angles)
+2026-04-01 06:27:21,099 - project_guardian.self_task_queue - INFO - [SelfTask] enqueued st_cda7f32a811f (Exercise module: longterm_planner)
+2026-04-01 06:27:21,193 - project_guardian.self_task_artifacts - INFO - [SelfTask] artifact saved C:\Users\mrnat\Project guardian\data\generated_reports\st_215617d671c2_summarize_monetizable_directions_from_learning.json
+2026-04-01 06:27:21,199 - project_guardian.self_task_queue - WARNING - [SelfTask] Archetype suppression 900s arch=summarize_monetizable_directions_from_learning useful_nonadv_streak=4 (heavy downrank pending queue)
+2026-04-01 06:27:21,202 - project_guardian.self_task_queue - INFO - [SelfTask] finished st_215617d671c2 tier=strong success=True useful=True adv=False op_ready=False arch=summarize_monetizable_directions_from_learning
+2026-04-01 06:27:21,341 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:27:21,342 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=[Autonomy] execute_self_task st_215617d671c2: ok=T...
+2026-04-01 06:27:40,179 - project_guardian.resource_limits - INFO - [ResourceMonitor] Memory callback armed: sustained breach streak=2 threshold=2 usage=96.9%
+2026-04-01 06:27:40,433 - project_guardian.memory_cleanup - INFO - Memory consolidation: 1067 -> 1000 (removed 67)
+2026-04-01 06:27:40,433 - project_guardian.monitoring - INFO - [Auto-Cleanup #1] Consolidated: reason=system_memory_pressure, outcome=consolidated, memory=1067->1000, removed=67
+2026-04-01 06:27:40,434 - project_guardian.monitoring - INFO - [Auto-Cleanup #1] Post-cleanup quiet zone active for 1 min (suppresses repeat cleanup checks)
+2026-04-01 06:27:46,342 - project_guardian.mistral_engine - WARNING - [Mistral] suggest_learning_targets failed: HTTPConnectionPool(host='127.0.0.1', port=11434): Read timed out. (read timeout=22.0)
+2026-04-01 06:27:46,342 - project_guardian.auto_learning - INFO - [Chained learning] round 2/3 Mistral: 
+2026-04-01 06:27:46,343 - project_guardian.auto_learning - INFO - [Chained learning] empty plan after round 1 — stopping early
+2026-04-01 06:27:48,176 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=conversational, reason=category_conversational): Why Is This Happening?
+
+The primary driver is a massive shif...
+2026-04-01 06:27:48,176 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=conversational, reason=title_only): @narendramodi AI means artificial intelligence or ambedkar i...
+2026-04-01 06:27:48,178 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=conversational, reason=category_conversational): 🗞 IN THE NEWS 🗞 @OpenAI, the San Francisco-based company beh...
+2026-04-01 06:27:48,179 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=conversational, reason=low_relevance): Machine learning is like a tattoo artist who can't quite get...
+2026-04-01 06:27:48,179 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=conversational, reason=category_conversational): @niru_kenya has made significant strides in the field of Art...
+2026-04-01 06:27:48,179 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=conversational, reason=category_conversational): machine learning has a secret life: at night, it reorganizes...
+2026-04-01 06:27:48,180 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=conversational, reason=low_relevance): 神权来自信仰的叙事包装，就像我们在消费主义时代把need和desire的错位包装。信仰是世俗的符号化，LLM的到来是福是...
+2026-04-01 06:27:48,181 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=conversational, reason=low_relevance): @sshin89 LLMは興味ないんだけど、時系列データに対する予測モデルでTransformerベースのを利用しようと...
+2026-04-01 06:27:48,184 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=conversational, reason=low_relevance): しかしながら、　@FGOAC
+ソースコード流出が
+AI羅生門みたいな話になってて
+えぐい。言語別にしたくらいではアウトで...
+2026-04-01 06:27:48,184 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=strategic, reason=cross_session_duplicate): [P] I replaced Dot-Product Attention with distance-based RBF...
+2026-04-01 06:27:48,185 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=strategic, reason=cross_session_duplicate): [D]  TurboQuant author replies on OpenReview...
+2026-04-01 06:27:48,185 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=strategic, reason=cross_session_duplicate): [R] Pesquisa acadêmica sobre trabalho com microtarefas de ma...
+2026-04-01 06:27:48,190 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=conversational, reason=low_relevance): I got tired of switching between AI tools so I built somethi...
+2026-04-01 06:27:48,190 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=conversational, reason=low_relevance): why Attapoll increase the min threshold for cashout...
+2026-04-01 06:27:48,190 - project_guardian.auto_learning - INFO - [Auto-Learning] Rejected (category=conversational, reason=low_relevance): Free £20...
+2026-04-01 06:27:48,487 - project_guardian.auto_learning - INFO - [Auto-Learning] Session complete: fetched=15 archived=15 admitted=0 rejected=15 cross_session_duplicates=3 (fp=3 title=0) dedup_pruned=0 top_rejections=low_relevance:7, category_conversational:4, cross_session_duplicate:3, title_only:1
+2026-04-01 06:27:48,615 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:27:48,617 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=[Adversarial Finding] noisy_learning_pattern: Bad ...
+2026-04-01 06:27:56,368 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:27:56,369 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=[Guardian Task] Created: Adversarial: tighten_lear...
+2026-04-01 06:28:13,560 - project_guardian.adversarial_self_learning - INFO - [Adversarial Self-Learning] Event bad_learning_session: findings=1 top=Bad learning session: 15/15 rejected, 0 admitted tasks=1
+2026-04-01 06:28:13,561 - project_guardian.auto_learning - INFO - [Auto-Learning] Bad session cooldown: 90 min (streak=1)
+2026-04-01 06:28:23,897 - project_guardian.core - INFO - [Novelty] Priority decay/boost: penalized execute_self_task by -4.0; boosted underused modules (same action 3 of last 3)
+2026-04-01 06:28:23,918 - project_guardian.api_key_manager - INFO - API keys loaded. LLM available: True
+2026-04-01 06:28:23,918 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=embedding chosen=local_mistral reason=openai_embedding_long_cooldown_active rejected=3
+2026-04-01 06:28:23,919 - project_guardian.api_key_manager - INFO - API keys loaded. LLM available: True
+2026-04-01 06:28:23,919 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=local_mistral reason=openai_loaded_but_degraded rejected=3
+2026-04-01 06:28:23,920 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=simple chosen=local_mistral reason=simple task + cost-sensitive → local rejected=3
+2026-04-01 06:28:23,922 - project_guardian.capability_registry - INFO - [Orchestration] capability map refreshed: modules=9 plugins=12 tools=0 agents=10
+2026-04-01 06:28:23,922 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:28:23,923 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=[Guardian
+2026-04-01 06:28:23,925 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:28:23,927 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=Consensus]
+2026-04-01 06:28:23,929 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:28:23,930 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=Cleared
+2026-04-01 06:28:23,932 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:28:23,933 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=votes
+2026-04-01 06:28:23,967 - project_guardian.core - INFO - [Orchestration] Pre-decision caps (top 5): ['harvest_engine:4.361', 'task_router:4.361', 'wallet:4.361', 'financial_manager:3.261', 'fractalmind:3.261']
+2026-04-01 06:28:23,967 - project_guardian.core - INFO - [Mistral] Removed consider_dream_cycle from candidates (memory pressure; avoids futile selection)
+2026-04-01 06:28:23,968 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=simple chosen=local_mistral reason=simple task + cost-sensitive → local rejected=3
+2026-04-01 06:28:23,969 - project_guardian.core - INFO - [Mistral] Decision requested (candidates=12)
+2026-04-01 06:28:25,047 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:28:25,048 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=[Autonomy] income_modules_pulse: gen earned=0.00 a...
+2026-04-01 06:28:32,001 - project_guardian.core - INFO - [Exploration] income_modules_pulse: gen earned=0.00 active=3; wallet total=0.0; elysia_acct=0.0 USD; fm cash=0.0
+2026-04-01 06:29:09,788 - project_guardian.core - INFO - [Novelty] Priority decay/boost: penalized execute_self_task by -4.0; boosted underused modules (same action 3 of last 4)
+2026-04-01 06:29:09,800 - project_guardian.api_key_manager - INFO - API keys loaded. LLM available: True
+2026-04-01 06:29:09,800 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=embedding chosen=local_mistral reason=openai_embedding_long_cooldown_active rejected=2
+2026-04-01 06:29:09,800 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openrouter reason=openai_recently_degraded_prefer_openrouter rejected=2
+2026-04-01 06:29:09,800 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=simple chosen=local_mistral reason=simple task + cost-sensitive → local rejected=2
+2026-04-01 06:29:09,802 - project_guardian.capability_registry - INFO - [Orchestration] capability map refreshed: modules=9 plugins=12 tools=0 agents=10
+2026-04-01 06:29:09,802 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:29:09,803 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=[Guardian
+2026-04-01 06:29:09,805 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:29:09,806 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=Trust
+2026-04-01 06:29:09,807 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:29:09,809 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=Decay]
+2026-04-01 06:29:09,811 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:29:09,812 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=memory_core:
+2026-04-01 06:29:09,814 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:29:09,815 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=1.000
+2026-04-01 06:29:09,846 - project_guardian.core - INFO - [Orchestration] Pre-decision caps (top 5): ['income_generator:8.981', 'wallet:8.981', 'financial_manager:7.881', 'harvest_engine:7.561', 'task_router:7.561']
+2026-04-01 06:29:09,847 - project_guardian.core - INFO - [Mistral] Removed consider_dream_cycle from candidates (memory pressure; avoids futile selection)
+2026-04-01 06:29:09,848 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openrouter reason=openai_recently_degraded_prefer_openrouter rejected=2
+2026-04-01 06:29:09,848 - project_guardian.core - INFO - [Mistral] Decision requested (candidates=12)
+2026-04-01 06:29:37,276 - project_guardian.openai_degraded - INFO - [OpenAI degraded] cooldown elapsed; resuming normal provider selection
+2026-04-01 06:30:23,281 - project_guardian.core - INFO - [Novelty] Priority decay/boost: penalized execute_self_task by -4.0; boosted underused modules (same action 3 of last 5)
+2026-04-01 06:30:23,295 - project_guardian.api_key_manager - INFO - API keys loaded. LLM available: True
+2026-04-01 06:30:23,295 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=embedding chosen=local_mistral reason=openai_embedding_long_cooldown_active rejected=1
+2026-04-01 06:30:23,295 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openai reason=reasoning/longform → OpenAI rejected=1
+2026-04-01 06:30:23,295 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=simple chosen=local_mistral reason=simple task + cost-sensitive → local rejected=1
+2026-04-01 06:30:23,296 - project_guardian.capability_registry - INFO - [Orchestration] capability map refreshed: modules=9 plugins=12 tools=0 agents=10
+2026-04-01 06:30:23,297 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:30:23,298 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=[Guardian
+2026-04-01 06:30:23,300 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:30:23,301 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=Trust
+2026-04-01 06:30:23,303 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:30:23,304 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=Decay]
+2026-04-01 06:30:23,306 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:30:23,308 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=memory_core:
+2026-04-01 06:30:23,309 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:30:23,311 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=1.000
+2026-04-01 06:30:23,313 - project_guardian.core - INFO - [Orchestration] Pre-decision caps (top 5): ['income_generator:8.981', 'wallet:8.981', 'financial_manager:7.881', 'harvest_engine:7.561', 'task_router:7.561']
+2026-04-01 06:30:23,314 - project_guardian.core - INFO - [Mistral] Removed consider_dream_cycle from candidates (memory pressure; avoids futile selection)
+2026-04-01 06:30:23,314 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openai reason=reasoning/longform → OpenAI rejected=1
+2026-04-01 06:30:23,314 - project_guardian.core - INFO - [Mistral] Decision requested (candidates=12)
+2026-04-01 06:30:42,001 - project_guardian.monitoring - WARNING - [Auto-Cleanup #2] Skipped: reason=system_memory_pressure, outcome=skipped_small_delta, memory_count=1003, trim_target=1000, skipped_count=1/2
+2026-04-01 06:31:35,424 - project_guardian.api_key_manager - INFO - API keys loaded. LLM available: True
+2026-04-01 06:31:35,424 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=embedding chosen=local_mistral reason=openai_embedding_long_cooldown_active rejected=1
+2026-04-01 06:31:35,424 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openai reason=reasoning/longform → OpenAI rejected=1
+2026-04-01 06:31:35,424 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=simple chosen=local_mistral reason=simple task + cost-sensitive → local rejected=1
+2026-04-01 06:31:35,426 - project_guardian.capability_registry - INFO - [Orchestration] capability map refreshed: modules=9 plugins=12 tools=0 agents=10
+2026-04-01 06:31:35,426 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:31:35,428 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=[Guardian
+2026-04-01 06:31:35,431 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:31:35,432 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=Trust
+2026-04-01 06:31:35,434 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:31:35,435 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=Decay]
+2026-04-01 06:31:35,437 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:31:35,440 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=memory_core:
+2026-04-01 06:31:35,442 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:31:35,443 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=1.000
+2026-04-01 06:31:35,445 - project_guardian.core - INFO - [Orchestration] Pre-decision caps (top 5): ['income_generator:8.981', 'wallet:8.981', 'financial_manager:7.881', 'harvest_engine:7.561', 'task_router:7.561']
+2026-04-01 06:31:35,446 - project_guardian.core - INFO - [Mistral] Removed consider_dream_cycle from candidates (memory pressure; avoids futile selection)
+2026-04-01 06:31:35,447 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openai reason=reasoning/longform → OpenAI rejected=1
+2026-04-01 06:31:35,447 - project_guardian.core - INFO - [Mistral] Decision requested (candidates=12)
+2026-04-01 06:32:47,472 - project_guardian.core - INFO - [Novelty] Priority decay/boost: penalized execute_task by -4.0; boosted underused modules (same action 3 of last 5)
+2026-04-01 06:32:47,487 - project_guardian.api_key_manager - INFO - API keys loaded. LLM available: True
+2026-04-01 06:32:47,487 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=embedding chosen=local_mistral reason=openai_embedding_long_cooldown_active rejected=1
+2026-04-01 06:32:47,487 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openai reason=reasoning/longform → OpenAI rejected=1
+2026-04-01 06:32:47,487 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=simple chosen=local_mistral reason=simple task + cost-sensitive → local rejected=1
+2026-04-01 06:32:47,489 - project_guardian.capability_registry - INFO - [Orchestration] capability map refreshed: modules=9 plugins=12 tools=0 agents=10
+2026-04-01 06:32:47,489 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:32:47,491 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=[Guardian
+2026-04-01 06:32:47,493 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:32:47,495 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=Trust
+2026-04-01 06:32:47,496 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:32:47,498 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=Decay]
+2026-04-01 06:32:47,499 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:32:47,501 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=memory_core:
+2026-04-01 06:32:47,503 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:32:47,504 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=1.000
+2026-04-01 06:32:47,506 - project_guardian.core - INFO - [Orchestration] Pre-decision caps (top 5): ['income_generator:8.981', 'wallet:8.981', 'financial_manager:7.881', 'harvest_engine:7.561', 'task_router:7.561']
+2026-04-01 06:32:47,507 - project_guardian.core - INFO - [Mistral] Removed consider_dream_cycle from candidates (memory pressure; avoids futile selection)
+2026-04-01 06:32:47,507 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openai reason=reasoning/longform → OpenAI rejected=1
+2026-04-01 06:32:47,508 - project_guardian.core - INFO - [Mistral] Decision requested (candidates=12)
+2026-04-01 06:32:48,625 - root - INFO - Income report generated: $0.00 from 0 sales
+2026-04-01 06:32:48,845 - project_guardian.memory_vector - INFO - Loading sentence-transformers model for embedding fallback...
+2026-04-01 06:32:48,847 - project_guardian.memory_vector - WARNING - Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=[Autonomy] harvest_income_report: total=$0.0 sales...
+2026-04-01 06:32:55,420 - project_guardian.core - INFO - [Exploration] harvest_income_report: total=0.0 sales=0

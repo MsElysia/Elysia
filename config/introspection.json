@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "heartbeat_interval_beats": 10,
+  "throttle_minutes": 30,
+  "trigger_learning": true,
+  "trigger_dreams": true,
+  "suggest_objectives": true
+}

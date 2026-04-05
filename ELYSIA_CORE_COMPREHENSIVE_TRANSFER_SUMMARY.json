@@ -1,0 +1,406 @@
+{
+  "transfer_date": "2025-07-15T18:43:52.915149",
+  "statistics": {
+    "transferred": 97,
+    "skipped": 0,
+    "errors": 0
+  },
+  "transferred_modules": [
+    {
+      "source": "elysia_core\\MERGE_STATUS.md",
+      "destination": "core_modules\\elysia_core_comprehensive\\MERGE_STATUS.md"
+    },
+    {
+      "source": "elysia_core\\migrate_to_guardian.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\migrate_to_guardian.py"
+    },
+    {
+      "source": "elysia_core\\requirements.txt",
+      "destination": "core_modules\\elysia_core_comprehensive\\requirements.txt"
+    },
+    {
+      "source": "elysia_core\\elysia_api.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\elysia_api.py"
+    },
+    {
+      "source": "elysia_core\\test_integration.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\test_integration.py"
+    },
+    {
+      "source": "elysia_core\\mutation_engine.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\mutation_engine.py"
+    },
+    {
+      "source": "elysia_core\\elysia_runtime_loop.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\elysia_runtime_loop.py"
+    },
+    {
+      "source": "elysia_core\\MERGE_PLAN.md",
+      "destination": "core_modules\\elysia_core_comprehensive\\MERGE_PLAN.md"
+    },
+    {
+      "source": "elysia_core\\INTEGRATION_SUMMARY.md",
+      "destination": "core_modules\\elysia_core_comprehensive\\INTEGRATION_SUMMARY.md"
+    },
+    {
+      "source": "elysia_core\\enhanced_memory.json",
+      "destination": "core_modules\\elysia_core_comprehensive\\enhanced_memory.json"
+    },
+    {
+      "source": "elysia_core\\enhanced_tasks.json",
+      "destination": "core_modules\\elysia_core_comprehensive\\enhanced_tasks.json"
+    },
+    {
+      "source": "elysia_core\\enhanced_trust.json",
+      "destination": "core_modules\\elysia_core_comprehensive\\enhanced_trust.json"
+    },
+    {
+      "source": "elysia_core\\MIGRATION_GUIDE.md",
+      "destination": "core_modules\\elysia_core_comprehensive\\MIGRATION_GUIDE.md"
+    },
+    {
+      "source": "elysia_core\\integration_example.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\integration_example.py"
+    },
+    {
+      "source": "elysia_core\\enhanced_task_engine.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\enhanced_task_engine.py"
+    },
+    {
+      "source": "elysia_core\\enhanced_trust_matrix.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\enhanced_trust_matrix.py"
+    },
+    {
+      "source": "elysia_core\\enhanced_memory_core.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\enhanced_memory_core.py"
+    },
+    {
+      "source": "elysia_core\\web_reader.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\web_reader.py"
+    },
+    {
+      "source": "elysia_core\\memory_log.json",
+      "destination": "core_modules\\elysia_core_comprehensive\\memory_log.json"
+    },
+    {
+      "source": "elysia_core\\dream_engine.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\dream_engine.py"
+    },
+    {
+      "source": "elysia_core\\context_builder.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\context_builder.py"
+    },
+    {
+      "source": "elysia_core\\memory_search.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\memory_search.py"
+    },
+    {
+      "source": "elysia_core\\elysia_config.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\elysia_config.py"
+    },
+    {
+      "source": "elysia_core\\external_ask.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\external_ask.py"
+    },
+    {
+      "source": "elysia_core\\feed_targets.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\feed_targets.py"
+    },
+    {
+      "source": "elysia_core\\self_evolver.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\self_evolver.py"
+    },
+    {
+      "source": "elysia_core\\mutation_verifier.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\mutation_verifier.py"
+    },
+    {
+      "source": "elysia_core\\runtime_feedback_loop.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\runtime_feedback_loop.py"
+    },
+    {
+      "source": "elysia_core\\mutation_log.json",
+      "destination": "core_modules\\elysia_core_comprehensive\\mutation_log.json"
+    },
+    {
+      "source": "elysia_core\\intent_engine.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\intent_engine.py"
+    },
+    {
+      "source": "elysia_core\\mutation_sandbox.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\mutation_sandbox.py"
+    },
+    {
+      "source": "elysia_core\\module_registry.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\module_registry.py"
+    },
+    {
+      "source": "elysia_core\\ranking_engine.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\ranking_engine.py"
+    },
+    {
+      "source": "elysia_core\\introspection_lens.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\introspection_lens.py"
+    },
+    {
+      "source": "elysia_core\\model_selector.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\model_selector.py"
+    },
+    {
+      "source": "elysia_core\\interaction_router.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\interaction_router.py"
+    },
+    {
+      "source": "elysia_core\\reality_mapper.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\reality_mapper.py"
+    },
+    {
+      "source": "elysia_core\\agent_manager.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\agent_manager.py"
+    },
+    {
+      "source": "elysia_core\\external_perception.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\external_perception.py"
+    },
+    {
+      "source": "elysia_core\\mission_director.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\mission_director.py"
+    },
+    {
+      "source": "elysia_core\\plugin_loader.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\plugin_loader.py"
+    },
+    {
+      "source": "elysia_core\\meta_integrator.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\meta_integrator.py"
+    },
+    {
+      "source": "elysia_core\\devils_advocate.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\devils_advocate.py"
+    },
+    {
+      "source": "elysia_core\\consensus_engine.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\consensus_engine.py"
+    },
+    {
+      "source": "elysia_core\\trust_matrix.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\trust_matrix.py"
+    },
+    {
+      "source": "elysia_core\\meta_planner.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\meta_planner.py"
+    },
+    {
+      "source": "elysia_core\\digital_safehouse.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\digital_safehouse.py"
+    },
+    {
+      "source": "elysia_core\\quantum_utilization_optimizer.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\quantum_utilization_optimizer.py"
+    },
+    {
+      "source": "elysia_core\\offline_matron_replica.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\offline_matron_replica.py"
+    },
+    {
+      "source": "elysia_core\\distributed_mother_thread.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\distributed_mother_thread.py"
+    },
+    {
+      "source": "elysia_core\\sync_engine.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\sync_engine.py"
+    },
+    {
+      "source": "elysia_core\\heartbeat.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\heartbeat.py"
+    },
+    {
+      "source": "elysia_core\\identity_core.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\identity_core.py"
+    },
+    {
+      "source": "elysia_core\\error_trap.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\error_trap.py"
+    },
+    {
+      "source": "elysia_core\\self_reflector.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\self_reflector.py"
+    },
+    {
+      "source": "elysia_core\\event_journal.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\event_journal.py"
+    },
+    {
+      "source": "elysia_core\\core_status.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\core_status.py"
+    },
+    {
+      "source": "elysia_core\\code_diff_analyzer.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\code_diff_analyzer.py"
+    },
+    {
+      "source": "elysia_core\\thread_labeler.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\thread_labeler.py"
+    },
+    {
+      "source": "elysia_core\\rollback_engine.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\rollback_engine.py"
+    },
+    {
+      "source": "elysia_core\\ranking engine.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\ranking engine.py"
+    },
+    {
+      "source": "elysia_core\\task_engine.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\task_engine.py"
+    },
+    {
+      "source": "elysia_core\\ask_ai.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\ask_ai.py"
+    },
+    {
+      "source": "elysia_core\\voice_thread.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\voice_thread.py"
+    },
+    {
+      "source": "elysia_core\\memory_core.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\memory_core.py"
+    },
+    {
+      "source": "elysia_core\\voicethread.py",
+      "destination": "core_modules\\elysia_core_comprehensive\\voicethread.py"
+    },
+    {
+      "source": "elysia_core\\static\\index.html",
+      "destination": "core_modules\\elysia_core_static\\index.html"
+    },
+    {
+      "source": "elysia_core\\backups\\dream_engine.py.bak.20250513_192602",
+      "destination": "core_modules\\elysia_core_backups\\dream_engine.py.bak.20250513_192602"
+    },
+    {
+      "source": "elysia_core\\backups\\dream_engine.py.bak.20250513_190142",
+      "destination": "core_modules\\elysia_core_backups\\dream_engine.py.bak.20250513_190142"
+    },
+    {
+      "source": "elysia_core\\venv\\.gitignore",
+      "destination": "core_modules\\elysia_core_venv\\.gitignore"
+    },
+    {
+      "source": "elysia_core\\venv\\pyvenv.cfg",
+      "destination": "core_modules\\elysia_core_venv\\pyvenv.cfg"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\mutation_engine.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\mutation_engine.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\elysia_runtime_loop.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\elysia_runtime_loop.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\enhanced_task_engine.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\enhanced_task_engine.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\enhanced_trust_matrix.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\enhanced_trust_matrix.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\enhanced_memory_core.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\enhanced_memory_core.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\rollback_engine.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\rollback_engine.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\self_reflector.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\self_reflector.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\sync_engine.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\sync_engine.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\heartbeat.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\heartbeat.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\runtime_feedback_loop.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\runtime_feedback_loop.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\intent_engine.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\intent_engine.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\model_selector.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\model_selector.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\trust_matrix.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\trust_matrix.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\mission_director.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\mission_director.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\mutation_verifier.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\mutation_verifier.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\mutation_sandbox.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\mutation_sandbox.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\self_evolver.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\self_evolver.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\ranking_engine.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\ranking_engine.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\devils_advocate.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\devils_advocate.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\introspection_lens.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\introspection_lens.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\plugin_loader.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\plugin_loader.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\web_reader.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\web_reader.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\memory_search.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\memory_search.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\context_builder.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\context_builder.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\voicethread.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\voicethread.cpython-313.pyc"
+    },
+    {
+      "source": "elysia_core\\__pycache__\\memory_core.cpython-313.pyc",
+      "destination": "core_modules\\elysia_core_compiled\\memory_core.cpython-313.pyc"
+    }
+  ],
+  "errors": [],
+  "categories": {
+    "elysia_core_modules": 66,
+    "static_files": 1,
+    "backup_files": 2,
+    "venv_config": 2,
+    "compiled_files": 26
+  }
+}

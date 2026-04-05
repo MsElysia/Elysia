@@ -1,0 +1,8 @@
+import json, os
+qfile = "./quarantined_nodes.json"
+if not os.path.exists(qfile):
+    print("No quarantine file."); exit()
+data = json.load(open(qfile))
+print("Quarantined nodes:" if data else "None")
+for nid,info in data.items():
+    print(f"- {nid[:8]} score={info['score']} at {info['time']}")

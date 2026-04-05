@@ -1,0 +1,23 @@
+{
+  "proposal_id": "test-20251130170601-simple-file-creation",
+  "title": "Test: Create Simple File",
+  "status": "approved",
+  "domain": "elysia_core",
+  "priority": "medium",
+  "created_at": "2025-11-30T17:06:01.401058",
+  "created_by": "test-script",
+  "description": "A simple test proposal to verify Implementer Agent works",
+  "impact_score": 0.3,
+  "effort_score": 0.2,
+  "risk_score": 0.1,
+  "last_updated_by": "test-script",
+  "history": [
+    {
+      "timestamp": "2025-11-30T22:06:01.424878+00:00",
+      "actor": "test-script",
+      "change_summary": "Status changed from proposal to approved",
+      "details": null
+    }
+  ],
+  "updated_at": "2025-11-30T22:06:01.425368+00:00"
+}

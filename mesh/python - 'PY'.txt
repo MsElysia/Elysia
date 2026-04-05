@@ -1,0 +1,5 @@
+python - <<'PY'
+from cryptography.fernet import Fernet
+open('encryption.key','wb').write(Fernet.generate_key())
+print("🔑  encryption.key created")
+PY

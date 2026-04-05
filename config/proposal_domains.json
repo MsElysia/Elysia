@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "description": "Canonical proposal domains for Elysia system. Canonical domains are hardcoded in code. Extended domains can be added here.",
+  "domain_descriptions": {
+    "elysia_core": "Core Elysia orchestration, task management, and system architecture",
+    "hestia_scraping": "Property data scraping, web automation, and data collection",
+    "legal_pipeline": "Legal document analysis, evidence archive, and RAG workflows",
+    "infra_observability": "Infrastructure monitoring, logging, and system observability",
+    "persona_mutation": "Persona management, identity evolution, and mutation controls"
+  },
+  "extended_domains": [],
+  "notes": [
+    "Canonical domains are defined in ProposalDomain enum and cannot be removed",
+    "Extended domains can be added here but should be used sparingly",
+    "All proposals must have exactly one primary domain",
+    "Domains enable filtering, parallelization, and ownership assignment"
+  ]
+}
+

@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Project Guardian Control Panel</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #f1f5f9;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 30px; }
+        .card {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+        }
+        .card h2 { color: #8b5cf6; margin-bottom: 15px; font-size: 1.2em; }
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #334155;
+        }
+        .status-item:last-child { border-bottom: none; }
+        .status-label { color: #cbd5e1; }
+        .status-value { color: #f1f5f9; font-weight: 500; }
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 500;
+        }
+        .badge-pending { background: #f59e0b; color: #0f172a; }
+        .badge-success { background: #10b981; color: #0f172a; }
+        .badge-task { background: #6366f1; color: white; }
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #6366f1;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 1em;
+            margin-right: 10px;
+            margin-top: 10px;
+        }
+        .btn:hover { background: #4f46e5; }
+        .btn-secondary { background: #8b5cf6; }
+        .btn-secondary:hover { background: #7c3aed; }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #cbd5e1;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 10px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #f1f5f9;
+            font-size: 1em;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #6366f1;
+        }
+        .warning-banner {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-left: 4px solid #6366f1;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            color: #cbd5e1;
+            font-size: 0.9em;
+        }
+        .warning-banner.warning-red {
+            border-left-color: #ef4444;
+            background: rgba(239, 68, 68, 0.1);
+        }
+        .warning-banner strong {
+            color: #f1f5f9;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Project Guardian Control Panel</h1>
+        
+        {% if bind_host_warning %}
+        <div class="warning-banner warning-red">
+            <strong>⚠️ Warning:</strong> UI_BIND_HOST is set to "{{ bind_host }}" (not loopback). Local-only enforcement is active, but ensure the server is bound to 127.0.0.1 for security.
+        </div>
+        {% else %}
+        <div class="warning-banner">
+            <strong>ℹ️ Local-only UI is enforced.</strong> Ensure server is bound to 127.0.0.1. Remote access is blocked.
+        </div>
+        {% endif %}
+        
+        <div class="card">
+            <h2>System Status</h2>
+            <div class="status-item">
+                <span class="status-label">Current Task:</span>
+                <span class="status-value">
+                    <span class="badge badge-task">{{ current_task }}</span>
+                </span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Pending Reviews:</span>
+                <span class="status-value">
+                    {% if pending_count > 0 %}
+                    <span class="badge badge-pending">{{ pending_count }} pending</span>
+                    {% else %}
+                    <span>0</span>
+                    {% endif %}
+                </span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Last Acceptance Run:</span>
+                <span class="status-value">
+                    {% if last_acceptance %}
+                    {{ last_acceptance }}
+                    {% if acceptance_status %}
+                    <span class="badge {% if acceptance_status == 'pass' %}badge-success{% else %}badge-pending{% endif %}" style="margin-left: 10px;">
+                        {{ acceptance_status.upper() }}
+                    </span>
+                    {% endif %}
+                    {% if acceptance_exit_code is not none %}
+                    <span style="color: #cbd5e1; font-size: 0.85em; margin-left: 10px;">(exit: {{ acceptance_exit_code }})</span>
+                    {% endif %}
+                    {% else %}
+                    Never
+                    {% endif %}
+                </span>
+            </div>
+            {% if last_acceptance %}
+            <div class="status-item">
+                <span class="status-label">Acceptance Log:</span>
+                <span class="status-value">
+                    <a href="/acceptance-log" class="btn" style="padding: 6px 12px; font-size: 0.9em;">View Log</a>
+                </span>
+            </div>
+            {% endif %}
+            <div class="status-item">
+                <span class="status-label">Last Run Once:</span>
+                <span class="status-value">
+                    {% if last_run_once %}
+                    {{ last_run_once }}
+                    {% if run_once_status %}
+                    <span class="badge {% if run_once_status == 'ok' or run_once_status == 'idle' %}badge-success{% elif run_once_status == 'error' or run_once_status == 'denied' %}badge-pending{% else %}badge-task{% endif %}" style="margin-left: 10px;">
+                        {{ run_once_status.upper() }}
+                    </span>
+                    {% endif %}
+                    {% else %}
+                    Never
+                    {% endif %}
+                </span>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>Quick Actions</h2>
+            <a href="/reviews" class="btn btn-secondary">View Review Queue</a>
+            <a href="/history" class="btn btn-secondary">View History</a>
+            <a href="/mutations" class="btn btn-secondary">View Mutations</a>
+            <form method="POST" action="/control/run-once" style="display: inline;">
+                <button type="submit" class="btn">Run Once</button>
+            </form>
+            <button onclick="runAcceptance()" class="btn">Run Acceptance</button>
+            <form method="POST" action="/control/task" style="display: inline;" onsubmit="return setTaskToNone(event)">
+                <input type="hidden" name="task" value="NONE">
+                <button type="submit" class="btn btn-secondary">Clear Current Task</button>
+            </form>
+            <a href="/tasks/new" class="btn btn-secondary">Create Task</a>
+            <a href="/mutations/new" class="btn btn-secondary">Create Mutation Payload</a>
+        </div>
+        
+        <div class="card">
+            <h2>Set Current Task</h2>
+            <form method="POST" action="/control/task" onsubmit="return setTask(event)">
+                <div class="form-group">
+                    <label for="task">Task Name (e.g., TASK-0013, NONE):</label>
+                    <input type="text" id="task" name="task" value="{{ current_task }}" required>
+                </div>
+                <button type="submit" class="btn">Update Task</button>
+            </form>
+        </div>
+        
+        <div id="acceptance-output" class="card" style="display: none;">
+            <h2>Acceptance Run Output</h2>
+            <pre id="output-content" style="background: #0f172a; padding: 15px; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; font-family: monospace; font-size: 0.9em;"></pre>
+        </div>
+    </div>
+    
+    <script>
+        async function runAcceptance() {
+            const outputDiv = document.getElementById('acceptance-output');
+            const contentDiv = document.getElementById('output-content');
+            outputDiv.style.display = 'block';
+            contentDiv.textContent = 'Running acceptance script...';
+            
+            try {
+                const response = await fetch('/control/run-acceptance', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    contentDiv.textContent = `Exit Code: ${data.exit_code}\n\nSTDOUT:\n${data.stdout}\n\nSTDERR:\n${data.stderr}`;
+                } else {
+                    contentDiv.textContent = `Exit Code: ${data.exit_code}\n\nSTDOUT:\n${data.stdout}\n\nSTDERR:\n${data.stderr}`;
+                }
+            } catch (error) {
+                contentDiv.textContent = `Error: ${error.message}`;
+            }
+        }
+        
+        async function setTask(event) {
+            event.preventDefault();
+            const formData = new FormData(event.target);
+            const task = formData.get('task');
+            
+            try {
+                const response = await fetch('/control/task', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert(`Task updated to: ${data.current_task}`);
+                    location.reload();
+                } else {
+                    alert(`Error: ${data.detail}`);
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+            
+            return false;
+        }
+        
+        async function setTaskToNone(event) {
+            event.preventDefault();
+            const formData = new FormData(event.target);
+            
+            try {
+                const response = await fetch('/control/task', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    location.reload();
+                } else {
+                    alert(`Error: ${data.detail}`);
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+            
+            return false;
+        }
+    </script>
+</body>
+</html>

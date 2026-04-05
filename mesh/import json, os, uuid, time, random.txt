@@ -1,0 +1,39 @@
+import json, os, uuid, time, random, threading, requests
+from cryptography.fernet import Fernet
+
+CORE_URL          = "http://localhost:8000"
+ENCRYPTION_KEY    = open("./encryption.key","rb").read()
+cipher            = Fernet(ENCRYPTION_KEY)
+NUM_SUBNODES      = 20
+PUSH_INTERVAL_SEC = 10
+
+def rand_log():
+    status = random.choices(["success","error","revoked"], [0.6,0.3,0.1])[0]
+    return {"time": time.time(), "status": status, "output": "ok" if status=="success" else "fail"}
+
+def register(device_name):
+    r = requests.post(f"{CORE_URL}/api/register", json={"device_name": device_name})
+    return r.json().get("node_id")
+
+def push_logs(node_id, logs):
+    payload = cipher.encrypt(json.dumps(logs).encode())
+    url     = f"{CORE_URL}/api/upload_logs/{node_id}"
+    try:
+        r = requests.post(url, data=payload, headers={"Content-Type":"application/octet-stream"})
+        print(f"[{node_id[:6]}] push {r.status_code}")
+    except Exception as e:
+        print(f"[{node_id[:6]}] push error: {e}")
+
+def simulate(device):
+    nid = register(device)
+    if not nid:
+        print(f"{device} failed to register"); return
+    while True:
+        push_logs(nid, [rand_log() for _ in range(random.randint(1,5))])
+        time.sleep(PUSH_INTERVAL_SEC+random.uniform(-2,2))
+
+if __name__ == "__main__":
+    for _ in range(NUM_SUBNODES):
+        d = f"Mock-{uuid.uuid4().hex[:8]}"
+        threading.Thread(target=simulate, args=(d,), daemon=True).start()
+    while True: time.sleep(60)

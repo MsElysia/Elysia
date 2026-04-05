@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Review Queue - Project Guardian</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #f1f5f9;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 30px; }
+        .card {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+        }
+        .review-item {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .review-item:hover { border-color: #6366f1; }
+        .review-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .review-id {
+            font-family: monospace;
+            color: #8b5cf6;
+            font-size: 0.9em;
+        }
+        .review-meta {
+            color: #cbd5e1;
+            font-size: 0.85em;
+        }
+        .review-details {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #334155;
+        }
+        .review-details strong { color: #8b5cf6; }
+        .btn {
+            display: inline-block;
+            padding: 8px 16px;
+            background: #6366f1;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 0.9em;
+            margin-right: 10px;
+        }
+        .btn:hover { background: #4f46e5; }
+        .btn-approve { background: #10b981; }
+        .btn-approve:hover { background: #059669; }
+        .btn-deny { background: #ef4444; }
+        .btn-deny:hover { background: #dc2626; }
+        .btn-secondary { background: #8b5cf6; }
+        .btn-secondary:hover { background: #7c3aed; }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #cbd5e1;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Review Queue</h1>
+        <a href="/" class="btn btn-secondary">← Back to Dashboard</a>
+        
+        <div class="card" style="margin-top: 20px;">
+            <h2>Review Requests</h2>
+            
+            <div style="margin-bottom: 20px;">
+                <strong>Filter by Status:</strong>
+                <a href="/reviews?status=pending" class="btn {% if current_status == 'pending' %}btn-secondary{% endif %}" style="margin-left: 10px;">Pending ({{ counts.pending }})</a>
+                <a href="/reviews?status=approved" class="btn {% if current_status == 'approved' %}btn-secondary{% endif %}">Approved ({{ counts.approved }})</a>
+                <a href="/reviews?status=denied" class="btn {% if current_status == 'denied' %}btn-secondary{% endif %}">Denied ({{ counts.denied }})</a>
+                <a href="/reviews?status=all" class="btn {% if current_status == 'all' %}btn-secondary{% endif %}">All ({{ counts.all }})</a>
+            </div>
+            
+            <h3 style="color: #8b5cf6; margin-bottom: 15px;">
+                {% if current_status == 'pending' %}Pending Review Requests
+                {% elif current_status == 'approved' %}Approved Requests
+                {% elif current_status == 'denied' %}Denied Requests
+                {% else %}All Review Requests
+                {% endif %}
+            </h3>
+            
+            {% if reviews %}
+                {% for review in reviews %}
+                <div class="review-item">
+                    <div class="review-header">
+                        <div>
+                            <div class="review-id">{{ review.request_id }}</div>
+                            <div class="review-meta">{{ review.created_at }}</div>
+                        </div>
+                        <div>
+                            <a href="/reviews/{{ review.request_id }}" class="btn">View Details</a>
+                        </div>
+                    </div>
+                    <div class="review-details">
+                        <div><strong>Status:</strong> <span style="color: {% if review.status == 'approved' %}#10b981{% elif review.status == 'denied' %}#ef4444{% else %}#f59e0b{% endif %};">{{ review.status.upper() }}</span></div>
+                        <div><strong>Component:</strong> {{ review.component }}</div>
+                        <div><strong>Action:</strong> {{ review.action }}</div>
+                        <div><strong>Target:</strong> {{ review.context.get('target', 'unknown') }}</div>
+                        <div><strong>Caller:</strong> {{ review.context.get('caller_identity', 'unknown') }}</div>
+                        <div><strong>Task ID:</strong> {{ review.context.get('task_id', 'unknown') }}</div>
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="empty-state">
+                    <p>No {% if current_status == 'pending' %}pending{% elif current_status == 'approved' %}approved{% elif current_status == 'denied' %}denied{% else %}review{% endif %} requests.</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>

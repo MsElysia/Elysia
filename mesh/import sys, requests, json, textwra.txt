@@ -1,0 +1,8 @@
+import sys, requests, json, textwrap
+
+if len(sys.argv) != 2:
+    sys.exit("usage: python unquarantine_helper.py <node_id>")
+
+nid = sys.argv[1]
+r = requests.post(f"http://localhost:8000/unquarantine/{nid}", timeout=5)
+print(r.status_code, r.json())

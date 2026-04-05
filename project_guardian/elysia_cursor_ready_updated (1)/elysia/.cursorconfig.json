@@ -1,0 +1,14 @@
+{
+  "tools": [
+    {
+      "name": "send_prompt",
+      "description": "Send a structured prompt through the Elysia PromptRouter",
+      "args": {
+        "module_id": "str",
+        "goal": "str",
+        "context": "str",
+        "task_type": "str"
+      }
+    }
+  ]
+}

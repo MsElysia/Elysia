@@ -1,0 +1,182 @@
+======================================================================
+INTEGRATION TEST REPORT
+======================================================================
+Start Time: 2025-11-06T17:55:25.503561
+End Time: 2025-11-06T18:12:16.937902
+Duration: 1011.94 seconds
+
+SUMMARY
+----------------------------------------------------------------------
+Total Tests: 105
+  [PASS] Passed: 18
+  [FAIL] Failed: 86
+  [SKIP] Skipped: 1
+  [ERROR] Errors: 0
+
+TEST FILE RESULTS
+----------------------------------------------------------------------
+[FAIL] test_integration.py
+    Status: failed
+    Passed: 8
+    Failed: 77
+    Duration: 7.03s
+    Failures:
+      - [
+      - [
+      - [
+      - [
+      - [
+      - project_guardian/tests/test_integration.py::TestEventLoopIntegration::test_module_adapter_execution
+      - project_guardian/tests/test_integration.py::TestSecurityIntegration::test_trust_eval_action_blocks_dangerous_action
+      - project_guardian/tests/test_integration.py::TestSecurityIntegration::test_trust_eval_content_filters_pii
+      - project_guardian/tests/test_integration.py::TestSecurityIntegration::test_security_system_integration
+      - project_guardian/tests/test_integration.py::TestSystemHealth::test_security_status_reporting
+
+[FAIL] test_integration_financial.py
+    Status: timeout
+    Passed: 0
+    Failed: 0
+    Duration: 300.00s
+
+[FAIL] test_integration_master_slave.py
+    Status: timeout
+    Passed: 0
+    Failed: 0
+    Duration: 300.00s
+
+[FAIL] test_integration_memory_persistence.py
+    Status: failed
+    Passed: 1
+    Failed: 8
+    Duration: 15.49s
+    Failures:
+      - [
+      - [
+      - [
+      - [
+      - [
+      - [
+      - [
+      - [100%]
+      - project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_memory_core_persistence
+      - project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_timeline_memory_persistence
+      - project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_memory_snapshot_persistence
+      - project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_multiple_memory_types_persistence
+      - project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_memory_search_persistence
+      - project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_memory_metadata_persistence
+      - project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_concurrent_memory_access
+      - project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_memory_corruption_recovery
+
+[FAIL] test_integration_mutation_workflow.py
+    Status: timeout
+    Passed: 0
+    Failed: 0
+    Duration: 300.00s
+
+[FAIL] test_integration_startup_shutdown.py
+    Status: failed
+    Passed: 9
+    Failed: 1
+    Duration: 88.83s
+    Failures:
+      - [
+      - project_guardian/tests/test_integration_startup_shutdown.py::TestSystemStartupShutdown::test_basic_initialization
+
+FAILURES DETAIL
+----------------------------------------------------------------------
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration.py
+
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration.py
+
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration.py
+
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration.py
+
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration.py
+
+[FAIL] project_guardian/tests/test_integration.py::TestEventLoopIntegration::test_module_adapter_execution
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration.py
+
+[FAIL] project_guardian/tests/test_integration.py::TestSecurityIntegration::test_trust_eval_action_blocks_dangerous_action
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration.py
+
+[FAIL] project_guardian/tests/test_integration.py::TestSecurityIntegration::test_trust_eval_content_filters_pii
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration.py
+
+[FAIL] project_guardian/tests/test_integration.py::TestSecurityIntegration::test_security_system_integration
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration.py
+
+[FAIL] project_guardian/tests/test_integration.py::TestSystemHealth::test_security_status_reporting
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration.py
+
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] [100%]
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_memory_core_persistence
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_timeline_memory_persistence
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_memory_snapshot_persistence
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_multiple_memory_types_persistence
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_memory_search_persistence
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_memory_metadata_persistence
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_concurrent_memory_access
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] project_guardian/tests/test_integration_memory_persistence.py::TestMemoryPersistence::test_memory_corruption_recovery
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_memory_persistence.py
+
+[FAIL] [
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_startup_shutdown.py
+
+[FAIL] project_guardian/tests/test_integration_startup_shutdown.py::TestSystemStartupShutdown::test_basic_initialization
+  File: C:\Users\mrnat\Project guardian\project_guardian\tests\test_integration_startup_shutdown.py
+
+WARNINGS
+----------------------------------------------------------------------
+[WARN] WARNING:project_guardian.core:Configuration warning [api_keys]: OpenAI API key not found\nWARNING:project_guardian.core:  \u2192 Suggestion: Set OPENAI_API_KEY environment variable or add to config.json\nINFO:project_guardian.core:Configuration: Claude API key not found (optional)\nINFO:project_guardian.core:Configuration: Grok API key not found (optional)\nINFO:project_guardian.core:Configuration: HuggingFace API key not found (optional)\nINFO:project_guardian.core:Configuration: Replicate API key not found (optional)\nINFO:project_guardian.core:Configuration: Optional package not installed: psutil\nINFO:project_guardian.core:Configuration: Optional package not installed: anthropic\nINFO:project_guardian.core:Configuration: Optional package not installed: faiss\nINFO:project_guardian.core:Configuration: Optional package not installed: sentence_transformers\nINFO:project_guardian.core:\u2713 Configuration validation passed\nWARNING:project_guardian.resource_limits:psutil not available, resource monitoring disabled\nWARNING:project_guardian.resource_limits:Cannot start monitoring: psutil not available\nINFO:comtypes.client._code_cache:Imported existing <module 'comtypes.gen' from 'C:\\\\Users\\\\mrnat\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\Lib\\\\site-packages\\\\comtypes\\\\gen\\\\__init__.py'>\nINFO:comtypes.client._code_cache:Using writeable comtypes cache directory: 'C:\\Users\\mrnat\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\comtypes\\gen'\nINFO:project_guardian.elysia_loop_core:Timeline memory initialized: elysia_timeline.db\nINFO:project_guardian.trust_policy_manager:Loaded 4 policies\nINFO:project_guardian.elysia_loop_core:Registered module: memory\nINFO:project_guardian.elysia_loop_core:Registered module: mutation\nINFO:project_guardian.elysia_loop_core:Registered module: safety\nINFO:project_guardian.elysia_loop_core:Registered module: trust\nINFO:project_guardian.elysia_loop_core:Registered module: tasks\nINFO:project_guardian.elysia_loop_core:Registered module: consensus\nINFO:project_guardian.elysia_loop_core:Registered module: trust_eval_action\nINFO:project_guardian.elysia_loop_core:Registered module: trust_eval_content\nINFO:project_guardian.elysia_loop_core:Registered module: feedback_loop\nINFO:project_guardian.startup_verification:============================================================\nINFO:project_guardian.startup_verification:Startup Verification Summary\nINFO:project_guardian.startup_verification:============================================================\nINFO:project_guardian.startup_verification:Total Checks: 11\nINFO:project_guardian.startup_verification:Successes: 11\nINFO:project_guardian.startup_verification:Warnings: 0\nINFO:project_guardian.startup_verification:Failures: 0\nINFO:project_guardian.startup_verification:Critical Failures: 0\nINFO:project_guardian.startup_verification:============================================================\nINFO:project_guardian.startup_verification:\u2713 All components initialized successfully\nINFO:project_guardian.startup_verification:============================================================\nINFO:project_guardian.startup_verification:Startup duration: 0.00s\nINFO:project_guardian.core:\u2713 All components initialized successfully\nINFO:project_guardian.runtime_health:Runtime health monitoring started\nINFO:project_guardian.core:Runtime health monitoring started
+[WARN] WARNING  project_guardian.core:core.py:721 Configuration warning [api_keys]: OpenAI API key not found\nWARNING  project_guardian.core:core.py:725   \u2192 Suggestion: Set OPENAI_API_KEY environment variable or add to config.json\nINFO     project_guardian.core:core.py:730 Configuration: Claude API key not found (optional)\nINFO     project_guardian.core:core.py:730 Configuration: Grok API key not found (optional)\nINFO     project_guardian.core:core.py:730 Configuration: HuggingFace API key not found (optional)\nINFO     project_guardian.core:core.py:730 Configuration: Replicate API key not found (optional)\nINFO     project_guardian.core:core.py:730 Configuration: Optional package not installed: psutil\nINFO     project_guardian.core:core.py:730 Configuration: Optional package not installed: anthropic\nINFO     project_guardian.core:core.py:730 Configuration: Optional package not installed: faiss\nINFO     project_guardian.core:core.py:730 Configuration: Optional package not installed: sentence_transformers\nINFO     project_guardian.core:core.py:734 \u2713 Configuration validation passed\nWARNING  project_guardian.resource_limits:resource_limits.py:110 psutil not available, resource monitoring disabled\nWARNING  project_guardian.resource_limits:resource_limits.py:120 Cannot start monitoring: psutil not available\nINFO     comtypes.client._code_cache:_code_cache.py:102 Imported existing <module 'comtypes.gen' from 'C:\\\\Users\\\\mrnat\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\Lib\\\\site-packages\\\\comtypes\\\\gen\\\\__init__.py'>\nINFO     comtypes.client._code_cache:_code_cache.py:83 Using writeable comtypes cache directory: 'C:\\Users\\mrnat\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\comtypes\\gen'\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:130 Timeline memory initialized: elysia_timeline.db\nINFO     project_guardian.trust_policy_manager:trust_policy_manager.py:544 Loaded 4 policies\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: memory\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: mutation\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: safety\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: trust\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: tasks\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: consensus\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: trust_eval_action\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: trust_eval_content\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: feedback_loop\nINFO     project_guardian.startup_verification:startup_verification.py:264 ============================================================\nINFO     project_guardian.startup_verification:startup_verification.py:265 Startup Verification Summary\nINFO     project_guardian.startup_verification:startup_verification.py:266 ============================================================\nINFO     project_guardian.startup_verification:startup_verification.py:267 Total Checks: 11\nINFO     project_guardian.startup_verification:startup_verification.py:268 Successes: 11\nINFO     project_guardian.startup_verification:startup_verification.py:269 Warnings: 0\nINFO     project_guardian.startup_verification:startup_verification.py:270 Failures: 0\nINFO     project_guardian.startup_verification:startup_verification.py:271 Critical Failures: 0\nINFO     project_guardian.startup_verification:startup_verification.py:288 ============================================================\nINFO     project_guardian.startup_verification:startup_verification.py:289 \u2713 All components initialized successfully\nINFO     project_guardian.startup_verification:startup_verification.py:290 ============================================================\nINFO     project_guardian.startup_verification:startup_verification.py:292 Startup duration: 0.00s\nINFO     project_guardian.core:core.py:827 \u2713 All components initialized successfully\nINFO     project_guardian.runtime_health:runtime_health.py:207 Runtime health monitoring started\nINFO     project_guardian.core:core.py:866 Runtime health monitoring started
+[WARN] WARNING:project_guardian.core:Configuration warning [api_keys]: OpenAI API key not found\nWARNING:project_guardian.core:  \u2192 Suggestion: Set OPENAI_API_KEY environment variable or add to config.json\nINFO:project_guardian.core:Configuration: Claude API key not found (optional)\nINFO:project_guardian.core:Configuration: Grok API key not found (optional)\nINFO:project_guardian.core:Configuration: HuggingFace API key not found (optional)\nINFO:project_guardian.core:Configuration: Replicate API key not found (optional)\nINFO:project_guardian.core:Configuration: Optional package not installed: psutil\nINFO:project_guardian.core:Configuration: Optional package not installed: anthropic\nINFO:project_guardian.core:Configuration: Optional package not installed: faiss\nINFO:project_guardian.core:Configuration: Optional package not installed: sentence_transformers\nINFO:project_guardian.core:\u2713 Configuration validation passed\nWARNING:project_guardian.resource_limits:psutil not available, resource monitoring disabled\nWARNING:project_guardian.resource_limits:Cannot start monitoring: psutil not available\nINFO:project_guardian.elysia_loop_core:Timeline memory initialized: elysia_timeline.db\nINFO:project_guardian.trust_policy_manager:Loaded 4 policies\nINFO:project_guardian.elysia_loop_core:Registered module: memory\nINFO:project_guardian.elysia_loop_core:Registered module: mutation\nINFO:project_guardian.elysia_loop_core:Registered module: safety\nINFO:project_guardian.elysia_loop_core:Registered module: trust\nINFO:project_guardian.elysia_loop_core:Registered module: tasks\nINFO:project_guardian.elysia_loop_core:Registered module: consensus\nINFO:project_guardian.elysia_loop_core:Registered module: trust_eval_action\nINFO:project_guardian.elysia_loop_core:Registered module: trust_eval_content\nINFO:project_guardian.elysia_loop_core:Registered module: feedback_loop\nINFO:project_guardian.startup_verification:============================================================\nINFO:project_guardian.startup_verification:Startup Verification Summary\nINFO:project_guardian.startup_verification:============================================================\nINFO:project_guardian.startup_verification:Total Checks: 11\nINFO:project_guardian.startup_verification:Successes: 11\nINFO:project_guardian.startup_verification:Warnings: 0\nINFO:project_guardian.startup_verification:Failures: 0\nINFO:project_guardian.startup_verification:Critical Failures: 0\nINFO:project_guardian.startup_verification:============================================================\nINFO:project_guardian.startup_verification:\u2713 All components initialized successfully\nINFO:project_guardian.startup_verification:============================================================\nINFO:project_guardian.startup_verification:Startup duration: 0.00s\nINFO:project_guardian.core:\u2713 All components initialized successfully\nINFO:project_guardian.runtime_health:Runtime health monitoring started\nINFO:project_guardian.core:Runtime health monitoring started
+[WARN] WARNING  project_guardian.core:core.py:721 Configuration warning [api_keys]: OpenAI API key not found\nWARNING  project_guardian.core:core.py:725   \u2192 Suggestion: Set OPENAI_API_KEY environment variable or add to config.json\nINFO     project_guardian.core:core.py:730 Configuration: Claude API key not found (optional)\nINFO     project_guardian.core:core.py:730 Configuration: Grok API key not found (optional)\nINFO     project_guardian.core:core.py:730 Configuration: HuggingFace API key not found (optional)\nINFO     project_guardian.core:core.py:730 Configuration: Replicate API key not found (optional)\nINFO     project_guardian.core:core.py:730 Configuration: Optional package not installed: psutil\nINFO     project_guardian.core:core.py:730 Configuration: Optional package not installed: anthropic\nINFO     project_guardian.core:core.py:730 Configuration: Optional package not installed: faiss\nINFO     project_guardian.core:core.py:730 Configuration: Optional package not installed: sentence_transformers\nINFO     project_guardian.core:core.py:734 \u2713 Configuration validation passed\nWARNING  project_guardian.resource_limits:resource_limits.py:110 psutil not available, resource monitoring disabled\nWARNING  project_guardian.resource_limits:resource_limits.py:120 Cannot start monitoring: psutil not available\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:130 Timeline memory initialized: elysia_timeline.db\nINFO     project_guardian.trust_policy_manager:trust_policy_manager.py:544 Loaded 4 policies\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: memory\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: mutation\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: safety\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: trust\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: tasks\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: consensus\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: trust_eval_action\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: trust_eval_content\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: feedback_loop\nINFO     project_guardian.startup_verification:startup_verification.py:264 ============================================================\nINFO     project_guardian.startup_verification:startup_verification.py:265 Startup Verification Summary\nINFO     project_guardian.startup_verification:startup_verification.py:266 ============================================================\nINFO     project_guardian.startup_verification:startup_verification.py:267 Total Checks: 11\nINFO     project_guardian.startup_verification:startup_verification.py:268 Successes: 11\nINFO     project_guardian.startup_verification:startup_verification.py:269 Warnings: 0\nINFO     project_guardian.startup_verification:startup_verification.py:270 Failures: 0\nINFO     project_guardian.startup_verification:startup_verification.py:271 Critical Failures: 0\nINFO     project_guardian.startup_verification:startup_verification.py:288 ============================================================\nINFO     project_guardian.startup_verification:startup_verification.py:289 \u2713 All components initialized successfully\nINFO     project_guardian.startup_verification:startup_verification.py:290 ============================================================\nINFO     project_guardian.startup_verification:startup_verification.py:292 Startup duration: 0.00s\nINFO     project_guardian.core:core.py:827 \u2713 All components initialized successfully\nINFO     project_guardian.runtime_health:runtime_health.py:207 Runtime health monitoring started\nINFO     project_guardian.core:core.py:866 Runtime health monitoring started
+[WARN] WARNING:project_guardian.core:Configuration warning [api_keys]: OpenAI API key not found\nWARNING:project_guardian.core:  \u2192 Suggestion: Set OPENAI_API_KEY environment variable or add to config.json\nINFO:project_guardian.core:Configuration: Claude API key not found (optional)\nINFO:project_guardian.core:Configuration: Grok API key not found (optional)\nINFO:project_guardian.core:Configuration: HuggingFace API key not found (optional)\nINFO:project_guardian.core:Configuration: Replicate API key not found (optional)\nINFO:project_guardian.core:Configuration: Optional package not installed: psutil\nINFO:project_guardian.core:Configuration: Optional package not installed: anthropic\nINFO:project_guardian.core:Configuration: Optional package not installed: faiss\nINFO:project_guardian.core:Configuration: Optional package not installed: sentence_transformers\nINFO:project_guardian.core:\u2713 Configuration validation passed\nWARNING:project_guardian.memory_vector:FAISS not available. Install with: pip install faiss-cpu\nWARNING:project_guardian.memory_vector:Vector memory disabled: FAISS not available\nINFO:project_guardian.core:Memory initialized with vector search support\nWARNING:project_guardian.resource_limits:psutil not available, resource monitoring disabled\nWARNING:project_guardian.resource_limits:Cannot start monitoring: psutil not available\nINFO:comtypes.client._code_cache:Imported existing <module 'comtypes.gen' from 'C:\\\\Users\\\\mrnat\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\Lib\\\\site-packages\\\\comtypes\\\\gen\\\\__init__.py'>\nINFO:comtypes.client._code_cache:Using writeable comtypes cache directory: 'C:\\Users\\mrnat\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\comtypes\\gen'\nINFO:project_guardian.elysia_loop_core:Timeline memory initialized: elysia_timeline.db\nINFO:project_guardian.trust_policy_manager:Loaded 4 policies\nINFO:project_guardian.elysia_loop_core:Registered module: memory\nINFO:project_guardian.elysia_loop_core:Registered module: mutation\nINFO:project_guardian.elysia_loop_core:Registered module: safety\nINFO:project_guardian.elysia_loop_core:Registered module: trust\nINFO:project_guardian.elysia_loop_core:Registered module: tasks\nINFO:project_guardian.elysia_loop_core:Registered module: consensus\nINFO:project_guardian.elysia_loop_core:Registered module: trust_eval_action\nINFO:project_guardian.elysia_loop_core:Registered module: trust_eval_content\nINFO:project_guardian.elysia_loop_core:Registered module: feedback_loop\nINFO:project_guardian.elysia_loop_core:ElysiaLoop-Core started\nINFO:project_guardian.startup_verification:============================================================\nINFO:project_guardian.startup_verification:Startup Verification Summary\nINFO:project_guardian.startup_verification:============================================================\nINFO:project_guardian.startup_verification:Total Checks: 11\nINFO:project_guardian.startup_verification:Successes: 11\nINFO:project_guardian.startup_verification:Warnings: 0\nINFO:project_guardian.startup_verification:Failures: 0\nINFO:project_guardian.startup_verification:Critical Failures: 0\nINFO:project_guardian.startup_verification:============================================================\nINFO:project_guardian.startup_verification:\u2713 All components initialized successfully\nINFO:project_guardian.startup_verification:============================================================\nINFO:project_guardian.startup_verification:Startup duration: 0.00s\nINFO:project_guardian.core:\u2713 All components initialized successfully\nINFO:project_guardian.runtime_health:Runtime health monitoring started\nINFO:project_guardian.core:Runtime health monitoring started\nINFO:project_guardian.elysia_loop_core:ElysiaLoop-Core event loop started
+[WARN] WARNING  project_guardian.core:core.py:721 Configuration warning [api_keys]: OpenAI API key not found\nWARNING  project_guardian.core:core.py:725   \u2192 Suggestion: Set OPENAI_API_KEY environment variable or add to config.json\nINFO     project_guardian.core:core.py:730 Configuration: Claude API key not found (optional)\nINFO     project_guardian.core:core.py:730 Configuration: Grok API key not found (optional)\nINFO     project_guardian.core:core.py:730 Configuration: HuggingFace API key not found (optional)\nINFO     project_guardian.core:core.py:730 Configuration: Replicate API key not found (optional)\nINFO     project_guardian.core:core.py:730 Configuration: Optional package not installed: psutil\nINFO     project_guardian.core:core.py:730 Configuration: Optional package not installed: anthropic\nINFO     project_guardian.core:core.py:730 Configuration: Optional package not installed: faiss\nINFO     project_guardian.core:core.py:730 Configuration: Optional package not installed: sentence_transformers\nINFO     project_guardian.core:core.py:734 \u2713 Configuration validation passed\nWARNING  project_guardian.memory_vector:memory_vector.py:18 FAISS not available. Install with: pip install faiss-cpu\nWARNING  project_guardian.memory_vector:memory_vector.py:350 Vector memory disabled: FAISS not available\nINFO     project_guardian.core:core.py:74 Memory initialized with vector search support\nWARNING  project_guardian.resource_limits:resource_limits.py:110 psutil not available, resource monitoring disabled\nWARNING  project_guardian.resource_limits:resource_limits.py:120 Cannot start monitoring: psutil not available\nINFO     comtypes.client._code_cache:_code_cache.py:102 Imported existing <module 'comtypes.gen' from 'C:\\\\Users\\\\mrnat\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\Lib\\\\site-packages\\\\comtypes\\\\gen\\\\__init__.py'>\nINFO     comtypes.client._code_cache:_code_cache.py:83 Using writeable comtypes cache directory: 'C:\\Users\\mrnat\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\comtypes\\gen'\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:130 Timeline memory initialized: elysia_timeline.db\nINFO     project_guardian.trust_policy_manager:trust_policy_manager.py:544 Loaded 4 policies\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: memory\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: mutation\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: safety\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: trust\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: tasks\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: consensus\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: trust_eval_action\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: trust_eval_content\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:241 Registered module: feedback_loop\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:548 ElysiaLoop-Core started\nINFO     project_guardian.startup_verification:startup_verification.py:264 ============================================================\nINFO     project_guardian.startup_verification:startup_verification.py:265 Startup Verification Summary\nINFO     project_guardian.startup_verification:startup_verification.py:266 ============================================================\nINFO     project_guardian.startup_verification:startup_verification.py:267 Total Checks: 11\nINFO     project_guardian.startup_verification:startup_verification.py:268 Successes: 11\nINFO     project_guardian.startup_verification:startup_verification.py:269 Warnings: 0\nINFO     project_guardian.startup_verification:startup_verification.py:270 Failures: 0\nINFO     project_guardian.startup_verification:startup_verification.py:271 Critical Failures: 0\nINFO     project_guardian.startup_verification:startup_verification.py:288 ============================================================\nINFO     project_guardian.startup_verification:startup_verification.py:289 \u2713 All components initialized successfully\nINFO     project_guardian.startup_verification:startup_verification.py:290 ============================================================\nINFO     project_guardian.startup_verification:startup_verification.py:292 Startup duration: 0.00s\nINFO     project_guardian.core:core.py:827 \u2713 All components initialized successfully\nINFO     project_guardian.runtime_health:runtime_health.py:207 Runtime health monitoring started\nINFO     project_guardian.core:core.py:866 Runtime health monitoring started\nINFO     project_guardian.elysia_loop_core:elysia_loop_core.py:492 ElysiaLoop-Core event loop started
+
+======================================================================
+[FAILURE] TESTS FAILED: 86 failures, 0 errors
+======================================================================

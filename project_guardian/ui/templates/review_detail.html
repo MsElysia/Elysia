@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Review Detail - Project Guardian</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #f1f5f9;
+            padding: 20px;
+        }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 30px; }
+        .card {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+        }
+        .card h2 { color: #8b5cf6; margin-bottom: 15px; font-size: 1.2em; }
+        .detail-item {
+            padding: 10px 0;
+            border-bottom: 1px solid #334155;
+        }
+        .detail-item:last-child { border-bottom: none; }
+        .detail-label { color: #cbd5e1; font-weight: 500; }
+        .detail-value {
+            color: #f1f5f9;
+            margin-top: 5px;
+            font-family: monospace;
+            font-size: 0.9em;
+            word-break: break-all;
+        }
+        .context-json {
+            background: #0f172a;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            font-size: 0.85em;
+        }
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #6366f1;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 1em;
+            margin-right: 10px;
+            margin-top: 10px;
+        }
+        .btn:hover { background: #4f46e5; }
+        .btn-approve { background: #10b981; }
+        .btn-approve:hover { background: #059669; }
+        .btn-deny { background: #ef4444; }
+        .btn-deny:hover { background: #dc2626; }
+        .btn-secondary { background: #8b5cf6; }
+        .btn-secondary:hover { background: #7c3aed; }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #cbd5e1;
+        }
+        .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #f1f5f9;
+            font-size: 1em;
+            font-family: inherit;
+            resize: vertical;
+        }
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #6366f1;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 500;
+        }
+        .status-approved { background: #10b981; color: #0f172a; }
+        .status-denied { background: #ef4444; color: white; }
+        .status-pending { background: #f59e0b; color: #0f172a; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Review Request Detail</h1>
+        <a href="/reviews" class="btn btn-secondary">← Back to Queue</a>
+        
+        <div class="card">
+            <h2>Request Information</h2>
+            <div class="detail-item">
+                <div class="detail-label">Request ID:</div>
+                <div class="detail-value">{{ review.request_id }}</div>
+            </div>
+            <div class="detail-item">
+                <div class="detail-label">Status:</div>
+                <div class="detail-value">
+                    <span class="status-badge status-{{ review.status }}">{{ review.status }}</span>
+                </div>
+            </div>
+            <div class="detail-item">
+                <div class="detail-label">Component:</div>
+                <div class="detail-value">{{ review.component }}</div>
+            </div>
+            <div class="detail-item">
+                <div class="detail-label">Action:</div>
+                <div class="detail-value">{{ review.action }}</div>
+            </div>
+            <div class="detail-item">
+                <div class="detail-label">Created At:</div>
+                <div class="detail-value">{{ review.created_at }}</div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>Context</h2>
+            <div class="context-json">{{ context_json }}</div>
+        </div>
+        
+        {% if approval %}
+        <div class="card">
+            <h2>Approval Status</h2>
+            <div class="detail-item">
+                <div class="detail-label">Approved:</div>
+                <div class="detail-value">
+                    {% if approval.approved %}
+                    <span class="status-badge status-approved">Yes</span>
+                    {% else %}
+                    <span class="status-badge status-denied">No</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="detail-item">
+                <div class="detail-label">Approver:</div>
+                <div class="detail-value">{{ approval.approver }}</div>
+            </div>
+            <div class="detail-item">
+                <div class="detail-label">Timestamp:</div>
+                <div class="detail-value">{{ approval.timestamp }}</div>
+            </div>
+            {% if approval.notes %}
+            <div class="detail-item">
+                <div class="detail-label">Notes:</div>
+                <div class="detail-value">{{ approval.notes }}</div>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+        
+        {% if review.status == "pending" %}
+        <div class="card">
+            <h2>Actions</h2>
+            <form id="approve-form" method="POST" action="/reviews/{{ review.request_id }}/approve" onsubmit="return submitAction(event, 'approve')">
+                <div class="form-group">
+                    <label for="approve-notes">Notes (optional):</label>
+                    <textarea id="approve-notes" name="notes" rows="3" placeholder="Add notes about this approval..."></textarea>
+                </div>
+                <button type="submit" class="btn btn-approve">Approve</button>
+            </form>
+            
+            <form id="deny-form" method="POST" action="/reviews/{{ review.request_id }}/deny" onsubmit="return submitAction(event, 'deny')" style="margin-top: 20px;">
+                <div class="form-group">
+                    <label for="deny-notes">Notes (optional):</label>
+                    <textarea id="deny-notes" name="notes" rows="3" placeholder="Add notes about this denial..."></textarea>
+                </div>
+                <button type="submit" class="btn btn-deny">Deny</button>
+            </form>
+        </div>
+        {% endif %}
+    </div>
+    
+    <script>
+        async function submitAction(event, action) {
+            event.preventDefault();
+            const form = event.target;
+            const formData = new FormData(form);
+            
+            const confirmMsg = action === 'approve' 
+                ? 'Are you sure you want to approve this request?'
+                : 'Are you sure you want to deny this request?';
+            
+            if (!confirm(confirmMsg)) {
+                return false;
+            }
+            
+            try {
+                const response = await fetch(form.action, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert(data.message);
+                    window.location.href = '/reviews';
+                } else {
+                    alert(`Error: ${data.detail}`);
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+            
+            return false;
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Elysia Control Panel</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; background-color: #111; color: #eee; }
+    h1 { color: #66ccff; }
+    input, button, select { padding: 8px; margin: 5px; font-size: 16px; }
+    #memory { background: #222; padding: 10px; margin-top: 15px; border: 1px solid #555; max-height: 200px; overflow-y: scroll; }
+  </style>
+</head>
+<body>
+  <h1>Elysia Control Panel</h1>
+
+  <label>Speak:</label><br>
+  <input type="text" id="speakInput" placeholder="Say something...">
+  <button onclick="sendSpeak()">Send</button><br>
+
+  <label>Voice Mode:</label>
+  <select id="modeSelect" onchange="changeMode()">
+    <option value="warm_guide">Warm Guide</option>
+    <option value="sharp_analyst">Sharp Analyst</option>
+    <option value="poetic_oracle">Poetic Oracle</option>
+  </select><br>
+
+  <button onclick="triggerDream()">Trigger Dream Cycle</button><br>
+  <button onclick="approveMutation()">Approve Last Mutation</button>
+  <button onclick="refreshMemory()">View Memory</button>
+  <hr>
+<h2>Ask GPT</h2>
+<input type="text" id="askInput" placeholder="Ask her anything...">
+<button onclick="askGPT()">Ask</button>
+<div id="gptReply" style="margin-top:10px; color:#88f;"></div>
+
+  <div id="memory"></div>
+
+  <script>
+    async function sendSpeak() {
+      const text = document.getElementById("speakInput").value;
+      await fetch("/speak", {
+        method: "POST",
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ text })
+      });
+    }
+    async function askGPT() {
+  const prompt = document.getElementById("askInput").value;
+  const response = await fetch("/ask", {
+    method: "POST",
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt })
+  });
+  const result = await response.json();
+  document.getElementById("gptReply").innerText = result.reply || "No response.";
+}
+
+    async function changeMode() {
+      const mode = document.getElementById("modeSelect").value;
+      await fetch("/mode", {
+        method: "POST",
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ mode })
+      });
+    }
+
+    async function triggerDream() {
+      await fetch("/dream", { method: "POST" });
+    }
+
+    async function refreshMemory() {
+      const res = await fetch("/memory");
+      const data = await res.json();
+      const mem = document.getElementById("memory");
+      mem.innerHTML = data.map(m => `<div>${m.time}: ${m.thought}</div>`).join("");
+    }
+    async function approveMutation() {
+      const res = await fetch("/approve", { method: "POST" });
+      const data = await res.json();
+      alert(data.message);
+    }
+  </script>
+</body>
+</html>

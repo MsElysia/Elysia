@@ -1,0 +1,127 @@
+{
+  "proposal_id": "webscout-20251129092913-better-internal-task-graph-orchestration",
+  "title": "Research: Better Internal Task Graph Orchestration",
+  "description": "Research and design improvements for Elysia's internal task graph and orchestration system. Focus on multi-agent coordination patterns, task dependency management, and failure recovery strategies.",
+  "status": "implemented",
+  "created_by": "elysia-webscout",
+  "created_at": "2025-11-29T09:29:13.049503",
+  "updated_at": "2025-11-29T11:29:45.189042",
+  "last_updated_by": "implementer_agent",
+  "schema_version": 1,
+  "domain": "elysia_core",
+  "priority": "medium",
+  "impact_score": null,
+  "effort_score": null,
+  "risk_level": "medium",
+  "tags": [
+    "orchestration",
+    "task-management",
+    "multi-agent"
+  ],
+  "research_sources": [
+    {
+      "url": "https://example.com/source-0",
+      "title": "Source 1 from LLM research",
+      "relevance": "high",
+      "extracted_patterns": [
+        "Pattern from LLM research"
+      ],
+      "summary": "### Research Summary\n\nElysiaÃ¢â‚¬â„¢s internal task graph and orchestration system is crucial for managing complex workflows, especially in multi-agent environments. This research focuses on enhancing the ex..."
+    },
+    {
+      "url": "https://example.com/source-1",
+      "title": "Source 2 from LLM research",
+      "relevance": "high",
+      "extracted_patterns": [
+        "Pattern from LLM research"
+      ],
+      "summary": "### Research Summary\n\nElysiaÃ¢â‚¬â„¢s internal task graph and orchestration system is crucial for managing complex workflows, especially in multi-agent environments. This research focuses on enhancing the ex..."
+    },
+    {
+      "url": "https://example.com/source-2",
+      "title": "Source 3 from LLM research",
+      "relevance": "high",
+      "extracted_patterns": [
+        "Pattern from LLM research"
+      ],
+      "summary": "### Research Summary\n\nElysiaÃ¢â‚¬â„¢s internal task graph and orchestration system is crucial for managing complex workflows, especially in multi-agent environments. This research focuses on enhancing the ex..."
+    }
+  ],
+  "design_impact": {
+    "modules_affected": [],
+    "complexity": "medium",
+    "estimated_effort_hours": 0,
+    "breaking_changes": false,
+    "dependencies": []
+  },
+  "approval_status": "approved",
+  "approved_by": "human::mrnat",
+  "approved_at": "2025-11-29T11:26:19.241028",
+  "rejection_reason": null,
+  "implementation_status": "not_started",
+  "implementation_notes": [],
+  "history": [
+    {
+      "timestamp": "2025-11-29T09:29:13.049516",
+      "actor": "elysia-webscout",
+      "change_summary": "Proposal created"
+    },
+    {
+      "timestamp": "2025-11-29T09:29:26.516699",
+      "actor": "elysia-webscout",
+      "change_summary": "Metadata updated"
+    },
+    {
+      "timestamp": "2025-11-29T09:29:26.527114",
+      "actor": "elysia-webscout",
+      "change_summary": "Metadata updated"
+    },
+    {
+      "timestamp": "2025-11-29T09:29:26.536372",
+      "actor": "elysia-webscout",
+      "change_summary": "Metadata updated"
+    },
+    {
+      "timestamp": "2025-11-29T11:27:06.615027",
+      "actor": "implementer_agent",
+      "change_summary": "Implementation started",
+      "details": "Status changed from approved to in_implementation"
+    },
+    {
+      "timestamp": "2025-11-29T11:27:06.671680",
+      "actor": "implementer_agent",
+      "change_summary": "Implementation failed: Failed to create branch implement/webscout-20251129092913-better-internal-task-graph-orchestration: Command '['git', 'checkout', '-b', 'implement/webscout-20251129092913-better-internal-task-graph-orchestration']' returned non-zero exit status 128.",
+      "details": "Status changed from in_implementation to implementation_failed"
+    },
+    {
+      "timestamp": "2025-11-29T11:27:50.346892",
+      "actor": "human::mrnat",
+      "change_summary": "Status reset from implementation_failed to approved for retry"
+    },
+    {
+      "timestamp": "2025-11-29T11:28:17.680790",
+      "actor": "implementer_agent",
+      "change_summary": "Implementation started",
+      "details": "Status changed from approved to in_implementation"
+    },
+    {
+      "timestamp": "2025-11-29T11:29:45.189055",
+      "actor": "implementer_agent",
+      "change_summary": "Implementation completed: implemented",
+      "details": {
+        "tasks_completed": 3,
+        "tasks_failed": 0,
+        "branch": "implement/webscout-20251129092913-better-internal-task-graph-orchestration"
+      }
+    }
+  ],
+  "implementation_artifacts": {
+    "branch_name": "implement/webscout-20251129092913-better-internal-task-graph-orchestration",
+    "tasks_completed": 3,
+    "tasks_failed": 0,
+    "tasks_total": 3,
+    "test_results": null,
+    "completed_at": "2025-11-29T11:29:45.189050"
+  },
+  "implementation_summary": "Implementation completed:\n- Status: implemented\n- Tasks: 3/3 passed\n- Branch: implement/webscout-20251129092913-better-internal-task-graph-orchestration\n"
+}

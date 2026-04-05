@@ -1,0 +1,47 @@
+{
+  "proposal_id": "test-20251130192336-simple-file-creation",
+  "title": "Test: Create Simple File",
+  "status": "implemented",
+  "domain": "elysia_core",
+  "priority": "medium",
+  "created_at": "2025-11-30T19:23:36.322787",
+  "created_by": "test-script",
+  "description": "A simple test proposal to verify Implementer Agent works",
+  "impact_score": 0.3,
+  "effort_score": 0.2,
+  "risk_score": 0.1,
+  "last_updated_by": "Elysia-Implementer",
+  "history": [
+    {
+      "timestamp": "2025-12-01T00:23:36.337030+00:00",
+      "actor": "test-script",
+      "change_summary": "Status changed from proposal to approved",
+      "details": null
+    },
+    {
+      "timestamp": "2025-12-01T00:23:36.355681+00:00",
+      "actor": "Elysia-Implementer",
+      "change_summary": "Status changed from approved to in_implementation",
+      "details": null
+    },
+    {
+      "timestamp": "2025-12-01T00:23:36.382467+00:00",
+      "actor": "Elysia-Implementer",
+      "change_summary": "Status changed from in_implementation to implemented",
+      "details": null
+    },
+    {
+      "timestamp": "2025-12-01T00:23:36.390156+00:00",
+      "actor": "Elysia-Implementer",
+      "change_summary": "Implementation completed: implemented",
+      "details": {
+        "tasks_completed": 3,
+        "tasks_failed": 0,
+        "tasks_total": 3
+      }
+    }
+  ],
+  "updated_at": "2025-12-01T00:23:36.390182+00:00",
+  "implementation_status": "completed",
+  "last_implemented_at": "2025-12-01T00:23:36.374866+00:00"
+}

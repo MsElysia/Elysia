@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mutation Payloads - Project Guardian</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #f1f5f9;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 30px; }
+        .card {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+        }
+        .card h2 { color: #8b5cf6; margin-bottom: 15px; font-size: 1.2em; }
+        .mutation-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            background: #0f172a;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            border: 1px solid #334155;
+        }
+        .mutation-item:hover {
+            border-color: #6366f1;
+        }
+        .mutation-info {
+            flex: 1;
+        }
+        .mutation-info strong {
+            color: #8b5cf6;
+        }
+        .mutation-meta {
+            color: #cbd5e1;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+        .btn {
+            display: inline-block;
+            padding: 8px 16px;
+            background: #6366f1;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+        .btn:hover { background: #4f46e5; }
+        .btn-secondary { background: #8b5cf6; }
+        .btn-secondary:hover { background: #7c3aed; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Mutation Payloads</h1>
+        
+        <div class="card">
+            <h2>Available Mutations</h2>
+            {% if mutations %}
+                {% for mutation in mutations %}
+                <div class="mutation-item">
+                    <div class="mutation-info">
+                        <strong>{{ mutation.filename }}</strong>
+                        <div class="mutation-meta">
+                            Summary: {{ mutation.summary[:100] }}{% if mutation.summary|length > 100 %}...{% endif %} | 
+                            Files: {{ mutation.touched_paths_count }} | 
+                            Modified: {{ mutation.modified_time }}
+                        </div>
+                    </div>
+                    <a href="/mutations/{{ mutation.filename }}" class="btn">View Details</a>
+                </div>
+                {% endfor %}
+            {% else %}
+                <p style="color: #cbd5e1;">No mutation payloads found.</p>
+            {% endif %}
+        </div>
+        
+        <div style="margin-top: 20px;">
+            <a href="/mutations/new" class="btn">Create New Mutation</a>
+            <a href="/" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
+    </div>
+</body>
+</html>

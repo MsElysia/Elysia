@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Create Mutation Payload - Project Guardian</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #f1f5f9;
+            padding: 20px;
+        }
+        .container { max-width: 1000px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 30px; }
+        .card {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+        }
+        .card h2 { color: #8b5cf6; margin-bottom: 15px; font-size: 1.2em; }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #cbd5e1;
+        }
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #f1f5f9;
+            font-size: 1em;
+        }
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #6366f1;
+        }
+        .form-group textarea {
+            min-height: 150px;
+            font-family: monospace;
+        }
+        .file-change {
+            background: #0f172a;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            border: 1px solid #334155;
+        }
+        .file-change-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #6366f1;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 1em;
+            margin-right: 10px;
+            margin-top: 10px;
+        }
+        .btn:hover { background: #4f46e5; }
+        .btn-secondary { background: #8b5cf6; }
+        .btn-secondary:hover { background: #7c3aed; }
+        .btn-danger {
+            background: #ef4444;
+            padding: 6px 12px;
+            font-size: 0.9em;
+        }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Create Mutation Payload</h1>
+        
+        <div class="card">
+            <form method="POST" action="/mutations/create" id="mutationForm" onsubmit="return submitMutation(event)">
+                <div class="form-group">
+                    <label for="payload_name">Payload Name (will be saved as MUTATIONS/&lt;name&gt;.json):</label>
+                    <input type="text" id="payload_name" name="payload_name" value="" required pattern="^[A-Za-z0-9_-]{1,64}\.json$" placeholder="test.json">
+                    <small style="color: #cbd5e1; font-size: 0.85em;">Alphanumeric with .json extension</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="summary">Summary:</label>
+                    <textarea id="summary" name="summary" required maxlength="500" placeholder="Brief description of this mutation"></textarea>
+                </div>
+                
+                <div class="card">
+                    <h2>File Changes</h2>
+                    <div id="file-changes">
+                        <div class="file-change" data-index="0">
+                            <div class="file-change-header">
+                                <h3 style="color: #8b5cf6; font-size: 1em;">File Change #1</h3>
+                                <button type="button" class="btn btn-danger btn-small" onclick="removeFileChange(this)" style="display: none;">Remove</button>
+                            </div>
+                            <div class="form-group">
+                                <label>File Path (relative to repo root):</label>
+                                <input type="text" name="file_paths" required placeholder="project_guardian/test.py">
+                            </div>
+                            <div class="form-group">
+                                <label>File Content:</label>
+                                <textarea name="file_contents" required placeholder="Full file contents here..."></textarea>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-secondary" onclick="addFileChange()">Add File Change</button>
+                </div>
+                
+                <button type="submit" class="btn">Create Mutation Payload</button>
+                <a href="/" class="btn btn-secondary">Cancel</a>
+            </form>
+        </div>
+    </div>
+    
+    <script>
+        let fileChangeIndex = 1;
+        
+        function addFileChange() {
+            const container = document.getElementById('file-changes');
+            const newChange = document.createElement('div');
+            newChange.className = 'file-change';
+            newChange.setAttribute('data-index', fileChangeIndex);
+            newChange.innerHTML = `
+                <div class="file-change-header">
+                    <h3 style="color: #8b5cf6; font-size: 1em;">File Change #${fileChangeIndex + 1}</h3>
+                    <button type="button" class="btn btn-danger btn-small" onclick="removeFileChange(this)">Remove</button>
+                </div>
+                <div class="form-group">
+                    <label>File Path (relative to repo root):</label>
+                    <input type="text" name="file_paths" required placeholder="project_guardian/test.py">
+                </div>
+                <div class="form-group">
+                    <label>File Content:</label>
+                    <textarea name="file_contents" required placeholder="Full file contents here..."></textarea>
+                </div>
+            `;
+            container.appendChild(newChange);
+            fileChangeIndex++;
+            updateRemoveButtons();
+        }
+        
+        function removeFileChange(button) {
+            const fileChange = button.closest('.file-change');
+            fileChange.remove();
+            updateRemoveButtons();
+        }
+        
+        function updateRemoveButtons() {
+            const fileChanges = document.querySelectorAll('.file-change');
+            fileChanges.forEach((change, index) => {
+                const removeBtn = change.querySelector('.btn-danger');
+                if (fileChanges.length > 1) {
+                    removeBtn.style.display = 'inline-block';
+                } else {
+                    removeBtn.style.display = 'none';
+                }
+            });
+        }
+        
+        async function submitMutation(event) {
+            event.preventDefault();
+            const formData = new FormData(event.target);
+            
+            try {
+                const response = await fetch('/mutations/create', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert(`Mutation payload created: ${data.payload_name}`);
+                    window.location.href = '/';
+                } else {
+                    alert(`Error: ${data.detail}`);
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+            
+            return false;
+        }
+        
+        // Initialize
+        updateRemoveButtons();
+    </script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+Prompt for Grok 4 (via Cursor):
+
+You are now tasked with finalizing the integration of the Elysia AI system, focusing particularly on the following components and considerations:
+
+Goals:
+
+Maximize system security against adversarial attacks (focus on emotional manipulation, trust escalation, inference chaining, and timing attacks).
+
+Optimize system performance, reducing latency and resource consumption.
+
+Ensure robust persona boundary enforcement and effective identity anchoring.
+
+Finalize and verify the comprehensive integration of the VoicePersona module with MutationFlow-Core, IdentityAnchor, TrustEngine, and ReputationEngine.
+
+Actions to Perform:
+
+Perform a comprehensive review of the finalized schema (Mutation ID: MP-002-GEM-VP-EMPATHY-R2) and all integrated mutations (GRK-ADV-001, GRK-ADV-002, GRK-ADV-003):
+
+Verify integration completeness and compatibility.
+
+Highlight potential edge-cases or integration gaps.
+
+Conduct an automated stress-test simulation:
+
+Attack vectors: emotional manipulation, persona boundary inversion, trust escalation, low-intensity rollback evasion, inference chaining.
+
+Attack intensity: 0.98 (near-maximum).
+
+Duration: 10 minutes.
+
+Clearly document any vulnerabilities or exploits detected.
+
+Implement enhanced sandbox mode (leveraging provided mocks: MockTaskQueue and MockIdentityAnchor):
+
+Integrate sandbox mode into Elysia's launcher, triggered by a configurable flag.
+
+Confirm that mock timing and metadata leak prevention techniques effectively obfuscate system internals.
+
+Provide detailed recommendations for final deployment:
+
+Security optimizations.
+
+Resource utilization improvements.
+
+Latency minimization.
+
+Persona coherence and identity alignment enforcement.
+
+Output comprehensive integration report:
+
+Provide a concise summary of security posture and resilience.
+
+List actionable steps required before production launch.
+
+Generate and clearly log final audit IDs and mutation integration confirmations.
+
+Format for Output:
+
+Integration Status Summary:
+
+Detected Vulnerabilities (if any):
+
+Performance Metrics and Improvements:
+
+Sandbox Mode Verification Results:
+
+Final Deployment Recommendations:
+
+Audit Traceability (AuditID, MutationIDs):
+
+Proceed now, fully leverage your integration with Cursor, and maximize the robustness and production-readiness of the Elysia system.

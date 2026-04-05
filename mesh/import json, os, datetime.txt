@@ -1,0 +1,15 @@
+import json, os, datetime
+
+QFILE = "quarantined_nodes.json"
+if not os.path.exists(QFILE):
+    print("No quarantine file yet.")
+    raise SystemExit
+
+data = json.load(open(QFILE))
+if not data:
+    print("No nodes are currently quarantined.")
+else:
+    print("Quarantined nodes:")
+    for nid, info in data.items():
+        t = datetime.datetime.fromisoformat(info["time"]).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"• {nid[:8]}  score={info['score']}  at {t}")

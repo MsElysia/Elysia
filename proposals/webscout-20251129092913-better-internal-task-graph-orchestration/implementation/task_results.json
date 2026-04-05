@@ -1,0 +1,20 @@
+[
+  {
+    "task_id": "task-step-1",
+    "status": "passed",
+    "error": null,
+    "files_changed": []
+  },
+  {
+    "task_id": "task-step-2",
+    "status": "passed",
+    "error": null,
+    "files_changed": []
+  },
+  {
+    "task_id": "task-step-3",
+    "status": "passed",
+    "error": null,
+    "files_changed": []
+  }
+]

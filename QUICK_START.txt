@@ -1,0 +1,87 @@
+# QUICK_START.txt
+================================================================================
+ELYSIA - QUICK START GUIDE
+================================================================================
+
+HOW TO USE ELYSIA IN 3 STEPS:
+
+STEP 1: START THE SYSTEM
+   Double-click: INTERACT_ELYSIA.bat
+
+STEP 2: USE THE MENU
+   Choose from:
+   1. Store Memory - Save information
+   2. Recall Memories - View what you saved
+   3. Show System Status - Check system health
+   4. Show Startup Verification - See components
+   5. Search Memories - Find by category
+   6. Exit - Shut down
+
+STEP 3: START USING IT!
+   Example:
+   - Store: "Buy groceries" (category: tasks)
+   - Store: "Learned Python today" (category: learning)
+   - Recall: See your recent memories
+   - Search: Find all "tasks" memories
+
+================================================================================
+WHAT IS ELYSIA?
+================================================================================
+
+Elysia is a memory system that:
+- Remembers everything you tell it
+- Organizes information by category
+- Lets you search and recall information
+- Persists data between sessions
+- Helps you build a knowledge base
+
+================================================================================
+COMMON CATEGORIES
+================================================================================
+
+Use these categories to organize:
+- tasks      → Things to do
+- learning   → Things you learned
+- ideas      → Ideas and thoughts
+- project    → Project-related info
+- notes      → General notes
+- meetings   → Meeting notes
+- code       → Code snippets/notes
+
+================================================================================
+QUICK EXAMPLES
+================================================================================
+
+Example 1: Task List
+   1. Store: "Call dentist" (category: tasks)
+   2. Store: "Finish report" (category: tasks)
+   3. Search: Category "tasks" → See all tasks
+
+Example 2: Learning Journal
+   1. Store: "Learned about decorators" (category: learning)
+   2. Store: "Decorators wrap functions" (category: learning)
+   3. Recall: See recent learning
+
+Example 3: Project Notes
+   1. Store: "User wants feature X" (category: project)
+   2. Store: "Feature X needs API changes" (category: project)
+   3. Search: Category "project" → All project info
+
+================================================================================
+FILES YOU CAN USE
+================================================================================
+
+INTERACT_ELYSIA.bat    → Interactive menu (START HERE!)
+START_ELYSIA.bat       → Start system (runs continuously)
+TEST_ELYSIA.bat        → Quick test
+EXAMPLES_ELYSIA.bat    → See examples
+
+================================================================================
+NEED HELP?
+================================================================================
+
+See ELYSIA_USER_GUIDE.md for complete documentation
+Run EXAMPLES_ELYSIA.bat to see code examples
+
+================================================================================
+

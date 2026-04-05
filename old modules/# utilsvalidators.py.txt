@@ -1,0 +1,98 @@
+# utils/validators.py
+
+from typing import Dict, Any, List
+
+class MutationValidator:
+    """
+    Provides utility functions for validating mutation proposals.
+    This ensures that proposed changes adhere to system integrity,
+    safety, and philosophical constraints (e.g., resisting entropy).
+    """
+    def __init__(self):
+        # Could load validation rules from a config or database
+        self.validation_rules = {
+            "min_performance_gain": 0.05, # Minimum expected improvement for a mutation
+            "max_soul_loss_impact": 0.1, # Max acceptable increase in soul loss metric
+            "preserve_symbolic_depth_keywords": ["symbol", "myth", "meaning", "narrative"]
+        }
+
+    def validate_proposal(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validates a mutation proposal against predefined rules.
+
+        Args:
+            proposal (Dict[str, Any]): The mutation proposal dictionary.
+                                        Expected keys: 'proposed_changes', 'expected_impact', 'current_system_state'.
+
+        Returns:
+            Dict[str, Any]: A dictionary with validation status and reasons.
+        """
+        validation_status = {"is_valid": True, "reasons": []}
+
+        # Rule 1: Check for expected performance gain
+        expected_gain = proposal.get("expected_impact", {}).get("performance_gain", 0.0)
+        if expected_gain < self.validation_rules["min_performance_gain"]:
+            validation_status["is_valid"] = False
+            validation_status["reasons"].append(f"Expected performance gain ({expected_gain:.2f}) is below minimum required ({self.validation_rules['min_performance_gain']:.2f}).")
+
+        # Rule 2: Check for acceptable soul loss impact
+        soul_loss_impact = proposal.get("expected_impact", {}).get("soul_loss_impact", 0.0)
+        if soul_loss_impact > self.validation_rules["max_soul_loss_impact"]:
+            validation_status["is_valid"] = False
+            validation_status["reasons"].append(f"Expected soul loss impact ({soul_loss_impact:.2f}) exceeds maximum acceptable ({self.validation_rules['max_soul_loss_impact']:.2f}).")
+
+        # Rule 3: Check for symbolic depth preservation (conceptual)
+        # This is a very basic check; real implementation would involve NLP/semantic analysis
+        proposed_code_snippet = proposal.get("proposed_changes", {}).get("code_snippet", "")
+        if not any(keyword in proposed_code_snippet.lower() for keyword in self.validation_rules["preserve_symbolic_depth_keywords"]):
+            # This rule is more about ensuring the *intent* of the mutation aligns with symbolic depth
+            # For a real check, you'd need to analyze the *effect* of the code.
+            pass # Skipping this for now as it's hard to implement conceptually without actual code analysis
+
+        # Rule 4: Ensure the proposal structure is complete
+        required_keys = ["proposed_changes", "expected_impact", "current_system_state", "proposer_id"]
+        for key in required_keys:
+            if key not in proposal:
+                validation_status["is_valid"] = False
+                validation_status["reasons"].append(f"Missing required key in proposal: '{key}'.")
+
+        if validation_status["is_valid"]:
+            print("  Validator: Mutation proposal passed initial validation.")
+        else:
+            print(f"  Validator: Mutation proposal FAILED validation. Reasons: {validation_status['reasons']}")
+
+        return validation_status
+
+    def run_simulated_test(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Simulates running tests on a proposed mutation.
+        In a real system, this would involve a sandboxed environment.
+
+        Args:
+            proposal (Dict[str, Any]): The mutation proposal.
+
+        Returns:
+            Dict[str, Any]: Simulated test results.
+        """
+        print(f"  Validator: Running simulated tests for mutation proposal from '{proposal.get('proposer_id', 'unknown')}'...")
+        # Simulate test outcomes based on expected impact
+        simulated_performance = proposal.get("expected_impact", {}).get("performance_gain", 0.0)
+        simulated_soul_loss = proposal.get("expected_impact", {}).get("soul_loss_impact", 0.0)
+
+        test_pass = simulated_performance > 0.03 and simulated_soul_loss < 0.05
+        
+        results = {
+            "tests_passed": test_pass,
+            "simulated_metrics": {
+                "performance_change": simulated_performance,
+                "soul_loss_change": simulated_soul_loss
+            },
+            "logs": ["Simulated test run completed."]
+        }
+        if not test_pass:
+            results["logs"].append("Simulated tests indicate potential negative impact.")
+            print("  Validator: Simulated tests FAILED.")
+        else:
+            print("  Validator: Simulated tests PASSED.")
+        return results
+

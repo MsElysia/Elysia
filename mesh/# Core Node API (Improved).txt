@@ -1,0 +1,233 @@
+# Core Node API (Improved)
+"""
+Improvements:
+- Added missing `execute` reference (renamed to `execute_command`)
+- Added optional CORS headers for local dev
+- Added `/health` endpoint for liveness probes
+- Switched to `flask_cors` for simple cross‑origin testing
+- Standardized JSON error responses with helper
+- Reduced repetition in JSON load/save helpers
+"""
+from flask import Flask, request, jsonify, send_file, make_response
+from flask_cors import CORS
+import os, json, uuid, datetime, subprocess, threading, time, io
+from cryptography.fernet import Fernet
+import matplotlib.pyplot as plt
+
+# ───────────────────────── Configuration ──────────────────────────
+LOG_DIR = './node_logs'
+TRUST_FILE = './trust_score.json'
+REGISTER_FILE = './registered_nodes.json'
+COMMANDS_FILE = './commands.json'
+QUARANTINE_FILE = './quarantined_nodes.json'
+KEY_FILE = './encryption.key'
+PLOT_COLOR = '#4aa3ff'
+PORT = 8000
+
+os.makedirs(LOG_DIR, exist_ok=True)
+
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})  # remove in prod
+
+# ───────────────────────── Utility helpers ────────────────────────
+
+def load_key() -> bytes:
+    if os.path.exists(KEY_FILE):
+        return open(KEY_FILE, 'rb').read()
+    key = Fernet.generate_key()
+    open(KEY_FILE, 'wb').write(key)
+    return key
+
+cipher = Fernet(load_key())
+
+
+def load_json(path: str):
+    try:
+        return json.load(open(path)) if os.path.exists(path) else {}
+    except json.JSONDecodeError:
+        # corrupted file
+        return {}
+
+
+def save_json(path: str, data):
+    tmp = f"{path}.tmp"
+    with open(tmp, 'w') as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
+def error(msg: str, code=400):
+    return make_response(jsonify({'error': msg}), code)
+
+
+# ───────────────────────── Trust / Quarantine logic ───────────────
+
+def assess_trust_delta(logs: list[dict]) -> float:
+    delta = 0.0
+    for e in logs:
+        status = e.get('status')
+        if status == 'success':
+            delta += 0.2
+        elif status in {'revoked', 'blocked'}:
+            delta -= 0.5
+        elif not e.get('output') or 'error' in e.get('output', '').lower():
+            delta -= 0.3
+    return round(delta, 2)
+
+
+def valid_node(node_id: str) -> bool:
+    reg = load_json(REGISTER_FILE)
+    quarantine = load_json(QUARANTINE_FILE)
+    return node_id in reg and node_id not in quarantine
+
+
+def valid_command(cmd: dict) -> bool:
+    return isinstance(cmd, dict) and 'action' in cmd
+
+# ───────────────────────── Command execution ──────────────────────
+
+def execute_command(cmd: dict) -> dict:
+    action = cmd.get('action')
+    if action == 'ping':
+        return {'response': 'pong'}
+    if action == 'reboot':
+        # Placeholder: real reboot omitted
+        return {'response': 'reboot simulated'}
+    if action == 'shell':
+        shell_cmd = cmd.get('cmd', '')
+        try:
+            out = subprocess.check_output(shell_cmd, shell=True, text=True, timeout=5)
+            return {'response': out.strip()}
+        except Exception as exc:
+            return {'error': str(exc)}
+    return {'error': f'Unknown action: {action}'}
+
+# ───────────────────────── Background monitor ─────────────────────
+
+def monitor_trust(threshold=-1.0, interval=10):
+    def loop():
+        while True:
+            trust = load_json(TRUST_FILE)
+            quarantine = load_json(QUARANTINE_FILE)
+            updated = False
+            for node_id, score in trust.items():
+                if score < threshold and node_id not in quarantine:
+                    quarantine[node_id] = {
+                        'score': score,
+                        'time': datetime.datetime.utcnow().isoformat()
+                    }
+                    print(f"[⚠] Quarantined {node_id[:8]} (score {score})")
+                    updated = True
+            if updated:
+                save_json(QUARANTINE_FILE, quarantine)
+            time.sleep(interval)
+    threading.Thread(target=loop, daemon=True).start()
+
+monitor_trust()
+
+# ───────────────────────── Routes ─────────────────────────────────
+
+@app.route('/health')
+def health():
+    return {'status': 'ok'}
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.get_json(silent=True) or {}
+    device = data.get('device_name')
+    if not device:
+        return error('device_name required')
+    reg = load_json(REGISTER_FILE)
+    # reuse existing ID
+    for nid, info in reg.items():
+        if info['device_name'] == device:
+            return {'node_id': nid, 'status': 'already_registered'}
+    nid = str(uuid.uuid4())
+    reg[nid] = {'device_name': device, 'registered_at': datetime.datetime.utcnow().isoformat()}
+    save_json(REGISTER_FILE, reg)
+    return {'node_id': nid, 'status': 'registered'}
+
+@app.route('/api/upload_logs/<node_id>', methods=['POST'])
+def upload_logs(node_id):
+    if not valid_node(node_id):
+        return error('invalid or quarantined node', 403)
+    try:
+        logs = json.loads(cipher.decrypt(request.get_data()))
+    except Exception:
+        return error('decrypt fail')
+    if not isinstance(logs, list):
+        return error('logs must be list')
+    path = os.path.join(LOG_DIR, f'{node_id}.json')
+    existing = load_json(path)
+    seen = {json.dumps(e, sort_keys=True) for e in existing}
+    new_logs = [l for l in logs if json.dumps(l, sort_keys=True) not in seen]
+    save_json(path, existing + new_logs)
+    trust = load_json(TRUST_FILE)
+    trust[node_id] = round(trust.get(node_id, 0) + assess_trust_delta(new_logs), 2)
+    save_json(TRUST_FILE, trust)
+    return {'received': len(new_logs), 'trust': trust[node_id]}
+
+@app.route('/trust/<node_id>')
+def api_trust(node_id):
+    if not valid_node(node_id):
+        return error('invalid node', 403)
+    return {'trust': load_json(TRUST_FILE).get(node_id, 0)}
+
+@app.route('/commands/<node_id>', methods=['GET', 'POST'])
+def api_commands(node_id):
+    if not valid_node(node_id):
+        return error('invalid node', 403)
+    cmds = load_json(COMMANDS_FILE)
+    if request.method == 'POST':
+        cmd = request.get_json(silent=True) or {}
+        if not valid_command(cmd):
+            return error('command must include "action"')
+        cmds.setdefault(node_id, []).append(cmd)
+        save_json(COMMANDS_FILE, cmds)
+        return {'status': 'queued'}
+    # GET → execute queued cmds
+    out = [execute_command(c) for c in cmds.get(node_id, [])]
+    cmds[node_id] = []
+    save_json(COMMANDS_FILE, cmds)
+    return out
+
+@app.route('/quarantined')
+def list_quarantined():
+    return load_json(QUARANTINE_FILE)
+
+@app.route('/unquarantine/<node_id>', methods=['POST'])
+def unquarantine(node_id):
+    quarantine = load_json(QUARANTINE_FILE)
+    if node_id in quarantine:
+        quarantine.pop(node_id)
+        save_json(QUARANTINE_FILE, quarantine)
+        return {'status': 'unquarantined'}
+    return error('node not in quarantine', 404)
+
+@app.route('/trust_graph_image')
+def trust_graph_image():
+    trust = load_json(TRUST_FILE)
+    if not trust:
+        return error('no data', 404)
+    ids, scores = zip(*trust.items())
+    plt.figure(figsize=(10, 4))
+    plt.bar(ids, scores, color=PLOT_COLOR)
+    plt.xticks(rotation=90)
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    plt.close()
+    buf.seek(0)
+    return send_file(buf, mimetype='image/png')
+
+@app.route('/trust_graph')
+def trust_graph():
+    html = """
+    <html><head><meta http-equiv='refresh' content='5'></head>
+    <body><h2>Trust Scores (refresh 5s)</h2><img src='/trust_graph_image'/></body></html>"""
+    return html
+
+# ───────────────────────── Main ───────────────────────────────────
+if __name__ == '__main__':
+    print(f"🚀 CoreNode ready on http://localhost:{PORT}")
+    app.run(debug=True, port=PORT)

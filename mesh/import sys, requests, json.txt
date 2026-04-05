@@ -1,0 +1,6 @@
+import sys, requests, json
+if len(sys.argv)!=2:
+    print("usage: python unquarantine_helper.py <node_id>"); exit()
+nid = sys.argv[1]
+r   = requests.post(f"http://localhost:8000/unquarantine/{nid}")
+print(r.status_code, r.json())

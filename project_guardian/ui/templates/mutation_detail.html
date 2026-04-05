@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mutation Detail - Project Guardian</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #f1f5f9;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 30px; }
+        .card {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+        }
+        .card h2 { color: #8b5cf6; margin-bottom: 15px; font-size: 1.2em; }
+        .file-change {
+            background: #0f172a;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            border: 1px solid #334155;
+        }
+        .file-change-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .path-list {
+            list-style: none;
+            padding-left: 0;
+        }
+        .path-list li {
+            padding: 5px 0;
+            color: #cbd5e1;
+        }
+        .btn {
+            display: inline-block;
+            padding: 8px 16px;
+            background: #6366f1;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+        .btn:hover { background: #4f46e5; }
+        .btn-secondary { background: #8b5cf6; }
+        .btn-secondary:hover { background: #7c3aed; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Mutation Payload: {{ filename }}</h1>
+        
+        <div class="card">
+            <h2>Summary</h2>
+            <p>{{ summary }}</p>
+        </div>
+        
+        <div class="card">
+            <h2>Touched Paths ({{ touched_paths|length }})</h2>
+            <ul class="path-list">
+                {% for path in touched_paths %}
+                <li>{{ path }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        
+        <div class="card">
+            <h2>File Changes</h2>
+            {% for status in file_statuses %}
+            <div class="file-change">
+                <div class="file-change-header">
+                    <h3 style="color: #8b5cf6; font-size: 1em;">{{ status.path }}</h3>
+                    <a href="/diff?mutation={{ filename }}&path={{ status.path }}" class="btn">View Diff</a>
+                </div>
+                <div style="margin-top: 10px;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; font-size: 0.85em;">
+                        <div>
+                            <strong style="color: #8b5cf6;">Base Hash:</strong>
+                            <div style="font-family: monospace; color: #cbd5e1; word-break: break-all;">
+                                {{ status.base_hash }}
+                            </div>
+                            {% if status.captured_at %}
+                            <div style="color: #64748b; font-size: 0.8em; margin-top: 5px;">
+                                Captured: {{ status.captured_at }}
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div>
+                            <strong style="color: #8b5cf6;">Current Hash:</strong>
+                            <div style="font-family: monospace; color: #cbd5e1; word-break: break-all;">
+                                {{ status.current_hash }}
+                            </div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        {% if status.status == "MATCH" %}
+                        <span style="background: #10b981; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; font-weight: 500;">✓ MATCH</span>
+                        {% elif status.status == "MISMATCH" %}
+                        <span style="background: #ef4444; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; font-weight: 500;">⚠ MISMATCH</span>
+                        {% elif status.status == "MISSING" %}
+                        <span style="background: #64748b; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; font-weight: 500;">⊘ MISSING</span>
+                        {% elif status.status == "NEW_FILE" %}
+                        <span style="background: #f59e0b; color: #0f172a; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; font-weight: 500;">+ NEW FILE</span>
+                        {% elif status.status == "DELETED" %}
+                        <span style="background: #ef4444; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; font-weight: 500;">- DELETED</span>
+                        {% elif status.status == "LEGACY" %}
+                        <span style="background: #64748b; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; font-weight: 500;">? LEGACY</span>
+                        {% elif status.status == "ERROR" %}
+                        <span style="background: #ef4444; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; font-weight: 500;">✗ ERROR</span>
+                        {% endif %}
+                    </div>
+                    {% for change in changes %}
+                        {% if change.path == status.path %}
+                        <p style="color: #cbd5e1; font-size: 0.9em; margin-top: 10px;">Content length: {{ change.content|length }} characters</p>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        
+        <div style="margin-top: 20px;">
+            <a href="/mutations" class="btn btn-secondary">Back to Mutations</a>
+            <a href="/" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
+    </div>
+</body>
+</html>

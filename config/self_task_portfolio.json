@@ -1,0 +1,18 @@
+{
+  "window_size": 16,
+  "pressure_strength": 0.09,
+  "domination_run_penalty": 0.06,
+  "soft_targets": {
+    "revenue": { "max_share": 0.42, "min_share": 0.0 },
+    "execution": { "max_share": 0.55, "min_share": 0.1 },
+    "research": { "max_share": 0.38, "min_share": 0.0 },
+    "operator_support": { "max_share": 0.5, "min_share": 0.08 },
+    "maintenance": { "max_share": 0.32, "min_share": 0.0 },
+    "capability_tooling": { "max_share": 0.4, "min_share": 0.0 },
+    "learning": { "max_share": 0.35, "min_share": 0.0 },
+    "internal": { "max_share": 0.55, "min_share": 0.0 }
+  },
+  "combined_min": {
+    "execution_operator": 0.14
+  }
+}

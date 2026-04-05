@@ -1,0 +1,34 @@
+{
+  "task_id": "st_abd5b60bc9a2",
+  "archetype": "create_small_dry_run_offer_ideas",
+  "contract_id": "revenue_shortlist",
+  "execution_tier": "strong",
+  "payload": {
+    "opportunities": [
+      {
+        "title": "Time-boxed audit micro-offer",
+        "rationale": "Sell a short structured review using existing harvest + planner outputs only.",
+        "required_capability": "module:harvest_engine",
+        "difficulty": "low",
+        "expected_value": "medium"
+      },
+      {
+        "title": "Operator dashboard export",
+        "rationale": "Package JSON briefs from generated_reports as a weekly digest product.",
+        "required_capability": "filesystem",
+        "difficulty": "low",
+        "expected_value": "medium"
+      },
+      {
+        "title": "Capability gap remediation sprint",
+        "rationale": "Fixed-scope fix for top gap report item.",
+        "required_capability": "module:tool_registry",
+        "difficulty": "medium",
+        "expected_value": "high"
+      }
+    ],
+    "sources_or_origin": [
+      "template_local"
+    ]
+  }
+}

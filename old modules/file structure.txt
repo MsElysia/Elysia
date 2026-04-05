@@ -1,0 +1,39 @@
+elysia/
+│
+├── control_panel/                    # React frontend (dashboard interface)
+│   ├── ElysiaControlPanel.jsx       # Primary UI file
+│   └── components/                  # Shared UI components
+│
+├── core/                            # System engine logic
+│   ├── runtime.py                   # Task routing loop
+│   ├── mutation_engine.py          # Auto-mutation cycle + proposal system
+│   ├── trust_engine.py             # Trust score governance
+│   ├── income_router.py            # Token / payout allocator
+│   ├── ledger.py                   # Project, earnings, task logs
+│   └── dream_engine.py             # Experimental exploration module
+│
+├── api/                             # REST backend (FastAPI or Flask)
+│   ├── main.py                      # Entry point
+│   ├── endpoints/
+│   │   ├── mutations.py
+│   │   ├── trust.py
+│   │   ├── ledger.py
+│   │   ├── ai_services.py
+│   │   ├── monetization.py
+│   │   └── runtime_control.py
+│
+├── storage/
+│   ├── mutation_queue.json         # Proposed mutations awaiting review
+│   ├── trust_registry.json         # Node trust and reputation info
+│   ├── activity_log.json           # Token usage, AI tasks, time spent
+│   ├── earnings_log.json           # Financial logs
+│   ├── project_ledger.json         # Contributions by subnode
+│   └── reputation_tags.json        # Tag-based reputation data
+│
+├── config/
+│   ├── ai_keys.json                # API keys (OpenAI, Gemini, Claude)
+│   └── payment_keys.json           # Stripe/Gumroad keys
+│
+└── utils/
+    ├── validators.py               # Mutation test filters
+    └── node_selector.py            # Optimizer for assigning tasks

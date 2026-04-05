@@ -1,0 +1,16 @@
+{
+  "pressure_trim_target": 1000,
+  "memory_pressure_trigger_fraction": 0.85,
+  "vector_embed_batch_every": 5,
+  "bad_learning_streak_cooldown_multiplier": 3,
+  "pressure_emergency_min_count": 25,
+  "skipped_small_delta_force_after": 2,
+  "post_cleanup_quiet_minutes": 1,
+  "post_cleanup_quiet_margin": 15,
+  "memory_search_no_novelty_block_cycles": 2,
+  "stagnation_force_non_memory_after_cycles": 3,
+  "low_value_write_reject_priority_below": 0.25,
+  "low_value_write_reject_when_count_above": 1000,
+  "bad_learning_session_cooldown_minutes": 90,
+  "embedding_fallback_log_level": "warning"
+}

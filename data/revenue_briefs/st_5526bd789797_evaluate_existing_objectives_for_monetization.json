@@ -1,0 +1,83 @@
+{
+  "task_id": "st_5526bd789797",
+  "archetype": "evaluate_existing_objectives_for_monetization",
+  "contract_id": "revenue_shortlist",
+  "execution_tier": "strong",
+  "payload": {
+    "opportunities": [
+      {
+        "title": "Revenue angle: System Optimization",
+        "rationale": "System Optimization",
+        "required_capability": "module:longterm_planner",
+        "difficulty": "medium",
+        "expected_value": "uncertain"
+      },
+      {
+        "title": "Revenue angle: Knowledge Acquisition",
+        "rationale": "Knowledge Acquisition",
+        "required_capability": "module:longterm_planner",
+        "difficulty": "medium",
+        "expected_value": "uncertain"
+      },
+      {
+        "title": "Revenue angle: Safety & Trust Maintenance",
+        "rationale": "Safety & Trust Maintenance",
+        "required_capability": "module:longterm_planner",
+        "difficulty": "medium",
+        "expected_value": "uncertain"
+      },
+      {
+        "title": "Revenue angle: Income Generation",
+        "rationale": "Income Generation",
+        "required_capability": "module:longterm_planner",
+        "difficulty": "medium",
+        "expected_value": "uncertain"
+      },
+      {
+        "title": "Revenue angle: User Experience Enhancement",
+        "rationale": "User Experience Enhancement",
+        "required_capability": "module:longterm_planner",
+        "difficulty": "medium",
+        "expected_value": "uncertain"
+      },
+      {
+        "title": "Revenue angle: SmokeObjective",
+        "rationale": "SmokeObjective",
+        "required_capability": "module:longterm_planner",
+        "difficulty": "medium",
+        "expected_value": "uncertain"
+      },
+      {
+        "title": "Revenue angle: SmokeObjective",
+        "rationale": "SmokeObjective",
+        "required_capability": "module:longterm_planner",
+        "difficulty": "medium",
+        "expected_value": "uncertain"
+      },
+      {
+        "title": "Revenue angle: SmokeObjective",
+        "rationale": "SmokeObjective",
+        "required_capability": "module:longterm_planner",
+        "difficulty": "medium",
+        "expected_value": "uncertain"
+      },
+      {
+        "title": "Revenue angle: SmokeObjective",
+        "rationale": "SmokeObjective",
+        "required_capability": "module:longterm_planner",
+        "difficulty": "medium",
+        "expected_value": "uncertain"
+      },
+      {
+        "title": "Revenue angle: SmokeObjective",
+        "rationale": "SmokeObjective",
+        "required_capability": "module:longterm_planner",
+        "difficulty": "medium",
+        "expected_value": "uncertain"
+      }
+    ],
+    "sources_or_origin": [
+      "longterm_planner.objectives"
+    ]
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "enabled": true,
+  "interval_hours": 6,
+  "max_chatlogs": 15,
+  "max_per_source": 4,
+  "learning_query_volume_scale": 0.65,
+  "topics": [
+    "AI",
+    "artificial intelligence",
+    "machine learning",
+    "income",
+    "automation",
+    "technology"
+  ],
+  "reddit_subs": [
+    "MachineLearning",
+    "ArtificialIntelligence",
+    "passive_income",
+    "automation"
+  ],
+  "rss_feeds": [
+    "https://feeds.feedburner.com/TechCrunch",
+    "https://www.wired.com/feed/rss",
+    "https://machinelearningmastery.com/feed/"
+  ],
+  "web_urls": [],
+  "facebook_page_ids": [],
+  "facebook_access_token": "",
+  "twitter_search_queries": [
+    "artificial intelligence",
+    "machine learning",
+    "LLM",
+    "AI agents",
+    "automation"
+  ],
+  "twitter_bearer_token": "AAAAAAAAAAAAAAAAAAAAAKZu8gEAAAAABVa%2FTE7SxcBHh9SsTNC6fdt7Z%2BU%3D9iM9J6tIn1YHN1jkdOGSRJ7EZsAhkmJgSG8Yyq5YtxkJtenQ9t",
+  "use_headless_browser": true,
+  "max_archived_per_session": 100,
+  "max_memory_per_session": 20,
+  "max_per_source_memory": 5,
+  "allow_reddit_into_memory": true,
+  "allow_strategic_into_memory": true,
+  "min_relevance_score": 2,
+  "min_reuse_potential": 1,
+  "dedup_window_days": 30,
+  "mistral_chained_learning": true,
+  "mistral_chained_max_rounds": 3,
+  "mistral_chained_per_source_cap": 3
+}

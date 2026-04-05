@@ -1,0 +1,60 @@
+# Project Guardian - Python Dependencies
+# Core Requirements
+
+# Web Framework & API
+Flask>=2.3.0
+flask-cors>=4.0.0
+# Note: FastAPI/uvicorn/jinja2 moved to requirements-ui.txt (optional UI dependencies)
+
+# Cryptography (for SecretsManager)
+cryptography>=41.0.0
+
+# Async Support
+asyncio  # Built-in Python 3.7+
+
+# Data Handling
+# json - Built-in
+# pathlib - Built-in
+PyYAML>=6.0.1
+
+# Optional but Recommended
+# System Monitoring
+psutil>=5.9.0; sys_platform != "darwin"  # Optional - better monitoring
+
+# Vector Search (Optional)
+# sentence-transformers>=2.2.0  # Optional - for vector embeddings
+# faiss-cpu>=1.7.4  # Optional - for vector search
+
+# Web Reading & Scraping
+httpx>=0.25.0  # Modern HTTP client for web fetching
+beautifulsoup4>=4.12.0  # HTML parsing
+lxml>=4.9.0  # Fast XML/HTML parser (optional but recommended)
+
+# Testing (Optional)
+pytest>=7.4.0  # For testing
+pytest-asyncio>=0.21.0  # For async tests (if needed)
+
+# Development (Optional)
+# black>=23.0.0  # Code formatting
+# pylint>=2.17.0  # Code linting
+# mypy>=1.5.0  # Type checking
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,4 @@
+pip install flask cryptography matplotlib requests
+python core_node_trust_api.py          # terminal 1
+python mock_subnode_simulator.py       # terminal 2
+# watch http://localhost:8000/trust_graph

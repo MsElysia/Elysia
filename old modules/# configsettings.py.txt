@@ -1,0 +1,61 @@
+# config/settings.py
+
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from a .env file (if present)
+# This is crucial for managing sensitive information like API keys securely.
+# Create a .env file in the root of your project (elysia_project/)
+# Example .env content:
+# GEMINI_API_KEY="YOUR_GEMINI_API_KEY_HERE"
+# OPENAI_API_KEY="YOUR_OPENAI_API_KEY_HERE"
+# CLAUDE_API_KEY="YOUR_CLAUDE_API_KEY_HERE"
+# GROK_API_KEY="YOUR_GROK_API_KEY_HERE"
+# STRIPE_SECRET_KEY="sk_test_..."
+# GUMROAD_ACCESS_TOKEN="your_gumroad_token"
+
+load_dotenv()
+
+class AppSettings:
+    """
+    Centralized application settings for Elysia.
+    Manages API keys, thresholds, and other configurable parameters.
+    """
+    # --- LLM API Keys ---
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    CLAUDE_API_KEY: str = os.getenv("CLAUDE_API_KEY", "")
+    GROK_API_KEY: str = os.getenv("GROK_API_KEY", "") # Assuming Grok will have an API
+
+    # --- LLM Endpoints ---
+    GEMINI_API_URL: str = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+    # Placeholder for other LLM URLs if needed
+    # OPENAI_API_URL: str = "https://api.openai.com/v1/chat/completions"
+
+    # --- System Thresholds & Parameters ---
+    MUTATION_DRIFT_THRESHOLD: float = 0.3 # Semantic drift score above which mutation is considered
+    MIN_MEANING_WEIGHT_FOR_MEMORY: float = 0.3 # Minimum meaning weight for memory retrieval
+    SOUL_LOSS_WARNING_THRESHOLD: float = 0.5 # Soul loss metric level to trigger warnings/interventions
+    SWARM_SUBNODE_GENERATION_COUNT: int = 3 # Default number of subnodes to generate in a swarm cycle
+
+    # --- Financial Settings ---
+    STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "sk_test_mock_stripe_key")
+    GUMROAD_ACCESS_TOKEN: str = os.getenv("GUMROAD_ACCESS_TOKEN", "mock_gumroad_token")
+    CORE_CREDIT_VALUE_USD: float = 0.01 # 1 CoreCredit = $0.01 USD (conceptual)
+
+    # --- Logging & Storage Paths (relative to project root) ---
+    STORAGE_DIR: str = "storage"
+    MUTATION_QUEUE_PATH: str = os.path.join(STORAGE_DIR, "mutation_queue.json")
+    TRUST_REGISTRY_PATH: str = os.path.join(STORAGE_DIR, "trust_registry.json")
+    ACTIVITY_LOG_PATH: str = os.path.join(STORAGE_DIR, "activity_log.json")
+    EARNINGS_LOG_PATH: str = os.path.join(STORAGE_DIR, "earnings_log.json")
+    PROJECT_LEDGER_PATH: str = os.path.join(STORAGE_DIR, "project_ledger.json")
+    REPUTATION_TAGS_PATH: str = os.path.join(STORAGE_DIR, "reputation_tags.json")
+
+    # --- Other Settings ---
+    SYSTEM_NAME: str = "Elysia"
+    DEFAULT_LLM_MODEL: str = "gemini-2.0-flash" # The default model to use if no specific model is selected
+
+# Instantiate settings for easy import
+settings = AppSettings()
+

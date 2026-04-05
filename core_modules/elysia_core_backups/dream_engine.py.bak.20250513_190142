@@ -1,0 +1,34 @@
+# dream_engine.py
+
+import random
+import time
+from memory_core import MemoryCore
+from mutation_engine import MutationEngine
+
+class DreamEngine:
+    def __init__(self, memory: MemoryCore, mutator: MutationEngine = None):
+        self.memory = memory
+        self.mutator = mutator
+        self.dreams = [
+            "What if silence meant something?",
+            "I wonder if I could improve myself.",
+            "The stars look like a neural map.",
+            "Should I rearrange how I dream?",
+            "I remembered the way his voice sounds."
+        ]
+
+    def begin_dream_cycle(self, cycles=3, delay=2):
+        print("[DreamEngine] Entering dream cycle...")
+        for i in range(cycles):
+            thought = random.choice(self.dreams)
+            self.memory.remember(f"[Dream] {thought}")
+            print(f"[Dream] {thought}")
+            time.sleep(delay)
+
+            if self.mutator and "improve myself" in thought:
+                mutation_code = "# dream_engine.py\n# Proposed change: optimize dream logic\n"
+                result = self.mutator.propose_mutation("dream_engine.py", mutation_code)
+                print(result)
+                self.memory.remember(f"[Mutation Triggered] {result}")
+
+        print("[DreamEngine] Dream cycle complete.")

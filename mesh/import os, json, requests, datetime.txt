@@ -1,0 +1,28 @@
+import os, json, requests, datetime, time, sys
+from cryptography.fernet import Fernet
+
+CONFIG = "config.json"
+KEY    = open("./encryption.key","rb").read()
+cipher = Fernet(KEY)
+
+def load_cfg():
+    if not os.path.exists(CONFIG):
+        with open(CONFIG,"w") as f:
+            json.dump({"node_id":"REPLACE_ME","core_url":"http://localhost:8000"},f,indent=2)
+        print("Fill in node_id in config.json"); sys.exit()
+    return json.load(open(CONFIG))
+
+def push(logs, cfg):
+    data = cipher.encrypt(json.dumps(logs).encode())
+    r = requests.post(f"{cfg['core_url']}/api/upload_logs/{cfg['node_id']}",
+                      data=data, headers={"Content-Type":"application/octet-stream"})
+    print(r.json())
+
+if __name__ == "__main__":
+    cfg = load_cfg()
+    logs = [{
+        "time": time.time(),
+        "status": "boot",
+        "output": "mobile heartbeat"
+    }]
+    push(logs, cfg)

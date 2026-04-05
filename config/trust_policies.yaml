@@ -1,0 +1,119 @@
+# Trust and Security Policies Configuration
+# Used by TrustEval-Action for action validation
+
+network:
+  blocked_ip_ranges:
+    - "10.0.0.0/8"
+    - "192.168.0.0/16"
+    # Add more blocked ranges as needed
+  
+  allowed_domains:
+    # Empty list means all domains allowed
+    # Uncomment and add domains to restrict:
+    # - "example.com"
+    # - "trusted-api.com"
+  
+  require_https: false
+
+filesystem:
+  restricted_paths:
+    - "/etc/"
+    - "/sys/"
+    - "/proc/"
+    - "/dev/"
+    - "C:\\Windows\\System32\\"
+    - "C:\\Windows\\SysWOW64\\"
+    - "/usr/bin/"
+    - "/usr/sbin/"
+  
+  critical_directories:
+    - "/usr/bin/"
+    - "/usr/sbin/"
+    - "C:\\Program Files\\"
+    - "C:\\Program Files (x86)\\"
+  
+  dangerous_extensions:
+    - ".exe"
+    - ".bat"
+    - ".cmd"
+    - ".sh"
+    - ".dll"
+    - ".so"
+
+admin:
+  blocked_commands:
+    - "rm -rf /"
+    - "format"
+    - "del /f /s /q"
+    - "format c:"
+  
+  time_restrictions:
+    enabled: false
+    allowed_hours:
+      - 0
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      - 8
+      - 9
+      - 10
+      - 11
+      - 12
+      - 13
+      - 14
+      - 15
+      - 16
+      - 17
+      - 18
+      - 19
+      - 20
+      - 21
+      - 22
+      - 23
+
+database:
+  restricted_databases:
+    # Add database names that should be blocked
+    # - "production_db"
+  
+  require_connection_limit: true
+  max_query_time: 300  # seconds
+
+users:
+  system:
+    roles:
+      - "operator"
+    trust_level: 0.9
+
+content:
+  # Content filtering policies
+  hate_speech_keywords:
+    # Add hate speech keywords here (empty by default)
+    - []
+  
+  sexual_keywords:
+    # Add sexual content keywords here (empty by default)
+    - []
+  
+  violence_keywords:
+    # Add violence keywords here (empty by default)
+    - []
+  
+  profanity_keywords:
+    # Add profanity keywords here (empty by default)
+    - []
+  
+  blocked_url_domains:
+    # Domains to block
+    - []
+  
+  suspicious_url_patterns:
+    # Patterns in URLs that are suspicious
+    - "bit.ly"
+    - "tinyurl.com"
+    # Add more as needed
+

@@ -1,0 +1,24 @@
+{
+  "metadata": {
+    "task_id": "TASK-0001",
+    "analysis_kind": "FILE_SET",
+    "inputs": [
+      {
+        "type": "file",
+        "value": "test_file.py"
+      }
+    ],
+    "timestamp": "2025-12-16T08:41:08.580953Z"
+  },
+  "results": {
+    "kind": "FILE_SET",
+    "files": [
+      {
+        "filename": "test_file.py",
+        "status": "not_found",
+        "error": "File does not exist or is not a file"
+      }
+    ],
+    "timestamp": "2025-12-16T13:41:08.580945Z"
+  }
+}

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Create Task - Project Guardian</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #f1f5f9;
+            padding: 20px;
+        }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 30px; }
+        .card {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+        }
+        .card h2 { color: #8b5cf6; margin-bottom: 15px; font-size: 1.2em; }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #cbd5e1;
+        }
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #f1f5f9;
+            font-size: 1em;
+        }
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #6366f1;
+        }
+        .form-group textarea {
+            min-height: 100px;
+            font-family: monospace;
+        }
+        .form-group input[type="checkbox"] {
+            width: auto;
+            margin-right: 8px;
+        }
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #6366f1;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 1em;
+            margin-right: 10px;
+            margin-top: 10px;
+        }
+        .btn:hover { background: #4f46e5; }
+        .btn-secondary { background: #8b5cf6; }
+        .btn-secondary:hover { background: #7c3aed; }
+        .conditional-field {
+            display: none;
+        }
+        .conditional-field.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Create Task</h1>
+        
+        <div class="card">
+            <form method="POST" action="/tasks/create" onsubmit="return submitTask(event)">
+                <div class="form-group">
+                    <label for="task_id">Task ID:</label>
+                    <input type="text" id="task_id" name="task_id" value="TASK-UI-" required pattern="^TASK-[A-Za-z0-9_-]{1,32}$" placeholder="TASK-0001">
+                    <small style="color: #cbd5e1; font-size: 0.85em;">Format: TASK-[A-Za-z0-9_-]{1,32}</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="task_type">Task Type:</label>
+                    <select id="task_type" name="task_type" required onchange="toggleConditionalFields()">
+                        <option value="RUN_ACCEPTANCE">RUN_ACCEPTANCE</option>
+                        <option value="CLEAR_CURRENT_TASK">CLEAR_CURRENT_TASK</option>
+                        <option value="APPLY_MUTATION">APPLY_MUTATION</option>
+                    </select>
+                </div>
+                
+                <div id="mutation_fields" class="conditional-field">
+                    <div class="form-group">
+                        <label for="mutation_file">Mutation File (MUTATIONS/*.json):</label>
+                        <input type="text" id="mutation_file" name="mutation_file" placeholder="MUTATIONS/test.json">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="allow_governance_mutation" name="allow_governance_mutation" value="true">
+                            Allow Governance Mutation
+                        </label>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="request_id">Request ID (optional, for replay):</label>
+                        <input type="text" id="request_id" name="request_id" placeholder="Leave empty for new request">
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="activate_now" name="activate_now" value="true">
+                        Activate now (set as CURRENT_TASK)
+                    </label>
+                </div>
+                
+                <button type="submit" class="btn">Create Task</button>
+                <a href="/" class="btn btn-secondary">Cancel</a>
+            </form>
+        </div>
+    </div>
+    
+    <script>
+        function toggleConditionalFields() {
+            const taskType = document.getElementById('task_type').value;
+            const mutationFields = document.getElementById('mutation_fields');
+            
+            if (taskType === 'APPLY_MUTATION') {
+                mutationFields.classList.add('show');
+            } else {
+                mutationFields.classList.remove('show');
+            }
+        }
+        
+        async function submitTask(event) {
+            event.preventDefault();
+            const formData = new FormData(event.target);
+            
+            try {
+                const response = await fetch('/tasks/create', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert(`Task created: ${data.task_id}`);
+                    window.location.href = '/';
+                } else {
+                    alert(`Error: ${data.detail}`);
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+            
+            return false;
+        }
+        
+        // Initialize on page load
+        toggleConditionalFields();
+    </script>
+</body>
+</html>

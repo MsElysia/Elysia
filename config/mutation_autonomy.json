@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "openai_model": "gpt-4o-mini",
+  "target_files": [
+    "project_guardian/mutation_autonomy_sandbox.py"
+  ],
+  "max_input_chars": 60000,
+  "max_output_tokens": 4096,
+  "instruction_template": "Make a minimal, safe improvement to this file only: clearer module docstring, a constant, or a tiny helper. Do not add subprocess, os.system, eval, exec, or network I/O. Output the COMPLETE file as valid Python."
+}

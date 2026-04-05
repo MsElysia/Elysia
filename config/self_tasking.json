@@ -1,0 +1,21 @@
+{
+  "orchestration_bounded_capability_execution": true,
+  "bounded_action_min_confidence": 0.35,
+  "bounded_action_max_candidates": 5,
+  "bounded_action_invalid_fallback": "legacy_capability_loop",
+  "enabled": true,
+  "max_queue_size": 24,
+  "stale_ttl_sec": 7200,
+  "expire_max_priority": 0.35,
+  "max_generate_per_cycle": 5,
+  "dedupe_cooldown_sec": 900,
+  "min_confidence_for_skip": 0.55,
+  "low_confidence_streak_trigger": 2,
+  "repeated_action_streak_trigger": 3,
+  "underuse_module_hours": 2.0,
+  "prefer_over_priority_below": 5.5,
+  "followup_max_retries_per_archetype": 2,
+  "operator_value_priority_boost": 0.42,
+  "blocking_maintenance_priority_boost": 0.55,
+  "max_operator_value_tasks_per_cycle": 4
+}

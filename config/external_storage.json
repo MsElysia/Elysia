@@ -1,0 +1,12 @@
+{
+  "use_external_storage": true,
+  "external_drive": "F:\\",
+  "fallback_drives": ["G:\\", "E:\\", "D:\\"],
+  "memory_filepath": "F:\\ProjectGuardian\\memory\\guardian_memory.json",
+  "vector_memory_config": {
+    "index_path": "F:\\ProjectGuardian\\memory\\vectors\\index.faiss",
+    "metadata_path": "F:\\ProjectGuardian\\memory\\vectors\\metadata.json"
+  },
+  "timeline_db_path": "F:\\ProjectGuardian\\memory\\elysia_timeline.db",
+  "data_dir": "F:\\ProjectGuardian\\data"
+}

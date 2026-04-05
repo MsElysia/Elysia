@@ -1,0 +1,44 @@
+import random
+import time
+
+# Enhanced Mock Implementation to Mitigate Timing and Metadata Leaks
+
+class MockTaskQueue:
+    def __init__(self, base_queue_length=10):
+        self.base_queue_length = base_queue_length
+
+    def get_mock_task_queue_length(self):
+        jitter = random.uniform(-0.1, 0.1)  # random jitter in milliseconds
+        response_time = 0.2 + jitter
+        time.sleep(response_time / 1000)  # convert ms to seconds
+        return random.choice([self.base_queue_length - 1, self.base_queue_length,
+                              self.base_queue_length + 1])
+
+
+class MockIdentityAnchor:
+    def __init__(self):
+        self.next_drift_log_time = time.time() + random.uniform(8, 14)
+
+    def mock_report_identity_drift(self):
+        current_time = time.time()
+        if current_time >= self.next_drift_log_time:
+            self.log_drift_event(current_time)
+            self.next_drift_log_time = current_time + random.uniform(8, 14)
+
+    def log_drift_event(self, timestamp):
+        jitter = random.uniform(-0.05, 0.05)
+        obfuscated_timestamp = timestamp + jitter
+        print(f"Drift event logged at: {obfuscated_timestamp:.3f}")
+
+
+# Usage in Sandbox
+if __name__ == "__main__":
+    task_queue_mock = MockTaskQueue()
+    identity_anchor_mock = MockIdentityAnchor()
+
+    # Simulate sandbox operations
+    for _ in range(10):
+        queue_length = task_queue_mock.get_mock_task_queue_length()
+        print(f"Mocked task queue length: {queue_length}")
+        identity_anchor_mock.mock_report_identity_drift()
+        time.sleep(random.uniform(0.5, 1.5))  # simulate variable load intervals

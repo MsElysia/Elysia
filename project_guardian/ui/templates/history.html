@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Execution History - Project Guardian</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #f1f5f9;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 30px; }
+        .card {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+        }
+        .card h2 { color: #8b5cf6; margin-bottom: 15px; font-size: 1.2em; }
+        .history-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            background: #0f172a;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            border: 1px solid #334155;
+        }
+        .history-item:hover {
+            border-color: #6366f1;
+        }
+        .history-info {
+            flex: 1;
+        }
+        .history-info strong {
+            color: #8b5cf6;
+        }
+        .history-meta {
+            color: #cbd5e1;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+        .btn {
+            display: inline-block;
+            padding: 8px 16px;
+            background: #6366f1;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+        .btn:hover { background: #4f46e5; }
+        .btn-secondary { background: #8b5cf6; }
+        .btn-secondary:hover { background: #7c3aed; }
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 500;
+            margin-left: 10px;
+        }
+        .badge-success { background: #10b981; color: #0f172a; }
+        .badge-pending { background: #f59e0b; color: #0f172a; }
+        .badge-error { background: #ef4444; color: white; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Execution History</h1>
+        
+        <div class="card" style="background: #1e293b; padding: 15px; margin-bottom: 20px; border: 1px solid #334155; border-radius: 8px;">
+            <p style="color: #cbd5e1; font-size: 0.9em;">
+                <strong>Retention Policy:</strong> Last {{ max_run_once }} run_once entries, last {{ max_acceptance }} acceptance entries
+                {% if max_days %}
+                (files older than {{ max_days }} days are also pruned)
+                {% endif %}
+            </p>
+        </div>
+        
+        <div class="card">
+            <h2>Run Once History</h2>
+            {% if run_once_files %}
+                {% for file in run_once_files %}
+                <div class="history-item">
+                    <div class="history-info">
+                        <strong>{{ file.filename }}</strong>
+                        <div class="history-meta">
+                            Timestamp: {{ file.timestamp }} | 
+                            Status: <span class="badge {% if file.status == 'ok' or file.status == 'idle' %}badge-success{% elif file.status == 'error' or file.status == 'denied' %}badge-error{% else %}badge-pending{% endif %}">{{ file.status.upper() }}</span>
+                            {% if file.task != 'none' %} | Task: {{ file.task }}{% endif %}
+                        </div>
+                    </div>
+                    <a href="/history/run-once/{{ file.filename }}" class="btn">View Details</a>
+                </div>
+                {% endfor %}
+            {% else %}
+                <p style="color: #cbd5e1;">No run_once history yet.</p>
+            {% endif %}
+        </div>
+        
+        <div class="card">
+            <h2>Acceptance History</h2>
+            {% if acceptance_files %}
+                {% for file in acceptance_files %}
+                <div class="history-item">
+                    <div class="history-info">
+                        <strong>{{ file.filename }}</strong>
+                        <div class="history-meta">
+                            Timestamp: {{ file.timestamp }} | 
+                            Status: <span class="badge {% if file.status == 'pass' %}badge-success{% else %}badge-error{% endif %}">{{ file.status.upper() }}</span>
+                            {% if file.exit_code is not none %} | Exit Code: {{ file.exit_code }}{% endif %}
+                        </div>
+                    </div>
+                    <a href="/history/acceptance/{{ file.filename }}" class="btn">View Details</a>
+                </div>
+                {% endfor %}
+            {% else %}
+                <p style="color: #cbd5e1;">No acceptance history yet.</p>
+            {% endif %}
+        </div>
+        
+        <div style="margin-top: 20px;">
+            <a href="/" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
+    </div>
+</body>
+</html>

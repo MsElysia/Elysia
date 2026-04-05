@@ -1,0 +1,29 @@
+{
+  "enabled": true,
+  "interval_seconds": 45,
+  "use_mistral_decision_engine": true,
+  "allowed_actions": [
+    "consider_learning",
+    "consider_dream_cycle",
+    "consider_prompt_evolution",
+    "consider_adversarial_learning",
+    "question_probe",
+    "code_analysis",
+    "consider_mutation",
+    "fractalmind_planning",
+    "work_on_objective",
+    "harvest_income_report",
+    "income_modules_pulse",
+    "tool_registry_pulse",
+    "continue_mission",
+    "execute_task",
+    "process_queue",
+    "execute_self_task"
+  ],
+  "self_generated_tasks": true,
+  "max_actions_per_hour": 40,
+  "require_approval_for": [],
+  "idle_capability_probe": true,
+  "idle_capability_probe_interval_sec": 1800,
+  "allow_dynamic_capability_actions": true
+}

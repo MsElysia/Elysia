@@ -1,0 +1,54 @@
+orchestration:
+  enabled: true
+  sqlite_path: data/orchestration_telemetry.db
+
+defaults:
+  pipeline: serial_plan_execute_review
+  planner_model: ollama:mistral:7b
+  executor_model: ollama:mistral:7b:7b
+  reviewer_model: openai:gpt-4.1-mini
+
+routes:
+  reasoning:
+    pipeline: serial_plan_execute_review
+    planner_model: ollama:mistral:7b
+    executor_model: openai:gpt-4.1-mini
+    reviewer_model: ollama:mistral:7b
+
+  coding:
+    pipeline: serial_plan_execute_review
+    planner_model: ollama:mistral:7b
+    executor_model: openai:gpt-4.1-mini
+    reviewer_model: ollama:mistral:7b
+
+  summarization:
+    pipeline: serial_plan_execute_review
+    planner_model: ollama:mistral:7b
+    executor_model: ollama:mistral:7b
+    reviewer_model: openai:gpt-4.1-mini
+
+  critique:
+    pipeline: parallel_compare_and_judge
+    planner_model: ollama:mistral:7b
+    fanout_models:
+      - ollama:mistral:7b
+      - openai:gpt-4.1-mini
+    judge_model: openai:gpt-4.1-mini
+
+  memory_compression:
+    pipeline: serial_plan_execute_review
+    planner_model: ollama:mistral:7b
+    executor_model: ollama:mistral:7b
+    reviewer_model: openai:gpt-4.1-mini
+
+  tool_selection:
+    pipeline: serial_plan_execute_review
+    planner_model: ollama:mistral:7b
+    executor_model: ollama:mistral:7b
+    reviewer_model: openai:gpt-4.1-mini
+
+  bounded_action:
+    pipeline: serial_plan_execute_review
+    planner_model: ollama:mistral:7b
+    executor_model: ollama:mistral:7b
+    reviewer_model: openai:gpt-4.1-mini

@@ -1,0 +1,128 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project Guardian Specific
+# Nested duplicate tree — extreme path depth breaks Git on Windows
+organized_project/
+
+# Runtime
+.elysia_backend.lock
+elysia_unified.log.*
+
+# Large / local archives (keep repo pushable)
+*.zip
+
+# Local memory snapshots (may contain private data)
+guardian_memory.json
+test_memory.json
+
+# Secrets and API Keys - NEVER COMMIT
+data/secrets/
+*.encrypted
+.master_key
+**/*api*key*.txt
+**/*api*key*.json
+API keys/
+**/secrets/
+
+# Config with sensitive data
+config/*api*.json
+config/*secret*.json
+!config/*template*.json
+
+# Logs
+logs/
+*.log
+
+# Data files
+data/*.json
+data/*.db
+data/vault/
+data/backups/
+!data/.gitkeep
+
+# Test files
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# Temporary files
+*.tmp
+*.temp
+test_*.py
+debug_*.py
+verify_*.py
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+elysia_timeline.db
+
+# Backups
+*.bak
+*.backup
+guardian_backups/
+
+# Compiled
+*.pyc
+*.pyo
+*.pyd
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

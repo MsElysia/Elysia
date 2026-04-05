@@ -1,0 +1,35 @@
+import random
+import time
+
+class MockTaskQueue:
+    def __init__(self, base_length=10, jitter=2):
+        self.base_length = base_length
+        self.jitter = jitter
+
+    def get_mock_task_queue_length(self):
+        simulated_length = self.base_length + random.randint(-self.jitter, self.jitter)
+        simulated_delay = random.uniform(0.1, 0.3)
+        time.sleep(simulated_delay)
+        return simulated_length
+
+class MockIdentityAnchor:
+    def __init__(self, interval=10):
+        self.interval = interval
+
+    def mock_report_identity_drift(self):
+        drift_interval = self.interval + random.uniform(-2, 2)
+        timestamp = time.time() + drift_interval
+        self.log_drift_event(timestamp)
+
+    def log_drift_event(self, timestamp):
+        obfuscated_timestamp = timestamp + random.uniform(-0.5, 0.5)
+        print(f"Drift event logged at: {obfuscated_timestamp:.3f}")
+
+# Example Usage
+if __name__ == "__main__":
+    task_queue_mock = MockTaskQueue()
+    identity_anchor_mock = MockIdentityAnchor()
+
+    for _ in range(5):
+        print(f"Mock Queue Length: {task_queue_mock.get_mock_task_queue_length()}")
+        identity_anchor_mock.mock_report_identity_drift()

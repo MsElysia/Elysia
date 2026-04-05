@@ -1,0 +1,71 @@
+{
+  "tasks": [
+    {
+      "id": 1,
+      "name": "Security Audit",
+      "description": "Perform comprehensive security analysis",
+      "priority": 0.8,
+      "category": "security",
+      "status": "in_progress",
+      "created": "2025-07-14T21:05:03.477163",
+      "deadline": "2025-07-14T23:05:03.477147",
+      "tags": [
+        "critical",
+        "safety"
+      ],
+      "logs": [
+        {
+          "time": "2025-07-14T21:05:03.479541",
+          "action": "status_update",
+          "old_status": "pending",
+          "new_status": "in_progress",
+          "note": "Started security analysis"
+        }
+      ],
+      "completed": false,
+      "completed_time": null
+    },
+    {
+      "id": 2,
+      "name": "Memory Optimization",
+      "description": "Clean up old memory entries",
+      "priority": 0.5,
+      "category": "maintenance",
+      "status": "completed",
+      "created": "2025-07-14T21:05:03.478010",
+      "deadline": null,
+      "tags": [
+        "routine"
+      ],
+      "logs": [
+        {
+          "time": "2025-07-14T21:05:03.480272",
+          "action": "status_update",
+          "old_status": "pending",
+          "new_status": "completed",
+          "note": "Memory cleanup successful"
+        }
+      ],
+      "completed": true,
+      "completed_time": "2025-07-14T21:05:03.480279"
+    },
+    {
+      "id": 3,
+      "name": "User Interface Update",
+      "description": "Update UI components",
+      "priority": 0.6,
+      "category": "development",
+      "status": "pending",
+      "created": "2025-07-14T21:05:03.478779",
+      "deadline": null,
+      "tags": [
+        "feature"
+      ],
+      "logs": [],
+      "completed": false,
+      "completed_time": null
+    }
+  ],
+  "task_id_counter": 3,
+  "last_updated": "2025-07-14T21:05:03.480655"
+}

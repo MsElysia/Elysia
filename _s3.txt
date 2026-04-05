@@ -1,0 +1,61 @@
+2026-04-01 06:23:33,165 - project_guardian.core - INFO - [Startup] Phase A (minimal boot) started
+2026-04-01 06:23:33,165 - project_guardian.core - INFO - [External Storage] Config found: F:\
+2026-04-01 06:23:33,175 - project_guardian.external_storage - INFO - [External Storage] Using configured path: F:\
+2026-04-01 06:23:33,175 - project_guardian.external_storage - INFO - Created directory: F:\ProjectGuardian
+2026-04-01 06:23:33,176 - project_guardian.external_storage - INFO - Created directory: F:\ProjectGuardian\memory
+2026-04-01 06:23:33,176 - project_guardian.external_storage - INFO - Created directory: F:\ProjectGuardian\memory\vectors
+2026-04-01 06:23:33,176 - project_guardian.external_storage - INFO - Created directory: F:\ProjectGuardian\data
+2026-04-01 06:23:33,176 - project_guardian.external_storage - INFO - External storage setup complete at: F:\ProjectGuardian
+2026-04-01 06:23:33,177 - project_guardian.core - INFO - [External Storage] Using external storage for memory
+2026-04-01 06:23:33,179 - project_guardian.memory - INFO - [Startup] MemoryCore JSON history load deferred (lazy_load=True)
+2026-04-01 06:23:33,179 - project_guardian.memory_vector - INFO - [Startup] VectorMemory FAISS/metadata load deferred (lazy=True)
+2026-04-01 06:23:33,179 - project_guardian.memory_vector - INFO - Enhanced memory with vector search enabled
+2026-04-01 06:23:33,179 - project_guardian.core - INFO - Memory initialized with vector search support (lazy JSON + vector for boot)
+2026-04-01 06:23:33,179 - project_guardian.core - INFO - GuardianCore: Memory attached to GuardianCore TimelineMemory (shared instance)
+2026-04-01 06:23:33,180 - project_guardian.memory - INFO - [Startup] MemoryCore: loading JSON history (deferred)
+2026-04-01 06:23:33,332 - project_guardian.memory_vector - INFO - [Startup] VectorMemory: loading FAISS index and metadata (deferred)
+2026-04-01 06:23:34,567 - project_guardian.memory_vector - INFO - Loaded existing FAISS index from F:\ProjectGuardian\memory\vectors\index.faiss
+2026-04-01 06:23:34,634 - project_guardian.memory_vector - INFO - Loaded 5377 metadata entries
+2026-04-01 06:24:01,185 - project_guardian.openai_degraded - WARNING - [OpenAI embedding] persistent quota pattern (3× in 2h) — long embedding cooldown 14400s (local/ST fallback only; does not use short chat cooldown strikes)
+2026-04-01 06:24:08,228 - project_guardian.resource_limits - INFO - Resource monitoring started
+2026-04-01 06:24:08,242 - project_guardian.resource_limits - WARNING - [Memory Alert] System memory at 85.1% - Automatic cleanup should trigger on next heartbeat
+2026-04-01 06:24:08,558 - project_guardian.trust_policy_manager - INFO - Loaded 4 policies
+2026-04-01 06:24:08,559 - project_guardian.ask_ai - INFO - OpenAI adapter initialized
+2026-04-01 06:24:08,598 - project_guardian.core - INFO - [DASHBOARD] GuardianCore starting control panel via canonical wrapper
+2026-04-01 06:24:09,607 - project_guardian.ui_control_panel - INFO - [DASHBOARD] start attempt 1 source=GuardianCore.start_ui_panel thread=MainThread - Starting Elysia Control Panel on http://127.0.0.1:5000
+2026-04-01 06:24:09,608 - project_guardian.ui_control_panel - INFO - [DASHBOARD] Server thread starting - binding to 127.0.0.1:5000 (PID: 16408)
+2026-04-01 06:24:09,909 - project_guardian.ui_control_panel - INFO - [DASHBOARD] Server is listening on http://127.0.0.1:5000 (PID: 16408)
+2026-04-01 06:24:09,909 - project_guardian.core - INFO - UI Control Panel started on http://127.0.0.1:5000
+2026-04-01 06:24:09,910 - project_guardian.elysia_loop_core - INFO - Registered module: memory
+2026-04-01 06:24:09,910 - project_guardian.elysia_loop_core - INFO - Registered module: mutation
+2026-04-01 06:24:09,910 - project_guardian.elysia_loop_core - INFO - Registered module: safety
+2026-04-01 06:24:09,910 - project_guardian.elysia_loop_core - INFO - Registered module: trust
+2026-04-01 06:24:09,910 - project_guardian.elysia_loop_core - INFO - Registered module: tasks
+2026-04-01 06:24:09,910 - project_guardian.elysia_loop_core - INFO - Registered module: consensus
+2026-04-01 06:24:09,910 - project_guardian.elysia_loop_core - INFO - Registered module: trust_eval_action
+2026-04-01 06:24:09,911 - project_guardian.elysia_loop_core - INFO - Registered module: trust_eval_content
+2026-04-01 06:24:09,911 - project_guardian.elysia_loop_core - INFO - Registered module: feedback_loop
+2026-04-01 06:25:54,150 - project_guardian.planner_readiness - INFO - [PlannerReadiness] Re-verifying Ollama health (model in tags, startup health was not ok)
+2026-04-01 06:26:04,969 - project_guardian.ollama_health - INFO - [Ollama] healthy: /api/chat OK (model=mistral:7b base=http://127.0.0.1:11434 tags=200)
+2026-04-01 06:26:04,976 - project_guardian.api_key_manager - INFO - API keys loaded. LLM available: True
+2026-04-01 06:26:04,977 - project_guardian.api_key_manager - INFO - API keys loaded. LLM available: True
+2026-04-01 06:26:05,007 - project_guardian.api_key_manager - INFO - API keys loaded. LLM available: True
+2026-04-01 06:26:05,008 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=embedding chosen=local_mistral reason=openai_embedding_long_cooldown_active rejected=1
+2026-04-01 06:26:05,008 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=reasoning chosen=openai reason=reasoning/longform → OpenAI rejected=1
+2026-04-01 06:26:05,008 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=simple chosen=local_mistral reason=simple task + cost-sensitive → local rejected=1
+2026-04-01 06:26:05,010 - project_guardian.capability_registry - INFO - [Orchestration] capability map refreshed: modules=9 plugins=0 tools=0 agents=10
+2026-04-01 06:26:05,083 - project_guardian.core - INFO - [Orchestration] Pre-decision caps (top 5): ['memory_core:2.111', 'mutation_engine:2.111', 'safety_engine:2.111', 'trust_matrix:1.011', 'rollback_engine:1.011']
+2026-04-01 06:26:05,084 - project_guardian.core - INFO - [Mistral] Removed consider_dream_cycle from candidates (memory pressure; avoids futile selection)
+2026-04-01 06:26:05,085 - project_guardian.multi_api_router - INFO - [APIRouter] task_type=simple chosen=local_mistral reason=simple task + cost-sensitive → local rejected=1
+2026-04-01 06:26:05,085 - project_guardian.planner_readiness - INFO - [PlannerReadiness] readiness transition unknown → ready
+2026-04-01 06:26:05,086 - project_guardian.core - INFO - [Mistral] Decision requested (candidates=6)
+2026-04-01 06:26:05,187 - project_guardian.self_task_queue - INFO - [SelfTask] finished st_b814ef5f6a9f tier=failed success=False useful=False adv=False op_ready=False arch=summarize_monetizable_directions_from_learning
+2026-04-01 06:26:05,303 - project_guardian.guardian_singleton - INFO - Monitoring started via singleton guard
+2026-04-01 06:26:05,304 - project_guardian.prompt_evolver - INFO - [AutoPromptEvolution] Started (interval=6.0h, min_records=5)
+2026-04-01 06:26:05,314 - project_guardian.planner_readiness - INFO - [Guardian] canonical_ollama_effective=mistral:7b exact_tag_match=True installed_tags=['mistral:7b'] suggested_close=[]
+2026-04-01 06:26:05,874 - project_guardian.ollama_health - INFO - [Ollama] healthy: /api/chat OK (model=mistral:7b base=http://127.0.0.1:11434 tags=200)
+2026-04-01 06:26:05,875 - project_guardian.core - INFO - [Autonomy] planner_startup readiness=ready exact_tag_match=True health_ok=True
+2026-04-01 06:26:05,875 - project_guardian.startup_verification - INFO - ============================================================
+2026-04-01 06:26:05,875 - project_guardian.startup_verification - INFO - Startup Verification Summary
+2026-04-01 06:26:05,875 - project_guardian.startup_verification - INFO - ============================================================
+2026-04-01 06:26:05,875 - project_guardian.startup_verification - INFO - Total Checks: 12

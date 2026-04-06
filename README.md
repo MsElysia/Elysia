@@ -1,6 +1,8 @@
-# Project Guardian
+# Project Guardian / Elysia
 
 **An Autonomous AI System with Self-Modification, Trust Management, and Financial Operations**
+
+**GitHub:** [github.com/MsElysia/Elysia](https://github.com/MsElysia/Elysia)
 
 [![Status](https://img.shields.io/badge/status-production--ready-brightgreen)]()
 [![Security](https://img.shields.io/badge/security-audited-green)]()
@@ -8,7 +10,7 @@
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # Install dependencies
@@ -31,9 +33,13 @@ python -m project_guardian
 **Access Web UI**: http://localhost:5000  
 **API Server**: http://localhost:8080
 
+### Optional: Poetry
+
+The repo includes `pyproject.toml` and `poetry.lock` for a package-based install. With [Poetry](https://python-poetry.org/) installed: `poetry install`
+
 ---
 
-## 📖 Documentation
+## Documentation
 
 - **[User Guide](USER_GUIDE.md)** - Complete usage instructions
 - **[API Reference](API_REFERENCE.md)** - REST API documentation
@@ -44,34 +50,34 @@ python -m project_guardian
 
 ---
 
-## ✨ Features
+## Features
 
 ### Core Systems
-- ✅ **Event Loop**: Non-blocking async task execution
-- ✅ **Memory System**: Persistent memory with timeline logging
-- ✅ **Trust System**: Comprehensive trust scoring and evaluation
-- ✅ **Mutation System**: Safe self-modification with AI validation
+- **Event Loop**: Non-blocking async task execution
+- **Memory System**: Persistent memory with timeline logging
+- **Trust System**: Comprehensive trust scoring and evaluation
+- **Mutation System**: Safe self-modification with AI validation
 
 ### Financial Operations
-- ✅ **Core Credits**: Virtual currency system
-- ✅ **Revenue Sharing**: Master-slave revenue distribution
-- ✅ **Franchise Model**: Business structure for slave operations
-- ✅ **Asset Management**: Financial tracking and management
+- **Core Credits**: Virtual currency system
+- **Revenue Sharing**: Master-slave revenue distribution
+- **Franchise Model**: Business structure for slave operations
+- **Asset Management**: Financial tracking and management
 
 ### Security & Safety
-- ✅ **Encrypted Secrets**: Secure API key management
-- ✅ **Mutation Safety**: Multi-layer validation and rollback
-- ✅ **Recovery Vault**: System snapshots and recovery
-- ✅ **Trust-Based Access**: Policy-driven access control
+- **Encrypted Secrets**: Secure API key management
+- **Mutation Safety**: Multi-layer validation and rollback
+- **Recovery Vault**: System snapshots and recovery
+- **Trust-Based Access**: Policy-driven access control
 
 ### External Access
-- ✅ **REST API**: Complete API for system interaction
-- ✅ **Web UI**: Control panel for monitoring and control
-- ✅ **Health Monitoring**: System health and metrics
+- **REST API**: Complete API for system interaction
+- **Web UI**: Control panel for monitoring and control
+- **Health Monitoring**: System health and metrics
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 Project Guardian
@@ -102,7 +108,7 @@ Project Guardian
 
 ---
 
-## 🔐 Security
+## Security
 
 **Security Features**:
 - Encrypted API key storage
@@ -116,13 +122,14 @@ Project Guardian
 
 ---
 
-## 📚 Getting Started
+## Getting Started
 
 ### Installation
 
 1. **Clone/Navigate to project**
    ```bash
-   cd "Project guardian"
+   git clone https://github.com/MsElysia/Elysia.git
+   cd Elysia
    ```
 
 2. **Install dependencies**
@@ -165,7 +172,7 @@ curl http://localhost:8080/api/health
 
 ---
 
-## 🔧 Development
+## Development
 
 ### Project Structure
 
@@ -192,18 +199,18 @@ python test_mutation_manual.py
 
 ---
 
-## 📊 Status
+## Status
 
-**System Status**: ✅ Production Ready  
+**System Status**: Production Ready  
 **Modules Implemented**: 44+  
-**Documentation**: ✅ Complete  
-**Security**: ✅ Audited
+**Documentation**: Complete  
+**Security**: Audited
 
 **See**: [Project Status](PROJECT_STATUS.md)
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 1. Review security checklist before committing
 2. Never commit API keys or secrets
@@ -212,13 +219,13 @@ python test_mutation_manual.py
 
 ---
 
-## 📝 License
+## License
 
 [Your License Here]
 
 ---
 
-## 🔗 Quick Links
+## Quick Links
 
 - [User Guide](USER_GUIDE.md)
 - [API Reference](API_REFERENCE.md)
@@ -228,24 +235,4 @@ python test_mutation_manual.py
 
 ---
 
-**Status**: System is operational and production-ready! 🛡️
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+**Status**: System is operational and production-ready.

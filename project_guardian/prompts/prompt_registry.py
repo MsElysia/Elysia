@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, Final, Tuple
 
 from .core.base import CORE_META, render_core_text
-from .modules import debugger, memory, planner, router, summarizer, tool_selection
+from .modules import debugger, memory, memory_condense, planner, router, summarizer, tool_selection
 from .agents import critic, executor, orchestrator
 
 ModuleRecord = Tuple[Dict[str, str], str]
@@ -15,6 +15,7 @@ AgentRecord = Tuple[Dict[str, str], str]
 MODULES: Final[Dict[str, ModuleRecord]] = {
     "router": (router.MODULE_META, router.MODULE_TEXT),
     "memory": (memory.MODULE_META, memory.MODULE_TEXT),
+    "memory_condense": (memory_condense.MODULE_META, memory_condense.MODULE_TEXT),
     "planner": (planner.MODULE_META, planner.MODULE_TEXT),
     "debugger": (debugger.MODULE_META, debugger.MODULE_TEXT),
     "tool_selection": (tool_selection.MODULE_META, tool_selection.MODULE_TEXT),

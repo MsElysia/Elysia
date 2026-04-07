@@ -82,9 +82,10 @@ htmlcov/
 # Temporary files
 *.tmp
 *.temp
-test_*.py
-debug_*.py
-verify_*.py
+# Root-only scratch scripts (do not ignore tests/ suite)
+/test_*.py
+/debug_*.py
+/verify_*.py
 
 # OS
 .DS_Store

@@ -50,7 +50,6 @@ Emitted by `log_prompted_call` (no full prompt bodies):
 | **Orchestration adapters** (`OpenAIAdapter`, `OllamaAdapter`) | Transport | **Prompt-agnostic** by design; `log_legacy_llm_call` with stable `reason=orchestration_*_adapter_transport`. |
 | **WebScout** (`research_with_llm`) | Medium | Inline research prompts; `reason=inline_prompt_webscout_research`. |
 | **Implementer codegen** (`CodegenClient.generate_code`) | Medium | Inline codegen prompts; `reason=inline_prompt_implementer_codegen`. |
-| **Memory condense** (`elysia.condense_memory_with_ai`) | High local | Structured JSON task; not migrated in this pass. |
 
 **Legacy observability:** `log_legacy_llm_call(detail, caller="Module.fn", reason="...")` — stable `reason` strings; `detail` optional. No duplicate `log_prompted_call` on the same invocation for these paths.
 
@@ -58,6 +57,7 @@ Emitted by `log_prompted_call` (no full prompt bodies):
 
 - **Unified chat** (`unified_chat_completion`): all backends + prompt stack + `log_prompted_call`.
 - **Elysia fallback** (`_chat_with_llm_cloud_only`, `_llm_completion` when unified off or on exception): **`elysia_cloud_fallback_completion`** — migrated.
+- **Memory condense** (`elysia.condense_memory_with_ai`): **`memory_condense`** module + `build_memory_condense_prompt_extra()`; `_llm_completion(..., prompt_extra=..., skip_capability_preamble=True)`; **`task_type=memory_condense`** via existing `log_prompted_call` (no legacy duplicate).
 - **Adapters / WebScout / codegen**: legacy markers only; boundary above.
 
 ## Preferred migration pattern for a new LLM call site

@@ -637,7 +637,16 @@ class UnifiedElysiaSystem:
                 caller="UnifiedElysiaSystem.chat_with_llm.fallback",
             )
 
-    def _llm_completion(self, messages, max_tokens: int = 2000):
+    def _llm_completion(
+        self,
+        messages,
+        max_tokens: int = 2000,
+        *,
+        module_name: str = "planner",
+        agent_name: Optional[str] = "orchestrator",
+        prompt_extra: Optional[Dict[str, Any]] = None,
+        skip_capability_preamble: bool = False,
+    ):
         """Call LLM with custom max_tokens. Returns (reply_text, error_string)."""
         if not isinstance(messages, list):
             messages = [{"role": "user", "content": str(messages)}]
@@ -649,6 +658,9 @@ class UnifiedElysiaSystem:
                 max_tokens,
                 cloud_preferred=self._llm_completion_cloud_preferred,
                 caller="UnifiedElysiaSystem._llm_completion",
+                module_name=module_name,
+                agent_name=agent_name,
+                prompt_extra=prompt_extra,
             )
         try:
             from project_guardian.unified_llm_route import unified_chat_completion
@@ -660,8 +672,10 @@ class UnifiedElysiaSystem:
                 cloud_openai_call=lambda m, mt: self._llm_completion_cloud_openai(m, mt),
                 cloud_openrouter_call=lambda m, mt: self._llm_completion_cloud_openrouter(m, mt),
                 mistral_model=self._mistral_model_for_chat(),
-                module_name="planner",
-                agent_name="orchestrator",
+                skip_capability_preamble=skip_capability_preamble,
+                module_name=module_name,
+                agent_name=agent_name,
+                prompt_extra=prompt_extra,
             )
             return reply, err
         except Exception as e:
@@ -673,6 +687,9 @@ class UnifiedElysiaSystem:
                 max_tokens,
                 cloud_preferred=self._llm_completion_cloud_preferred,
                 caller="UnifiedElysiaSystem._llm_completion.fallback",
+                module_name=module_name,
+                agent_name=agent_name,
+                prompt_extra=prompt_extra,
             )
 
     def condense_memory_with_ai(self, memory_threshold: int = 4000, chunk_size: int = 80, max_to_condense: int = 2000, max_workers: int = 4) -> bool:
@@ -705,16 +722,10 @@ class UnifiedElysiaSystem:
         if not chunks:
             return False
 
-        CONDEM_PROMPT = """You are condensing a list of memory entries from an AI system. Your task:
-1. Merge redundant or very similar items.
-2. Keep important facts, events, and decisions.
-3. Output ONLY a valid JSON array of objects. Each object must have: "thought" (string), "category" (string), "priority" (number 0.0-1.0).
-4. Use category "consensus" for summarized/condensed entries. Reduce the list length significantly while preserving meaning.
-
-Memories to condense (one per line, format: [time] category priority | thought):
-{chunk_text}
-
-Output the JSON array only, no other text."""
+        from project_guardian.memory_condense_helpers import (
+            build_memory_condense_prompt_extra,
+            parse_condensed_memory_json,
+        )
 
         def process_chunk(args):
             start, end, mems = args
@@ -726,23 +737,29 @@ Output the JSON array only, no other text."""
                 ts = m.get("time", "")[:19] if m.get("time") else ""
                 lines.append(f"[{ts}] {cat} {pri} | {t[:500]}")
             chunk_text = "\n".join(lines)
-            prompt = CONDEM_PROMPT.format(chunk_text=chunk_text)
-            reply, err = self._llm_completion([{"role": "user", "content": prompt}], max_tokens=1500)
+            prompt_extra = build_memory_condense_prompt_extra(chunk_text)
+            user_msg = [{"role": "user", "content": "Memory condensation task (structured JSON per OUTPUT CONTRACT)."}]
+
+            def _one_call():
+                return self._llm_completion(
+                    user_msg,
+                    max_tokens=1500,
+                    module_name="memory_condense",
+                    agent_name=None,
+                    prompt_extra=prompt_extra,
+                    skip_capability_preamble=True,
+                )
+
+            reply, err = _one_call()
             if err or not reply:
                 return start, end, None, err
-            # Parse JSON (strip markdown code block if present)
-            text = reply.strip()
-            for marker in ("```json", "```"):
-                if text.startswith(marker):
-                    text = text[len(marker):].strip()
-                if text.endswith("```"):
-                    text = text[:-3].strip()
-            try:
-                arr = json.loads(text)
-            except json.JSONDecodeError:
-                return start, end, None, "JSON parse failed"
-            if not isinstance(arr, list):
-                return start, end, None, "Response not a list"
+            arr, perr = parse_condensed_memory_json(reply)
+            if perr == "JSON parse failed":
+                reply2, err2 = _one_call()
+                if not err2 and reply2:
+                    arr, perr = parse_condensed_memory_json(reply2)
+            if perr:
+                return start, end, None, perr
             out = []
             now = datetime.now().isoformat()
             for i, item in enumerate(arr):

@@ -68,6 +68,7 @@ logs/
 
 # Data files
 data/*.json
+data/*.jsonl
 data/*.db
 data/vault/
 data/backups/

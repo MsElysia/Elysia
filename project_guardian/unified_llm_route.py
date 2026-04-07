@@ -233,12 +233,17 @@ def unified_chat_completion(
     skip_capability_preamble: bool = False,
     module_name: str,
     agent_name: Optional[str] = None,
+    prompt_extra: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str, Dict[str, Any]]:
     """
     Run one chat completion with unified backend selection + optional capability preamble + usage log hook data.
     Returns (reply, error, meta) meta includes backend, reason, latency_ms.
 
     module_name / agent_name select the Guardian prompt stack for every backend (Ollama, OpenAI, OpenRouter).
+
+    When ``prompt_extra`` is set (e.g. memory condensation), it may include ``task_text``, ``context``,
+    ``output_schema``, and ``task_type`` for :func:`prepare_prompted_messages`. Structured tasks should
+    pass ``prompt_extra`` and ``skip_capability_preamble=True`` so chat capability routing does not hijack the turn.
     """
     from .llm.prompted_call import log_prompted_call, prepare_prompted_messages, require_prompt_profile
 
@@ -261,7 +266,8 @@ def unified_chat_completion(
     t0 = time.perf_counter()
     meta: Dict[str, Any] = {"backend": "unknown", "reason": "", "latency_ms": 0.0}
 
-    if guardian and decider_cfg.get("chat_tool_first_capability", True):
+    # Structured prompt_extra paths must not run chat tool-first capability execute.
+    if prompt_extra is None and guardian and decider_cfg.get("chat_tool_first_capability", True):
         hit = try_chat_capability_execute(user_text, guardian)
         if hit:
             reply, extra = hit
@@ -331,6 +337,14 @@ def unified_chat_completion(
 
     reply, err = "", ""
 
+    pe = prompt_extra or {}
+    _log_task_type = str(pe.get("task_type") or "unified_chat")
+
+    def _resolved_task_text() -> str:
+        if pe.get("task_text") is not None:
+            return str(pe["task_text"])
+        return _UNIFIED_CHAT_TASK_TEXT
+
     # One prep for all cloud attempts: same msgs as Ollama sees (capability preamble + thread), plus prompt stack.
     _cloud_prep_cache: Optional[Dict[str, Any]] = None
 
@@ -341,7 +355,9 @@ def unified_chat_completion(
                 list(msgs),
                 module_name=_mod,
                 agent_name=_ag,
-                task_text=_UNIFIED_CHAT_TASK_TEXT,
+                task_text=_resolved_task_text(),
+                context=pe.get("context"),
+                output_schema=pe.get("output_schema"),
                 caller="unified_chat_completion.cloud",
             )
         return _cloud_prep_cache
@@ -359,6 +375,10 @@ def unified_chat_completion(
                     max_tokens=max_tokens,
                     module_name=_mod,
                     agent_name=_ag,
+                    task_text=pe.get("task_text"),
+                    context=pe.get("context"),
+                    output_schema=pe.get("output_schema"),
+                    task_type=_log_task_type,
                 ),
                 "",
             )
@@ -379,7 +399,7 @@ def unified_chat_completion(
                 log_prompted_call(
                     module_name=_mod,
                     agent_name=_ag,
-                    task_type="unified_chat",
+                    task_type=_log_task_type,
                     provider="openrouter",
                     model=_CLOUD_MODEL_LOG_OPENROUTER,
                     bundle_meta=cp["meta"],
@@ -392,7 +412,7 @@ def unified_chat_completion(
                 log_prompted_call(
                     module_name=_mod,
                     agent_name=_ag,
-                    task_type="unified_chat",
+                    task_type=_log_task_type,
                     provider="openai",
                     model=_CLOUD_MODEL_LOG_OPENAI,
                     bundle_meta=cp["meta"],

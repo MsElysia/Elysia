@@ -276,25 +276,36 @@ class MistralEngine:
         *,
         module_name: str,
         agent_name: Optional[str] = None,
+        task_text: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        output_schema: Optional[Dict[str, Any]] = None,
+        task_type: Optional[str] = None,
     ) -> str:
-        """Plain Ollama chat (no JSON schema) for unified LLM routing."""
+        """Plain Ollama chat for unified LLM routing; optional task_text/context/output_schema for structured tasks."""
         from .llm.prompted_call import log_prompted_call, prepare_prompted_messages, require_prompt_profile
 
         mod, ag, _ = require_prompt_profile(
             module_name, agent_name, caller="MistralEngine.complete_chat", allow_legacy=False
         )
 
+        tt = (
+            task_text
+            if task_text is not None
+            else "Unified chat completion: respond as the assistant to the conversation thread."
+        )
         _prep = prepare_prompted_messages(
             messages,
             module_name=mod,
             agent_name=ag,
-            task_text="Unified chat completion: respond as the assistant to the conversation thread.",
+            task_text=tt,
+            context=context,
+            output_schema=output_schema,
             caller="MistralEngine.complete_chat",
         )
         log_prompted_call(
             module_name=mod,
             agent_name=ag,
-            task_type="unified_chat",
+            task_type=task_type or "unified_chat",
             provider="ollama",
             model=self.model,
             bundle_meta=_prep["meta"],

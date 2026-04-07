@@ -1,2 +1,1 @@
-# redacted — set keys via environment
-
+# OpenRouter / mesh secrets: set via environment or your local secrets store (not committed).

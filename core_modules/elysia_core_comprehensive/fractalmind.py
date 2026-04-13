@@ -72,6 +72,99 @@ class FractalMind:
             _root = Path(__file__).resolve().parents[2]
             self.log_file = str(_root / "data" / "fractalmind_log.json")
         self._last_gen_mode: str = "fallback"
+
+    @staticmethod
+    def _openai_reasoning_quota_block_active() -> bool:
+        try:
+            from project_guardian.openai_degraded import openai_insufficient_quota_reasoning_blocked
+
+            return bool(openai_insufficient_quota_reasoning_blocked())
+        except Exception:
+            return False
+
+    def _subtask_user_message(self, prompt: str, depth: int) -> str:
+        return (
+            f"Break the following task into {depth} detailed, actionable subtasks. "
+            f"Each subtask should be specific and executable. "
+            f"Return only the subtasks, one per line, without numbering:\n\n{prompt}"
+        )
+
+    def _parse_subtasks_from_response(self, content: str, depth: int) -> List[str]:
+        subtasks: List[str] = []
+        for line in (content or "").split("\n"):
+            line = line.strip()
+            if line:
+                cleaned = line.lstrip("- *0123456789. ")
+                if cleaned:
+                    subtasks.append(cleaned)
+        return subtasks[:depth] if subtasks else []
+
+    def _openrouter_api_key(self) -> str:
+        k = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+        if k:
+            return k
+        try:
+            from project_guardian.api_key_manager import get_api_key_manager
+
+            mgr = get_api_key_manager()
+            mgr.load_keys()
+            return (mgr.keys.openrouter or "").strip()
+        except Exception:
+            return ""
+
+    def _generate_subtasks_openrouter(self, prompt: str, depth: int) -> List[str]:
+        if not OPENAI_AVAILABLE:
+            return []
+        key = self._openrouter_api_key()
+        if not key:
+            return []
+        model = (os.environ.get("FRACTALMIND_OPENROUTER_MODEL") or "openai/gpt-3.5-turbo").strip()
+        client = OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1")
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": self._subtask_user_message(prompt, depth)}],
+            max_tokens=500,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        return self._parse_subtasks_from_response(raw, depth)
+
+    def _generate_subtasks_ollama(self, prompt: str, depth: int) -> List[str]:
+        try:
+            from project_guardian.mistral_engine import MistralEngine
+            from project_guardian.ollama_model_config import get_canonical_ollama_model
+
+            eng = MistralEngine(model=get_canonical_ollama_model(log_once=False))
+            raw = eng.complete_chat(
+                [{"role": "user", "content": self._subtask_user_message(prompt, depth)}],
+                max_tokens=500,
+                module_name="planner",
+                agent_name="orchestrator",
+                task_text=(
+                    "FractalMind: decompose the user's task into concise executable subtasks. "
+                    "Output one subtask per line, no numbering or bullets required."
+                ),
+                task_type="fractalmind_subtasks",
+            )
+            return self._parse_subtasks_from_response(raw, depth)
+        except Exception as e:
+            logging.debug("FractalMind Ollama subtask generation failed: %s", e)
+            return []
+
+    def _generate_subtasks_when_openai_quota_blocked(self, prompt: str, depth: int, model: str) -> List[str]:
+        """OpenRouter first, then local Ollama/Mistral; empty => caller uses rule fallback."""
+        _ = model  # OpenAI model name not used for alternates
+        try:
+            or_tasks = self._generate_subtasks_openrouter(prompt, depth)
+            if or_tasks:
+                self._last_gen_mode = "ai"
+                return or_tasks
+        except Exception as e:
+            logging.debug("FractalMind OpenRouter subtask generation failed: %s", e)
+        ol_tasks = self._generate_subtasks_ollama(prompt, depth)
+        if ol_tasks:
+            self._last_gen_mode = "ai"
+            return ol_tasks
+        return []
     
     def is_ambiguous(self, prompt: str) -> bool:
         """Detect if a prompt contains ambiguity indicators"""
@@ -107,41 +200,47 @@ class FractalMind:
                 return self._generate_with_ai(prompt, depth, use_model)
             except Exception as e:
                 logging.error(f"AI generation failed: {e}. Falling back to rule-based.")
+                try:
+                    from project_guardian.openai_degraded import note_openai_transport_failure
+
+                    note_openai_transport_failure(e, context="fractalmind_generate_subtasks")
+                except Exception:
+                    pass
         
         # Fallback to rule-based generation
         return self._generate_fallback(prompt, depth)
     
     def _generate_with_ai(self, prompt: str, depth: int, model: str) -> List[str]:
         """Generate subtasks using OpenAI"""
+        if self._openai_reasoning_quota_block_active():
+            logging.info(
+                "[FractalMind] skipping OpenAI (insufficient_quota reasoning quota block active); "
+                "using OpenRouter or local Ollama/Mistral instead of OpenAI"
+            )
+            routed = self._generate_subtasks_when_openai_quota_blocked(prompt, depth, model)
+            if routed:
+                return routed
+            return self._generate_fallback(prompt, depth)
         try:
             response = self.client.chat.completions.create(
                 model=model,
-                messages=[{
-                    "role": "user",
-                    "content": f"Break the following task into {depth} detailed, actionable subtasks. "
-                              f"Each subtask should be specific and executable. "
-                              f"Return only the subtasks, one per line, without numbering:\n\n{prompt}"
-                }],
+                messages=[{"role": "user", "content": self._subtask_user_message(prompt, depth)}],
                 max_tokens=500
             )
             content = response.choices[0].message.content.strip()
-            
-            # Parse subtasks from response
-            subtasks = []
-            for line in content.split("\n"):
-                line = line.strip()
-                if line:
-                    # Remove common prefixes like "- ", "* ", "1. ", etc.
-                    cleaned = line.lstrip("- *0123456789. ")
-                    if cleaned:
-                        subtasks.append(cleaned)
-            
+            subtasks = self._parse_subtasks_from_response(content, depth)
             if subtasks:
                 self._last_gen_mode = "ai"
-                return subtasks[:depth]
+                return subtasks
             return self._generate_fallback(prompt, depth)
         except Exception as e:
             logging.error(f"Error in AI generation: {e}")
+            try:
+                from project_guardian.openai_degraded import note_openai_transport_failure
+
+                note_openai_transport_failure(e, context="fractalmind_ai_generation")
+            except Exception:
+                pass
             return self._generate_fallback(prompt, depth)
     
     def _generate_fallback(self, prompt: str, depth: int) -> List[str]:

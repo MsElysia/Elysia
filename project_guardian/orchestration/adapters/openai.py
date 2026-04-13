@@ -70,19 +70,9 @@ class OpenAIAdapter:
             except httpx.HTTPStatusError as e:
                 if e.response is not None and e.response.status_code == 429:
                     try:
-                        from ...openai_degraded import note_openai_rate_limit, note_openai_reasoning_rate_limit
+                        from ...openai_degraded import note_openai_transport_failure
 
-                        body = ""
-                        try:
-                            body = (e.response.text or "")[:800]
-                        except Exception:
-                            body = ""
-                        note_openai_rate_limit(
-                            "orchestration_openai_chat", status_code=429, detail=body
-                        )
-                        note_openai_reasoning_rate_limit(
-                            body or str(e), status_code=429, context="orchestration_openai_chat"
-                        )
+                        note_openai_transport_failure(e, context="orchestration_openai_chat")
                     except Exception:
                         pass
                 raise

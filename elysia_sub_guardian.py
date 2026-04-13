@@ -77,6 +77,14 @@ def init_guardian_core(config: Optional[Dict[str, Any]] = None) -> Optional[Any]
             logger.info("  [OK] Guardian Core initialized (singleton)")
             if memory_limit != 0.8:
                 logger.info(f"  [Config] Memory limit: {memory_limit:.0%} (set via config or ELYSIA_MEMORY_LIMIT)")
+            try:
+                from project_guardian.diagnostics.upstream_routing_live_probe import (
+                    schedule_upstream_routing_live_probes,
+                )
+
+                schedule_upstream_routing_live_probes(guardian)
+            except Exception as _diag_e:
+                logger.debug("upstream_routing_live_probe schedule: %s", _diag_e)
             return guardian
         else:
             logger.error("  [FAIL] Guardian Core initialization returned None")

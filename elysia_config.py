@@ -28,6 +28,16 @@ LOG_FILE = PROJECT_ROOT / "elysia_unified.log"
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 LOG_BACKUP_COUNT = 5
 
+# USB memory policy (env ELYSIA_USB_MEMORY_POLICY). Default / recommended production: failover (unset or "failover").
+USB_MEMORY_POLICY_HELP = (
+    "ELYSIA_USB_MEMORY_POLICY — recommended: failover (default). "
+    "failover: one active ElysiaMemory root (primary USB, else secondary, else ~/ElysiaMemory). "
+    "mirror: only guardian_memory.json is copied to the secondary USB after MemoryCore JSON saves; "
+    "trust/tasks/vectors are not mirrored. "
+    "split: archive/backup path (get_backup_path / sync_to_backup) prefers secondary …/archive when "
+    "that volume is usable; active memory/trust/tasks JSON files stay on the active root only."
+)
+
 
 def _parse_float_env(name: str, default: float) -> float:
     val = os.environ.get(name)
@@ -42,47 +52,93 @@ def _parse_float_env(name: str, default: float) -> float:
     return default
 
 
-def find_elysia_memory_drive() -> Optional[str]:
-    """
-    Find a thumb drive intended for Elysia memory storage.
-    - ELYSIA_THUMB_DRIVE env: use this letter (e.g. F:) if the drive exists.
-    - Else: look for a drive whose root contains the marker file ELYSIA_MEMORY
-      (so the same stick works on any PC regardless of drive letter).
-    - Candidate letters: D:, E:, F:, G:, H: (or all removable letters on Windows).
-    Returns drive letter like "F:" or None.
-    """
-    # Explicit override
-    env_drive = os.environ.get("ELYSIA_THUMB_DRIVE", "").strip().upper()
-    if env_drive:
-        if len(env_drive) == 1:
-            env_drive = env_drive + ":"
-        root = Path(env_drive) / ""
-        if root.exists():
-            return env_drive
-        # Env set but drive missing - don't scan, caller will use fallback
-        return None
-
-    # No env: look for marker file on candidate drives
-    if os.name == "nt":
-        candidates = [f"{d}:\\" for d in string.ascii_uppercase if d not in "AB"]  # skip A:, B:
-    else:
-        # Linux/mac: common mount points
+def _discover_elysia_marker_drives() -> list[str]:
+    """All drive letters (Windows) whose root has ELYSIA_MEMORY / .elysia_memory; sorted."""
+    found: list[str] = []
+    if os.name != "nt":
         candidates = ["/media", "/mnt", "/Volumes"]
-    for candidate in candidates:
-        root = Path(candidate)
+        for candidate in candidates:
+            root = Path(candidate)
+            if not root.exists():
+                continue
+            marker = root / ELYSIA_MEMORY_DRIVE_MARKER
+            alt = root / ".elysia_memory"
+            if marker.exists() or alt.exists():
+                found.append(str(root))
+        return sorted(found)
+
+    for letter in string.ascii_uppercase:
+        if letter in "AB":
+            continue
+        root = Path(f"{letter}:\\")
         if not root.exists():
             continue
         marker = root / ELYSIA_MEMORY_DRIVE_MARKER
         alt = root / ".elysia_memory"
         if marker.exists() or alt.exists():
-            if os.name == "nt" and candidate.endswith("\\"):
-                return candidate[0] + ":"
-            return candidate
-    return None
+            found.append(f"{letter}:")
+    return sorted(found, key=lambda x: x[0])
+
+
+def find_elysia_memory_drives() -> Tuple[Optional[str], Optional[str]]:
+    """
+    Resolve primary and optional secondary Elysia USB roots (drive letters like 'F:').
+
+    - ELYSIA_THUMB_DRIVE: primary override when present and the drive exists.
+    - ELYSIA_THUMB_DRIVE_SECONDARY: secondary override when present and the drive exists.
+    - ELYSIA_USB_MEMORY_POLICY: failover (default), mirror, or split — see USB_MEMORY_POLICY_HELP.
+    - If not set, scans for ELYSIA_MEMORY marker volumes: first discovery = primary,
+      next distinct letter = secondary (two-stick auto-pairing).
+
+    Returns (primary, secondary). secondary may be None (single-volume / legacy).
+    """
+    discovered = _discover_elysia_marker_drives()
+
+    primary: Optional[str] = None
+    raw_p = os.environ.get("ELYSIA_THUMB_DRIVE", "").strip().upper()
+    if raw_p:
+        if len(raw_p) == 1:
+            raw_p = raw_p + ":"
+        root = Path(raw_p) / ""
+        if root.exists():
+            primary = raw_p
+    elif discovered:
+        primary = discovered[0]
+
+    secondary: Optional[str] = None
+    raw_s = os.environ.get("ELYSIA_THUMB_DRIVE_SECONDARY", "").strip().upper()
+    if raw_s:
+        if len(raw_s) == 1:
+            raw_s = raw_s + ":"
+        root_s = Path(raw_s) / ""
+        if root_s.exists() and raw_s != primary:
+            secondary = raw_s
+
+    if secondary is None and discovered:
+        for d in discovered:
+            if primary is None or d != primary:
+                secondary = d
+                break
+
+    return primary, secondary
+
+
+def find_elysia_memory_drive() -> Optional[str]:
+    """
+    Find a thumb drive intended for Elysia memory storage (first of two if auto-discovered).
+    - ELYSIA_THUMB_DRIVE env: use this letter (e.g. F:) if the drive exists.
+    - Else: first drive whose root contains ELYSIA_MEMORY or .elysia_memory.
+    """
+    p, _ = find_elysia_memory_drives()
+    return p
 
 
 def get_storage_paths() -> Dict[str, Any]:
-    """Get memory/trust/tasks file paths. Uses memory_storage_config if available."""
+    """Get memory/trust/tasks file paths. Uses memory_storage_config if available.
+
+    Two-USB behavior is controlled by ELYSIA_USB_MEMORY_POLICY; see USB_MEMORY_POLICY_HELP
+    in this module for operator guidance (failover recommended for production).
+    """
     base = {
         "memory_file": str(PROJECT_ROOT / "guardian_memory.json"),
         "trust_file": str(PROJECT_ROOT / "enhanced_trust.json"),
@@ -91,19 +147,55 @@ def get_storage_paths() -> Dict[str, Any]:
         "thumb_drive_available": False,
     }
     try:
-        from memory_storage_config import MemoryStorageConfig
-        thumb = find_elysia_memory_drive() or "F:"  # prefer detected drive, else default F:
-        storage = MemoryStorageConfig(thumb_drive=thumb, fallback_local=True)
-        base.update({
-            "memory_file": str(storage.get_memory_file_path()),
-            "trust_file": str(storage.get_trust_file_path()),
-            "tasks_file": str(storage.get_tasks_file_path()),
-        })
+        from memory_storage_config import (
+            MemoryStorageConfig,
+            MemoryUsbPolicy,
+            register_active_memory_storage_config,
+        )
+
+        register_active_memory_storage_config(None)
+        primary, secondary = find_elysia_memory_drives()
+        primary_letter = primary or "F:"
+        policy = MemoryUsbPolicy.from_env()
+        storage = MemoryStorageConfig(
+            primary_drive=primary_letter,
+            secondary_drive=secondary,
+            policy=policy,
+            fallback_local=True,
+        )
+        register_active_memory_storage_config(storage)
+        base.update(
+            {
+                "memory_file": str(storage.get_memory_file_path()),
+                "trust_file": str(storage.get_trust_file_path()),
+                "tasks_file": str(storage.get_tasks_file_path()),
+            }
+        )
         cfg = storage.get_config()
         base["storage_path"] = cfg.get("storage_path", base["storage_path"])
         base["thumb_drive_available"] = cfg.get("thumb_drive_available", False)
+        for k in (
+            "usb_memory_policy",
+            "usb_primary_drive",
+            "usb_secondary_drive",
+            "usb_primary_root",
+            "usb_secondary_root",
+            "usb_primary_available",
+            "usb_secondary_available",
+            "usb_active_write_targets",
+            "usb_archive_root",
+            "usb_storage_degraded",
+            "usb_degraded_notes",
+        ):
+            if k in cfg:
+                base[k] = cfg[k]
     except Exception:
-        pass
+        try:
+            from memory_storage_config import register_active_memory_storage_config
+
+            register_active_memory_storage_config(None)
+        except Exception:
+            pass
     return base
 
 
@@ -144,7 +236,7 @@ def get_elysia_config() -> Dict[str, Any]:
     """
     paths = get_storage_paths()
     memory_path = paths["memory_file"]
-    return {
+    out = {
         "memory_filepath": memory_path,
         "memory_file": memory_path,  # legacy alias
         "trust_file": paths["trust_file"],
@@ -155,6 +247,22 @@ def get_elysia_config() -> Dict[str, Any]:
         "resource_limits": get_resource_limits(),
         "auto_learning": get_auto_learning_config(),
     }
+    for k in (
+        "usb_memory_policy",
+        "usb_primary_drive",
+        "usb_secondary_drive",
+        "usb_primary_root",
+        "usb_secondary_root",
+        "usb_primary_available",
+        "usb_secondary_available",
+        "usb_active_write_targets",
+        "usb_archive_root",
+        "usb_storage_degraded",
+        "usb_degraded_notes",
+    ):
+        if k in paths:
+            out[k] = paths[k]
+    return out
 
 
 def get_status_url() -> str:

@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "enabled": true,
+  "core_mission": "Advance Elysia toward useful autonomy: measurable progress on income, learning, and operator-ready artifacts—not idle exploration.",
+  "standing_priorities": [
+    {"id": "pri_outcomes", "title": "Ship artifacts operators can use", "weight": 1.0},
+    {"id": "pri_learning", "title": "Turn learning into monetizable or strategic direction", "weight": 0.85},
+    {"id": "pri_stability", "title": "Keep systems healthy without repetitive no-op cycles", "weight": 0.7}
+  ],
+  "campaigns": [
+    {
+      "id": "cmp_execution",
+      "title": "Execution & self-tasks",
+      "purpose": "Run structured self-tasks that produce JSON/markdown artifacts and advance objectives.",
+      "success_metric": "completed self-tasks with execution_artifact and useful=true",
+      "status": "active",
+      "current_priority": 0.95,
+      "next_recommended_actions": ["execute_self_task", "work_on_objective", "process_queue"],
+      "blockers": [],
+      "last_progress_at": null
+    },
+    {
+      "id": "cmp_revenue_intel",
+      "title": "Revenue & income intelligence",
+      "purpose": "Refresh income signals and shortlists tied to monetization.",
+      "success_metric": "harvest or income pulse with non-empty actionable summary",
+      "status": "active",
+      "current_priority": 0.75,
+      "next_recommended_actions": ["harvest_income_report", "income_modules_pulse"],
+      "blockers": [],
+      "last_progress_at": null
+    },
+    {
+      "id": "cmp_planning",
+      "title": "Planning decomposition",
+      "purpose": "Break complex goals into subtasks when objectives are unclear.",
+      "success_metric": "FractalMind artifact with new subtasks vs prior",
+      "status": "active",
+      "current_priority": 0.45,
+      "next_recommended_actions": ["fractalmind_planning", "continue_mission"],
+      "blockers": [],
+      "last_progress_at": null
+    },
+    {
+      "id": "cmp_ops_health",
+      "title": "Operational health",
+      "purpose": "Fix degraded vectors, registry, or safety tasks—not repeated probes with no delta.",
+      "success_metric": "rebuild_vector or high-priority execute_task resolved",
+      "status": "active",
+      "current_priority": 0.85,
+      "next_recommended_actions": ["rebuild_vector", "execute_task", "mission_deadline"],
+      "blockers": [],
+      "last_progress_at": null
+    },
+    {
+      "id": "cmp_learning_loop",
+      "title": "Learning & knowledge quality",
+      "purpose": "Improve learning and prompts only when tied to outcomes—not idle cycles.",
+      "success_metric": "learning or prompt evolution with verified usefulness",
+      "status": "active",
+      "current_priority": 0.4,
+      "next_recommended_actions": ["consider_learning", "consider_prompt_evolution", "consider_adversarial_learning"],
+      "blockers": [],
+      "last_progress_at": null
+    },
+    {
+      "id": "cmp_social_intel",
+      "title": "Bounded social intelligence",
+      "purpose": "Observe real discussion spaces (Moltbook-first), remember threads/people, draft replies—no mass automation.",
+      "success_metric": "social observe + saved artifacts + operator-reviewed drafts; sponsored noise filtered",
+      "status": "active",
+      "current_priority": 0.35,
+      "next_recommended_actions": ["use_capability/tool/elysia_social_intel"],
+      "blockers": [],
+      "last_progress_at": null
+    }
+  ],
+  "session_objectives": [
+    {"id": "sess_1", "text": "Prefer one high-value self-task or objective step per session", "campaign_id": "cmp_execution", "weight": 1.0}
+  ],
+  "action_campaign_map": {
+    "execute_self_task": ["cmp_execution"],
+    "work_on_objective": ["cmp_execution"],
+    "process_queue": ["cmp_execution", "cmp_ops_health"],
+    "harvest_income_report": ["cmp_revenue_intel"],
+    "income_modules_pulse": ["cmp_revenue_intel"],
+    "fractalmind_planning": ["cmp_planning"],
+    "continue_mission": ["cmp_planning", "cmp_execution"],
+    "rebuild_vector": ["cmp_ops_health"],
+    "execute_task": ["cmp_ops_health"],
+    "mission_deadline": ["cmp_ops_health"],
+    "consider_learning": ["cmp_learning_loop"],
+    "consider_prompt_evolution": ["cmp_learning_loop"],
+    "tool_registry_pulse": ["cmp_ops_health"],
+    "consider_adversarial_learning": ["cmp_learning_loop"],
+    "use_capability/tool/elysia_social_intel": ["cmp_social_intel", "cmp_learning_loop"]
+  },
+  "artifact_expected_actions": ["execute_self_task", "work_on_objective", "harvest_income_report"],
+  "governance_weights": {
+    "mission_alignment": 2.2,
+    "campaign_contribution": 2.8,
+    "usefulness": 1.4,
+    "cost": 0.6,
+    "repetition_penalty": 2.0,
+    "novelty_secondary": 0.35,
+    "drift_exploratory_penalty": 2.5,
+    "no_artifact_penalty": 1.2,
+    "priority_scale": 0.85
+  }
+}

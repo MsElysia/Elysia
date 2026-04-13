@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 logger = logging.getLogger(__name__)
 
 _last_quota_related_route_log_ts: float = 0.0
+_last_router_reasoning_quota_skip_ts: float = 0.0
+_last_reasoning_quota_gate_diag_ts: float = 0.0
 
 if TYPE_CHECKING:
     from .capability_registry import CapabilityRegistry
@@ -120,9 +122,22 @@ def select_best_api(
         # Quota block must never be wiped by unrelated import/call failures below.
         quota_reasoning_block_read = False
         try:
-            from .openai_degraded import openai_insufficient_quota_reasoning_blocked
+            from .openai_degraded import (
+                openai_insufficient_quota_block_until_epoch,
+                openai_insufficient_quota_reasoning_blocked,
+            )
 
             quota_reasoning_block_read = bool(openai_insufficient_quota_reasoning_blocked())
+            if quota_reasoning_block_read:
+                global _last_router_reasoning_quota_skip_ts
+                now_q = time.time()
+                if now_q - _last_router_reasoning_quota_skip_ts >= 45.0:
+                    _last_router_reasoning_quota_skip_ts = now_q
+                    until = openai_insufficient_quota_block_until_epoch()
+                    logger.info(
+                        "[APIRouter] reasoning selection skips OpenAI (insufficient_quota block active_until_epoch=%.0f)",
+                        until,
+                    )
         except Exception:
             pass
 
@@ -224,6 +239,28 @@ def select_best_api(
         ],
         "task_type": task_type,
     }
+    if task_type in ("reasoning", "longform", "planning"):
+        global _last_reasoning_quota_gate_diag_ts
+        _now_gate = time.time()
+        if _now_gate - _last_reasoning_quota_gate_diag_ts >= 90.0:
+            _last_reasoning_quota_gate_diag_ts = _now_gate
+            try:
+                from .openai_degraded import (
+                    openai_insufficient_quota_block_until_epoch,
+                    openai_insufficient_quota_reasoning_blocked,
+                )
+
+                _blocked = openai_insufficient_quota_reasoning_blocked()
+                _until = openai_insufficient_quota_block_until_epoch()
+                logger.info(
+                    "[APIRouter] reasoning_quota_gate block_active=%s block_until_epoch=%.0f chosen=%s reason=%s",
+                    _blocked,
+                    _until,
+                    out.get("chosen"),
+                    str(out.get("reason") or "")[:100],
+                )
+            except Exception:
+                pass
     log_api_routing_decision(task_type, out)
     return out
 
@@ -259,7 +296,7 @@ def log_api_routing_decision(task_type: str, decision: Dict[str, Any]) -> None:
             )
             return
         logger.info(
-            "[APIRouter] task_type=%s chosen=%s reason=%s rejected=%s",
+            "[APIRouter] task_type=%s chosen=%s reason=%s unavailable_providers=%s",
             task_type,
             decision.get("chosen"),
             reason_full[:180],

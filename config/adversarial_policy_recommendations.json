@@ -1,149 +1,5 @@
 [
   {
-    "finding_id": "adv_f8c991309896",
-    "type": "cleanup_control_anomaly",
-    "severity": "critical",
-    "recommended_action": "review_cleanup_threshold",
-    "summary": "Multiple cleanup skips (4); memory pressure or threshold mismatch",
-    "created_at": "2026-03-24T22:10:11.800893"
-  },
-  {
-    "finding_id": "adv_f8c991309896",
-    "type": "cleanup_control_anomaly",
-    "severity": "critical",
-    "recommended_action": "review_cleanup_threshold",
-    "summary": "Multiple cleanup skips (4); memory pressure or threshold mismatch",
-    "created_at": "2026-03-24T22:10:11.800893"
-  },
-  {
-    "finding_id": "adv_f8c991309896",
-    "type": "cleanup_control_anomaly",
-    "severity": "critical",
-    "recommended_action": "review_cleanup_threshold",
-    "summary": "Multiple cleanup skips (4); memory pressure or threshold mismatch",
-    "created_at": "2026-03-24T22:10:11.800893"
-  },
-  {
-    "finding_id": "adv_f8c991309896",
-    "type": "cleanup_control_anomaly",
-    "severity": "critical",
-    "recommended_action": "review_cleanup_threshold",
-    "summary": "Multiple cleanup skips (4); memory pressure or threshold mismatch",
-    "created_at": "2026-03-24T22:10:11.800893"
-  },
-  {
-    "finding_id": "adv_f8c991309896",
-    "type": "cleanup_control_anomaly",
-    "severity": "critical",
-    "recommended_action": "review_cleanup_threshold",
-    "summary": "Multiple cleanup skips (4); memory pressure or threshold mismatch",
-    "created_at": "2026-03-24T22:10:11.800893"
-  },
-  {
-    "finding_id": "adv_f8c991309896",
-    "type": "cleanup_control_anomaly",
-    "severity": "critical",
-    "recommended_action": "review_cleanup_threshold",
-    "summary": "Multiple cleanup skips (4); memory pressure or threshold mismatch",
-    "created_at": "2026-03-24T22:10:11.800893"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "high",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_62a879adf4b6",
-    "type": "noisy_learning_pattern",
-    "severity": "high",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 33/33 rejected, 0 admitted",
-    "created_at": "2026-03-24T21:52:08.153075"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
     "finding_id": "adv_188021dfce31",
     "type": "task_outcome_contradiction",
     "severity": "critical",
@@ -798,5 +654,149 @@
     "recommended_action": "tighten_learning_filters",
     "summary": "Bad learning session: 14/15 rejected, 1 admitted",
     "created_at": "2026-04-03T18:12:06.639583"
+  },
+  {
+    "finding_id": "adv_b3def3789ae4",
+    "type": "noisy_learning_pattern",
+    "severity": "high",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 14/15 rejected, 1 admitted",
+    "created_at": "2026-04-06T21:52:39.342945"
+  },
+  {
+    "finding_id": "adv_b3def3789ae4",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 14/15 rejected, 1 admitted",
+    "created_at": "2026-04-06T21:52:39.342945"
+  },
+  {
+    "finding_id": "adv_d5a9f4f289d9",
+    "type": "noisy_learning_pattern",
+    "severity": "high",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-07T20:34:06.926971"
+  },
+  {
+    "finding_id": "adv_d5a9f4f289d9",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-07T20:34:06.926971"
+  },
+  {
+    "finding_id": "adv_d5a9f4f289d9",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-07T20:34:06.926971"
+  },
+  {
+    "finding_id": "adv_d5a9f4f289d9",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-07T20:34:06.926971"
+  },
+  {
+    "finding_id": "adv_d5a9f4f289d9",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-07T20:34:06.926971"
+  },
+  {
+    "finding_id": "adv_d5a9f4f289d9",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-07T20:34:06.926971"
+  },
+  {
+    "finding_id": "adv_3114f8b2caf3",
+    "type": "noisy_learning_pattern",
+    "severity": "high",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-09T18:04:38.913876"
+  },
+  {
+    "finding_id": "adv_3114f8b2caf3",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-09T18:04:38.913876"
+  },
+  {
+    "finding_id": "adv_3114f8b2caf3",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-09T18:04:38.913876"
+  },
+  {
+    "finding_id": "adv_3114f8b2caf3",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-09T18:04:38.913876"
+  },
+  {
+    "finding_id": "adv_3114f8b2caf3",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-09T18:04:38.913876"
+  },
+  {
+    "finding_id": "adv_3114f8b2caf3",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-09T18:04:38.913876"
+  },
+  {
+    "finding_id": "adv_3114f8b2caf3",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
+    "created_at": "2026-04-09T18:04:38.913876"
+  },
+  {
+    "finding_id": "adv_606a6d3bee2b",
+    "type": "noisy_learning_pattern",
+    "severity": "high",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 16/16 rejected, 0 admitted",
+    "created_at": "2026-04-12T18:31:59.472123"
+  },
+  {
+    "finding_id": "adv_606a6d3bee2b",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 16/16 rejected, 0 admitted",
+    "created_at": "2026-04-12T18:31:59.472123"
+  },
+  {
+    "finding_id": "adv_606a6d3bee2b",
+    "type": "noisy_learning_pattern",
+    "severity": "critical",
+    "recommended_action": "tighten_learning_filters",
+    "summary": "Bad learning session: 16/16 rejected, 0 admitted",
+    "created_at": "2026-04-12T18:31:59.472123"
   }
 ]

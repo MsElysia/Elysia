@@ -446,6 +446,19 @@ class SelfTaskQueue:
             op_ready,
             arch,
         )
+        try:
+            from .mission_autonomy import record_self_task_artifact_outcome
+
+            record_self_task_artifact_outcome(
+                task=t,
+                success=success,
+                useful=useful,
+                archetype=arch,
+                execution_artifact=execution_artifact,
+                objective_advanced=adv,
+            )
+        except Exception as _e_ma:
+            logger.debug("[MissionDirector] self_task artifact hook: %s", _e_ma)
 
     def release_stale_in_progress(self, max_sec: float = 1800) -> None:
         now = time.time()

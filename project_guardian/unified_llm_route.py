@@ -426,19 +426,25 @@ def unified_chat_completion(
             if b in ("openai", "openrouter") and orch_registry is not None:
                 orch_registry.note_api_failure(b)
             logger.warning("[UnifiedLLM] provider %s raised: %s", b, e)
+            if b == "openai":
+                try:
+                    from .openai_degraded import note_openai_transport_failure
+
+                    note_openai_transport_failure(e, context="unified_llm_openai_raised")
+                except Exception:
+                    pass
             continue
 
         if err:
             if b in ("openai", "openrouter") and orch_registry is not None:
                 orch_registry.note_api_failure(b)
-            if b == "openai" and err and (
-                "429" in err or "insufficient_quota" in err.lower() or "rate" in err.lower()
-            ):
+            # Live path returns (reply, err) without raising — must record 429/quota here or the
+            # insufficient_quota reasoning block never arms and select_best_api keeps choosing OpenAI.
+            if b == "openai" and err:
                 try:
-                    from .openai_degraded import note_openai_rate_limit, note_openai_reasoning_rate_limit
+                    from .openai_degraded import note_openai_transport_failure
 
-                    note_openai_rate_limit(err[:400], 429, detail=err)
-                    note_openai_reasoning_rate_limit(err[:400], status_code=429, context="unified_llm_openai")
+                    note_openai_transport_failure(RuntimeError(err), context="unified_llm_openai")
                 except Exception:
                     pass
             continue

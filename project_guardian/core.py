@@ -287,17 +287,19 @@ class GuardianCore:
             disk_limit_percent=resource_config.get("disk_limit", 0.9),
             disk_path=resource_config.get("disk_path", config.get("storage_path", "."))
         )
+        self._resource_monitor_startup_deferred = False
+        try:
+            self._resource_monitoring_interval = int(config.get("resource_monitoring_interval", 30))
+        except (TypeError, ValueError):
+            self._resource_monitoring_interval = 30
         
         # Initialize security auditor
         self.security_auditor = SecurityAuditor(
             config_path=config.get("config_path")
         )
         
-        # Start resource monitoring if enabled
+        # Start resource monitoring if enabled (defer thread until Phase B when defer_heavy_startup)
         if config.get("enable_resource_monitoring", True):
-            self.resource_monitor.start_monitoring(
-                interval=config.get("resource_monitoring_interval", 30)
-            )
             # When memory limit exceeded, trigger aggressive cleanup (throttled to avoid thrashing)
             self._last_resource_triggered_cleanup: Optional[float] = None
             _RESOURCE_CLEANUP_COOLDOWN = 180  # seconds; don't run again within 3 minutes
@@ -326,6 +328,13 @@ class GuardianCore:
                 except Exception as e:
                     logger.debug(f"Resource limit cleanup callback: {e}")
             self.resource_monitor.register_callback(ResourceType.MEMORY, _on_memory_limit_exceeded)
+            if self._defer_heavy_startup:
+                self._resource_monitor_startup_deferred = True
+                logger.info(
+                    "[Startup] Resource monitor thread deferred until Phase B (avoid overlap with JSON/FAISS/embed load)"
+                )
+            else:
+                self.resource_monitor.start_monitoring(interval=self._resource_monitoring_interval)
         
         # Initialize creativity and context components
         self.context = ContextBuilder(self.memory)
@@ -603,6 +612,23 @@ class GuardianCore:
                 "JSON/FAISS load and startup cleanup deferred"
             )
         
+    def _ensure_resource_monitor_started_after_deferred(self) -> None:
+        """Start psutil resource thread after Phase B if it was deferred (idempotent)."""
+        if not getattr(self, "_resource_monitor_startup_deferred", False):
+            return
+        rm = getattr(self, "resource_monitor", None)
+        if rm is None:
+            self._resource_monitor_startup_deferred = False
+            return
+        try:
+            if not rm.monitoring_active:
+                rm.start_monitoring(interval=getattr(self, "_resource_monitoring_interval", 30))
+                logger.info("[Startup] Resource monitor thread started (post Phase B)")
+        except Exception as e:
+            logger.warning("[Startup] Deferred resource monitor start failed: %s", e)
+        finally:
+            self._resource_monitor_startup_deferred = False
+
     def start_deferred_initialization(self) -> None:
         """
         Phase B: load full JSON history, FAISS/metadata, embeddings, startup cleanup.
@@ -711,6 +737,10 @@ class GuardianCore:
                         self.deferred_init_failed = True
                         self.deferred_init_error = (getattr(self, "deferred_init_error", None) or "Unexpected exit")
                         logger.warning("[Startup] Deferred initialization did not complete normally; marked failed")
+            try:
+                self._ensure_resource_monitor_started_after_deferred()
+            except Exception as e:
+                logger.debug("[Startup] resource monitor post-deferred hook: %s", e)
         
     def propose_mutation(
         self, 
@@ -1418,6 +1448,61 @@ class GuardianCore:
             return [str(x) for x in raw]
         return [str(raw)] if raw else []
 
+    def _tool_registry_pulse_metrics(self, tr: Any) -> Tuple[int, List[str], Dict[str, Any]]:
+        """
+        Same tool surface as capability_registry.refresh: coerce list_tools() (list or dict) to names,
+        plus storage/diagnostic counts. Use this everywhere we log 'N tools' for tool_registry_pulse.
+        """
+        from .capability_registry import collect_tool_registry_surface_diag, coerce_tool_registry_name_list
+
+        diag: Dict[str, Any] = {
+            "registry_id": id(tr) if tr is not None else None,
+            "registry_class": type(tr).__name__ if tr is not None else None,
+        }
+        if tr is None:
+            diag["reason"] = "no_tool_registry"
+            return 0, [], diag
+        storage_n = 0
+        try:
+            td = getattr(tr, "tools", None)
+            if isinstance(td, dict):
+                storage_n = len(td)
+        except Exception:
+            pass
+        diag["raw_tools_map_count"] = storage_n
+        names, coerce_exc = coerce_tool_registry_name_list(tr, 96)
+        diag["coerce_suffix"] = coerce_exc or ""
+        n = len(names)
+        diag["list_tools_usable_count"] = n
+        diag["first_names"] = names[:8]
+        try:
+            raw = tr.list_tools()
+            diag["list_tools_return_type"] = type(raw).__name__
+            if isinstance(raw, dict):
+                diag["raw_list_tools_len"] = len(raw)
+                diag["raw_first_names"] = [str(k) for k in list(raw.keys())[:8]]
+            elif isinstance(raw, (list, tuple)):
+                diag["raw_list_tools_len"] = len(raw)
+                diag["raw_first_names"] = [str(x) for x in raw[:8]]
+            else:
+                diag["raw_list_tools_len"] = 0
+                diag["raw_first_names"] = []
+        except Exception as ex:
+            diag["list_tools_exc"] = str(ex)
+        try:
+            d2 = collect_tool_registry_surface_diag(
+                tr,
+                listed_count=n,
+                storage_before_ensure=storage_n,
+                storage_after_ensure=storage_n,
+            )
+            diag["surface"] = d2
+            if d2.get("filter_reason") and d2.get("filter_reason") != "ok":
+                diag["exclusion_hint"] = d2.get("filter_reason")
+        except Exception:
+            pass
+        return n, names, diag
+
     def _tool_registry_minimal_capabilities_ok(self, tr: Any) -> bool:
         """True when registry exposes llm + web + exec class tools (or builtin trio)."""
         names = [n.lower() for n in self._tool_registry_list_names(tr)]
@@ -1457,7 +1542,14 @@ class GuardianCore:
         return {
             "task_type": "routing_probe",
             "objective": ctx[:500],
-            "payload": {"source": "guardian", "format_version": 1},
+            "payload": {
+                "source": "guardian",
+                "format_version": 1,
+                "probe_role": "registry_router_health",
+                "does_not_execute_registered_tools": True,
+            },
+            # TaskRouter only: adds tie diagnostics; does not change winner vs omitting this flag.
+            "_guardian_router_health_probe": True,
         }
 
     def _invoke_task_router_probe(self, router: Any) -> Any:
@@ -1481,10 +1573,15 @@ class GuardianCore:
         if not self._tool_registry_minimal_capabilities_ok(tr):
             logger.info("[Idle] tool_registry probe skipped (missing llm/web/exec tools)")
             return False
-        n = 0
-        if hasattr(tr, "list_tools"):
-            tools = tr.list_tools()
-            n = len(tools) if isinstance(tools, dict) else (len(tools) if isinstance(tools, list) else 0)
+        n, _pulse_names, pulse_diag = self._tool_registry_pulse_metrics(tr)
+        logger.debug(
+            "[Idle] tool_registry metrics id=%s cls=%s usable=%s map=%s first=%s",
+            pulse_diag.get("registry_id"),
+            pulse_diag.get("registry_class"),
+            n,
+            pulse_diag.get("raw_tools_map_count"),
+            pulse_diag.get("first_names"),
+        )
         route_hint = ""
         route_to = None
         router = (self._modules or {}).get("task_router")
@@ -1493,12 +1590,16 @@ class GuardianCore:
                 r = self._invoke_task_router_probe(router)
                 if isinstance(r, dict):
                     route_to = r.get("routed_to")
-                    route_hint = f" route_routing_probe->{route_to}"
+                    route_hint = f" route_registry_health->{route_to}"
             except Exception:
                 pass
         self._tool_registry_last_sig = f"{n}:{route_to}"
         self._tool_registry_last_pulse_ts = time.time()
-        logger.info("[Idle] tool_registry probe: %d tools%s", n, route_hint)
+        logger.info(
+            "[Idle] registry_router_health_probe: %d tools visible (no tool execution)%s",
+            n,
+            route_hint,
+        )
         self._module_last_invoked["tool_registry"] = datetime.datetime.now().isoformat()
         return True
 
@@ -1822,34 +1923,38 @@ class GuardianCore:
                     refresh_sec = 1800  # 30m: slow refresh while registry seems stagnant/empty
                     last_sig = getattr(self, "_tool_registry_last_sig", None)
                     last_ts = getattr(self, "_tool_registry_last_pulse_ts", 0.0) or 0.0
-                    sig = None
-                    try:
-                        router = (self._modules or {}).get("task_router")
-                        tools_n = 0
-                        if tr and hasattr(tr, "list_tools"):
-                            tools = tr.list_tools()
-                            tools_n = len(tools) if isinstance(tools, dict) else (len(tools) if isinstance(tools, list) else 0)
-                        route_to = None
-                        if tools_n > 0 and router and hasattr(router, "route_task"):
-                            r = self._invoke_task_router_probe(router)
-                            if isinstance(r, dict):
-                                route_to = r.get("routed_to")
-                        sig = f"{tools_n}:{route_to}"
-                    except Exception:
-                        sig = None
-
-                    if sig is not None and last_sig is not None and sig == last_sig and (now_ts - last_ts) < refresh_sec:
-                        logger.debug("[Adversarial] Suppressing tool_registry_pulse (unchanged; %.0fs remaining)",
-                                     refresh_sec - (now_ts - last_ts))
+                    cd_until = float(getattr(self, "_tool_registry_pulse_cooldown_until", 0.0) or 0.0)
+                    if cd_until > now_ts:
+                        logger.debug(
+                            "[Adversarial] Skipping tool_registry_pulse candidate (cooldown %.0fs remaining)",
+                            cd_until - now_ts,
+                        )
                     else:
-                        candidates.append({
-                            "action": "tool_registry_pulse",
-                            "source": "tool_registry",
-                            "reason": "Snapshot registered tools and routing probe",
-                            "priority_score": 3,
-                            "can_auto_execute": True,
-                            "metadata": {},
-                        })
+                        sig = None
+                        try:
+                            router = (self._modules or {}).get("task_router")
+                            tools_n, _, _ = self._tool_registry_pulse_metrics(tr)
+                            route_to = None
+                            if tools_n > 0 and router and hasattr(router, "route_task"):
+                                r = self._invoke_task_router_probe(router)
+                                if isinstance(r, dict):
+                                    route_to = r.get("routed_to")
+                            sig = f"{tools_n}:{route_to}"
+                        except Exception:
+                            sig = None
+
+                        if sig is not None and last_sig is not None and sig == last_sig and (now_ts - last_ts) < refresh_sec:
+                            logger.debug("[Adversarial] Suppressing tool_registry_pulse (unchanged; %.0fs remaining)",
+                                         refresh_sec - (now_ts - last_ts))
+                        else:
+                            candidates.append({
+                                "action": "tool_registry_pulse",
+                                "source": "tool_registry",
+                                "reason": "Snapshot registered tools and routing probe",
+                                "priority_score": 3,
+                                "can_auto_execute": True,
+                                "metadata": {},
+                            })
         except Exception:
             pass
         # 6. LongTermPlanner objectives (objectives may be list or dict)
@@ -2072,35 +2177,39 @@ class GuardianCore:
                         refresh_sec = 1800
                         last_sig = getattr(self, "_tool_registry_last_sig", None)
                         last_ts = getattr(self, "_tool_registry_last_pulse_ts", 0.0) or 0.0
-                        sig = None
-                        try:
-                            router = (self._modules or {}).get("task_router")
-                            tools_n = 0
-                            if tr_e and hasattr(tr_e, "list_tools"):
-                                tools = tr_e.list_tools()
-                                tools_n = len(tools) if isinstance(tools, dict) else (len(tools) if isinstance(tools, list) else 0)
-                            route_to = None
-                            if tools_n > 0 and router and hasattr(router, "route_task"):
-                                r = self._invoke_task_router_probe(router)
-                                if isinstance(r, dict):
-                                    route_to = r.get("routed_to")
-                            sig = f"{tools_n}:{route_to}"
-                        except Exception:
-                            sig = None
-
-                        if sig is not None and last_sig is not None and sig == last_sig and (now_ts - last_ts) < refresh_sec:
-                            logger.debug("[Adversarial] Suppressing tool_registry_pulse expansion (unchanged; %.0fs remaining)",
-                                         refresh_sec - (now_ts - last_ts))
+                        cd_until = float(getattr(self, "_tool_registry_pulse_cooldown_until", 0.0) or 0.0)
+                        if cd_until > now_ts:
+                            logger.debug(
+                                "[Exploration] Skipping tool_registry_pulse expansion (cooldown %.0fs remaining)",
+                                cd_until - now_ts,
+                            )
                         else:
-                            candidates.append({
-                                "action": "tool_registry_pulse",
-                                "source": "exploration",
-                                "reason": "Tool registry snapshot (exploratory)",
-                                "priority_score": 2,
-                                "can_auto_execute": True,
-                                "metadata": {"exploratory": True},
-                            })
-                            existing_actions.add(action)
+                            sig = None
+                            try:
+                                router = (self._modules or {}).get("task_router")
+                                tools_n, _, _ = self._tool_registry_pulse_metrics(tr_e)
+                                route_to = None
+                                if tools_n > 0 and router and hasattr(router, "route_task"):
+                                    r = self._invoke_task_router_probe(router)
+                                    if isinstance(r, dict):
+                                        route_to = r.get("routed_to")
+                                sig = f"{tools_n}:{route_to}"
+                            except Exception:
+                                sig = None
+
+                            if sig is not None and last_sig is not None and sig == last_sig and (now_ts - last_ts) < refresh_sec:
+                                logger.debug("[Adversarial] Suppressing tool_registry_pulse expansion (unchanged; %.0fs remaining)",
+                                             refresh_sec - (now_ts - last_ts))
+                            else:
+                                candidates.append({
+                                    "action": "tool_registry_pulse",
+                                    "source": "exploration",
+                                    "reason": "Tool registry snapshot (exploratory)",
+                                    "priority_score": 2,
+                                    "can_auto_execute": True,
+                                    "metadata": {"exploratory": True},
+                                })
+                                existing_actions.add(action)
         if len(candidates) < min_cands:
             logger.info("[Exploration] Candidate expansion: %d -> target %d", len(candidates), min_cands)
         # execute_task cooldown: exclude from candidate pool while timer active (any last action)
@@ -2288,6 +2397,16 @@ class GuardianCore:
                                    rep_count)
         except Exception as e:
             logger.debug("Exploration enforcement: %s", e)
+
+        # Mission Director: campaign-aware scoring + anti-drift (novelty/exploration already applied above)
+        try:
+            recent_ma = list(getattr(self, "_decider_recent_actions", []) or [])
+            last_ma = getattr(self, "_last_returned_action", None)
+            if last_ma:
+                recent_ma = (recent_ma + [str(last_ma)])[-12:]
+            candidates = self.missions.apply_mission_governance(candidates, recent_ma)
+        except Exception as e:
+            logger.debug("Mission governance: %s", e)
 
         # Pre-decision: refresh API budget cycle, rank capabilities vs task, boost matching candidates
         self._pre_decision_context = {}
@@ -2502,6 +2621,24 @@ class GuardianCore:
             self._last_returned_action = best["action"]
             if best["action"] == "execute_task":
                 self._last_execute_task_selected_at = datetime.datetime.now()
+            try:
+                from .mission_autonomy import log_selected_action
+
+                _mg = best.get("_mission_governance") if isinstance(best.get("_mission_governance"), dict) else None
+                log_selected_action(
+                    best["action"],
+                    str(best.get("_mistral_reason") or best.get("reason") or ""),
+                    mission_meta=(
+                        {
+                            "score_delta": _mg.get("score_delta"),
+                            "drift_delta": _mg.get("drift_delta"),
+                        }
+                        if _mg
+                        else None
+                    ),
+                )
+            except Exception as _e_ms:
+                logger.debug("MissionDirector log_selected: %s", _e_ms)
             out = {
                 "success": True,
                 "action": best["action"],
@@ -3568,13 +3705,24 @@ class GuardianCore:
                             "underused_modules": list(task.get("underused_modules") or []),
                         }
                         if kind == "module" and name == "task_router":
+                            from .routing_task_type import infer_canonical_routing_task_type
+
+                            rt, rsn = infer_canonical_routing_task_type(goal, archetype=arch)
+                            logger.info(
+                                "[SelfTasking] routing_task_type inferred=%s reason=%s archetype=%s goal_sample=%s",
+                                rt,
+                                rsn,
+                                (arch or "")[:120],
+                                (goal or "")[:160],
+                            )
                             inp["structured_task"] = {
-                                "task_type": "self_task",
+                                "task_type": rt,
                                 "objective": goal,
                                 "payload": {
                                     "source": "self_tasking",
                                     "format_version": 1,
                                     "task_id": task_id,
+                                    "routing_inference": rsn,
                                 },
                             }
                         ex = execute_capability_kind(self, kind, name, inp)
@@ -4453,6 +4601,12 @@ class GuardianCore:
                                     "harvest_income_report",
                                     reason="zero_total_zero_sales",
                                 )
+                            try:
+                                from .mission_autonomy import mission_autonomy_feedback_harvest
+
+                                mission_autonomy_feedback_harvest(nonzero=nonzero)
+                            except Exception:
+                                pass
                             if self._autonomy_in_degraded_planner_mode():
                                 if nonzero:
                                     clear_degraded_low_value_streak("harvest_income_report")
@@ -4503,7 +4657,12 @@ class GuardianCore:
                         if isinstance(st, dict):
                             cash = float(st.get("cash_balance", st.get("balance", 0) or 0) or 0)
                             snippets.append(f"fm cash={cash}")
+                    _prev_income_sig = getattr(self, "_income_modules_last_sig", None)
                     sig = f"{earned:.2f}:{active}:{wallet_total:.2f}:{elysia_acct:.2f}:{cash:.2f}"
+                    _all_zero_income = (
+                        earned == 0.0 and wallet_total == 0.0 and elysia_acct == 0.0 and cash == 0.0
+                    )
+                    _same_income_sig = _prev_income_sig is not None and _prev_income_sig == sig
                     self._income_modules_last_sig = sig
                     self._income_modules_last_pulse_ts = time.time()
                     msg = "; ".join(snippets) if snippets else "no income module data"
@@ -4514,6 +4673,15 @@ class GuardianCore:
                     self._income_modules_prev_sig_for_nonadv = sig
                     self.memory.remember(f"[Autonomy] income_modules_pulse: {msg[:200]}", category="autonomy", priority=0.55)
                     logger.info("[Exploration] income_modules_pulse: %s", msg[:120])
+                    try:
+                        from .mission_autonomy import mission_autonomy_feedback_income_pulse
+
+                        mission_autonomy_feedback_income_pulse(
+                            all_zero=_all_zero_income,
+                            same_signature=_same_income_sig,
+                        )
+                    except Exception:
+                        pass
                     if self._autonomy_in_degraded_planner_mode():
                         try:
                             from .planner_readiness import (
@@ -4538,51 +4706,108 @@ class GuardianCore:
             elif action == "tool_registry_pulse":
                 action_meaningful_success = False
                 self._autonomy_last_advanced = False
+                _zero_pulse_limit = 3
+                _pulse_cooldown_sec = 180.0
                 try:
-                    tr = (self._modules or {}).get("tool_registry")
-                    if tr and hasattr(tr, "ensure_minimal_builtin_tools"):
-                        try:
-                            tr.ensure_minimal_builtin_tools()
-                        except Exception:
-                            pass
-                    if not tr or not self._tool_registry_minimal_capabilities_ok(tr):
-                        self.memory.remember(
-                            "[Autonomy] tool_registry_pulse skipped: registry lacks llm/web/exec tools",
-                            category="autonomy",
-                            priority=0.5,
+                    cd_until = float(getattr(self, "_tool_registry_pulse_cooldown_until", 0.0) or 0.0)
+                    if time.time() < cd_until:
+                        rem = int(cd_until - time.time())
+                        logger.info(
+                            "[Exploration] tool_registry_pulse suppressed (cooldown %ds; prefer other exploration)",
+                            rem,
                         )
-                        logger.info("[Autonomy] tool_registry_pulse skipped (minimal tool set not met)")
+                        self.memory.remember(
+                            f"[Autonomy] tool_registry_pulse skipped: cooldown {rem}s",
+                            category="autonomy",
+                            priority=0.45,
+                        )
                     else:
-                        router = (self._modules or {}).get("task_router")
-                        n = 0
-                        if tr and hasattr(tr, "list_tools"):
-                            tools = tr.list_tools()
-                            n = len(tools) if isinstance(tools, dict) else 0
-                        route_hint = ""
-                        route_to = None
-                        r = None
-                        if router and hasattr(router, "route_task"):
-                            r = self._invoke_task_router_probe(router)
+                        tr = (self._modules or {}).get("tool_registry")
+                        if tr and hasattr(tr, "ensure_minimal_builtin_tools"):
+                            try:
+                                tr.ensure_minimal_builtin_tools()
+                            except Exception:
+                                pass
+                        if not tr or not self._tool_registry_minimal_capabilities_ok(tr):
+                            self.memory.remember(
+                                "[Autonomy] tool_registry_pulse skipped: registry lacks llm/web/exec tools",
+                                category="autonomy",
+                                priority=0.5,
+                            )
+                            logger.info("[Autonomy] tool_registry_pulse skipped (minimal tool set not met)")
+                        else:
+                            n, _names, diag = self._tool_registry_pulse_metrics(tr)
+                            surf = diag.get("surface") if isinstance(diag.get("surface"), dict) else {}
+                            excl = diag.get("exclusion_hint") or surf.get("filter_reason") or ""
+                            if excl == "ok":
+                                excl = ""
+                            logger.info(
+                                "[Exploration] tool_registry_pulse diag id=%s cls=%s raw_list_len=%s map=%s usable=%s "
+                                "return_type=%s raw_first=%s coerced_first=%s filter=%s coerce=%s",
+                                diag.get("registry_id"),
+                                diag.get("registry_class"),
+                                diag.get("raw_list_tools_len"),
+                                diag.get("raw_tools_map_count"),
+                                n,
+                                diag.get("list_tools_return_type"),
+                                diag.get("raw_first_names"),
+                                diag.get("first_names"),
+                                excl or "(none)",
+                                (diag.get("coerce_suffix") or "")[:160],
+                            )
+                            if n == 0:
+                                streak = int(getattr(self, "_tool_registry_zero_pulse_streak", 0) or 0) + 1
+                            else:
+                                streak = 0
+                            self._tool_registry_zero_pulse_streak = streak
+                            if streak >= _zero_pulse_limit:
+                                self._tool_registry_pulse_cooldown_until = time.time() + _pulse_cooldown_sec
+                                self._tool_registry_zero_pulse_streak = 0
+                                logger.warning(
+                                    "[Exploration] tool_registry_pulse: %d consecutive zero-usable pulses; "
+                                    "cooldown %.0fs (other exploration actions preferred)",
+                                    _zero_pulse_limit,
+                                    _pulse_cooldown_sec,
+                                )
+
+                            router = (self._modules or {}).get("task_router")
+                            route_hint = ""
+                            route_to = None
+                            r = None
+                            if router and hasattr(router, "route_task"):
+                                r = self._invoke_task_router_probe(router)
+                                if isinstance(r, dict):
+                                    route_to = r.get("routed_to")
+                                    # Label: registry + router health only — not a multi-tool exercise.
+                                    route_hint = f" route_registry_health->{route_to}"
+                                    tied = r.get("diagnostic_tied_tools_at_winner_score")
+                                    pick_rule = r.get("diagnostic_pick_rule") or ""
+                                    logger.info(
+                                        "[Exploration] registry_router_health_probe (task_type=routing_probe) "
+                                        "reply routed_to=%s score=%s tied_at_winner_score=%s pick_rule=%s "
+                                        "(health check only — no web/exec execution; tie-break policy, not tool visibility)",
+                                        route_to,
+                                        r.get("score"),
+                                        tied,
+                                        pick_rule,
+                                    )
+                            self._tool_registry_last_sig = f"{n}:{route_to}"
+                            self._tool_registry_last_pulse_ts = time.time()
+                            self.memory.remember(
+                                f"[Autonomy] tool_registry_pulse: {n} tools{route_hint}",
+                                category="autonomy",
+                                priority=0.55,
+                            )
+                            logger.info("[Exploration] tool_registry_pulse: %d usable tools%s", n, route_hint)
+                            self._module_last_invoked["tool_registry"] = datetime.datetime.now().isoformat()
+                            meaningful = n >= 3
                             if isinstance(r, dict):
-                                route_to = r.get("routed_to")
-                                route_hint = f" route_routing_probe->{route_to}"
-                        self._tool_registry_last_sig = f"{n}:{route_to}"
-                        self._tool_registry_last_pulse_ts = time.time()
-                        self.memory.remember(
-                            f"[Autonomy] tool_registry_pulse: {n} tools{route_hint}",
-                            category="autonomy",
-                            priority=0.55,
-                        )
-                        logger.info("[Exploration] tool_registry_pulse: %d tools%s", n, route_hint)
-                        self._module_last_invoked["tool_registry"] = datetime.datetime.now().isoformat()
-                        meaningful = n >= 3
-                        if isinstance(r, dict):
-                            if r.get("data") or r.get("tasks") or r.get("result"):
-                                meaningful = True
-                            elif route_to and not r.get("data") and not r.get("tasks"):
-                                meaningful = False
-                        action_meaningful_success = bool(meaningful)
-                        self._autonomy_last_advanced = bool(meaningful)
+                                if r.get("data") or r.get("tasks") or r.get("result"):
+                                    meaningful = True
+                                elif route_to and not r.get("data") and not r.get("tasks"):
+                                    meaningful = False
+                            action_meaningful_success = bool(meaningful)
+                            self._autonomy_last_advanced = bool(meaningful)
                 except Exception as e:
                     logger.debug("Autonomy tool_registry_pulse: %s", e)
                     self.memory.remember(f"[Autonomy] tool_registry_pulse failed: {e}", category="error", priority=0.65)
@@ -4687,6 +4912,16 @@ class GuardianCore:
                                     clear_autonomy_noop_streak("work_on_objective")
                                 except Exception:
                                     pass
+                            try:
+                                from .mission_autonomy import mission_autonomy_feedback_work_objective
+
+                                mission_autonomy_feedback_work_objective(
+                                    state_changed=bool(state_changed),
+                                    tasks_created=int(tasks_created),
+                                    submitted=int(submitted),
+                                )
+                            except Exception:
+                                pass
                             self.memory.remember(
                                 f"[Autonomy] work_on_objective: objective={objective_id} tasks_created={tasks_created} submitted={submitted} score={score:.2f}",
                                 category="autonomy",
@@ -4733,10 +4968,25 @@ class GuardianCore:
                             pass
                     if len(ctx) < 4:
                         ctx = "autonomy_capability_run"
+                    from .routing_task_type import infer_canonical_routing_task_type
+
+                    rt_auto, rsn_auto = infer_canonical_routing_task_type(
+                        ctx, extra_context="autonomy_use_capability"
+                    )
+                    logger.info(
+                        "[Autonomy] routing_task_type inferred=%s reason=%s context_sample=%s",
+                        rt_auto,
+                        rsn_auto,
+                        (ctx or "")[:200],
+                    )
                     structured = {
-                        "task_type": "autonomy_capability",
+                        "task_type": rt_auto,
                         "objective": ctx[:500],
-                        "payload": {"source": "run_autonomous_cycle", "format_version": 1},
+                        "payload": {
+                            "source": "run_autonomous_cycle",
+                            "format_version": 1,
+                            "routing_inference": rsn_auto,
+                        },
                     }
                     inp_kw: Dict[str, Any] = {
                         "task": structured["objective"],

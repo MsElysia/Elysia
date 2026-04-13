@@ -5,10 +5,77 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Real-task task_router executions only (excludes health_probe and probe_like DEBUG paths).
+_TASK_ROUTER_GATE_METRICS: Dict[str, Any] = {
+    "real_task_events": 0,
+    "ok_route_metadata": 0,
+    "ok_payload": 0,
+    "fail_closed_gate": 0,
+    "by_routed_to_on_success": defaultdict(int),  # type: ignore[arg-type]
+    "by_task_type": defaultdict(int),  # type: ignore[arg-type]
+}
+_TASK_ROUTER_METRICS_LOG_EVERY = 25
+
+
+def _bump_task_router_gate_metrics(
+    task_type: str,
+    routed_to: Any,
+    success_source: str,
+    ok: bool,
+) -> None:
+    m = _TASK_ROUTER_GATE_METRICS
+    m["real_task_events"] = int(m["real_task_events"]) + 1
+    if ok:
+        if success_source == "route_metadata":
+            m["ok_route_metadata"] = int(m["ok_route_metadata"]) + 1
+        elif success_source == "payload":
+            m["ok_payload"] = int(m["ok_payload"]) + 1
+        if routed_to is not None and str(routed_to).strip():
+            m["by_routed_to_on_success"][str(routed_to)] += 1
+    else:
+        m["fail_closed_gate"] = int(m["fail_closed_gate"]) + 1
+    m["by_task_type"][str(task_type)] += 1
+    n = int(m["real_task_events"])
+    if n % _TASK_ROUTER_METRICS_LOG_EVERY == 0:
+        snap = {
+            "real_task_events": m["real_task_events"],
+            "ok_route_metadata": m["ok_route_metadata"],
+            "ok_payload": m["ok_payload"],
+            "fail_closed_gate": m["fail_closed_gate"],
+            "by_routed_to_on_success": dict(m["by_routed_to_on_success"]),
+            "by_task_type": dict(m["by_task_type"]),
+        }
+        logger.info("[CapabilityExec] task_router_gate_metrics cumulative=%s", snap)
+
+
+def get_task_router_gate_metrics_snapshot() -> Dict[str, Any]:
+    """Read-only snapshot for tests / diagnostics."""
+    m = _TASK_ROUTER_GATE_METRICS
+    return {
+        "real_task_events": int(m["real_task_events"]),
+        "ok_route_metadata": int(m["ok_route_metadata"]),
+        "ok_payload": int(m["ok_payload"]),
+        "fail_closed_gate": int(m["fail_closed_gate"]),
+        "by_routed_to_on_success": dict(m["by_routed_to_on_success"]),
+        "by_task_type": dict(m["by_task_type"]),
+    }
+
+
+def reset_task_router_gate_metrics() -> None:
+    """Zero cumulative counters (tests / manual diagnostics)."""
+    m = _TASK_ROUTER_GATE_METRICS
+    m["real_task_events"] = 0
+    m["ok_route_metadata"] = 0
+    m["ok_payload"] = 0
+    m["fail_closed_gate"] = 0
+    m["by_routed_to_on_success"] = defaultdict(int)
+    m["by_task_type"] = defaultdict(int)
 
 
 def _builtin_operator_tool_result(guardian: Any, tool_name: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -107,6 +174,33 @@ def _builtin_operator_tool_result(guardian: Any, tool_name: str, payload: Dict[s
             }
         return {"success": True, "result": build_revenue_shortlist_from_summary(base_summary)}
 
+    if tname == "elysia_bounded_browser":
+        from .bounded_browser.capability import run_bounded_browser_for_capability
+
+        try:
+            return run_bounded_browser_for_capability(guardian, payload)
+        except Exception as e:
+            logger.debug("elysia_bounded_browser: %s", e)
+            return {"success": False, "error": str(e)}
+
+    if tname == "elysia_moltbook_browser":
+        from .bounded_browser.moltbook import run_moltbook_browser_for_capability
+
+        try:
+            return run_moltbook_browser_for_capability(guardian, payload)
+        except Exception as e:
+            logger.debug("elysia_moltbook_browser: %s", e)
+            return {"success": False, "error": str(e)}
+
+    if tname == "elysia_social_intel":
+        from .social_intelligence import run_social_intel_for_capability
+
+        try:
+            return run_social_intel_for_capability(guardian, payload)
+        except Exception as e:
+            logger.debug("elysia_social_intel: %s", e)
+            return {"success": False, "error": str(e)}
+
     return None
 
 
@@ -201,7 +295,9 @@ def infer_chat_capability_input(user_text: str, entry: Dict[str, Any]) -> Dict[s
     desc = (entry.get("description") or "").lower()
     out: Dict[str, Any] = {"task": text[:1200], "query": text[:800], "prompt": text[:800]}
     blob = f"{desc} {entry.get('name', '')}".lower()
-    if any(w in blob for w in ("search", "web", "http", "url", "fetch")):
+    if "bounded" in blob and "browser" in blob:
+        out["method"] = "bounded_browse"
+    elif any(w in blob for w in ("search", "web", "http", "url", "fetch")):
         out["method"] = "search"
     elif any(w in blob for w in ("generate", "write", "compose", "summarize")):
         out["method"] = "execute"
@@ -264,6 +360,24 @@ def execute_capability_kind(
             return {"success": False, "error": str(e)}
 
     if k == "module":
+        if (nm or "").strip().lower() == "bounded_browser":
+            from .bounded_browser.capability import run_bounded_browser_for_capability
+
+            try:
+                return run_bounded_browser_for_capability(guardian, payload)
+            except Exception as e:
+                logger.debug("module bounded_browser: %s", e)
+                return {"success": False, "error": str(e)}
+
+        if (nm or "").strip().lower() == "moltbook_browser":
+            from .bounded_browser.moltbook import run_moltbook_browser_for_capability
+
+            try:
+                return run_moltbook_browser_for_capability(guardian, payload)
+            except Exception as e:
+                logger.debug("module moltbook_browser: %s", e)
+                return {"success": False, "error": str(e)}
+
         mod = mods.get(nm)
         if mod is None:
             return {"success": False, "error": f"module '{nm}' not in _modules"}
@@ -307,10 +421,13 @@ def execute_capability_kind(
                 return {"success": True, "result": {"objectives_preview": len(seq)}}
             if nm == "task_router" and hasattr(mod, "route_task"):
                 st = payload.get("structured_task")
+                is_health_probe = False
                 if isinstance(st, dict):
                     tt = str(st.get("task_type") or "routing_probe")
+                    is_health_probe = bool(st.get("_guardian_router_health_probe"))
                     r = mod.route_task(tt, st)
                 else:
+                    tt = "routing_probe"
                     ctx = {
                         "task_type": "routing_probe",
                         "objective": str(
@@ -319,10 +436,67 @@ def execute_capability_kind(
                         "payload": {"source": "execute_capability", "format_version": 1},
                     }
                     r = mod.route_task(ctx["task_type"], ctx)
+                success_source = "none"
                 if isinstance(r, dict):
-                    ok = bool(r.get("data") or r.get("tasks") or r.get("result"))
+                    ok_payload = bool(r.get("data") or r.get("tasks") or r.get("result"))
+                    rt_raw = r.get("routed_to")
+                    sc = r.get("score")
+                    ok_route = (
+                        rt_raw is not None
+                        and bool(str(rt_raw).strip())
+                        and sc is not None
+                    )
+                    # Health probe: only payload counts as success (diagnostic; route metadata alone is not "work").
+                    if is_health_probe:
+                        ok = ok_payload
+                        success_source = "payload" if ok_payload else "none"
+                    else:
+                        ok = ok_payload or ok_route
+                        if ok_payload:
+                            success_source = "payload"
+                        elif ok_route:
+                            success_source = "route_metadata"
+                        else:
+                            success_source = "none"
                 else:
                     ok = bool(r)
+                    success_source = "non_dict_truthy" if ok else "none"
+                # Utilization: routing picks a tool id; this path does not call tool_registry.call_tool.
+                rd = r if isinstance(r, dict) else {}
+                rt = rd.get("routed_to")
+                rs = rd.get("score")
+                if is_health_probe:
+                    logger.debug(
+                        "[CapabilityExec] task_router health_probe task_type=%s routed_to=%s score=%s "
+                        "ok_gate=%s success_source=%s (route_metadata_ignored_for_ok)",
+                        tt,
+                        rt,
+                        rs,
+                        ok,
+                        success_source,
+                    )
+                elif tt == "routing_probe":
+                    logger.debug(
+                        "[CapabilityExec] task_router probe_like task_type=%s routed_to=%s score=%s "
+                        "ok_gate=%s success_source=%s",
+                        tt,
+                        rt,
+                        rs,
+                        ok,
+                        success_source,
+                    )
+                else:
+                    logger.info(
+                        "[CapabilityExec] task_router real_task task_type=%s routed_to=%s route_score=%s "
+                        "ok_gate=%s success_source=%s abandoned_as_empty=%s",
+                        tt,
+                        rt,
+                        rs,
+                        ok,
+                        success_source,
+                        not ok,
+                    )
+                    _bump_task_router_gate_metrics(tt, rt, success_source, ok)
                 if not ok:
                     return {
                         "success": False,

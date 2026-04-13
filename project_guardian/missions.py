@@ -2,19 +2,55 @@
 # Mission Management System for Project Guardian
 
 import datetime
-from typing import Dict, Any, List, Optional
+import logging
+from typing import Any, Dict, List, Optional
+
 from .memory import MemoryCore
+
+logger = logging.getLogger(__name__)
+
 
 class MissionDirector:
     """
     Mission management and tracking for Project Guardian.
     Provides goal-oriented task management and progress tracking.
+    Campaign/mission autonomy governance lives in mission_autonomy.MissionAutonomyStore.
     """
-    
+
     def __init__(self, memory: MemoryCore):
         self.memory = memory
         self.missions = []
         self.mission_counter = 0
+        try:
+            from .mission_autonomy import MissionAutonomyStore
+
+            self.mission_autonomy = MissionAutonomyStore()
+        except Exception as e:
+            logger.debug("MissionAutonomyStore unavailable: %s", e)
+            self.mission_autonomy = None
+
+    def apply_mission_governance(
+        self,
+        candidates: List[Dict[str, Any]],
+        recent_actions: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Re-score autonomy candidates for mission/campaign fit and anti-drift (authoritative pre-Mistral pass)."""
+        if not candidates or not getattr(self, "mission_autonomy", None):
+            return candidates
+        try:
+            return self.mission_autonomy.apply_governance(candidates, recent_actions)
+        except Exception as e:
+            logger.debug("apply_mission_governance: %s", e)
+            return candidates
+
+    def mission_autonomy_snapshot(self) -> Dict[str, Any]:
+        """Inspectable mission/campaign state for logs and status."""
+        if not getattr(self, "mission_autonomy", None):
+            return {"enabled": False}
+        try:
+            return self.mission_autonomy.to_inspectable_dict()
+        except Exception:
+            return {"enabled": False, "error": "snapshot_failed"}
         
     def create_mission(self, name: str, goal: str, priority: str = "medium", 
                       deadline: Optional[datetime.datetime] = None) -> Dict[str, Any]:

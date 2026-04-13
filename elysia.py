@@ -22,6 +22,7 @@ from elysia_config import (
     STATUS_HOST,
     STATUS_PORT,
     API_TOKEN,
+    USB_MEMORY_POLICY_HELP,
     get_elysia_config,
     get_status_url,
     launch_attach_interface_standalone,
@@ -265,8 +266,16 @@ def _run_status_server(system: "UnifiedElysiaSystem"):
         server.serve_forever()
     except OSError as e:
         if "WinError 10048" in str(e) or "Address already in use" in str(e):
-            logger.warning(f"Status port {STATUS_PORT} in use, skipping status server")
+            msg = (
+                f"[Elysia Status] Port {STATUS_HOST}:{STATUS_PORT} already in use — "
+                "this process will NOT bind the real Elysia /status API here.\n"
+                "Another app (or old Elysia) may own the port. Check: netstat -ano | findstr :8888\n"
+                "Unified UI 'attach' may talk to that other service; logs may stay quiet in elysia_unified.log."
+            )
+            print(msg, flush=True)
+            logger.warning("Status port %s in use, skipping status server: %s", STATUS_PORT, e)
         else:
+            print(f"[Elysia Status] Could not start status server: {e}", flush=True)
             logger.warning(f"Could not start status server: {e}")
     finally:
         _status_system = None
@@ -557,6 +566,12 @@ class UnifiedElysiaSystem:
                         reply = (r.choices[0].message.content or "").strip()
                 except Exception as e:
                     err = str(e)
+                    try:
+                        from project_guardian.openai_degraded import note_openai_transport_failure
+
+                        note_openai_transport_failure(e, context="elysia_cloud_openai")
+                    except Exception:
+                        pass
             else:
                 err = "No OpenAI client"
         else:
@@ -887,8 +902,35 @@ class UnifiedElysiaSystem:
                     chatlogs_path=Path(get_chatlogs_path()),
                     max_chatlogs=auto_cfg.get("max_chatlogs", 20),
                 )
-                self.auto_learning.start()
-                logger.info("Auto-learning started (AI, income, etc. -> thumb drive)")
+                defer_al = self.guardian and getattr(self.guardian, "_defer_heavy_startup", False)
+                if defer_al:
+                    # First _run_once() is heavy (HTTP + parsing); wait until Phase B finishes or fails
+                    def _auto_learning_after_deferred():
+                        g = self.guardian
+                        max_wait = 1200
+                        for _ in range(max_wait):
+                            if not self.running:
+                                return
+                            if getattr(g, "deferred_init_complete", False) or getattr(g, "deferred_init_failed", False):
+                                break
+                            time.sleep(1)
+                        else:
+                            logger.warning(
+                                "[Startup] Auto-learning: deferred init wait exceeded %ds; starting scheduler anyway",
+                                max_wait,
+                            )
+                        if self.running and getattr(self, "auto_learning", None):
+                            self.auto_learning.start()
+                            logger.info("Auto-learning started after Phase B (AI, income, etc. -> thumb drive)")
+
+                    threading.Thread(
+                        target=_auto_learning_after_deferred,
+                        daemon=True,
+                        name="AutoLearningAfterDeferred",
+                    ).start()
+                else:
+                    self.auto_learning.start()
+                    logger.info("Auto-learning started (AI, income, etc. -> thumb drive)")
             except Exception as e:
                 logger.warning(f"Auto-learning not started: {e}")
                 self.auto_learning = None
@@ -924,16 +966,40 @@ class UnifiedElysiaSystem:
 
 def main():
     """Main entry point."""
+    # Dedicated backend starter (Start_Elysia_Backend.cmd) must always run full boot;
+    # a loose /status probe can otherwise match unrelated services and exit with no server.
+    _force_full = os.environ.get("ELYSIA_FORCE_FULL_BACKEND", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if _force_full:
+        print(
+            "[Elysia] ELYSIA_FORCE_FULL_BACKEND is set — full backend boot "
+            "(attach-only /status probe skipped).",
+            flush=True,
+        )
+        logger.info("[Launcher] ELYSIA_FORCE_FULL_BACKEND active — forcing full backend boot")
     # 1) Live /status → attach UI only (never a second heavy backend boot)
-    if probe_backend_alive():
+    if not _force_full and probe_backend_alive():
+        su = get_status_url()
         logger.info("[Launcher] Existing backend detected; skipping backend start")
-        print("\n" + "=" * 70)
-        print("Backend already running")
-        print("=" * 70)
-        print("The status API is already up. Skipping a second GuardianCore / memory / vector boot.")
-        print("Attaching a new Unified Interface only.")
-        print(f"Status URL: {get_status_url()}/status")
-        print("=" * 70 + "\n")
+        print("\n" + "=" * 70, flush=True)
+        print("ATTACH-ONLY MODE (/status already returned usable JSON)", flush=True)
+        print("=" * 70, flush=True)
+        print(
+            "Something on this machine already answered GET /status like Elysia. "
+            "Skipping GuardianCore / full backend boot.",
+            flush=True,
+        )
+        print(f"Status URL: {su}/status", flush=True)
+        print(
+            "If that is NOT Elysia, free the port or set ELYSIA_STATUS_PORT. "
+            "To force full boot anyway: set ELYSIA_FORCE_FULL_BACKEND=1 (see Start_Elysia_Backend.cmd).",
+            flush=True,
+        )
+        print("=" * 70 + "\n", flush=True)
         launch_attach_interface_standalone()
         sys.exit(0)
 
@@ -965,6 +1031,39 @@ def main():
         print(f"Thumb Drive Available: {td}")
     else:
         print("Memory Storage: (using defaults)")
+    if config.get("usb_memory_policy"):
+        pol = config.get("usb_memory_policy")
+        pdrv = config.get("usb_primary_drive", "")
+        sdrv = config.get("usb_secondary_drive") or "(none)"
+        pa = config.get("usb_primary_available")
+        sa = config.get("usb_secondary_available")
+        targets = config.get("usb_active_write_targets") or [sp]
+        logger.info(
+            "[USBMemory] policy=%s primary=%s available=%s secondary=%s available=%s active_write_targets=%s",
+            pol,
+            pdrv,
+            pa,
+            sdrv,
+            sa,
+            targets,
+        )
+        if config.get("usb_archive_root"):
+            logger.info("[USBMemory] archive_root=%s", config.get("usb_archive_root"))
+        if config.get("usb_storage_degraded"):
+            for note in config.get("usb_degraded_notes") or []:
+                logger.warning("[USBMemory] degraded: %s", note)
+        if pol == "mirror":
+            logger.info(
+                "[USBMemory] scope: mirror only replicates guardian_memory.json to the secondary USB "
+                "after MemoryCore JSON saves; trust, tasks, and vectors are not mirrored."
+            )
+        elif pol == "split":
+            logger.info(
+                "[USBMemory] scope: split uses the secondary USB for archive/backup paths when available; "
+                "active memory, trust, and tasks JSON files stay on the active storage root only."
+            )
+        if pol in ("mirror", "split"):
+            logger.info("[USBMemory] policy guidance: %s", USB_MEMORY_POLICY_HELP)
     system = UnifiedElysiaSystem(config=config)
     system.start()
 
@@ -1051,21 +1150,38 @@ def main():
     elif startup_status == "failed":
         print(">>> Startup failed - Review logs before using the dashboard <<<")
 
-    def signal_handler(sig, frame):
-        print("\n\nShutdown signal received...")
-        system.shutdown()
-        release_backend_lock()
-        print("Goodbye!")
-        sys.exit(0)
+    # Do not call system.shutdown() inside the SIGINT handler: on Windows that can deadlock
+    # (handler runs in a restricted context while other threads hold locks). Request stop here,
+    # run shutdown on the main thread after the wait loop exits.
+    _shutdown_requested = threading.Event()
 
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    def _request_shutdown(sig, frame):
+        if not _shutdown_requested.is_set():
+            print("\n\nShutdown signal received...", flush=True)
+        _shutdown_requested.set()
+
+    signal.signal(signal.SIGINT, _request_shutdown)
+    signal.signal(signal.SIGTERM, _request_shutdown)
 
     try:
-        while True:
-            time.sleep(1)
+        while not _shutdown_requested.is_set():
+            _shutdown_requested.wait(timeout=1.0)
     except KeyboardInterrupt:
-        signal_handler(None, None)
+        if not _shutdown_requested.is_set():
+            print("\n\nShutdown signal received...", flush=True)
+        _shutdown_requested.set()
+
+    print("\nShutting down...", flush=True)
+    try:
+        system.shutdown()
+    except Exception as e:
+        logger.debug("Shutdown: %s", e)
+    try:
+        release_backend_lock()
+    except Exception:
+        pass
+    print("Goodbye!", flush=True)
+    sys.exit(0)
 
 
 if __name__ == "__main__":

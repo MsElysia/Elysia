@@ -103,7 +103,7 @@ class TrialRunManager:
             
             # Configuration with F: drive
             from memory_storage_config import MemoryStorageConfig
-            storage_config = MemoryStorageConfig(thumb_drive="F:", fallback_local=True)
+            storage_config = MemoryStorageConfig(primary_drive="F:", fallback_local=True)
             storage_info = storage_config.get_config()
             
             logger.info(f"Memory Storage: {storage_info['storage_path']}")

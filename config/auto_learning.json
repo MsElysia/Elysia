@@ -34,6 +34,7 @@
     "automation"
   ],
   "twitter_bearer_token": "AAAAAAAAAAAAAAAAAAAAAKZu8gEAAAAABVa%2FTE7SxcBHh9SsTNC6fdt7Z%2BU%3D9iM9J6tIn1YHN1jkdOGSRJ7EZsAhkmJgSG8Yyq5YtxkJtenQ9t",
+  "enable_moltbook_auto_learn": true,
   "use_headless_browser": true,
   "max_archived_per_session": 100,
   "max_memory_per_session": 20,

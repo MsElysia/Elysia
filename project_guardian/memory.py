@@ -535,6 +535,12 @@ class MemoryCore:
                 try:
                     with open(self.filepath, "w", encoding="utf-8") as f:
                         json.dump(self.memory_log, f, indent=2)
+                    try:
+                        from memory_storage_config import notify_usb_persist_mirror
+
+                        notify_usb_persist_mirror(self.filepath)
+                    except ImportError:
+                        pass
                     return
                 except Exception as e:
                     last_err = e

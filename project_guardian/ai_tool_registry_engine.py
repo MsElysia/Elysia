@@ -209,6 +209,27 @@ class ToolRegistry:
                 "local://opportunity_ranker",
                 ["ranking", "opportunities", "revenue"],
             ),
+            (
+                "elysia_bounded_browser",
+                "Bounded multi-page read-only browser (Playwright; budget-limited)",
+                "builtin",
+                "local://bounded_browser",
+                ["bounded_browse"],
+            ),
+            (
+                "elysia_moltbook_browser",
+                "Read-only bounded browse for moltbook.com / www.moltbook.com only",
+                "builtin",
+                "local://moltbook_browser",
+                ["moltbook_browse"],
+            ),
+            (
+                "elysia_social_intel",
+                "Bounded social intelligence on Moltbook: observe, summarize, draft; speak gated",
+                "builtin",
+                "local://social_intel",
+                ["social_moltbook_observe"],
+            ),
         ]
         for name, desc, prov, ep, caps in builtins:
             if name in self.tools:
@@ -367,6 +388,10 @@ class ToolRegistry:
         """
         adapter = self.get_tool(tool_name)
         if not adapter:
+            logger.info(
+                "[ToolUtil] call_tool skipped tool=%s reason=no_adapter",
+                tool_name,
+            )
             return {
                 "success": False,
                 "error": f"Tool {tool_name} not found"
@@ -374,11 +399,21 @@ class ToolRegistry:
         
         tool = self.tools.get(tool_name)
         if not tool:
+            logger.info(
+                "[ToolUtil] call_tool skipped tool=%s reason=no_metadata",
+                tool_name,
+            )
             return {
                 "success": False,
                 "error": f"Tool metadata for {tool_name} not found"
             }
         
+        logger.info(
+            "[ToolUtil] call_tool invoke tool=%s method=%s arg_keys=%s",
+            tool_name,
+            method,
+            list(kwargs.keys())[:16],
+        )
         # Update usage stats
         tool.usage_count += 1
         tool.last_used = datetime.now()
@@ -391,6 +426,12 @@ class ToolRegistry:
             tool.success_count += 1
         else:
             tool.failure_count += 1
+        logger.info(
+            "[ToolUtil] call_tool done tool=%s success=%s err=%s",
+            tool_name,
+            bool(result.get("success")),
+            (result.get("error") or "")[:200],
+        )
         
         self.save()
         return result

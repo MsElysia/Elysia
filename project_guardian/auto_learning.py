@@ -26,6 +26,7 @@ SOURCE_TRUST_TIERS = {
     "web": "medium",
     "rss": "medium",
     "wikipedia": "medium",
+    "moltbook": "medium",
     "reddit": "low",
     "facebook": "low",
     "twitter": "low",
@@ -619,6 +620,78 @@ def fetch_web_url(url: str, max_length: int = 15000, max_retries: int = 2, use_h
             if attempt < max_retries:
                 time.sleep(1 + attempt)
     return None
+
+
+def fetch_moltbook_for_auto_learning(
+    topics: List[str],
+    *,
+    goal_override: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Bounded read-only browse of moltbook.com (same stack as elysia_moltbook_browser).
+    Produces one learning item per successful session for the auto-learning pipeline.
+    """
+    try:
+        from .bounded_browser.moltbook import MOLTBOOK_DEFAULT_START_URL, browse_moltbook
+    except Exception as e:
+        logger.debug("[Auto-Learning] Moltbook import skipped: %s", e)
+        return []
+
+    topic_hint = ", ".join(str(t) for t in (topics or [])[:8]) if topics else "AI, technology, community"
+    goal = goal_override or (
+        "Read-only scan of Moltbook for visible headlines, posts, and themes. "
+        f"Focus on content related to: {topic_hint}. Extract factual on-page text only."
+    )
+
+    try:
+        result = browse_moltbook(goal, start_url=MOLTBOOK_DEFAULT_START_URL)
+    except RuntimeError as e:
+        logger.warning("[Auto-Learning] Moltbook browse unavailable (install Playwright?): %s", e)
+        return []
+    except Exception as e:
+        logger.warning("[Auto-Learning] Moltbook browse failed: %s", e)
+        return []
+
+    lines: List[str] = []
+    for s in result.steps:
+        u = (s.url or "")[:220]
+        t = (s.title or "").strip()
+        k = (s.key_findings or "").strip()
+        if t or k:
+            lines.append(f"---\nURL: {u}\nTitle: {t}\n{k}")
+    body = "\n".join(lines).strip()
+    if len(body) < 40:
+        body = " ".join((s.key_findings or "").strip() for s in result.steps).strip()
+    if len(body) < 30:
+        logger.info("[Auto-Learning] Moltbook session produced thin text; skipping archive item")
+        return []
+
+    title = "Moltbook browse session"
+    for s in result.steps:
+        ft = (s.title or "").strip()
+        if ft:
+            title = f"Moltbook: {ft}"[:120]
+            break
+
+    # Helps topic relevance scoring match configured learning topics.
+    body = f"{body}\n\n[Learning topics: {topic_hint}]"
+
+    logger.info(
+        "[Auto-Learning] Moltbook bounded browse session pages=%d stop=%s",
+        len(result.visited_urls),
+        (result.stop_reason or "")[:80],
+    )
+
+    return [
+        {
+            "source": "moltbook",
+            "url": result.start_url,
+            "title": title,
+            "text": body[:12000],
+            "moltbook_stop_reason": result.stop_reason,
+            "moltbook_pages_visited": len(result.visited_urls),
+        }
+    ]
 
 
 def _classify_content_category(combined: str) -> Tuple[str, int]:
@@ -1332,7 +1405,7 @@ def run_learning_session(
     llm_callback: Optional[Callable[[str], tuple]] = None,
     memory: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Run one learning session: fetch Reddit, RSS, ChatGPT chatlogs, web URLs, Facebook, X (Twitter); compress; store.
+    """Run one learning session: fetch Reddit, RSS, ChatGPT chatlogs, web URLs, Moltbook (bounded), Facebook, X (Twitter); compress; store.
     Items are archived to disk; only those passing quality gates are admitted to long-term memory.
     When use_headless_for_web is True and Playwright is available, web URLs are fetched via headless browser.
     """
@@ -1350,6 +1423,10 @@ def run_learning_session(
             if item:
                 item["compressed"] = compress_with_llm(item.get("text", ""), llm_callback, module_name="summarizer")
                 collected.append(item)
+    if cfg.get("enable_moltbook_auto_learn", True):
+        for item in fetch_moltbook_for_auto_learning(topics):
+            item["compressed"] = compress_with_llm(item.get("text", ""), llm_callback, module_name="summarizer")
+            collected.append(item)
     # ChatGPT conversation files (from import_chatgpt_export)
     if chatlogs_path:
         processed_marker = storage_path / ".processed_chatlogs.json"
@@ -1389,6 +1466,7 @@ def run_learning_session(
         + len(reddit_subs)
         + len(rss_feeds)
         + (1 if web_urls else 0)
+        + (1 if cfg.get("enable_moltbook_auto_learn", True) else 0)
         + (len(facebook_pages) if (facebook_pages and facebook_access_token) else 0)
         + (len(twitter_search_queries) if (twitter_search_queries and twitter_bearer_token) else 0)
     )
@@ -1459,6 +1537,12 @@ def run_mistral_chained_learning_session(
         max_cf = int(cfg.get("max_chatlogs", 15))
         for item in fetch_chatlogs(chatlogs_path, max_files=max_cf, processed_path=processed_marker):
             item["compressed"] = compress_with_llm(item.get("text", ""), llm_callback, module_name="summarizer")
+            collected.append(item)
+
+    if cfg.get("enable_moltbook_auto_learn", True):
+        for item in fetch_moltbook_for_auto_learning(topics):
+            item["compressed"] = compress_with_llm(item.get("text", ""), llm_callback, module_name="summarizer")
+            item["mistral_round"] = -1
             collected.append(item)
 
     parts: List[str] = []
@@ -1643,6 +1727,16 @@ def _normalize_learning_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         v = out.get(key)
         if v is None or not isinstance(v, bool):
             out[key] = default
+    # Moltbook auto-learn defaults ON (bounded browser; disable via auto_learning.json).
+    v_molt = out.get("enable_moltbook_auto_learn")
+    if v_molt is None:
+        out["enable_moltbook_auto_learn"] = True
+    elif isinstance(v_molt, bool):
+        pass
+    elif isinstance(v_molt, (int, float)):
+        out["enable_moltbook_auto_learn"] = bool(int(v_molt))
+    else:
+        out["enable_moltbook_auto_learn"] = str(v_molt).strip().lower() in ("1", "true", "yes", "on")
     return out
 
 

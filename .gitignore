@@ -39,7 +39,9 @@ organized_project/
 
 # Runtime
 .elysia_backend.lock
+elysia_unified.log
 elysia_unified.log.*
+browser_agent_state.json
 
 # Large / local archives (keep repo pushable)
 *.zip
@@ -72,6 +74,11 @@ data/*.jsonl
 data/*.db
 data/vault/
 data/backups/
+# Generated / local runtime under data (keep repo pushable)
+data/generated_reports/
+data/revenue_briefs/
+data/research_briefs/
+data/social_intelligence/
 !data/.gitkeep
 
 # Test files

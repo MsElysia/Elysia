@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "environments": {
+    "moltbook": {
+      "modes": {
+        "observe": true,
+        "draft": true,
+        "speak": false
+      },
+      "description": "Default: read + summarize + drafts only; no outbound posts."
+    }
+  },
+  "default_environment": "moltbook",
+  "sponsored_risk_threshold": 0.42,
+  "speak": {
+    "enabled": false,
+    "max_posts_per_hour": 2,
+    "allowlisted_host_suffixes": ["moltbook.com"],
+    "queue_outbound_to_disk": true,
+    "note": "When enabled, outbound text is queued to data/social_intelligence/outbound_queue.jsonl — no browser posting in this pass."
+  },
+  "campaign_ids": {
+    "observe": ["cmp_social_intel", "cmp_learning_loop"],
+    "draft": ["cmp_social_intel"],
+    "speak": ["cmp_social_intel"]
+  },
+  "memory": {
+    "max_thread_lines": 400,
+    "max_profile_lines": 250,
+    "max_draft_lines": 200,
+    "max_rankings_lines": 500
+  },
+  "human_ranking": {
+    "low_person_score_skip_threshold": 0.24,
+    "low_likely_human_skip_threshold": 0.34,
+    "high_value_followup_thread_floor": 0.45,
+    "high_value_followup_person_floor": 0.58,
+    "high_value_followup_human_floor": 0.55
+  },
+  "continuity": {
+    "stale_days": 21,
+    "max_contacts": 400,
+    "max_threads": 250,
+    "low_yield_score_threshold": 0.28,
+    "low_yield_human_threshold": 0.35,
+    "low_yield_streak_for_dead_end": 3,
+    "followup_mix_floor": 0.38
+  }
+}

@@ -8,6 +8,7 @@ echo ========================================
 echo.
 echo Connecting to backend at http://127.0.0.1:8888
 echo Make sure elysia.py is already running.
+echo To start backend + this UI together, use START_ELYSIA_UNIFIED.bat
 echo.
 python elysia_interface.py --attach-only
 echo.

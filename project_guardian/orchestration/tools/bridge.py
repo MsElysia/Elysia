@@ -21,15 +21,26 @@ def _merge_payload(intent: ActionIntent, task_context: Optional[Dict[str, Any]])
     if isinstance(ctx.get("underused_modules"), list):
         base.setdefault("underused_modules", list(ctx.get("underused_modules") or []))
     if arch and intent.target_kind == "module" and (intent.target_name or "") == "task_router":
+        from ...routing_task_type import infer_canonical_routing_task_type
+
+        rt, rsn = infer_canonical_routing_task_type(goal, archetype=arch)
+        logger.info(
+            "[OrchestrationBridge] routing_task_type inferred=%s reason=%s archetype=%s goal_sample=%s",
+            rt,
+            rsn,
+            (arch or "")[:120],
+            (goal or "")[:160],
+        )
         base.setdefault(
             "structured_task",
             {
-                "task_type": "self_task",
+                "task_type": rt,
                 "objective": goal,
                 "payload": {
                     "source": "orchestration_bridge",
                     "format_version": 1,
                     "task_id": str(ctx.get("task_id") or ""),
+                    "routing_inference": rsn,
                 },
             },
         )

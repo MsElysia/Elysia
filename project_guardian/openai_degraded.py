@@ -40,7 +40,15 @@ def _detect_insufficient_quota(msg: str) -> bool:
         return True
     if "exceeded your current quota" in m:
         return True
+    if "you exceeded your quota" in m or "exceeded your quota" in m:
+        return True
+    if "billing_hard_limit" in m or "hard limit has been reached" in m:
+        return True
+    if "quota" in m and ("exceed" in m or "billing" in m or "plan" in m):
+        return True
     if "billing" in m and "quota" in m and ("429" in m or "exceeded" in m):
+        return True
+    if "do not have enough credits" in m or "no credits" in m:
         return True
     return False
 
@@ -59,11 +67,24 @@ def _set_insufficient_quota_reasoning_block(source: str) -> None:
     sec = _insufficient_quota_reasoning_block_sec()
     with _lock:
         _quota_reasoning_until_ts = max(_quota_reasoning_until_ts, now + sec)
+        until = _quota_reasoning_until_ts
     logger.warning(
-        "[OpenAI insufficient_quota] reasoning routes blocked %.0fs (%s); use openai_insufficient_quota_blocked / openai_quota_block_prefer_openrouter",
+        "[OpenAI insufficient_quota] reasoning quota block SET for %.0fs source=%s active_until_epoch=%.0f "
+        "(openai_usable_for_routing=False for reasoning until expiry)",
         sec,
         (source or "")[:120],
+        until,
     )
+
+
+def openai_insufficient_quota_block_until_epoch() -> float:
+    """Monotonic-ish wall epoch seconds until hard reasoning quota block ends; 0.0 if inactive."""
+    now = time.time()
+    with _lock:
+        global _quota_reasoning_until_ts
+        if _quota_reasoning_until_ts <= 0 or now >= _quota_reasoning_until_ts:
+            return 0.0
+        return float(_quota_reasoning_until_ts)
 
 
 def openai_insufficient_quota_reasoning_blocked() -> bool:
@@ -164,6 +185,8 @@ def _is_rate_limit_signal(*, msg: str, code: Optional[int]) -> bool:
     if code == 429:
         return True
     if "429" in m or "insufficient_quota" in m or "rate_limit" in m:
+        return True
+    if _detect_insufficient_quota(m):
         return True
     return False
 
@@ -305,18 +328,38 @@ def note_openai_transport_failure(exc: BaseException, context: str = "") -> None
     msg = str(exc).lower()
     code = getattr(exc, "status_code", None)
     try:
+        resp = getattr(exc, "response", None)
+        if code is None and resp is not None:
+            code = getattr(resp, "status_code", None)
+    except Exception:
+        pass
+    try:
         from openai import APIStatusError
 
         if isinstance(exc, APIStatusError):
             code = getattr(exc, "status_code", code)
     except Exception:
         pass
-    if code == 429 or "429" in msg or "insufficient_quota" in msg or "rate_limit" in msg:
+    if (
+        code == 429
+        or "429" in msg
+        or "insufficient_quota" in msg
+        or "rate_limit" in msg
+        or _detect_insufficient_quota(msg)
+    ):
         note_openai_rate_limit(
             source=f"{context}:{msg[:120]}",
-            status_code=int(code) if code else None,
+            status_code=int(code) if code is not None else None,
             detail=msg,
         )
+        try:
+            note_openai_reasoning_rate_limit(
+                exc,
+                status_code=int(code) if code is not None else (429 if "429" in msg else None),
+                context=context or "openai_transport",
+            )
+        except Exception:
+            pass
 
 
 def is_openai_degraded_active() -> bool:

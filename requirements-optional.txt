@@ -1,5 +1,8 @@
 # Optional dependencies for Elysia - install for better embeddings and search
 # See OPTIONAL_DEPENDENCIES.md for details
+#
+# Bounded browser agent (project_guardian.bounded_browser): after install run `playwright install chromium`
+# playwright>=1.40.0
 
 # Better embeddings (avoids OpenAI API cost, improves semantic search)
 sentence-transformers>=2.2.0

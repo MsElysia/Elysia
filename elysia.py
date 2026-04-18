@@ -96,6 +96,23 @@ from elysia_sub_registration import register_all_modules
 # Reference for status server (set when system starts)
 _status_system: Optional["UnifiedElysiaSystem"] = None
 
+# Main thread blocks on this; signal handlers and POST /shutdown set it (graceful exit).
+_main_loop_shutdown = threading.Event()
+
+
+def request_main_shutdown(source: str = "unknown") -> None:
+    """Request elysia.py main() to exit its wait loop and run UnifiedElysiaSystem.shutdown()."""
+    if not _main_loop_shutdown.is_set():
+        if str(source).upper().startswith("SIG"):
+            print("\n\nShutdown signal received...", flush=True)
+        else:
+            print(f"\n\nShutdown requested ({source})...", flush=True)
+        try:
+            logger.info("Main shutdown requested: %s", source)
+        except Exception:
+            pass
+    _main_loop_shutdown.set()
+
 
 def _make_status_handler():
     """Build request handler that uses _status_system."""
@@ -118,6 +135,7 @@ def _make_status_handler():
                     "<h1>Elysia is running</h1>"
                     "<p><a href='" + dashboard_url + "' style='font-size:1.2rem;'>Open Control Panel</a> (" + dashboard_url + ")</p>"
                     "<p><a href='/status'>JSON status</a> | <a href='/health'>Health</a></p>"
+                    "<p style='color:#555;font-size:0.9rem;'>Desktop toggle uses <code>POST /shutdown</code> (Bearer token if <code>API_TOKEN</code> is set).</p>"
                     "</body></html>"
                 )
                 self.wfile.write(html.encode("utf-8"))
@@ -164,13 +182,40 @@ def _make_status_handler():
             return False, json.dumps({"error": "Unauthorized", "message": "Missing or invalid Authorization header"})
 
         def do_POST(self):
-            if self.path == "/chat":
+            if self.path == "/shutdown":
+                self._handle_shutdown()
+            elif self.path == "/chat":
                 self._handle_chat()
             elif self.path == "/v1/chat/completions":
                 self._handle_openai_chat()
             else:
                 self.send_response(404)
                 self.end_headers()
+
+        def _handle_shutdown(self):
+            """Graceful shutdown for desktop toggle (localhost POST). Same auth rules as /chat when API_TOKEN is set."""
+            ok, err_body = self._check_auth()
+            if not ok:
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(err_body.encode())
+                return
+            if not _status_system:
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": "System not initialized"}).encode())
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "shutting_down": True}).encode())
+            try:
+                self.wfile.flush()
+            except Exception:
+                pass
+            request_main_shutdown("post_shutdown")
 
         def _handle_openai_chat(self):
             """OpenAI-compatible POST /v1/chat/completions for OpenClaw/custom LLM clients."""
@@ -290,6 +335,7 @@ class UnifiedElysiaSystem:
         self.config = config or {}
         self.start_time = datetime.now()
         self.running = False
+        self._last_autonomy_unified_meta: Optional[Dict[str, Any]] = None
 
         logger.info("=" * 70)
         logger.info("Initializing Unified Elysia System (elysia.py)")
@@ -661,11 +707,27 @@ class UnifiedElysiaSystem:
         agent_name: Optional[str] = "orchestrator",
         prompt_extra: Optional[Dict[str, Any]] = None,
         skip_capability_preamble: bool = False,
+        require_autonomy_safe_reasoning: bool = False,
     ):
         """Call LLM with custom max_tokens. Returns (reply_text, error_string)."""
         if not isinstance(messages, list):
             messages = [{"role": "user", "content": str(messages)}]
+        if require_autonomy_safe_reasoning:
+            self._last_autonomy_unified_meta = None
         if not self._unified_chat_llm_router_enabled():
+            if require_autonomy_safe_reasoning:
+                # Cloud-only fallback does not apply unified autonomy-safe routing; refuse rather than leak.
+                self._last_autonomy_unified_meta = {
+                    "backend": "none",
+                    "reason": "unified_router_disabled",
+                    "autonomy_reasoning_safe_required": True,
+                    "autonomy_reasoning_block_reason": "unified_router_disabled",
+                    "autonomy_reasoning_actual_backend": "none",
+                }
+                logger.debug(
+                    "[LLM] autonomy-safe completion blocked (unified router disabled); refusing cloud-only fallback"
+                )
+                return "", "autonomy_safe_unified_router_disabled"
             from project_guardian.elysia_llm_fallback import elysia_cloud_fallback_completion
 
             return elysia_cloud_fallback_completion(
@@ -680,7 +742,7 @@ class UnifiedElysiaSystem:
         try:
             from project_guardian.unified_llm_route import unified_chat_completion
 
-            reply, err, _ = unified_chat_completion(
+            reply, err, umeta = unified_chat_completion(
                 messages=messages,
                 max_tokens=max_tokens,
                 guardian=self.guardian,
@@ -691,9 +753,27 @@ class UnifiedElysiaSystem:
                 module_name=module_name,
                 agent_name=agent_name,
                 prompt_extra=prompt_extra,
+                require_autonomy_safe_reasoning=require_autonomy_safe_reasoning,
             )
+            if require_autonomy_safe_reasoning:
+                self._last_autonomy_unified_meta = umeta
+            else:
+                self._last_autonomy_unified_meta = None
             return reply, err
         except Exception as e:
+            if require_autonomy_safe_reasoning:
+                self._last_autonomy_unified_meta = {
+                    "backend": "none",
+                    "reason": "unified_chat_exception",
+                    "autonomy_reasoning_safe_required": True,
+                    "autonomy_reasoning_block_reason": "unified_chat_failed",
+                    "autonomy_reasoning_actual_backend": "none",
+                }
+                logger.warning(
+                    "Unified LLM completion failed for autonomy-safe call; refusing unsafe cloud fallback: %s",
+                    e,
+                )
+                return "", "autonomy_safe_unified_chat_failed"
             logger.warning("Unified LLM completion failed (%s); cloud fallback", e)
             from project_guardian.elysia_llm_fallback import elysia_cloud_fallback_completion
 
@@ -706,6 +786,28 @@ class UnifiedElysiaSystem:
                 agent_name=agent_name,
                 prompt_extra=prompt_extra,
             )
+
+    def _autonomy_llm_completion(
+        self,
+        messages,
+        max_tokens: int = 2000,
+        *,
+        module_name: str = "planner",
+        agent_name: Optional[str] = "orchestrator",
+        prompt_extra: Optional[Dict[str, Any]] = None,
+        skip_capability_preamble: bool = False,
+        **_: Any,
+    ) -> Tuple[str, str]:
+        """Autonomy-safe internal LLM completion; routes via :func:`unified_autonomy_chat_completion` semantics."""
+        return self._llm_completion(
+            messages,
+            max_tokens,
+            module_name=module_name,
+            agent_name=agent_name,
+            prompt_extra=prompt_extra,
+            skip_capability_preamble=skip_capability_preamble,
+            require_autonomy_safe_reasoning=True,
+        )
 
     def condense_memory_with_ai(self, memory_threshold: int = 4000, chunk_size: int = 80, max_to_condense: int = 2000, max_workers: int = 4) -> bool:
         """
@@ -756,7 +858,7 @@ class UnifiedElysiaSystem:
             user_msg = [{"role": "user", "content": "Memory condensation task (structured JSON per OUTPUT CONTRACT)."}]
 
             def _one_call():
-                return self._llm_completion(
+                return self._autonomy_llm_completion(
                     user_msg,
                     max_tokens=1500,
                     module_name="memory_condense",
@@ -1153,23 +1255,22 @@ def main():
     # Do not call system.shutdown() inside the SIGINT handler: on Windows that can deadlock
     # (handler runs in a restricted context while other threads hold locks). Request stop here,
     # run shutdown on the main thread after the wait loop exits.
-    _shutdown_requested = threading.Event()
-
     def _request_shutdown(sig, frame):
-        if not _shutdown_requested.is_set():
-            print("\n\nShutdown signal received...", flush=True)
-        _shutdown_requested.set()
+        if sig == signal.SIGINT:
+            request_main_shutdown("SIGINT")
+        elif getattr(signal, "SIGTERM", None) is not None and sig == signal.SIGTERM:
+            request_main_shutdown("SIGTERM")
+        else:
+            request_main_shutdown(str(sig))
 
     signal.signal(signal.SIGINT, _request_shutdown)
     signal.signal(signal.SIGTERM, _request_shutdown)
 
     try:
-        while not _shutdown_requested.is_set():
-            _shutdown_requested.wait(timeout=1.0)
+        while not _main_loop_shutdown.is_set():
+            _main_loop_shutdown.wait(timeout=1.0)
     except KeyboardInterrupt:
-        if not _shutdown_requested.is_set():
-            print("\n\nShutdown signal received...", flush=True)
-        _shutdown_requested.set()
+        request_main_shutdown("KeyboardInterrupt")
 
     print("\nShutting down...", flush=True)
     try:

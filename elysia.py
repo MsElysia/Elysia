@@ -712,8 +712,8 @@ class UnifiedElysiaSystem:
         """Call LLM with custom max_tokens. Returns (reply_text, error_string)."""
         if not isinstance(messages, list):
             messages = [{"role": "user", "content": str(messages)}]
-        if require_autonomy_safe_reasoning:
-            self._last_autonomy_unified_meta = None
+        # Clear before each call so non-safe paths (cloud fallback) do not leave prior autonomy meta visible.
+        self._last_autonomy_unified_meta = None
         if not self._unified_chat_llm_router_enabled():
             if require_autonomy_safe_reasoning:
                 # Cloud-only fallback does not apply unified autonomy-safe routing; refuse rather than leak.

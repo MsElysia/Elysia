@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "autonomous_deployment_policy": "deny",
+  "lineage_registry_path": "data/eai_lineage_registry.json",
+  "audit_log_path": "data/eai_assessments.jsonl",
+  "alert_state_path": "data/eai_alert_state.json",
+  "review_threshold": 0.45,
+  "deny_threshold": 0.85,
+  "max_recent_assessments": 25,
+  "max_lineage_status_items": 5
+}

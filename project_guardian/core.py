@@ -10,6 +10,7 @@ import asyncio
 import logging
 import hashlib
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from .memory import MemoryCore
@@ -38,13 +39,21 @@ from .prompt_evolver import PromptEvolver, AutoPromptEvolutionScheduler
 from .trust_policy_manager import TrustPolicyManager
 from .trust_audit_log import TrustAuditLog
 from .trust_escalation_handler import TrustEscalationHandler
+from .eai_safety import configure_eai_safety_framework, load_eai_safety_config
 from .memory_snapshot import MemorySnapshot
 from .ui_control_panel import UIControlPanel
+from .guardian_layer import GuardianLayer
 from .config_validator import ConfigValidator
 from .security_audit import SecurityAuditor, run_security_audit
 from .resource_limits import ResourceMonitor, ResourceType
 from .startup_verification import StartupVerifier, verify_guardian_startup
 from .runtime_health import RuntimeHealthMonitor, create_guardian_health_checks
+from .module_activity import (
+    activity_age_minutes,
+    get_module_last_activity,
+    mark_module_activity,
+)
+from .planner_readiness import log_autonomy_exploration_routine, log_autonomy_routine
 from .adversarial_self_learning import (
     run_adversarial_cycle,
     get_adversarial_status,
@@ -61,6 +70,70 @@ from .adversarial_self_learning import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _module_health_summary(module_obj: Any) -> str:
+    """Best-effort runtime health for surfaced module inventory."""
+    if module_obj is None:
+        return "missing"
+    try:
+        instance_attrs = getattr(module_obj, "__dict__", {})
+        if not isinstance(instance_attrs, dict):
+            instance_attrs = {}
+        for attr_name, healthy, unhealthy in (
+            ("connected", "connected", "disconnected"),
+            ("is_connected", "connected", "disconnected"),
+            ("ready", "ready", "not_ready"),
+            ("is_ready", "ready", "not_ready"),
+            ("running", "running", "stopped"),
+            ("is_running", "running", "stopped"),
+        ):
+            if attr_name in instance_attrs:
+                value = instance_attrs[attr_name]
+                return healthy if bool(value) else unhealthy
+        for attr_name in ("status", "_status"):
+            if attr_name in instance_attrs:
+                value = instance_attrs[attr_name]
+                if isinstance(value, str) and value.strip():
+                    return value.strip().lower().replace(" ", "_")
+    except Exception:
+        return "unknown"
+    return "ok"
+
+
+def _mark_capability_activity(
+    module_last_invoked: Optional[Dict[str, str]],
+    kind: str,
+    name: str,
+) -> Optional[str]:
+    """Record activity for a concrete capability execution."""
+    used = module_last_invoked if isinstance(module_last_invoked, dict) else None
+    if used is None:
+        return None
+    k = (kind or "").strip().lower()
+    n = (name or "").strip()
+    if not n:
+        return None
+    if k == "tool":
+        return mark_module_activity(used, "tool_registry")
+    if k == "module":
+        return mark_module_activity(used, n)
+    return None
+
+
+def _mark_activity_from_execution_payload(
+    module_last_invoked: Optional[Dict[str, str]],
+    execution: Any,
+) -> Optional[str]:
+    """Record activity from orchestration bridge execution metadata."""
+    if not isinstance(execution, dict):
+        return None
+    return _mark_capability_activity(
+        module_last_invoked,
+        str(execution.get("target_kind") or ""),
+        str(execution.get("target_name") or ""),
+    )
+
 
 class GuardianCore:
     """
@@ -101,6 +174,17 @@ class GuardianCore:
         self.start_time = datetime.datetime.now()
         self._initialized = False
         self._running = False
+        self._last_context_pipeline_packet_status: Dict[str, Any] = {}
+        self._context_pipeline_packet_counters: Dict[str, int] = {
+            "cycles": 0,
+            "fallback_used": 0,
+            "ok_no_fallback": 0,
+            "error_timeout": 0,
+            "error_ollama_unavailable": 0,
+            "error_invalid_packet": 0,
+            "error_other": 0,
+            "error_none": 0,
+        }
         
         # Set paths for CONTROL.md, TASKS directory, and MUTATIONS directory
         project_root = Path(__file__).parent.parent
@@ -196,6 +280,7 @@ class GuardianCore:
                     timeline_memory=self.timeline,
                     lazy_json=_defer,
                     lazy_vector=_defer,
+                    defer_embeddings=True,
                 )
                 logger.info(
                     "Memory initialized with vector search support"
@@ -228,9 +313,11 @@ class GuardianCore:
             logger.info("GuardianCore: Memory attached to GuardianCore TimelineMemory (shared instance)")
 
         try:
+            from .planner_readiness import bind_guardian_for_startup_gates
             from .startup_runtime_guard import bind_guardian_for_runtime_guard
 
             bind_guardian_for_runtime_guard(self)
+            bind_guardian_for_startup_gates(self)
         except Exception:
             pass
         
@@ -243,6 +330,8 @@ class GuardianCore:
         project_root = Path(__file__).parent.parent
         review_queue = ReviewQueue(queue_file=project_root / "REPORTS" / "review_queue.jsonl", memory=self.memory)
         approval_store = ApprovalStore(store_file=project_root / "REPORTS" / "approval_store.json")
+        self.review_queue = review_queue
+        self.approval_store = approval_store
         
         # Initialize MutationEngine with TrustMatrix, ReviewQueue, ApprovalStore
         self.mutation = MutationEngine(
@@ -313,10 +402,26 @@ class GuardianCore:
                         return
                     consolidation_threshold = self.config.get("memory_cleanup_threshold", 3500)
                     pressure_cfg = _load_memory_pressure_config()
+                    # Align resource-monitor callbacks with pressure policy trigger so 80% memory-limit
+                    # alerts do not spam pressure cleanups when pressure mode is configured higher.
+                    try:
+                        pressure_trigger = float(
+                            pressure_cfg.get("memory_pressure_trigger_fraction", 0.88)
+                        )
+                    except (TypeError, ValueError):
+                        pressure_trigger = 0.88
+                    pressure_trigger = max(0.5, min(0.99, pressure_trigger))
                     # Under high memory pressure, trim to lower watermark (1600) to break pressure loop
                     target = pressure_cfg.get("pressure_trim_target", max(1000, int(consolidation_threshold * 0.5)))
                     target = max(1000, int(target))
                     usage = violation.get("usage_percent")
+                    if isinstance(usage, (int, float)) and float(usage) < pressure_trigger:
+                        logger.debug(
+                            "[ResourceMonitor] memory-limit callback skipped: usage=%.1f%% below pressure trigger %.1f%%",
+                            float(usage) * 100.0,
+                            pressure_trigger * 100.0,
+                        )
+                        return
                     if hasattr(self, "monitor") and self.monitor and hasattr(self.monitor, "_perform_cleanup"):
                         self.monitor._perform_cleanup(
                             target,
@@ -381,6 +486,7 @@ class GuardianCore:
         self._mistral_consecutive_override_count = 0
         self._last_get_next_had_override = False
         self._adversarial_low_yield_streak = 0
+        self._adversarial_empty_run_streak = 0
         self._adversarial_last_fingerprint: Optional[str] = None
         self._adversarial_priority_penalty = 0.0
         self._get_next_action_lock = threading.Lock()  # UI + heartbeat may call concurrently
@@ -394,6 +500,13 @@ class GuardianCore:
         self._planner_startup_snapshot: Dict[str, Any] = {}
         self._planner_startup_probe_pending: bool = False
         self._last_autonomy_next_result: Optional[Dict[str, Any]] = None
+        self._last_moltbook_guidance: Optional[Dict[str, Any]] = None
+        self._moltbook_guidance_last_at: float = 0.0
+        self._last_chatlog_guidance: Optional[Dict[str, Any]] = None
+        self._chatlog_guidance_last_at: float = 0.0
+        self._autonomy_exec_history_ring: Optional[Any] = None  # deque[(ts, action)] maxlen set lazily
+        self._autonomy_summary_last_emit_ts: float = 0.0
+        self._autonomy_summary_lock = threading.Lock()  # ring + emit_ts (UI + heartbeat may overlap)
 
         # Initialize ElysiaLoop-Core system (timeline already created for MemoryCore)
         self.module_registry = ModuleRegistry()
@@ -416,6 +529,48 @@ class GuardianCore:
             audit_logger=self.trust_audit,
             escalation_handler=self.trust_escalation
         )
+
+        # Shared Evolvable-AI safety framework for reproduction, variation, and deployment gates.
+        self.eai_safety_framework = None
+        self.eai_safety = None
+        eai_config_path = str(config.get("eai_safety_config_path", "config/eai_safety.json"))
+        eai_config = load_eai_safety_config(config_path=eai_config_path, overrides=config)
+        if eai_config.get("enabled", True):
+            try:
+                eai_storage_path = config.get("eai_lineage_registry_path") or config.get(
+                    "lineage_registry_path"
+                )
+                eai_audit_path = config.get("eai_audit_log_path") or config.get(
+                    "audit_log_path"
+                )
+                eai_alert_state_path = config.get("eai_alert_state_path") or config.get(
+                    "alert_state_path"
+                )
+                deployment_policy = config.get("eai_autonomous_deployment_policy")
+                self.eai_safety_framework = configure_eai_safety_framework(
+                    guardian=self,
+                    audit_log=self.trust_audit,
+                    approval_store=self.approval_store,
+                    review_queue=self.review_queue,
+                    storage_path=str(eai_storage_path) if eai_storage_path is not None else None,
+                    audit_path=str(eai_audit_path) if eai_audit_path is not None else None,
+                    alert_state_path=(
+                        str(eai_alert_state_path)
+                        if eai_alert_state_path is not None
+                        else None
+                    ),
+                    autonomous_deployment_policy=(
+                        str(deployment_policy) if deployment_policy is not None else None
+                    ),
+                    config_path=eai_config_path,
+                    config=config,
+                )
+                self.eai_safety = self.eai_safety_framework
+                logger.info("[OK] EAI safety framework initialized")
+            except Exception as e:
+                logger.warning("[WARN] EAI safety framework initialization failed: %s", e)
+        else:
+            logger.info("[SKIP] EAI safety framework disabled by config")
         
         # Initialize PromptEvolver first (evolve prompts using AI API)
         self._ask_ai_for_evolution = None
@@ -460,6 +615,32 @@ class GuardianCore:
             )
             if ui_config.get("auto_start", False):
                 self.start_ui_panel(host=ui_host, port=ui_port, debug=ui_config.get("debug", False))
+
+        # Guardian Layer (identity fingerprint + alert surface)
+        self.guardian_layer = None
+        guardian_layer_cfg = config.get("guardian_layer_config", {})
+        guardian_layer_enabled = bool(
+            guardian_layer_cfg.get("enabled", config.get("enable_guardian_layer", True))
+        )
+        if guardian_layer_enabled:
+            try:
+                self.guardian_layer = GuardianLayer(
+                    config_path=str(
+                        guardian_layer_cfg.get(
+                            "config_path",
+                            config.get("guardian_layer_config_path", "data/guardian.json"),
+                        )
+                    ),
+                    rebuild_log_path=str(
+                        guardian_layer_cfg.get(
+                            "rebuild_log_path",
+                            config.get("guardian_layer_rebuild_log_path", "data/guardian_rebuild.log"),
+                        )
+                    ),
+                )
+                logger.info("[OK] GuardianLayer initialized")
+            except Exception as e:
+                logger.warning("[WARN] GuardianLayer initialization failed: %s", e)
         
         # Register module adapters
         self._register_module_adapters()
@@ -900,6 +1081,41 @@ class GuardianCore:
         Canonical operational state: deferred init, memory, vector, dashboard.
         Single source of truth for status APIs, CLI, and UI. Do not compute these elsewhere.
         """
+        _cache = getattr(self, "_startup_operational_state_cache", None)
+        _cache_ts = float(getattr(self, "_startup_operational_state_cache_ts", 0.0) or 0.0)
+        _now_ts = time.time()
+        if isinstance(_cache, dict) and (_now_ts - _cache_ts) < 0.5:
+            cached = dict(_cache)
+            started = getattr(self, "deferred_init_started", False)
+            running = getattr(self, "deferred_init_running", False)
+            complete = getattr(self, "deferred_init_complete", True)
+            failed = getattr(self, "deferred_init_failed", False)
+            if started and not running and not complete and not failed:
+                state = "inconsistent"
+            elif running:
+                state = "running"
+            elif complete:
+                state = "complete"
+            elif failed:
+                state = "failed"
+            else:
+                state = "not_started"
+            cached["deferred_init_started"] = started
+            cached["deferred_init_running"] = running
+            cached["deferred_init_complete"] = complete
+            cached["deferred_init_failed"] = failed
+            cached["deferred_init_error"] = getattr(self, "deferred_init_error", None)
+            cached["deferred_init_state"] = state
+            panel = getattr(self, "ui_panel", None)
+            if panel is not None and hasattr(panel, "is_ready"):
+                try:
+                    cached["dashboard_ready"] = bool(panel.is_ready())
+                except Exception:
+                    cached["dashboard_ready"] = False
+            else:
+                cached["dashboard_ready"] = False
+            return cached
+
         started = getattr(self, "deferred_init_started", False)
         running = getattr(self, "deferred_init_running", False)
         complete = getattr(self, "deferred_init_complete", True)
@@ -954,7 +1170,27 @@ class GuardianCore:
         try:
             from .planner_readiness import compact_runtime_status
 
-            out["planner_runtime_status"] = compact_runtime_status()
+            prs = compact_runtime_status()
+            try:
+                from .ollama_model_config import get_ollama_model_pool
+
+                prs["ollama_model_pool"] = list(get_ollama_model_pool())
+                prs["mistral_decider_last_ollama_model"] = getattr(self, "_mistral_engine_model", None)
+                prs["mistral_decider_pool_failover_retries"] = int(
+                    getattr(self, "_mistral_decider_pool_failover_retries", 0) or 0
+                )
+                _acfg = self._load_autonomy_config()
+                prs["use_capability_stale_fingerprint_modules"] = _acfg.get(
+                    "use_capability_stale_fingerprint_modules", ["income_generator"]
+                )
+                try:
+                    _dcfg = self._load_mistral_decider_config()
+                    prs["mistral_ollama_pool_failover"] = bool(_dcfg.get("mistral_ollama_pool_failover", True))
+                except Exception:
+                    prs["mistral_ollama_pool_failover"] = True
+            except Exception:
+                pass
+            out["planner_runtime_status"] = prs
         except Exception:
             out["planner_runtime_status"] = {}
         try:
@@ -977,6 +1213,8 @@ class GuardianCore:
         out["embedding_fallback_loaded"] = bool(
             getattr(vm, "_sentence_transformer_model", None) is not None
         )
+        self._startup_operational_state_cache = dict(out)
+        self._startup_operational_state_cache_ts = _now_ts
         return out
 
     def get_planner_runtime_status(self) -> Dict[str, Any]:
@@ -1001,6 +1239,17 @@ class GuardianCore:
         task_stats = self.tasks.get_task_stats()
         trust_report = self.trust.get_trust_report()
         consensus_stats = self.consensus.get_agent_stats()
+        module_last_invoked = getattr(self, "_module_last_invoked", {}) or {}
+        module_inventory: Dict[str, Any] = {}
+        mods = getattr(self, "_modules", None) or {}
+        if isinstance(mods, dict):
+            for module_name, module_obj in sorted(mods.items()):
+                module_inventory[module_name] = {
+                    "available": module_obj is not None,
+                    "class": type(module_obj).__name__ if module_obj is not None else None,
+                    "last_invoked": get_module_last_activity(module_last_invoked, module_name),
+                    "health": _module_health_summary(module_obj),
+                }
         
         # Get capability report
         try:
@@ -1009,6 +1258,28 @@ class GuardianCore:
         except Exception as e:
             logger.debug(f"Could not get capabilities: {e}")
             capabilities = {}
+
+        guardian_layer = getattr(self, "guardian_layer", None)
+        guardian_layer_status: Dict[str, Any] = {
+            "enabled": guardian_layer is not None,
+        }
+        if guardian_layer is not None:
+            try:
+                verification = guardian_layer.verify_identity()
+                guardian_layer_status["identity_verified"] = bool(
+                    verification.get("identity_verified", False)
+                )
+            except Exception as e:
+                guardian_layer_status["identity_verified"] = False
+                guardian_layer_status["error"] = str(e)
+
+        eai_safety = getattr(self, "eai_safety_framework", None)
+        eai_safety_status: Dict[str, Any] = {"enabled": eai_safety is not None}
+        if eai_safety is not None:
+            try:
+                eai_safety_status.update(eai_safety.get_status())
+            except Exception as e:
+                eai_safety_status["error"] = str(e)
         
         # operational_state is canonical; deferred_init_* copied from it for backward compat
         op = self.get_startup_operational_state()
@@ -1022,8 +1293,11 @@ class GuardianCore:
             "active_components": len(self.consensus.agents),
             "monitoring": self.monitor.get_system_health(),
             "introspection": self.reflector.summarize_self(),
+            "guardian_layer": guardian_layer_status,
+            "eai_safety": eai_safety_status,
             "capabilities": capabilities,
-            "module_last_invoked": getattr(self, "_module_last_invoked", {}),
+            "module_last_invoked": module_last_invoked,
+            "module_inventory": module_inventory,
             "deferred_init_started": op.get("deferred_init_started", False),
             "deferred_init_running": op.get("deferred_init_running", False),
             "deferred_init_complete": op.get("deferred_init_complete", True),
@@ -1033,6 +1307,21 @@ class GuardianCore:
             "operational_state": op,
             "adversarial_self_learning": get_adversarial_status(self),
             "planner_runtime_status": op.get("planner_runtime_status", {}),
+            "context_pipeline_runtime_status": self.get_context_pipeline_runtime_status(),
+        }
+
+    def get_context_pipeline_runtime_status(self) -> Dict[str, Any]:
+        """Compact counters for prompt packet health/fallback behavior."""
+        counters = dict(getattr(self, "_context_pipeline_packet_counters", {}) or {})
+        total = int(counters.get("cycles", 0) or 0)
+        fallback = int(counters.get("fallback_used", 0) or 0)
+        timeout = int(counters.get("error_timeout", 0) or 0)
+        return {
+            "last_packet_status": dict(getattr(self, "_last_context_pipeline_packet_status", {}) or {}),
+            "counters": counters,
+            "fallback_rate": round((fallback / total), 4) if total > 0 else 0.0,
+            "timeout_rate": round((timeout / total), 4) if total > 0 else 0.0,
+            "cycles": total,
         }
         
     def run_safety_check(self) -> Dict[str, Any]:
@@ -1307,33 +1596,59 @@ class GuardianCore:
         guardian = self
         def _run():
             try:
-                from .auto_learning import run_learning_session, get_learned_storage_path, get_chatlogs_path, load_learning_config, DEFAULT_REDDIT_SUBS
+                from .auto_learning import (
+                    DEFAULT_REDDIT_SUBS,
+                    get_chatlogs_path,
+                    get_learned_storage_path,
+                    load_learning_config,
+                    make_learning_llm_callback,
+                    run_learning_session,
+                )
                 cfg = load_learning_config()
                 storage = get_learned_storage_path()
                 chatlogs = get_chatlogs_path()
                 reddit_subs = cfg.get("reddit_subs") or DEFAULT_REDDIT_SUBS[:1]
+                intro_chatlogs = bool(cfg.get("learning_read_chatgpt_in_introspection", True))
+                intro_max = max(0, min(20, int(cfg.get("introspection_max_chatlogs", 4) or 0)))
+                use_chatlogs = intro_chatlogs and intro_max > 0 and chatlogs.exists()
+                if use_chatlogs:
+                    logger.info(
+                        "[IntrospectionLearning] chatlogs enabled path=%s max_chatlogs=%d",
+                        chatlogs,
+                        intro_max,
+                    )
                 llm = None
-                try:
-                    import sys
-                    main_mod = sys.modules.get("__main__")
-                    if main_mod:
-                        status_sys = getattr(main_mod, "_status_system", None)
-                        if status_sys and hasattr(status_sys, "chat_with_llm"):
-                            llm = lambda m: status_sys.chat_with_llm(m)
-                except Exception:
-                    pass
+                us = getattr(guardian, "_unified_system", None)
+                if us is not None:
+                    llm = make_learning_llm_callback(us)
+                else:
+                    from .auto_learning import _autonomy_learning_disabled_llm_callback
+
+                    llm = _autonomy_learning_disabled_llm_callback
                 result = run_learning_session(
                     storage_path=storage,
                     topics=[],
                     reddit_subs=reddit_subs,
                     rss_feeds=[],
-                    chatlogs_path=None,
+                    chatlogs_path=chatlogs if use_chatlogs else None,
                     max_per_source=2,
-                    max_chatlogs=0,
+                    max_chatlogs=intro_max if use_chatlogs else 0,
                     llm_callback=llm,
                     memory=guardian.memory,
                 )
-                guardian.memory.remember("[Introspection] Auto-learning triggered (2 Reddit items)", category="learning", priority=0.55)
+                chat_n = int((result or {}).get("chatlogs", 0) or 0)
+                if use_chatlogs and chat_n > 0:
+                    guardian.memory.remember(
+                        f"[Introspection] Auto-learning triggered (Reddit + {chat_n} ChatGPT chatlog excerpt(s))",
+                        category="learning",
+                        priority=0.55,
+                    )
+                else:
+                    guardian.memory.remember(
+                        "[Introspection] Auto-learning triggered (2 Reddit items)",
+                        category="learning",
+                        priority=0.55,
+                    )
                 # Event-driven adversarial: bad learning session
                 try:
                     trigger_adversarial_on_event(guardian, TRIGGER_BAD_LEARNING_SESSION, result)
@@ -1571,7 +1886,7 @@ class GuardianCore:
             except Exception:
                 pass
         if not self._tool_registry_minimal_capabilities_ok(tr):
-            logger.info("[Idle] tool_registry probe skipped (missing llm/web/exec tools)")
+            log_autonomy_routine(logger, "[Idle] tool_registry probe skipped (missing llm/web/exec tools)")
             return False
         n, _pulse_names, pulse_diag = self._tool_registry_pulse_metrics(tr)
         logger.debug(
@@ -1595,7 +1910,8 @@ class GuardianCore:
                 pass
         self._tool_registry_last_sig = f"{n}:{route_to}"
         self._tool_registry_last_pulse_ts = time.time()
-        logger.info(
+        log_autonomy_routine(
+            logger,
             "[Idle] registry_router_health_probe: %d tools visible (no tool execution)%s",
             n,
             route_hint,
@@ -1616,7 +1932,9 @@ class GuardianCore:
             ranked = self._orchestration_registry.get_relevant_capabilities(
                 "idle exploration validate tools apis low risk", self, snapshot=cap_snap, top_k=10
             )
-            logger.info("[Idle] Capability probe — candidates: %s", [r.get("name") for r in ranked[:6]])
+            log_autonomy_routine(
+                logger, "[Idle] Capability probe — candidates: %s", [r.get("name") for r in ranked[:6]]
+            )
             try:
                 from .capability_execution import capability_action_is_safe_idle, execute_capability_kind
 
@@ -1626,7 +1944,8 @@ class GuardianCore:
                     if not capability_action_is_safe_idle(rk, rn):
                         continue
                     ex = execute_capability_kind(self, rk, rn, {})
-                    logger.info(
+                    log_autonomy_routine(
+                        logger,
                         "[Idle] capability execute kind=%s name=%s success=%s",
                         rk,
                         rn,
@@ -1654,6 +1973,133 @@ class GuardianCore:
                 self._run_tool_registry_pulse_quick()
         except Exception as e:
             logger.debug("Idle tool_registry pulse: %s", e)
+
+    def _maybe_suppress_repeated_system_monitoring_task(
+        self,
+        best: Optional[Dict[str, Any]],
+        candidates: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        If execute_task would target ``system_monitoring`` again with no evidence of variety,
+        prefer another candidate when scores allow — logs an explicit suppression reason.
+        """
+        if not best or best.get("action") != "execute_task":
+            return best
+        md = best.get("metadata") if isinstance(best.get("metadata"), dict) else {}
+        if str(md.get("name") or "").strip().lower() != "system_monitoring":
+            return best
+        streak = int(getattr(self, "_execute_task_monitoring_select_streak", 0) or 0)
+        recent = list(getattr(self, "_decider_recent_actions", []) or [])
+        et_recent = sum(1 for a in recent[-10:] if a == "execute_task")
+        if streak < 2 and et_recent < 3:
+            return best
+        best_id = id(best)
+        alts: List[Dict[str, Any]] = []
+        for c in candidates:
+            if id(c) == best_id:
+                continue
+            a = str(c.get("action") or "")
+            if a == "execute_self_task":
+                alts.append(c)
+                continue
+            if a == "execute_task":
+                om = c.get("metadata") if isinstance(c.get("metadata"), dict) else {}
+                if str(om.get("name") or "").strip().lower() == "system_monitoring":
+                    continue
+            alts.append(c)
+        if not alts:
+            logger.info(
+                "[AutonomySelector] suppressing execute_task->system_monitoring due to unchanged_state "
+                "blocked_no_alternates streak=%d execute_task_tail=%d",
+                streak,
+                et_recent,
+            )
+            return best
+        alt = max(alts, key=lambda c: float(c.get("priority_score", 0) or 0))
+        bscore = float(best.get("priority_score", 0) or 0)
+        ascore = float(alt.get("priority_score", 0) or 0)
+        alt_action = str(alt.get("action") or "").strip()
+        prefer_self_task_escape = (
+            alt_action == "execute_self_task"
+            and (streak >= 2 or et_recent >= 4)
+        )
+        alt_threshold = max(0.28, bscore * 0.16)
+        if prefer_self_task_escape:
+            alt_threshold = max(0.55, bscore * 0.06)
+        if ascore < alt_threshold:
+            logger.info(
+                "[AutonomySelector] execute_task->system_monitoring unchanged_state_heuristic streak=%d "
+                "execute_task_tail=%d keeping_pick weak_alternates best=%.3f best_alt=%.3f "
+                "alt_action=%s min_alt=%.3f",
+                streak,
+                et_recent,
+                bscore,
+                ascore,
+                alt_action or "unknown",
+                alt_threshold,
+            )
+            return best
+        logger.info(
+            "[AutonomySelector] suppressing execute_task->system_monitoring due to unchanged_state "
+            "preferring action=%s score=%.3f over=%.3f%s",
+            alt_action or "unknown",
+            ascore,
+            bscore,
+            " reason=execute_self_task_escape"
+            if prefer_self_task_escape
+            else "",
+        )
+        return dict(alt)
+
+    def _remember_autonomy_event_if_fresh(
+        self,
+        cache_key: str,
+        message: str,
+        *,
+        signature: str,
+        category: str = "autonomy",
+        priority: float = 0.5,
+        metadata: Optional[Dict[str, Any]] = None,
+        min_interval_sec: float = 1800.0,
+    ) -> bool:
+        """
+        Avoid repeated ``memory.remember`` churn for identical autonomy outcomes that recur in tight loops.
+        Returns True when a new memory row was written.
+        """
+        mem = getattr(self, "memory", None)
+        if mem is None or not hasattr(mem, "remember"):
+            return False
+        try:
+            interval = max(30.0, float(min_interval_sec))
+        except (TypeError, ValueError):
+            interval = 1800.0
+        cache = getattr(self, "_autonomy_memory_repeat_guard", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._autonomy_memory_repeat_guard = cache
+        now = time.time()
+        prev = cache.get(cache_key)
+        prev_sig = ""
+        prev_ts = 0.0
+        if isinstance(prev, dict):
+            prev_sig = str(prev.get("signature") or "")
+            try:
+                prev_ts = float(prev.get("ts") or 0.0)
+            except (TypeError, ValueError):
+                prev_ts = 0.0
+        if prev_sig == signature and (now - prev_ts) < interval:
+            logger.info(
+                "[AutonomyMemory] suppressing repeated memory key=%s reason=identical_signature window=%.0fs",
+                cache_key,
+                interval,
+            )
+            return False
+        remember_kwargs: Dict[str, Any] = {"category": category, "priority": priority}
+        if metadata is not None:
+            remember_kwargs["metadata"] = metadata
+        mem.remember(message, **remember_kwargs)
+        cache[cache_key] = {"signature": signature, "ts": now}
+        return True
 
     def get_next_action(self) -> Dict[str, Any]:
         """
@@ -1811,9 +2257,15 @@ class GuardianCore:
                 cool_until = getattr(self, "_fractalmind_low_yield_cooldown_until", None)
                 rep_until = getattr(self, "_fractalmind_repetition_suppress_until", None)
                 if cool_until and isinstance(cool_until, (int, float)) and time.time() < float(cool_until):
-                    logger.info("[FractalMind] Suppressing fractalmind_planning (low-yield cooldown active)")
+                    logger.info(
+                        "[FractalMind] Suppressing fractalmind_planning (low-yield cooldown active) | "
+                        "[AutonomySelector] suppressing fractalmind_planning due to unchanged_artifact cooldown=low_yield"
+                    )
                 elif rep_until and isinstance(rep_until, (int, float)) and time.time() < float(rep_until):
-                    logger.info("[FractalMind] Suppressing fractalmind_planning (repeated-artifact cooldown active)")
+                    logger.info(
+                        "[FractalMind] Suppressing fractalmind_planning (repeated-artifact cooldown active) | "
+                        "[AutonomySelector] suppressing fractalmind_planning due to unchanged_artifact cooldown=repeated_identical_planning"
+                    )
                 else:
                     candidates.append({
                         "action": "fractalmind_planning",
@@ -1846,7 +2298,7 @@ class GuardianCore:
                 # Event-driven suppression:
                 # If last pulse showed all-zero state and nothing changed, don't keep offering this action.
                 now_ts = time.time()
-                refresh_sec = 1800  # 30m: slow refresh while state appears stagnant
+                refresh_sec = 900  # 15m: earlier suppression for unchanged all-zero income state
                 last_sig = getattr(self, "_income_modules_last_sig", None)
                 last_ts = getattr(self, "_income_modules_last_pulse_ts", 0.0) or 0.0
                 all_zero = False
@@ -1960,32 +2412,84 @@ class GuardianCore:
         # 6. LongTermPlanner objectives (objectives may be list or dict)
         try:
             planner = (self._modules or {}).get("longterm_planner")
-            if planner and hasattr(planner, "objectives"):
-                _objs = planner.objectives
-                _seq = list(_objs.values()) if isinstance(_objs, dict) else (list(_objs) if isinstance(_objs, list) else [])
-                active_obj = []
-                for o in _seq:
-                    st = o.get("status", "") if isinstance(o, dict) else getattr(o, "status", "")
-                    if "active" in str(st).lower():
-                        active_obj.append(o)
-                if active_obj:
-                    o = active_obj[0]
+            if planner:
+                o = None
+                if hasattr(planner, "pick_next_actionable_objective"):
+                    o = planner.pick_next_actionable_objective()
+                elif hasattr(planner, "objectives"):
+                    _objs = planner.objectives
+                    _seq = list(_objs.values()) if isinstance(_objs, dict) else (list(_objs) if isinstance(_objs, list) else [])
+                    active_obj = []
+                    for obj in _seq:
+                        st = obj.get("status", "") if isinstance(obj, dict) else getattr(obj, "status", "")
+                        if "active" in str(st).lower():
+                            active_obj.append(obj)
+                    if active_obj:
+                        o = active_obj[0]
+                if o:
+                    objective_name = getattr(o, "name", "") if not isinstance(o, dict) else str(o.get("name") or "")
+                    objective_id = getattr(o, "objective_id", "") if not isinstance(o, dict) else str(o.get("objective_id") or "")
                     candidates.append({
                         "action": "work_on_objective",
                         "source": "longterm_planner",
-                        "reason": f"Objective: {getattr(o, 'name', 'Unknown')}",
+                        "reason": f"Objective: {objective_name or 'Unknown'}",
                         "priority_score": 5,
                         "can_auto_execute": True,
-                        "metadata": {"objective_id": getattr(o, "objective_id", "")},
+                        "metadata": {"objective_id": objective_id},
                     })
+        except Exception:
+            pass
+        # 6b. OpenClaw delegation candidate (execution layer for web/github/file/app tasks).
+        try:
+            if self._openclaw_available():
+                goal_parts: List[str] = []
+                try:
+                    am = self.missions.get_active_missions()
+                    if am:
+                        goal_parts.extend(str(m.get("name") or "") for m in am[:2] if isinstance(m, dict))
+                except Exception:
+                    pass
+                try:
+                    active_tasks = self.tasks.get_active_tasks()
+                    goal_parts.extend(str(t.get("name") or "") for t in active_tasks[:4] if isinstance(t, dict))
+                except Exception:
+                    pass
+                goal_blob = " | ".join(p for p in goal_parts if p).strip()
+                if self._goal_requires_openclaw(goal_blob):
+                    skill = self._infer_openclaw_skill_for_goal(goal_blob)
+                    oc_strength = self._openclaw_goal_signal_strength(goal_blob)
+                    oc_priority = 4 + min(3, oc_strength)
+                    candidates.append(
+                        {
+                            "action": "delegate_openclaw",
+                            "source": "openclaw",
+                            "reason": f"OpenClaw execution candidate ({skill}) for current goals",
+                            "priority_score": oc_priority,
+                            "can_auto_execute": True,
+                            "metadata": {
+                                "skill_name": skill,
+                                "goal_hint": goal_blob[:400],
+                                "openclaw_signal_strength": oc_strength,
+                            },
+                        }
+                    )
         except Exception:
             pass
         # 7. Exploratory / diversity candidates (expand pool to 5–7 options)
         decider_cfg = self._load_mistral_decider_config()
         min_cands = decider_cfg.get("mistral_min_candidates", 5)
         exploratory_actions = decider_cfg.get("mistral_exploratory_actions", [
-            "fractalmind_planning", "question_probe", "code_analysis", "consider_prompt_evolution", "work_on_objective", "consider_mutation",
-            "harvest_income_report", "income_modules_pulse", "tool_registry_pulse",
+            "fractalmind_planning",
+            "question_probe",
+            "code_analysis",
+            "consider_prompt_evolution",
+            "work_on_objective",
+            "consider_mutation",
+            "harvest_income_report",
+            "income_modules_pulse",
+            "tool_registry_pulse",
+            "delegate_openclaw",
+            "consider_moltbook_direction",
         ])
         existing_actions = {c.get("action") for c in candidates}
         for action in exploratory_actions:
@@ -2036,6 +2540,14 @@ class GuardianCore:
                                 "metadata": {"exploratory": True},
                             })
                             existing_actions.add(action)
+                        elif low_cool:
+                            logger.info(
+                                "[AutonomySelector] suppressing fractalmind_planning due to unchanged_artifact cooldown=low_yield exploratory_skip"
+                            )
+                        elif rep_cool:
+                            logger.info(
+                                "[AutonomySelector] suppressing fractalmind_planning due to unchanged_artifact cooldown=repeated_identical_planning exploratory_skip"
+                            )
                 elif action == "consider_learning" and getattr(self, "elysia_loop", None):
                     candidates.append({
                         "action": "consider_learning",
@@ -2046,6 +2558,19 @@ class GuardianCore:
                         "metadata": {"exploratory": True},
                     })
                     existing_actions.add(action)
+                elif action == "consider_moltbook_direction":
+                    if "consider_moltbook_direction" not in existing_actions and bool(
+                        self._load_autonomy_config().get("enable_moltbook_direction_guidance", True)
+                    ):
+                        candidates.append({
+                            "action": "consider_moltbook_direction",
+                            "source": "moltbook",
+                            "reason": "Bounded MoltBook scan for decision-facing external direction",
+                            "priority_score": 3,
+                            "can_auto_execute": True,
+                            "metadata": {"exploratory": True, "action_hint": "exploratory diversification"},
+                        })
+                        existing_actions.add(action)
                 elif action == "consider_dream_cycle" and getattr(self, "dreams", None):
                     candidates.append({
                         "action": "consider_dream_cycle",
@@ -2082,15 +2607,23 @@ class GuardianCore:
                             existing_actions.add(action)
                 elif action == "work_on_objective" and (self._modules or {}).get("longterm_planner"):
                     if "work_on_objective" not in existing_actions:
-                        candidates.append({
-                            "action": "work_on_objective",
-                            "source": "exploration",
-                            "reason": "Explore long-term objectives",
-                            "priority_score": 2,
-                            "can_auto_execute": True,
-                            "metadata": {"exploratory": True},
-                        })
-                        existing_actions.add(action)
+                        planner = (self._modules or {}).get("longterm_planner")
+                        actionable_objective = None
+                        if planner and hasattr(planner, "pick_next_actionable_objective"):
+                            actionable_objective = planner.pick_next_actionable_objective()
+                        if actionable_objective is not None or not hasattr(planner, "pick_next_actionable_objective"):
+                            metadata = {"exploratory": True}
+                            if actionable_objective is not None:
+                                metadata["objective_id"] = str(getattr(actionable_objective, "objective_id", "") or "")
+                            candidates.append({
+                                "action": "work_on_objective",
+                                "source": "exploration",
+                                "reason": "Explore long-term objectives",
+                                "priority_score": 2,
+                                "can_auto_execute": True,
+                                "metadata": metadata,
+                            })
+                            existing_actions.add(action)
                 elif action == "harvest_income_report" and (self._modules or {}).get("harvest_engine"):
                     if "harvest_income_report" not in existing_actions:
                         candidates.append({
@@ -2107,7 +2640,7 @@ class GuardianCore:
                     if m.get("income_generator") or m.get("wallet") or m.get("financial_manager"):
                         if "income_modules_pulse" not in existing_actions:
                             now_ts = time.time()
-                            refresh_sec = 1800
+                            refresh_sec = 900
                             last_sig = getattr(self, "_income_modules_last_sig", None)
                             last_ts = getattr(self, "_income_modules_last_pulse_ts", 0.0) or 0.0
                             all_zero = False
@@ -2149,8 +2682,10 @@ class GuardianCore:
                                 all_zero = False
 
                             if sig is not None and last_sig is not None and sig == last_sig and all_zero and (now_ts - last_ts) < refresh_sec:
-                                logger.debug("[Adversarial] Suppressing income_modules_pulse expansion (unchanged all-zero; %.0fs remaining)",
-                                             refresh_sec - (now_ts - last_ts))
+                                logger.debug(
+                                    "[Adversarial] Suppressing income_modules_pulse expansion (unchanged all-zero; %.0fs remaining)",
+                                    refresh_sec - (now_ts - last_ts),
+                                )
                             else:
                                 candidates.append({
                                     "action": "income_modules_pulse",
@@ -2210,8 +2745,64 @@ class GuardianCore:
                                     "metadata": {"exploratory": True},
                                 })
                                 existing_actions.add(action)
+                elif action == "delegate_openclaw":
+                    if "delegate_openclaw" not in existing_actions and self._openclaw_available():
+                        candidates.append({
+                            "action": "delegate_openclaw",
+                            "source": "exploration",
+                            "reason": "OpenClaw execution for browser/github/file/app interactions",
+                            "priority_score": 3,
+                            "can_auto_execute": True,
+                            "metadata": {"exploratory": True, "skill_name": "browser_research"},
+                        })
+                        existing_actions.add(action)
         if len(candidates) < min_cands:
-            logger.info("[Exploration] Candidate expansion: %d -> target %d", len(candidates), min_cands)
+            log_autonomy_exploration_routine(
+                logger, "[Exploration] Candidate expansion: %d -> target %d", len(candidates), min_cands
+            )
+        # Bias toward OpenClaw when recent MoltBook guidance indicates external execution work.
+        try:
+            mb_oc_boost = self._moltbook_openclaw_boost()
+            aut_cfg = self._load_autonomy_config()
+            try:
+                sticky_threshold = float(aut_cfg.get("openclaw_moltbook_sticky_threshold", 2.25))
+            except (TypeError, ValueError):
+                sticky_threshold = 2.25
+            sticky_threshold = max(0.0, min(10.0, sticky_threshold))
+            try:
+                sticky_penalty = float(aut_cfg.get("openclaw_moltbook_sticky_penalty_factor", 0.55))
+            except (TypeError, ValueError):
+                sticky_penalty = 0.55
+            sticky_penalty = max(0.05, min(1.0, sticky_penalty))
+            try:
+                repeat_min_count = int(aut_cfg.get("openclaw_moltbook_sticky_repeat_min_count", 2))
+            except (TypeError, ValueError):
+                repeat_min_count = 2
+            repeat_min_count = max(1, min(6, repeat_min_count))
+            if mb_oc_boost > 0.0:
+                for c in candidates:
+                    if str(c.get("action") or "") == "delegate_openclaw":
+                        c["priority_score"] = float(c.get("priority_score", 0) or 0) + mb_oc_boost
+                        c["_moltbook_openclaw_boost"] = mb_oc_boost
+                # Sticky preference: with strong MoltBook->OpenClaw signal, temporarily
+                # downrank repetitive low-value local actions this cycle.
+                if mb_oc_boost >= sticky_threshold and any(str(c.get("action") or "") == "delegate_openclaw" for c in candidates):
+                    recent = [str(a) for a in (getattr(self, "_decider_recent_actions", []) or [])][-8:]
+                    low_value_local = {
+                        "consider_learning",
+                        "consider_dream_cycle",
+                        "consider_adversarial_learning",
+                        "question_probe",
+                        "code_analysis",
+                    }
+                    repeated = {a for a in low_value_local if recent.count(a) >= repeat_min_count}
+                    for c in candidates:
+                        act = str(c.get("action") or "")
+                        if act in repeated:
+                            c["priority_score"] = float(c.get("priority_score", 0) or 0) * sticky_penalty
+                            c["_moltbook_openclaw_sticky_penalty"] = True
+        except Exception as e:
+            logger.debug("MoltBook OpenClaw bias: %s", e)
         # execute_task cooldown: exclude from candidate pool while timer active (any last action)
         try:
             cooldown_min = decider_cfg.get("mistral_execute_task_cooldown_minutes", 0)
@@ -2269,11 +2860,15 @@ class GuardianCore:
             logger.debug("Adversarial execution policy: %s", e)
 
         try:
+            from .autonomy_antiloop import apply_autonomy_antiloop_factors
             from .planner_readiness import (
+                apply_autonomy_loop_load_guards,
                 autonomy_noop_suppression_factor,
                 boost_alternatives_when_autonomy_noop_suppressed,
                 boot_low_value_action_factor,
                 harvest_zero_yield_priority_factor,
+                monetization_priority_factor,
+                startup_antithrash_priority_factor,
             )
 
             for c in candidates:
@@ -2291,6 +2886,26 @@ class GuardianCore:
                 if bf < 1.0:
                     c["priority_score"] = float(c.get("priority_score", 0) or 0) * bf
                     c["_boot_low_value_penalty"] = True
+            _dc = int(getattr(self, "_mistral_decision_cycle", 0) or 0) + 1
+            _recent = list(getattr(self, "_decider_recent_actions", []) or [])
+            apply_autonomy_antiloop_factors(
+                candidates,
+                decision_cycle=_dc,
+                recent_actions=_recent,
+                guardian=self,
+                legacy_startup_antithrash_fn=startup_antithrash_priority_factor,
+            )
+            try:
+                apply_autonomy_loop_load_guards(self, candidates, recent_actions=_recent)
+            except Exception as _lg:
+                logger.debug("autonomy loop load guards: %s", _lg)
+            for c in candidates:
+                md = c.get("metadata") if isinstance(c.get("metadata"), dict) else {}
+                arch_hint = str(md.get("archetype") or md.get("self_task_archetype") or "")
+                mf = monetization_priority_factor(str(c.get("action") or ""), arch_hint, self)
+                if mf < 1.0:
+                    c["priority_score"] = float(c.get("priority_score", 0) or 0) * mf
+                    c["_monetization_readiness_penalty"] = True
             boost_alternatives_when_autonomy_noop_suppressed(
                 candidates,
                 list(decider_cfg.get("mistral_exploratory_actions", []) or []),
@@ -2362,7 +2977,7 @@ class GuardianCore:
                         mod = action_to_mod.get(act, act)
                         if act == repeated_action:
                             c["priority_score"] = c.get("priority_score", 0) - 4.0
-                        elif not used.get(mod):
+                        elif not get_module_last_activity(used, mod):
                             c["priority_score"] = c.get("priority_score", 0) + 3.0
                             c["_novelty_boost"] = True
                     logger.info(
@@ -2371,6 +2986,11 @@ class GuardianCore:
                     )
         except Exception as e:
             logger.debug("Novelty pressure: %s", e)
+
+        try:
+            self._apply_underused_module_fairness(candidates, decider_cfg)
+        except Exception as e:
+            logger.debug("Underused module fairness: %s", e)
 
         # Stagnation/exploration enforcement: restrict to exploratory modules when repetition detected
         try:
@@ -2389,9 +3009,14 @@ class GuardianCore:
                     candidates = explor_candidates
                     for c in candidates:
                         c["priority_score"] = c.get("priority_score", 0) + 5.0
-                    logger.info("[Exploration] Forced exploratory only: %d candidates (rep=%d stagnation=%d) actions=%s",
-                                len(candidates), rep_count, getattr(self, "_stagnation_cycles", 0),
-                                [c.get("action") for c in candidates])
+                    log_autonomy_exploration_routine(
+                        logger,
+                        "[Exploration] Forced exploratory only: %d candidates (rep=%d stagnation=%d) actions=%s",
+                        len(candidates),
+                        rep_count,
+                        getattr(self, "_stagnation_cycles", 0),
+                        [c.get("action") for c in candidates],
+                    )
                 else:
                     logger.warning("[Exploration] Forced exploratory but no exploratory candidates in pool (rep=%d)",
                                    rep_count)
@@ -2472,6 +3097,21 @@ class GuardianCore:
         except Exception as e:
             logger.debug("executable candidate filter: %s", e)
 
+        try:
+            from .planner_readiness import restricted_safe_autonomy_candidate_ok, restricted_safe_startup_mode
+
+            if restricted_safe_startup_mode() and candidates:
+                _rs = [c for c in candidates if restricted_safe_autonomy_candidate_ok(c)]
+                if _rs:
+                    logger.info(
+                        "[AutonomyGate] restricted_safe_startup candidate_filter %d -> %d",
+                        len(candidates),
+                        len(_rs),
+                    )
+                    candidates = _rs
+        except Exception as e:
+            logger.debug("restricted_safe candidate filter: %s", e)
+
         # Pick next action: Mistral primary decider (when enabled) or deterministic highest-priority
         # Mistral-owned: routing choice. Python governor overrides when hard rules violated.
         cfg = self._load_autonomy_config()
@@ -2499,6 +3139,17 @@ class GuardianCore:
                     candidates = candidates_backup
                 if candidates:
                     snapshot = self._build_decider_state_snapshot(candidates)
+                    try:
+                        _cg = self._maybe_collect_chatlog_guidance(
+                            purpose="decision",
+                            action_hint="autonomy action selection and program direction",
+                            force_refresh=False,
+                        )
+                        if isinstance(_cg, dict) and _cg.get("summary"):
+                            snapshot["chatlog_guidance"] = str(_cg.get("summary") or "")[:420]
+                            snapshot["chatlog_guidance_captured_at"] = _cg.get("captured_at")
+                    except Exception as _cg_e:
+                        logger.debug("Chatlog decision guidance: %s", _cg_e)
                     from .planner_readiness import pick_degraded_autonomy_candidate, planner_context_for_snapshot
 
                     planner_runtime_out = planner_context_for_snapshot(self._mistral_decision_cycle)
@@ -2529,24 +3180,56 @@ class GuardianCore:
                     else:
                         logger.info("[Mistral] Decision requested (candidates=%d)", len(candidates))
                         from .mistral_engine import MistralEngine
-                        from .ollama_model_config import get_canonical_ollama_model
+                        from .ollama_model_config import get_ollama_model_pool, pick_ollama_model_for_decider
 
-                        model = get_canonical_ollama_model(log_once=True)
-                        if not hasattr(self, "_mistral_engine") or getattr(self, "_mistral_engine_model", None) != model:
-                            self._mistral_engine = MistralEngine(model=model)
-                            self._mistral_engine_model = model
+                        _dcycle = int(getattr(self, "_mistral_decision_cycle", 0) or 0)
+                        _pool = get_ollama_model_pool()
+                        _has_env = bool(
+                            (os.environ.get("ELYSIA_OLLAMA_MODEL") or os.environ.get("OLLAMA_MODEL") or "").strip()
+                        )
+                        primary_model = pick_ollama_model_for_decider(decision_cycle=_dcycle)
+                        _pool_failover = bool(decider_cfg.get("mistral_ollama_pool_failover", True))
+                        if _has_env or len(_pool) <= 1 or not _pool_failover:
+                            _try_models = [primary_model]
+                        else:
+                            _try_models = [primary_model] + [p for p in _pool if p != primary_model]
+
                         gov_hints: List[str] = []
                         if getattr(self, "_mistral_consecutive_override_count", 0) >= 2:
                             gov_hints.append("low_confidence_local")
                         _stag_thr = int(decider_cfg.get("mistral_force_exploration_stagnation_cycles", 2))
                         if int(snapshot.get("stagnation_count", 0) or 0) >= _stag_thr:
                             gov_hints.append("repeated_low_value_local")
-                        mistral_decision = self._mistral_engine.decide_next_action(
-                            snapshot,
-                            governance_hints=gov_hints,
-                            module_name="planner",
-                            agent_name="orchestrator",
-                        )
+
+                        mistral_decision: Optional[Dict[str, Any]] = None
+                        _pool_failover_retries = 0
+                        for _tmi, model in enumerate(_try_models):
+                            _prev_decider_model = getattr(self, "_mistral_engine_model", None)
+                            if _prev_decider_model != model:
+                                logger.info("[Ollama] Mistral decider model → %s", model)
+                            if not hasattr(self, "_mistral_engine") or getattr(self, "_mistral_engine_model", None) != model:
+                                self._mistral_engine = MistralEngine(model=model)
+                                self._mistral_engine_model = model
+                            _raw_md = self._mistral_engine.decide_next_action(
+                                snapshot,
+                                governance_hints=gov_hints,
+                                module_name="planner",
+                                agent_name="orchestrator",
+                            )
+                            mistral_decision = dict(_raw_md) if isinstance(_raw_md, dict) else {}
+                            _transport_failed = bool(mistral_decision.pop("_planner_transport_failed", False))
+                            if _transport_failed and (_tmi + 1) < len(_try_models):
+                                _pool_failover_retries += 1
+                            if not _transport_failed:
+                                break
+                            if _tmi + 1 < len(_try_models):
+                                logger.warning(
+                                    "[Ollama] Planner transport failed on model=%s; retrying next pool tag (%d/%d)",
+                                    model,
+                                    _tmi + 1,
+                                    len(_try_models),
+                                )
+                        self._mistral_decider_pool_failover_retries = int(_pool_failover_retries)
                         try:
                             _el = float(decider_cfg.get("mistral_extreme_low_confidence_threshold", 0.2))
                             if float(mistral_decision.get("confidence", 1.0) or 0.0) < _el:
@@ -2565,6 +3248,7 @@ class GuardianCore:
                             (_pr[:160] + "…") if len(_pr) > 160 else (_pr or "-"),
                         )
                         best, override_reason = self._apply_governor_to_mistral(mistral_decision, candidates, decider_cfg)
+                        _pipe_tr = (mistral_decision or {}).get("_pipeline_trace") if isinstance(mistral_decision, dict) else None
                         intended = mistral_decision.get("chosen_action", "")
                         _final = (best or {}).get("action", "")
                         logger.info(
@@ -2587,6 +3271,8 @@ class GuardianCore:
                             best = best or max(candidates, key=lambda c: c.get("priority_score", 0))
                             if best:
                                 best = dict(best)
+                                if _pipe_tr:
+                                    best["_pipeline_trace"] = _pipe_tr
                         else:
                             self._mistral_consecutive_override_count = 0
                             self._last_get_next_had_override = False
@@ -2594,6 +3280,8 @@ class GuardianCore:
                                 best = dict(best)
                                 best["_mistral_source"] = "mistral"
                                 best["_mistral_reason"] = mistral_decision.get("reasoning", best.get("reason", ""))
+                                if _pipe_tr:
+                                    best["_pipeline_trace"] = _pipe_tr
             except Exception as e:
                 logger.debug("[Mistral] Fallback to deterministic: %s", e)
 
@@ -2602,6 +3290,8 @@ class GuardianCore:
             if use_mistral and mistral_decision is not None:
                 logger.info("[Mistral] Deterministic fallback used")
 
+        scored_pick_action = str((best or {}).get("action") or "").strip() if best else ""
+        pick_override: Optional[Dict[str, str]] = None
         try:
             candidates, best = self._self_tasking_augment_decision(
                 candidates,
@@ -2618,9 +3308,39 @@ class GuardianCore:
             best = max(candidates, key=lambda c: c.get("priority_score", 0))
 
         if best:
+            try:
+                best = self._maybe_suppress_repeated_system_monitoring_task(best, candidates)
+            except Exception as _sm:
+                logger.debug("system_monitoring suppression pass: %s", _sm)
+            try:
+                from .autonomy_antiloop import (
+                    compute_selection_override,
+                    log_autonomy_pick_override,
+                )
+
+                pick_override = compute_selection_override(scored_pick_action, best)
+                if pick_override:
+                    log_autonomy_pick_override(pick_override)
+            except Exception:
+                pick_override = None
+            try:
+                from .autonomy_antiloop import log_autonomy_antiloop_selection
+
+                log_autonomy_antiloop_selection(best, candidates)
+            except Exception:
+                pass
             self._last_returned_action = best["action"]
             if best["action"] == "execute_task":
                 self._last_execute_task_selected_at = datetime.datetime.now()
+                _bm = best.get("metadata") if isinstance(best.get("metadata"), dict) else {}
+                if str(_bm.get("name") or "").strip().lower() == "system_monitoring":
+                    self._execute_task_monitoring_select_streak = (
+                        int(getattr(self, "_execute_task_monitoring_select_streak", 0) or 0) + 1
+                    )
+                else:
+                    self._execute_task_monitoring_select_streak = 0
+            else:
+                self._execute_task_monitoring_select_streak = 0
             try:
                 from .mission_autonomy import log_selected_action
 
@@ -2639,13 +3359,27 @@ class GuardianCore:
                 )
             except Exception as _e_ms:
                 logger.debug("MissionDirector log_selected: %s", _e_ms)
+            can_auto_out = bool(best.get("can_auto_execute", False))
+            if str(best.get("action") or "") == "execute_task":
+                ac0 = self._load_autonomy_config()
+                if bool(ac0.get("autonomy_auto_execute_guardian_tasks", True)):
+                    bmd = best.get("metadata") if isinstance(best.get("metadata"), dict) else {}
+                    btid = bmd.get("task_id")
+                    btask = None
+                    try:
+                        if btid is not None:
+                            btask = self.tasks.get_task(int(btid))
+                    except (TypeError, ValueError):
+                        btask = None
+                    if btask and str(btask.get("category") or "").lower() in ("system", "safety", "adversarial"):
+                        can_auto_out = True
             out = {
                 "success": True,
                 "action": best["action"],
                 "source": best.get("_mistral_source", best["source"]),
                 "reason": best.get("_mistral_reason", best["reason"]),
                 "priority_score": best.get("priority_score", 0),
-                "can_auto_execute": best.get("can_auto_execute", False),
+                "can_auto_execute": can_auto_out,
                 "candidates": candidates,
                 "candidates_count": len(candidates),
             }
@@ -2662,6 +3396,11 @@ class GuardianCore:
                 }
             if best.get("metadata") is not None:
                 out["metadata"] = best.get("metadata")
+            _abd = best.get("_antiloop")
+            if isinstance(_abd, dict):
+                out["autonomy_antiloop"] = _abd
+            if pick_override:
+                out["selection_override"] = pick_override
             if planner_runtime_out:
                 out["planner_runtime"] = planner_runtime_out
             return out
@@ -2695,9 +3434,421 @@ class GuardianCore:
             "enabled": True,
             "interval_seconds": 120,
             "use_mistral_decision_engine": False,
-            "allowed_actions": ["consider_learning", "consider_dream_cycle", "consider_prompt_evolution", "consider_adversarial_learning", "rebuild_vector"],
+            "allowed_actions": [
+                "consider_learning",
+                "consider_dream_cycle",
+                "consider_prompt_evolution",
+                "consider_adversarial_learning",
+                "rebuild_vector",
+                "delegate_openclaw",
+                "consider_moltbook_direction",
+            ],
             "max_actions_per_hour": 0,
+            "enable_moltbook_direction_guidance": True,
+            "moltbook_guidance_mode": "social",
+            "moltbook_guidance_cooldown_minutes": 30,
+            "moltbook_guidance_max_chars": 1000,
+            "moltbook_guidance_max_pages": 10,
+            "moltbook_guidance_max_depth": 3,
+            "moltbook_guidance_max_links_per_page": 3,
+            "moltbook_guidance_force_link_follow": True,
+            "moltbook_guidance_include_api_home": True,
+            "moltbook_guidance_delegate_openclaw": True,
+            "enable_chatlog_direction_guidance": True,
+            "chatlog_guidance_cooldown_minutes": 20,
+            "chatlog_guidance_max_files": 3,
+            "chatlog_guidance_max_chars": 420,
+            "openclaw_moltbook_sticky_threshold": 2.25,
+            "openclaw_moltbook_sticky_penalty_factor": 0.55,
+            "openclaw_moltbook_sticky_repeat_min_count": 2,
         }
+
+    def _openclaw_system(self) -> Optional[Any]:
+        us = getattr(self, "_unified_system", None)
+        if us is None:
+            return None
+        oc = getattr(us, "openclaw", None)
+        return us if oc is not None else None
+
+    def _openclaw_available(self) -> bool:
+        us = self._openclaw_system()
+        if us is None:
+            return False
+        try:
+            oc = getattr(us, "openclaw", None)
+            return bool(oc and oc.is_available())
+        except Exception:
+            return False
+
+    def _infer_openclaw_skill_for_goal(self, goal_text: str) -> str:
+        blob = str(goal_text or "").lower()
+        if any(t in blob for t in ("github", "repo", "repository", "open-source", "open source")):
+            return "github_scan"
+        if any(t in blob for t in ("browser", "research", "web", "online", "site", "url", "links")):
+            return "browser_research"
+        if any(t in blob for t in ("file", "folder", "directory", "organize", "cleanup", "scan local")):
+            return "file_scan"
+        if any(t in blob for t in ("daily report", "summary", "what did", "since last run")):
+            return "daily_report"
+        if any(t in blob for t in ("app", "external", "repeat", "automation", "connector", "integration")):
+            return "browser_research"
+        return "browser_research"
+
+    def _goal_requires_openclaw(self, goal_text: str) -> bool:
+        blob = str(goal_text or "").lower()
+        cues = (
+            "browser",
+            "research",
+            "github",
+            "repo",
+            "repository",
+            "file organization",
+            "organize files",
+            "scan files",
+            "external app",
+            "connector",
+            "repeated task",
+            "automation",
+            "web",
+        )
+        return any(c in blob for c in cues)
+
+    def _openclaw_goal_signal_strength(self, goal_text: str) -> int:
+        """
+        Estimate how strongly a goal implies external execution work (OpenClaw).
+        Returns 0..4 for candidate-priority biasing.
+        """
+        blob = str(goal_text or "").lower()
+        if not blob.strip():
+            return 0
+        weighted = [
+            ("github", 2),
+            ("repo", 2),
+            ("repository", 2),
+            ("browser", 2),
+            ("research", 2),
+            ("web", 1),
+            ("scan files", 2),
+            ("organize files", 2),
+            ("file organization", 2),
+            ("external app", 2),
+            ("connector", 2),
+            ("automation", 1),
+            ("repeated task", 1),
+            ("daily report", 1),
+        ]
+        score = 0
+        for cue, weight in weighted:
+            if cue in blob:
+                score += weight
+        if any(k in blob for k in ("urgent", "asap", "now", "immediately", "blocking")):
+            score += 1
+        return max(0, min(4, score // 2))
+
+    def _moltbook_openclaw_boost(self) -> float:
+        """
+        Additional delegate_openclaw bias when recent MoltBook guidance implies
+        external execution work (repo/web/file/app interactions).
+        """
+        mb = getattr(self, "_last_moltbook_guidance", None)
+        if not isinstance(mb, dict):
+            return 0.0
+        summary = str(mb.get("summary") or "").strip()
+        if not summary:
+            return 0.0
+        strength = self._openclaw_goal_signal_strength(summary)
+        if strength <= 0:
+            return 0.0
+        # 0.75 .. 3.0 additive priority boost
+        return round(0.75 * float(strength), 3)
+
+    def _maybe_collect_moltbook_guidance(
+        self,
+        *,
+        purpose: str,
+        action_hint: str = "",
+        force_refresh: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Optionally collect bounded MoltBook guidance for autonomy decisions/mutations.
+        Returns cached guidance when within cooldown.
+        """
+        cfg = self._load_autonomy_config()
+        if not bool(cfg.get("enable_moltbook_direction_guidance", True)):
+            return None
+        now = time.time()
+        try:
+            cooldown_min = float(cfg.get("moltbook_guidance_cooldown_minutes", 30))
+        except (TypeError, ValueError):
+            cooldown_min = 30.0
+        cooldown_sec = max(0.0, cooldown_min * 60.0)
+        cached = self._last_moltbook_guidance if isinstance(self._last_moltbook_guidance, dict) else None
+        if (
+            not force_refresh
+            and cached is not None
+            and (now - float(getattr(self, "_moltbook_guidance_last_at", 0.0) or 0.0)) < cooldown_sec
+        ):
+            return dict(cached)
+
+        goal = (
+            "Full interaction scan MoltBook for practical operator direction relevant to Elysia autonomy. "
+            "Go beyond the front page: inspect threads, agents, replies, needs, pain points, and implementation "
+            "signals that can guide decisions, mutations, and program-building tasks."
+        )
+        if action_hint:
+            goal += f" Focus especially on: {action_hint}."
+        try:
+            max_chars = int(cfg.get("moltbook_guidance_max_chars", 420))
+        except (TypeError, ValueError):
+            max_chars = 420
+        max_chars = max(120, min(max_chars, 1200))
+        def _cfg_int(name: str, default: int, cap: int) -> int:
+            try:
+                return max(1, min(cap, int(cfg.get(name, default))))
+            except (TypeError, ValueError):
+                return default
+
+        try:
+            from .bounded_browser.moltbook import MOLTBOOK_DEFAULT_START_URL, browse_moltbook
+
+            mode = str(cfg.get("moltbook_guidance_mode") or "browse").strip().lower()
+            max_pages = _cfg_int("moltbook_guidance_max_pages", 10, 16)
+            max_depth = _cfg_int("moltbook_guidance_max_depth", 3, 5)
+            max_links = _cfg_int("moltbook_guidance_max_links_per_page", 3, 6)
+            force_links = bool(cfg.get("moltbook_guidance_force_link_follow", True))
+            include_api_home = bool(cfg.get("moltbook_guidance_include_api_home", True))
+
+            guidance: Dict[str, Any]
+            if mode in ("social", "full", "full_interaction", "interactive"):
+                from .social_intelligence import run_moltbook_social_session
+
+                social = run_moltbook_social_session(
+                    self,
+                    {
+                        "goal": goal,
+                        "start_url": MOLTBOOK_DEFAULT_START_URL,
+                        "max_pages": max_pages,
+                        "max_depth": max_depth,
+                        "max_links_per_page": max_links,
+                        "force_link_follow": force_links,
+                        "include_api_home": include_api_home,
+                    },
+                )
+                sr = social.get("result") if isinstance(social, dict) else {}
+                if not isinstance(sr, dict):
+                    sr = {}
+                topics = ", ".join(str(x) for x in list(sr.get("topics_recurring") or [])[:8])
+                next_step = str(sr.get("suggested_next_interaction") or "").strip()
+                summary_bits = [
+                    str(sr.get("summary") or "").strip(),
+                    f"Topics: {topics}" if topics else "",
+                    f"Next: {next_step}" if next_step else "",
+                ]
+                summary = " | ".join(x for x in summary_bits if x).strip()
+                if not summary:
+                    summary = str(social.get("error") or "No actionable social guidance captured.").strip()
+                summary = summary[:max_chars]
+                guidance = {
+                    "purpose": purpose,
+                    "action_hint": action_hint,
+                    "mode": mode,
+                    "summary": summary,
+                    "pages_visited": int(sr.get("pages_visited") or 0),
+                    "stop_reason": str(sr.get("stop_reason") or "")[:80],
+                    "thread_id": sr.get("thread_id"),
+                    "ranked_participants": list(sr.get("ranked_participants") or [])[:5],
+                    "drafts": sr.get("drafts"),
+                    "api_home_summary": sr.get("api_home_summary"),
+                    "api_home_error": sr.get("api_home_error"),
+                    "captured_at": datetime.datetime.now().isoformat(),
+                }
+            else:
+                res = browse_moltbook(
+                    goal,
+                    start_url=MOLTBOOK_DEFAULT_START_URL,
+                    max_pages=max_pages,
+                    max_depth=max_depth,
+                    max_links_per_page=max_links,
+                    force_link_follow=force_links,
+                    memory_core=getattr(self, "memory", None),
+                )
+                lines: List[str] = []
+                for step in list(getattr(res, "steps", []) or [])[:6]:
+                    title = str(getattr(step, "title", "") or "").strip()
+                    findings = str(getattr(step, "key_findings", "") or "").strip()
+                    if title and findings:
+                        lines.append(f"{title}: {findings}")
+                    elif findings:
+                        lines.append(findings)
+                    elif title:
+                        lines.append(title)
+                summary = " | ".join(s for s in lines if s).strip()
+                if not summary:
+                    summary = str(getattr(res, "stop_reason", "") or "").strip() or "No actionable guidance captured."
+                summary = summary[:max_chars]
+                guidance = {
+                    "purpose": purpose,
+                    "action_hint": action_hint,
+                    "mode": mode,
+                    "summary": summary,
+                    "pages_visited": len(list(getattr(res, "visited_urls", []) or [])),
+                    "stop_reason": str(getattr(res, "stop_reason", "") or "")[:80],
+                    "captured_at": datetime.datetime.now().isoformat(),
+                }
+
+            if bool(cfg.get("moltbook_guidance_delegate_openclaw", True)) and self._openclaw_available():
+                try:
+                    us = self._openclaw_system()
+                    if us is not None and hasattr(us, "delegate_to_openclaw"):
+                        oc = us.delegate_to_openclaw(
+                            goal=(
+                                "Use browser research to interact with MoltBook beyond the homepage. "
+                                "Stay on moltbook.com, read threads/agents/replies, and return concrete operator "
+                                "needs plus follow-up actions. Do not post or message."
+                            ),
+                            skill_name="browser_research",
+                            args={
+                                "source": "moltbook_guidance",
+                                "start_url": MOLTBOOK_DEFAULT_START_URL,
+                                "allowed_hosts": ["moltbook.com", "www.moltbook.com"],
+                                "read_only": True,
+                            },
+                        )
+                        guidance["openclaw"] = {
+                            "ok": bool(oc.get("ok")) if isinstance(oc, dict) else False,
+                            "task_id": oc.get("task_id") if isinstance(oc, dict) else None,
+                            "skill": "browser_research",
+                        }
+                except Exception as oc_e:
+                    guidance["openclaw_error"] = str(oc_e)[:200]
+            self._last_moltbook_guidance = guidance
+            self._moltbook_guidance_last_at = now
+            try:
+                self.memory.remember(
+                    f"[Autonomy] MoltBook guidance ({purpose}): {summary[:320]}",
+                    category="autonomy",
+                    priority=0.52,
+                )
+            except Exception:
+                pass
+            return dict(guidance)
+        except Exception as e:
+            logger.debug("MoltBook guidance (%s) unavailable: %s", purpose, e)
+            if cached is not None:
+                return dict(cached)
+            return None
+
+    def _maybe_collect_chatlog_guidance(
+        self,
+        *,
+        purpose: str,
+        action_hint: str = "",
+        force_refresh: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Optionally collect local ChatGPT conversation guidance for autonomy decisions.
+        Returns cached guidance when within cooldown.
+        """
+        cfg = self._load_autonomy_config()
+        if not bool(cfg.get("enable_chatlog_direction_guidance", True)):
+            return None
+        now = time.time()
+        try:
+            cooldown_min = float(cfg.get("chatlog_guidance_cooldown_minutes", 20))
+        except (TypeError, ValueError):
+            cooldown_min = 20.0
+        cooldown_sec = max(0.0, cooldown_min * 60.0)
+        cached = self._last_chatlog_guidance if isinstance(self._last_chatlog_guidance, dict) else None
+        if (
+            not force_refresh
+            and cached is not None
+            and (now - float(getattr(self, "_chatlog_guidance_last_at", 0.0) or 0.0)) < cooldown_sec
+        ):
+            return dict(cached)
+
+        try:
+            max_files = int(cfg.get("chatlog_guidance_max_files", 3))
+        except (TypeError, ValueError):
+            max_files = 3
+        max_files = max(1, min(max_files, 8))
+        try:
+            max_chars = int(cfg.get("chatlog_guidance_max_chars", 420))
+        except (TypeError, ValueError):
+            max_chars = 420
+        max_chars = max(120, min(max_chars, 1200))
+        try:
+            from .auto_learning import (
+                get_chatlogs_path,
+                peek_chatlogs_context,
+                resolve_chatlog_search_terms,
+            )
+
+            topics = [action_hint] if action_hint else []
+            terms = resolve_chatlog_search_terms(
+                topics=topics,
+                cfg=cfg,
+                explicit_terms=[
+                    "Elysia goals",
+                    "next steps",
+                    "mutations",
+                    "programs",
+                    "implementation",
+                ],
+            )
+            peek_text = peek_chatlogs_context(
+                chatlogs_path=get_chatlogs_path(),
+                max_files=max_files,
+                search_terms=terms,
+            )
+            lines: List[str] = []
+            # peek_chatlogs_context returns a single formatted str (see auto_learning); do not iterate it as dict rows.
+            if isinstance(peek_text, str) and peek_text.strip():
+                chunks = [c.strip() for c in peek_text.strip().split("\n\n") if c.strip()]
+                for chunk in chunks[:max_files]:
+                    flat = " ".join(chunk.split())
+                    if flat:
+                        lines.append(flat[:220])
+                summary = " | ".join(lines).strip() if lines else peek_text.strip()[:max_chars]
+            elif isinstance(peek_text, list):
+                for item in list(peek_text or [])[:max_files]:
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(item.get("title") or "").strip()
+                    text = str(item.get("text") or "").strip()
+                    preview = text[:180] if text else ""
+                    if title and preview:
+                        lines.append(f"{title}: {preview}")
+                    elif preview:
+                        lines.append(preview)
+                summary = " | ".join(s for s in lines if s).strip()
+            else:
+                summary = ""
+            if not summary:
+                summary = "No local ChatGPT direction captured."
+            summary = summary[:max_chars]
+            guidance = {
+                "purpose": purpose,
+                "action_hint": action_hint,
+                "summary": summary,
+                "items_used": len(lines) if lines else (1 if isinstance(peek_text, str) and peek_text.strip() else 0),
+                "captured_at": datetime.datetime.now().isoformat(),
+            }
+            self._last_chatlog_guidance = guidance
+            self._chatlog_guidance_last_at = now
+            try:
+                self.memory.remember(
+                    f"[Autonomy] Chatlog guidance ({purpose}): {summary[:320]}",
+                    category="autonomy",
+                    priority=0.52,
+                )
+            except Exception:
+                pass
+            return dict(guidance)
+        except Exception as e:
+            logger.debug("Chatlog guidance (%s) unavailable: %s", purpose, e)
+            if cached is not None:
+                return dict(cached)
+            return None
 
     def _load_mistral_decider_config(self) -> Dict[str, Any]:
         """Load config/mistral_decider.json. Governor uses these for override rules."""
@@ -2719,11 +3870,19 @@ class GuardianCore:
             "mistral_skip_auto_execute_when_ask_user": True,
             "mistral_exploratory_actions": [
                 "fractalmind_planning", "question_probe", "code_analysis", "consider_prompt_evolution", "work_on_objective", "consider_mutation",
-                "harvest_income_report", "income_modules_pulse", "tool_registry_pulse",
+                "harvest_income_report",
+                "income_modules_pulse",
+                "tool_registry_pulse",
+                "delegate_openclaw",
+                "consider_moltbook_direction",
             ],
             "mistral_min_candidates": 5,
             "mistral_novelty_same_action_threshold": 3,
             "mistral_execute_task_cooldown_minutes": 15,
+            "mistral_underused_module_boost_minutes": 45,
+            "mistral_underused_module_boost_score": 1.75,
+            "mistral_starved_module_boost_minutes": 180,
+            "mistral_starved_module_boost_score": 3.25,
             "mistral_force_exploration_stagnation_cycles": 2,
             "mistral_extreme_low_confidence_threshold": 0.2,
         }
@@ -2970,20 +4129,46 @@ class GuardianCore:
         top_type = adv_result.get("top_type")
         tasks_created = int(adv_result.get("tasks_created", 0) or 0)
         fc = int(adv_result.get("findings_count", 0) or 0)
+        cap = float(decider_cfg.get("mistral_adversarial_low_yield_penalty_cap", 6.0))
+        cooldown_min = float(decider_cfg.get("mistral_adversarial_low_yield_cooldown_minutes", 90))
+        hard_block_streak = int(decider_cfg.get("mistral_adversarial_low_yield_hard_block_streak", 4))
+
         if fc == 0 and tasks_created == 0:
+            self._adversarial_empty_run_streak = int(getattr(self, "_adversarial_empty_run_streak", 0) or 0) + 1
+            per_empty = float(decider_cfg.get("mistral_adversarial_empty_run_penalty_per_streak", 0.35))
+            hard_empty = int(decider_cfg.get("mistral_adversarial_empty_run_hard_block_streak", 8))
+            self._adversarial_priority_penalty = min(cap, self._adversarial_priority_penalty + per_empty)
+            if self._adversarial_empty_run_streak >= hard_empty:
+                self._adversarial_low_yield_cooldown_until = time.time() + int(cooldown_min * 60)
+                logger.warning(
+                    "[Mistral] Adversarial empty-run hard block: streak=%d cooldown=%.1fm",
+                    self._adversarial_empty_run_streak,
+                    cooldown_min,
+                )
+                self._adversarial_empty_run_streak = 0
+            else:
+                logger.info(
+                    "[Mistral] Adversarial empty run: streak=%d priority_penalty=%.2f",
+                    self._adversarial_empty_run_streak,
+                    self._adversarial_priority_penalty,
+                )
             return
+
+        self._adversarial_empty_run_streak = 0
         fp = f"{top_type}:{str(top)[:80]}" if top else ""
-        if fp and fp == self._adversarial_last_fingerprint and tasks_created == 0:
+
+        if tasks_created > 0:
+            self._adversarial_low_yield_streak = 0
+            self._adversarial_priority_penalty = max(
+                0.0,
+                self._adversarial_priority_penalty - float(decider_cfg.get("mistral_adversarial_penalty_decay", 2.0)),
+            )
+            self._adversarial_low_yield_cooldown_until = None
+        elif fp and fp == self._adversarial_last_fingerprint:
             self._adversarial_low_yield_streak += 1
             per = float(decider_cfg.get("mistral_adversarial_low_yield_penalty_per_streak", 1.5))
-            hard_block_streak = int(decider_cfg.get("mistral_adversarial_low_yield_hard_block_streak", 4))
-            cooldown_min = float(decider_cfg.get("mistral_adversarial_low_yield_cooldown_minutes", 90))
-            self._adversarial_priority_penalty = min(
-                float(decider_cfg.get("mistral_adversarial_low_yield_penalty_cap", 6.0)),
-                self._adversarial_priority_penalty + per,
-            )
+            self._adversarial_priority_penalty = min(cap, self._adversarial_priority_penalty + per)
 
-            # Strong cooldown + candidate suppression when novelty/actionability collapses.
             if self._adversarial_low_yield_streak >= hard_block_streak:
                 self._adversarial_low_yield_cooldown_until = time.time() + int(cooldown_min * 60)
                 logger.warning(
@@ -2998,15 +4183,41 @@ class GuardianCore:
                 self._adversarial_priority_penalty,
                 (str(top)[:60] + "...") if top and len(str(top)) > 60 else top,
             )
-        else:
-            if tasks_created > 0 or (fp and fp != self._adversarial_last_fingerprint):
+        elif tasks_created == 0 and fc > 0:
+            if self._adversarial_last_fingerprint is None:
                 self._adversarial_low_yield_streak = 0
                 self._adversarial_priority_penalty = max(
                     0.0,
                     self._adversarial_priority_penalty - float(decider_cfg.get("mistral_adversarial_penalty_decay", 2.0)),
                 )
-                # Reset cooldown once we get novelty or actionable output.
                 self._adversarial_low_yield_cooldown_until = None
+            else:
+                if fp and fp != self._adversarial_last_fingerprint:
+                    no_task_per = float(
+                        decider_cfg.get("mistral_adversarial_rotating_no_task_penalty_per_streak", 0.5)
+                    )
+                else:
+                    no_task_per = float(
+                        decider_cfg.get("mistral_adversarial_no_task_from_findings_per_streak", 0.75)
+                    )
+                self._adversarial_low_yield_streak += 1
+                self._adversarial_priority_penalty = min(cap, self._adversarial_priority_penalty + no_task_per)
+                if self._adversarial_low_yield_streak >= hard_block_streak:
+                    self._adversarial_low_yield_cooldown_until = time.time() + int(cooldown_min * 60)
+                    logger.warning(
+                        "[Mistral] Adversarial no-task-from-findings hard block: streak=%d cooldown=%.1fm findings=%d",
+                        self._adversarial_low_yield_streak,
+                        cooldown_min,
+                        fc,
+                    )
+                logger.info(
+                    "[Mistral] Adversarial findings without tasks: streak=%d priority_penalty=%.2f findings=%d fp_rotated=%s",
+                    self._adversarial_low_yield_streak,
+                    self._adversarial_priority_penalty,
+                    fc,
+                    bool(fp and fp != self._adversarial_last_fingerprint),
+                )
+
         self._adversarial_last_fingerprint = fp or self._adversarial_last_fingerprint
 
     def _mistral_apply_adversarial_priority_penalty(self, candidates: List[Dict[str, Any]]) -> None:
@@ -3044,6 +4255,106 @@ class GuardianCore:
                 expired_mods.append(mod)
         for m in expired_mods:
             penal.pop(m, None)
+
+    def _apply_underused_module_fairness(
+        self,
+        candidates: List[Dict[str, Any]],
+        decider_cfg: Dict[str, Any],
+    ) -> None:
+        """Give stale autonomy modules a bounded chance to run again."""
+        if not candidates:
+            return
+
+        boost_after_min = float(decider_cfg.get("mistral_underused_module_boost_minutes", 45) or 45)
+        starved_after_min = float(decider_cfg.get("mistral_starved_module_boost_minutes", 180) or 180)
+        boost_score = float(decider_cfg.get("mistral_underused_module_boost_score", 1.75) or 1.75)
+        starved_score = float(decider_cfg.get("mistral_starved_module_boost_score", 3.25) or 3.25)
+        recent_penalty_min = float(
+            decider_cfg.get("mistral_recent_module_repeat_penalty_minutes", 30) or 30
+        )
+        recent_penalty = float(
+            decider_cfg.get("mistral_recent_module_repeat_penalty_score", 2.5) or 2.5
+        )
+        if boost_after_min <= 0 or starved_after_min <= 0:
+            return
+
+        action_to_module = {
+            "consider_learning": "learning",
+            "consider_dream_cycle": "dreams",
+            "consider_prompt_evolution": "prompt_evolver",
+            "consider_adversarial_learning": "adversarial_self_learning",
+            "fractalmind_planning": "fractalmind",
+            "work_on_objective": "longterm_planner",
+            "harvest_income_report": "harvest_engine",
+            "income_modules_pulse": "income_modules",
+            "tool_registry_pulse": "tool_registry",
+            "code_analysis": "analysis_engine",
+            "question_probe": "exploration",
+        }
+
+        def _action_module_key(act: str) -> Optional[str]:
+            mod = action_to_module.get(act)
+            if mod:
+                return mod
+            if act.startswith("use_capability/module/") and act.count("/") >= 2:
+                return act.split("/", 2)[-1].strip() or None
+            if act.startswith("use_capability/tool/"):
+                return "tool_registry"
+            return None
+
+        boosted: List[str] = []
+        penalized: List[str] = []
+        used = getattr(self, "_module_last_invoked", {}) or {}
+        ages: Dict[str, Optional[float]] = {}
+        for c in candidates:
+            act = str(c.get("action") or "")
+            mod = _action_module_key(act)
+            if not mod:
+                continue
+            age_min = activity_age_minutes(used, mod)
+            ages[act] = age_min
+            if age_min is None:
+                delta = starved_score
+            elif age_min >= starved_after_min:
+                delta = starved_score
+            elif age_min >= boost_after_min:
+                delta = boost_score
+            else:
+                continue
+            c["priority_score"] = float(c.get("priority_score", 0) or 0) + delta
+            c["_module_fairness_boost"] = {
+                "module": mod,
+                "age_minutes": None if age_min is None else round(age_min, 1),
+                "boost": round(delta, 2),
+            }
+            age_label = "never" if age_min is None else f"{int(age_min)}m"
+            boosted.append(f"{act}->{mod}:{age_label}+{delta:.2f}")
+
+        if boosted and recent_penalty_min > 0 and recent_penalty > 0:
+            for c in candidates:
+                if c.get("_module_fairness_boost"):
+                    continue
+                act = str(c.get("action") or "")
+                mod = _action_module_key(act)
+                if not mod:
+                    continue
+                age_min = ages.get(act)
+                if age_min is None or age_min >= recent_penalty_min:
+                    continue
+                c["priority_score"] = float(c.get("priority_score", 0) or 0) - recent_penalty
+                c["_module_fairness_repeat_penalty"] = {
+                    "module": mod,
+                    "age_minutes": round(age_min, 1),
+                    "penalty": round(recent_penalty, 2),
+                }
+                penalized.append(f"{act}->{mod}:{int(age_min)}m-{recent_penalty:.2f}")
+
+        if boosted or penalized:
+            logger.info(
+                "[Fairness] Boosted underused module actions: %s%s",
+                ", ".join(boosted[:6]) if boosted else "(none)",
+                f" | penalized recent repeats: {', '.join(penalized[:6])}" if penalized else "",
+            )
 
     def _finish_nonadv_tracking(self, action: Optional[str], meaningful_ok: bool, advanced: bool) -> None:
         if not meaningful_ok or not action:
@@ -3214,6 +4525,80 @@ class GuardianCore:
         if len(recent_overrides) >= 3:
             uncertainty_level = "high"
 
+        context_pipeline: Dict[str, Any] = {"enabled": False}
+        try:
+            from .context_pipeline.runner import run_context_pipeline_for_decider
+
+            sid = f"dc_{getattr(self, '_mistral_decision_cycle', 0)}_{int(time.time())}"
+            provider_degraded = False
+            try:
+                from .openai_degraded import (
+                    is_openai_degraded_active,
+                    openai_insufficient_quota_reasoning_blocked,
+                )
+
+                provider_degraded = bool(
+                    is_openai_degraded_active() or openai_insufficient_quota_reasoning_blocked()
+                )
+            except Exception:
+                provider_degraded = False
+
+            context_pipeline = run_context_pipeline_for_decider(
+                self,
+                active_goal=active_goal,
+                session_id=sid,
+                decider_cfg=decider_cfg,
+                pipeline_signals={
+                    "uncertainty_level": uncertainty_level,
+                    "stagnation_count": getattr(self, "_stagnation_cycles", 0),
+                    "memory_pressure_high": memory_pressure_high,
+                    "decision_objective": (active_goal or "")[:2000],
+                    "task_type": str(decider_cfg.get("context_pipeline_task_type") or "autonomy_decide_next"),
+                    "provider_degraded": provider_degraded,
+                },
+            )
+        except Exception as e:
+            logger.debug("context_pipeline snapshot: %s", e)
+            context_pipeline = {"enabled": False, "error": str(e)[:200]}
+        try:
+            cp_summary = context_pipeline.get("context_pipeline_summary") if isinstance(context_pipeline, dict) else {}
+            packet_status = (cp_summary or {}).get("prompt_packet_status") if isinstance(cp_summary, dict) else {}
+            if isinstance(packet_status, dict):
+                self._last_context_pipeline_packet_status = dict(packet_status)
+                counters = getattr(self, "_context_pipeline_packet_counters", None)
+                if isinstance(counters, dict):
+                    counters["cycles"] = int(counters.get("cycles", 0) or 0) + 1
+                    reason = str(packet_status.get("error_reason") or "none").lower()
+                    key = f"error_{reason}" if f"error_{reason}" in counters else "error_other"
+                    counters[key] = int(counters.get(key, 0) or 0) + 1
+                    if packet_status.get("fallback_used"):
+                        counters["fallback_used"] = int(counters.get("fallback_used", 0) or 0) + 1
+                    elif packet_status.get("ok"):
+                        counters["ok_no_fallback"] = int(counters.get("ok_no_fallback", 0) or 0) + 1
+        except Exception as e:
+            logger.debug("context_pipeline runtime counters: %s", e)
+
+        moltbook_guidance = ""
+        moltbook_guidance_captured_at = None
+        moltbook_pages_visited: Optional[int] = None
+        moltbook_stop_reason = ""
+        try:
+            _mb_snap = self._maybe_collect_moltbook_guidance(
+                purpose="decision",
+                action_hint="autonomy action selection",
+                force_refresh=False,
+            )
+            if isinstance(_mb_snap, dict):
+                moltbook_guidance = str(_mb_snap.get("summary") or "")[:420]
+                moltbook_guidance_captured_at = _mb_snap.get("captured_at")
+                try:
+                    moltbook_pages_visited = int(_mb_snap.get("pages_visited")) if _mb_snap.get("pages_visited") is not None else None
+                except (TypeError, ValueError):
+                    moltbook_pages_visited = None
+                moltbook_stop_reason = str(_mb_snap.get("stop_reason") or "")[:120]
+        except Exception as e:
+            logger.debug("MoltBook snapshot guidance: %s", e)
+
         return {
             "active_goal": active_goal,
             "recent_actions": recent,
@@ -3237,6 +4622,15 @@ class GuardianCore:
             "orchestration_recon": orchestration_recon,
             "pre_decision_task_context": (pdc.get("task_context") or "")[:800],
             "relevant_capabilities": pdc.get("relevant_capabilities") or [],
+            "context_pipeline": context_pipeline,
+            "context_pipeline_packet": context_pipeline.get("context_pipeline_packet"),
+            "context_pipeline_online": context_pipeline.get("context_pipeline_online"),
+            "context_pipeline_summary": context_pipeline.get("context_pipeline_summary"),
+            "context_pipeline_validation": context_pipeline.get("context_pipeline_validation"),
+            "moltbook_guidance": moltbook_guidance,
+            "moltbook_guidance_captured_at": moltbook_guidance_captured_at,
+            "moltbook_pages_visited": moltbook_pages_visited,
+            "moltbook_stop_reason": moltbook_stop_reason,
         }
 
     def _apply_governor_to_mistral(
@@ -3392,7 +4786,7 @@ class GuardianCore:
 
                 def _fallback_score(c):
                     mod = _module_key_for_action(c.get("action") or "")
-                    ts = used.get(mod, "")
+                    ts = get_module_last_activity(used, mod) or ""
                     base = c.get("priority_score", 0)
                     if not ts:  # underused
                         base += expl_score * expl_bias
@@ -3406,16 +4800,14 @@ class GuardianCore:
         # Module cooldown (configurable minutes between same module)
         cooldown_min = decider_cfg.get("mistral_module_cooldown_minutes", 5)
         mod = _module_key_for_action(chosen)
-        invoked = (getattr(self, "_module_last_invoked", None) or {}).get(mod, "")
-        if invoked:
-            try:
-                dt = datetime.datetime.fromisoformat(invoked)
-                if (datetime.datetime.now() - dt).total_seconds() < cooldown_min * 60:
-                    others = [c for c in candidates if _module_key_for_action(c.get("action") or "") != mod]
-                    if others:
-                        return (max(others, key=lambda x: x.get("priority_score", 0)), "module_cooldown")
-            except Exception:
-                pass
+        age_min = activity_age_minutes(
+            getattr(self, "_module_last_invoked", None) or {},
+            mod,
+        )
+        if age_min is not None and age_min < cooldown_min:
+            others = [c for c in candidates if _module_key_for_action(c.get("action") or "") != mod]
+            if others:
+                return (max(others, key=lambda x: x.get("priority_score", 0)), "module_cooldown")
 
         return (best, None)
 
@@ -3623,12 +5015,20 @@ class GuardianCore:
                             f"Recommended capabilities: {caps}\n"
                             "Plan one bounded module or tool execution aligned with the goal."
                         )
+                        _mb_guidance = str((cycle_metadata or {}).get("moltbook_guidance") or "").strip()
+                        if _mb_guidance:
+                            prompt += f"\nMoltBook direction: {_mb_guidance[:320]}"
+                        _cg_guidance = str((cycle_metadata or {}).get("chatlog_guidance") or "").strip()
+                        if _cg_guidance:
+                            prompt += f"\nLocal ChatGPT direction: {_cg_guidance[:320]}"
                         ctx = {
                             "allowed_capabilities": list(caps),
                             "archetype": arch,
                             "goal": goal,
                             "task_id": task_id,
                             "underused_modules": list(task.get("underused_modules") or []),
+                            "moltbook_guidance": _mb_guidance[:320],
+                            "chatlog_guidance": _cg_guidance[:320],
                             "bounded_settings": {
                                 "min_action_confidence": float(
                                     st_cfg.get("bounded_action_min_confidence", 0.35)
@@ -3674,6 +5074,10 @@ class GuardianCore:
                                 else:
                                     capability_ok = self._self_task_payload_useful(rfg)
                                     ok_any = capability_ok or bool(rfg)
+                                _mark_activity_from_execution_payload(
+                                    getattr(self, "_module_last_invoked", None),
+                                    exb,
+                                )
                                 useful_any = self._self_task_payload_useful(rfg)
                                 if isinstance(exb, dict):
                                     pl_ex = exb.get("payload")
@@ -3704,6 +5108,12 @@ class GuardianCore:
                             "self_task_archetype": arch,
                             "underused_modules": list(task.get("underused_modules") or []),
                         }
+                        _mb_guidance = str((cycle_metadata or {}).get("moltbook_guidance") or "").strip()
+                        if _mb_guidance:
+                            inp["moltbook_guidance"] = _mb_guidance[:320]
+                        _cg_guidance = str((cycle_metadata or {}).get("chatlog_guidance") or "").strip()
+                        if _cg_guidance:
+                            inp["chatlog_guidance"] = _cg_guidance[:320]
                         if kind == "module" and name == "task_router":
                             from .routing_task_type import infer_canonical_routing_task_type
 
@@ -3727,8 +5137,15 @@ class GuardianCore:
                             }
                         ex = execute_capability_kind(self, kind, name, inp)
                         last_capability_ex = ex if isinstance(ex, dict) else None
+                        _mark_capability_activity(
+                            getattr(self, "_module_last_invoked", None),
+                            kind,
+                            name,
+                        )
                         ok = bool(ex.get("success"))
-                        res = ex.get("result")
+                        res = ex.get("result_for_governance")
+                        if res is None:
+                            res = normalize_payload(ex.get("result"))
                         last_result = res
                         if ok:
                             capability_ok = True
@@ -4092,6 +5509,12 @@ class GuardianCore:
 
         _portfolio_tracker = PortfolioCycleTracker()
         pending = queue.list_pending_sorted(obj_store, _portfolio_tracker)
+        try:
+            from .planner_readiness import filter_monetization_pending_tasks
+
+            pending = filter_monetization_pending_tasks(pending, self)
+        except Exception as e:
+            logger.debug("filter_monetization_pending_tasks: %s", e)
         if not pending:
             return list(candidates), best
 
@@ -4130,6 +5553,8 @@ class GuardianCore:
             "can_auto_execute": True,
             "metadata": {
                 "self_task_id": top.get("task_id"),
+                "archetype": ta,
+                "self_task_archetype": ta,
                 "cycle_selection_snapshot": _cycle_snap,
             },
         }
@@ -4155,6 +5580,88 @@ class GuardianCore:
         pr = nr.get("planner_runtime") or {}
         return str(pr.get("autonomy_planner_mode") or "") == "degraded_autonomy"
 
+    def _ensure_autonomy_exec_history_ring_unlocked(self):
+        """Create ring if missing; caller must hold :attr:`_autonomy_summary_lock`."""
+        r = getattr(self, "_autonomy_exec_history_ring", None)
+        if r is not None:
+            return r
+        try:
+            mx = max(4, min(48, int(os.environ.get("ELYSIA_AUTONOMY_SUMMARY_MAX_ACTIONS", "12"))))
+        except ValueError:
+            mx = 12
+        self._autonomy_exec_history_ring = deque(maxlen=mx)
+        return self._autonomy_exec_history_ring
+
+    def _abbrev_autonomy_action_for_summary(self, action: str) -> str:
+        a = str(action or "").strip()
+        if not a:
+            return "?"
+        if a.startswith("use_capability/"):
+            rest = a[len("use_capability/") :]
+            if len(rest) > 42:
+                rest = rest[:39] + "…"
+            return f"uc:{rest}"
+        if len(a) > 48:
+            return a[:45] + "…"
+        return a
+
+    def _ensure_autonomy_summary_lock(self):
+        """Lock for summary ring + emit timestamp; lazily created if ``__init__`` did not run (test stubs)."""
+        lk = getattr(self, "_autonomy_summary_lock", None)
+        if lk is None:
+            lk = threading.Lock()
+            self._autonomy_summary_lock = lk
+        return lk
+
+    def _record_autonomy_execution_for_summary(self, action: Optional[str]) -> None:
+        act = str(action or "").strip()
+        if not act:
+            return
+        try:
+            with self._ensure_autonomy_summary_lock():
+                self._ensure_autonomy_exec_history_ring_unlocked().append((time.time(), act))
+        except Exception:
+            pass
+
+    def _maybe_emit_autonomy_recent_summary(self) -> None:
+        """Periodic INFO line of recent auto-executed actions (for operators at INFO level)."""
+        try:
+            interval = float(os.environ.get("ELYSIA_AUTONOMY_RECENT_SUMMARY_SEC", "900"))
+        except ValueError:
+            interval = 900.0
+        if interval <= 0:
+            return
+        with self._ensure_autonomy_summary_lock():
+            ring = getattr(self, "_autonomy_exec_history_ring", None)
+            if not ring or len(ring) == 0:
+                return
+            now = time.time()
+            last_emit = float(getattr(self, "_autonomy_summary_last_emit_ts", 0.0) or 0.0)
+            if now - last_emit < interval:
+                return
+            self._autonomy_summary_last_emit_ts = now
+            try:
+                oldest_ts = float(ring[0][0])
+                span_sec = max(0.0, now - oldest_ts)
+                span_m = int(span_sec // 60)
+            except Exception:
+                span_m = 0
+            parts: List[str] = []
+            try:
+                for _ts, a in ring:
+                    parts.append(self._abbrev_autonomy_action_for_summary(str(a)))
+            except Exception:
+                parts = []
+            chain = " → ".join(parts)
+            if len(chain) > 900:
+                chain = chain[:897] + "…"
+            logger.info(
+                "[AutonomySummary] last %d exec (~%dm span): %s",
+                len(ring),
+                span_m,
+                chain,
+            )
+
     def run_autonomous_cycle(self) -> Dict[str, Any]:
         """
         Autonomous decision loop: get next action and execute if allowed.
@@ -4167,16 +5674,23 @@ class GuardianCore:
         allowed = set(cfg.get("allowed_actions", []))
         if not allowed:
             return result
+        now = datetime.datetime.now()
+        action_times = getattr(self, "_autonomy_action_times", [])
         max_per_hour = cfg.get("max_actions_per_hour", 6)
         if max_per_hour > 0:
-            now = datetime.datetime.now()
-            action_times = getattr(self, "_autonomy_action_times", [])
             action_times = [t for t in action_times if (now - t).total_seconds() < 3600]
             if len(action_times) >= max_per_hour:
                 return result
         try:
             t0 = time.time()
             self._autonomy_cycle_t0 = t0
+            _stale_uc_cfg = cfg.get("use_capability_stale_fingerprint_modules")
+            if _stale_uc_cfg is None:
+                _stale_uc_mods = ["income_generator"]
+            elif isinstance(_stale_uc_cfg, list):
+                _stale_uc_mods = [str(x).strip() for x in _stale_uc_cfg if str(x).strip()]
+            else:
+                _stale_uc_mods = ["income_generator"]
             next_result = self.get_next_action()
             self._last_autonomy_next_result = next_result
             action = next_result.get("action")
@@ -4188,7 +5702,11 @@ class GuardianCore:
                 action, str
             ) and action.startswith("use_capability/")
             self_task_ok = cfg.get("self_generated_tasks", True) and action == "execute_self_task"
-            if action not in allowed and not dynamic_uc and not self_task_ok:
+            openclaw_ok = action == "delegate_openclaw" and self._openclaw_available()
+            moltbook_dir_ok = action == "consider_moltbook_direction" and bool(
+                cfg.get("enable_moltbook_direction_guidance", True)
+            )
+            if action not in allowed and not dynamic_uc and not self_task_ok and not openclaw_ok and not moltbook_dir_ok:
                 return result
             # Mistral asked operator: store question, skip auto-execute this cycle (gives Mistral control to pause)
             decider_cfg = self._load_mistral_decider_config()
@@ -4211,6 +5729,26 @@ class GuardianCore:
                 else:
                     _meta = dict(next_result.get("metadata") or {})
                     _meta["degraded_autonomy"] = self._autonomy_in_degraded_planner_mode(next_result)
+                    try:
+                        mbg = self._maybe_collect_moltbook_guidance(
+                            purpose="self_task",
+                            action_hint="self-generated tasks for adding programs and concrete execution",
+                            force_refresh=False,
+                        )
+                        if isinstance(mbg, dict) and mbg.get("summary"):
+                            _meta["moltbook_guidance"] = str(mbg.get("summary") or "")[:420]
+                    except Exception as mbg_e:
+                        logger.debug("execute_self_task MoltBook guidance: %s", mbg_e)
+                    try:
+                        clg = self._maybe_collect_chatlog_guidance(
+                            purpose="self_task",
+                            action_hint="program-building and implementation priorities from local conversations",
+                            force_refresh=False,
+                        )
+                        if isinstance(clg, dict) and clg.get("summary"):
+                            _meta["chatlog_guidance"] = str(clg.get("summary") or "")[:420]
+                    except Exception as clg_e:
+                        logger.debug("execute_self_task Chatlog guidance: %s", clg_e)
                     ok_m, useful_m, det = self._run_self_generated_task(str(tid), t0, _meta)
                     action_meaningful_success = bool(useful_m or ok_m)
                     self.memory.remember(
@@ -4219,6 +5757,45 @@ class GuardianCore:
                         priority=0.55,
                     )
                 self._module_last_invoked["self_tasking"] = datetime.datetime.now().isoformat()
+            elif action == "delegate_openclaw":
+                action_meaningful_success = False
+                us = self._openclaw_system()
+                md_oc = next_result.get("metadata") if isinstance(next_result.get("metadata"), dict) else {}
+                skill = str(md_oc.get("skill_name") or "").strip() or "browser_research"
+                goal_hint = str(md_oc.get("goal_hint") or "").strip()
+                if us is None or not hasattr(us, "delegate_to_openclaw"):
+                    self.memory.remember(
+                        "[Autonomy] delegate_openclaw skipped: adapter not available",
+                        category="autonomy",
+                        priority=0.45,
+                    )
+                else:
+                    goal_text = goal_hint or str(next_result.get("reason") or "Autonomous OpenClaw delegation")
+                    try:
+                        oc_res = us.delegate_to_openclaw(goal=goal_text, skill_name=skill, args={"source": "autonomy_loop"})
+                        action_meaningful_success = bool(oc_res.get("ok"))
+                        score = oc_res.get("score") if isinstance(oc_res.get("score"), dict) else {}
+                        self.memory.remember(
+                            f"[Autonomy] delegate_openclaw skill={skill} ok={bool(oc_res.get('ok'))} "
+                            f"success_score={float(score.get('success_score', 0.0)):.2f}",
+                            category="autonomy",
+                            priority=0.6 if action_meaningful_success else 0.45,
+                            metadata={
+                                "type": "openclaw_task_result",
+                                "skill": skill,
+                                "task_id": oc_res.get("task_id"),
+                                "ok": bool(oc_res.get("ok")),
+                                "score": score,
+                            },
+                        )
+                    except Exception as e:
+                        logger.debug("Autonomy delegate_openclaw: %s", e)
+                        self.memory.remember(
+                            f"[Autonomy] delegate_openclaw error: {e}",
+                            category="error",
+                            priority=0.6,
+                        )
+                self._module_last_invoked["openclaw"] = datetime.datetime.now().isoformat()
             elif action == "consider_learning":
                 try:
                     if getattr(self, "elysia_loop", None) and hasattr(self.elysia_loop, "submit_task"):
@@ -4234,13 +5811,42 @@ class GuardianCore:
                     self._trigger_introspection_learning()
                 self._module_last_invoked["learning"] = datetime.datetime.now().isoformat()
                 self.memory.remember("[Autonomy] Executed consider_learning", category="autonomy", priority=0.6)
+            elif action == "consider_moltbook_direction":
+                action_meaningful_success = False
+                md_hint = ""
+                try:
+                    md = next_result.get("metadata") if isinstance(next_result.get("metadata"), dict) else {}
+                    md_hint = str(md.get("action_hint") or next_result.get("reason") or "")[:280]
+                    mbg = self._maybe_collect_moltbook_guidance(
+                        purpose="autonomy_action",
+                        action_hint=md_hint or "bounded MoltBook refresh for decisions and planning",
+                        force_refresh=True,
+                    )
+                    action_meaningful_success = bool(
+                        isinstance(mbg, dict) and bool(str(mbg.get("summary") or "").strip())
+                    )
+                    self.memory.remember(
+                        f"[Autonomy] consider_moltbook_direction ok={action_meaningful_success} pages="
+                        f"{(mbg or {}).get('pages_visited', '-')}",
+                        category="autonomy",
+                        priority=0.58 if action_meaningful_success else 0.48,
+                    )
+                except Exception as e:
+                    logger.debug("consider_moltbook_direction: %s", e)
+                    self.memory.remember(
+                        f"[Autonomy] consider_moltbook_direction error: {e}",
+                        category="error",
+                        priority=0.5,
+                    )
+                self._module_last_invoked["moltbook"] = datetime.datetime.now().isoformat()
             elif action == "consider_dream_cycle":
                 def _do_dream_cycle() -> None:
                     try:
                         thoughts = self.dreams.begin_dream_cycle(1)
                         if thoughts:
                             joined = "; ".join(str(t) for t in thoughts)
-                            logger.info(
+                            log_autonomy_routine(
+                                logger,
                                 "[Dream cycle] finished (%d thought(s); text in [Dream] lines above)",
                                 len(thoughts),
                             )
@@ -4250,7 +5856,7 @@ class GuardianCore:
                                 priority=0.6,
                             )
                         else:
-                            logger.info("[Dream cycle] finished (no thoughts composed)")
+                            log_autonomy_routine(logger, "[Dream cycle] finished (no thoughts composed)")
                             self.memory.remember(
                                 "[Autonomy] consider_dream_cycle (no thoughts composed)",
                                 category="autonomy",
@@ -4306,6 +5912,8 @@ class GuardianCore:
                     loop = getattr(self, "elysia_loop", None)
                     tq = getattr(loop, "task_queue", None) if loop else None
                     if not tq:
+                        self._process_queue_unchanged_streak = 0
+                        self._process_queue_noop_deprioritize_until = 0.0
                         try:
                             from .planner_readiness import record_autonomy_noop_outcome
 
@@ -4313,13 +5921,45 @@ class GuardianCore:
                         except Exception:
                             pass
                     else:
+                        # process_queue must actively unblock the worker, not only observe it.
+                        # Previously we only slept 150ms; if the loop was stopped or paused,
+                        # queue totals never moved and autonomy treated every run as a no-op.
+                        started_or_resumed = False
+                        if loop:
+                            if not getattr(loop, "running", False):
+                                try:
+                                    loop.start()
+                                    started_or_resumed = True
+                                except Exception as _e:
+                                    logger.debug("process_queue elysia_loop.start: %s", _e)
+                            if getattr(loop, "paused", False):
+                                try:
+                                    q_probe = int(tq.get_queue_size())
+                                except Exception:
+                                    q_probe = 0
+                                if q_probe > 0:
+                                    try:
+                                        loop.resume()
+                                        started_or_resumed = True
+                                    except Exception as _e:
+                                        logger.debug("process_queue elysia_loop.resume: %s", _e)
                         before_sz = int(tq.get_queue_size())
                         before_tot = int(tq.get_task_count())
-                        time.sleep(0.15)
+                        if started_or_resumed:
+                            try:
+                                probe_wait = float(
+                                    os.environ.get("ELYSIA_PROCESS_QUEUE_PROBE_SEC", "1.0")
+                                )
+                            except ValueError:
+                                probe_wait = 1.0
+                            time.sleep(max(0.15, probe_wait))
+                        else:
+                            time.sleep(0.15)
                         after_sz = int(tq.get_queue_size())
                         after_tot = int(tq.get_task_count())
                         changed = before_sz != after_sz or before_tot != after_tot
-                        logger.info(
+                        log_autonomy_routine(
+                            logger,
                             "[Autonomy] process_queue snapshot before=(q=%s,tot=%s) after=(q=%s,tot=%s) changed=%s",
                             before_sz,
                             before_tot,
@@ -4328,6 +5968,8 @@ class GuardianCore:
                             changed,
                         )
                         if changed:
+                            self._process_queue_unchanged_streak = 0
+                            self._process_queue_noop_deprioritize_until = 0.0
                             try:
                                 from .planner_readiness import clear_autonomy_noop_streak
 
@@ -4335,6 +5977,20 @@ class GuardianCore:
                             except Exception:
                                 pass
                         else:
+                            stq = int(getattr(self, "_process_queue_unchanged_streak", 0) or 0) + 1
+                            self._process_queue_unchanged_streak = stq
+                            if stq == 1:
+                                log_autonomy_routine(
+                                    logger,
+                                    "[AutonomySelector] process_queue_probe unchanged_totals streak=1 "
+                                    "— early_deprioritize_on_repeat_if_totals_stay_flat",
+                                )
+                            if stq >= 2:
+                                try:
+                                    _pq_cd = float(os.environ.get("ELYSIA_PROCESS_QUEUE_STALE_SUPPRESS_SEC", "1200"))
+                                except ValueError:
+                                    _pq_cd = 1200.0
+                                self._process_queue_noop_deprioritize_until = time.time() + max(300.0, _pq_cd)
                             try:
                                 from .planner_readiness import record_autonomy_noop_outcome
 
@@ -4355,7 +6011,7 @@ class GuardianCore:
                 self._pending_operator_question = probe_msg
                 self._module_last_invoked["exploration"] = datetime.datetime.now().isoformat()
                 self.memory.remember(f"[Autonomy] Executed question_probe: {probe_msg[:80]}...", category="autonomy", priority=0.6)
-                logger.info("[Exploration] question_probe: %s", probe_msg[:100])
+                log_autonomy_exploration_routine(logger, "[Exploration] question_probe: %s", probe_msg[:100])
             elif action == "code_analysis":
                 try:
                     analysis_result = self.analysis_engine.run("REPO_SUMMARY", [], task_id=None)
@@ -4366,7 +6022,7 @@ class GuardianCore:
                         category="autonomy", priority=0.6
                     )
                     self._module_last_invoked["analysis_engine"] = datetime.datetime.now().isoformat()
-                    logger.info("[Exploration] code_analysis: repo summary completed")
+                    log_autonomy_exploration_routine(logger, "[Exploration] code_analysis: repo summary completed")
                 except Exception as e:
                     logger.debug("Autonomy code_analysis: %s", e)
                     self.memory.remember(f"[Autonomy] code_analysis failed: {e}", category="error", priority=0.7)
@@ -4399,6 +6055,32 @@ class GuardianCore:
                             mistral_r = (next_result.get("reason") or "")[:500]
                             if mistral_r:
                                 instr = f"{instr}\n\nMistral decision context: {mistral_r}"
+                            try:
+                                mbg = self._maybe_collect_moltbook_guidance(
+                                    purpose="mutation",
+                                    action_hint="mutation direction and safe program improvements",
+                                    force_refresh=False,
+                                )
+                                if isinstance(mbg, dict) and mbg.get("summary"):
+                                    instr = (
+                                        f"{instr}\n\nMoltBook direction (bounded read-only signal): "
+                                        f"{str(mbg.get('summary') or '')[:420]}"
+                                    ).strip()
+                            except Exception as mbg_e:
+                                logger.debug("consider_mutation MoltBook guidance: %s", mbg_e)
+                            try:
+                                clg = self._maybe_collect_chatlog_guidance(
+                                    purpose="mutation",
+                                    action_hint="code mutation and adding programs from operator conversations",
+                                    force_refresh=False,
+                                )
+                                if isinstance(clg, dict) and clg.get("summary"):
+                                    instr = (
+                                        f"{instr}\n\nLocal ChatGPT direction: "
+                                        f"{str(clg.get('summary') or '')[:420]}"
+                                    ).strip()
+                            except Exception as clg_e:
+                                logger.debug("consider_mutation Chatlog guidance: %s", clg_e)
                             new_code = self.mutation.generate_mutation_with_openai(
                                 rel,
                                 instr,
@@ -4423,7 +6105,9 @@ class GuardianCore:
                                         category="autonomy",
                                         priority=0.65,
                                     )
-                                    logger.info("[Exploration] consider_mutation: OpenAI mutation applied %s", rel)
+                                    log_autonomy_exploration_routine(
+                                        logger, "[Exploration] consider_mutation: OpenAI mutation applied %s", rel
+                                    )
                                 except Exception as me:
                                     ran_openai = True
                                     logger.warning("consider_mutation OpenAI apply failed: %s", me)
@@ -4434,7 +6118,9 @@ class GuardianCore:
                                     )
                             else:
                                 ran_openai = True
-                                logger.info("[Exploration] consider_mutation: OpenAI returned no code for %s", rel)
+                                log_autonomy_exploration_routine(
+                                    logger, "[Exploration] consider_mutation: OpenAI returned no code for %s", rel
+                                )
                                 self.memory.remember(
                                     f"[Autonomy] consider_mutation: OpenAI produced no code for {rel}",
                                     category="autonomy",
@@ -4454,7 +6140,7 @@ class GuardianCore:
                                 category="autonomy",
                                 priority=0.5,
                             )
-                        logger.info("[Exploration] consider_mutation: status check completed")
+                        log_autonomy_exploration_routine(logger, "[Exploration] consider_mutation: status check completed")
                     self._module_last_invoked["mutation"] = datetime.datetime.now().isoformat()
                 except Exception as e:
                     logger.debug("Autonomy consider_mutation: %s", e)
@@ -4528,9 +6214,8 @@ class GuardianCore:
                     _prev_fp = getattr(self, "_fractalmind_last_artifact_fingerprint", None)
                     if _fp != _prev_fp:
                         self._fractalmind_repetition_suppress_until = None
-                    if low_yield:
-                        self._fractalmind_same_artifact_streak = 0
-                    elif _fp == _prev_fp:
+                    # Same fingerprint = same planning surface (including repeated low-yield / low-change).
+                    if _fp == _prev_fp:
                         self._fractalmind_same_artifact_streak = (
                             getattr(self, "_fractalmind_same_artifact_streak", 0) + 1
                         )
@@ -4538,30 +6223,60 @@ class GuardianCore:
                         self._fractalmind_same_artifact_streak = 0
                     self._fractalmind_last_artifact_fingerprint = _fp
                     try:
-                        _need = max(2, int(os.environ.get("ELYSIA_FRACTALMIND_REPEAT_STREAK_BEFORE_SUPPRESS", "3")))
+                        _need = max(1, int(os.environ.get("ELYSIA_FRACTALMIND_REPEAT_STREAK_BEFORE_SUPPRESS", "1")))
                     except ValueError:
-                        _need = 3
+                        _need = 1
                     if self._fractalmind_same_artifact_streak >= _need:
                         try:
-                            _cool = float(os.environ.get("ELYSIA_FRACTALMIND_REPEAT_COOLDOWN_SEC", "900"))
+                            _cool = float(os.environ.get("ELYSIA_FRACTALMIND_REPEAT_COOLDOWN_SEC", "1500"))
                         except ValueError:
-                            _cool = 900.0
-                        self._fractalmind_repetition_suppress_until = time.time() + _cool
-                        logger.info(
-                            "[FractalMind] Repeated identical planning artifact — suppression %.0fs",
-                            _cool,
+                            _cool = 1500.0
+                        # Escalate suppression window on longer identical-artifact streaks.
+                        _extra = max(
+                            0,
+                            int(getattr(self, "_fractalmind_same_artifact_streak", 0) or 0) - _need,
                         )
-                        self._fractalmind_same_artifact_streak = 0
+                        _cool_eff = _cool * min(3.0, 1.0 + (0.5 * _extra))
+                        self._fractalmind_repetition_suppress_until = time.time() + _cool_eff
+                        logger.info(
+                            "[FractalMind] Repeated identical planning artifact — suppression %.0fs | "
+                            "[AutonomySelector] fractalmind_planning cooldown=%.0fs reason=unchanged_artifact_fingerprint",
+                            _cool_eff,
+                            _cool_eff,
+                        )
+                        try:
+                            from .planner_readiness import record_autonomy_noop_outcome
+
+                            record_autonomy_noop_outcome(
+                                "fractalmind_planning",
+                                reason="identical_planning_artifact",
+                            )
+                        except Exception:
+                            pass
 
                     self._last_fractalmind_artifact = artifact
                     self._module_last_invoked["fractalmind"] = datetime.datetime.now().isoformat()
-                    self.memory.remember(
-                        f"[Autonomy] fractalmind_planning artifact: count={count} low_yield={low_yield}",
-                        category="autonomy",
-                        priority=0.6,
-                        metadata=artifact,
+                    _fm_pri = (
+                        0.42
+                        if low_yield or (_fp == _prev_fp and _prev_fp is not None)
+                        else 0.5
                     )
-                    logger.info("[Exploration] fractalmind_planning: artifact-ready=%s count=%d low_yield=%s", True, count, low_yield)
+                    self._remember_autonomy_event_if_fresh(
+                        "fractalmind_planning_artifact",
+                        f"[Autonomy] fractalmind_planning artifact: count={count} low_yield={low_yield}",
+                        signature=_fp,
+                        category="autonomy",
+                        priority=_fm_pri,
+                        metadata=artifact,
+                        min_interval_sec=1800.0 if _fp == _prev_fp and _prev_fp is not None else 30.0,
+                    )
+                    log_autonomy_exploration_routine(
+                        logger,
+                        "[Exploration] fractalmind_planning: artifact-ready=%s count=%d low_yield=%s",
+                        True,
+                        count,
+                        low_yield,
+                    )
                 except Exception as e:
                     logger.debug("Autonomy fractalmind_planning: %s", e)
                     self.memory.remember(f"[Autonomy] fractalmind_planning failed: {e}", category="error", priority=0.7)
@@ -4577,7 +6292,9 @@ class GuardianCore:
                             category="autonomy",
                             priority=0.55,
                         )
-                        logger.info("[Exploration] harvest_income_report: total=%s sales=%s", total, sales)
+                        log_autonomy_exploration_routine(
+                            logger, "[Exploration] harvest_income_report: total=%s sales=%s", total, sales
+                        )
                         try:
                             from .planner_readiness import (
                                 clear_autonomy_noop_streak,
@@ -4671,8 +6388,31 @@ class GuardianCore:
                     else:
                         self._autonomy_last_advanced = prev_sig is None or prev_sig != sig
                     self._income_modules_prev_sig_for_nonadv = sig
-                    self.memory.remember(f"[Autonomy] income_modules_pulse: {msg[:200]}", category="autonomy", priority=0.55)
-                    logger.info("[Exploration] income_modules_pulse: %s", msg[:120])
+                    if _all_zero_income and _same_income_sig:
+                        self._income_pulse_same_zero_sig_streak = (
+                            int(getattr(self, "_income_pulse_same_zero_sig_streak", 0) or 0) + 1
+                        )
+                    else:
+                        self._income_pulse_same_zero_sig_streak = 0
+                    _mem_pri = 0.55
+                    if int(getattr(self, "_income_pulse_same_zero_sig_streak", 0) or 0) >= 2:
+                        _mem_pri = 0.38
+                    if _all_zero_income and _same_income_sig:
+                        self._remember_autonomy_event_if_fresh(
+                            "income_modules_pulse_zero_sig",
+                            f"[Autonomy] income_modules_pulse: {msg[:200]}",
+                            signature=sig,
+                            category="autonomy",
+                            priority=_mem_pri,
+                            min_interval_sec=1800.0,
+                        )
+                    else:
+                        self.memory.remember(
+                            f"[Autonomy] income_modules_pulse: {msg[:200]}",
+                            category="autonomy",
+                            priority=_mem_pri,
+                        )
+                    log_autonomy_exploration_routine(logger, "[Exploration] income_modules_pulse: %s", msg[:120])
                     try:
                         from .mission_autonomy import mission_autonomy_feedback_income_pulse
 
@@ -4680,6 +6420,21 @@ class GuardianCore:
                             all_zero=_all_zero_income,
                             same_signature=_same_income_sig,
                         )
+                    except Exception:
+                        pass
+                    try:
+                        from .planner_readiness import (
+                            clear_autonomy_noop_streak,
+                            record_autonomy_noop_outcome,
+                        )
+
+                        if _all_zero_income and _same_income_sig:
+                            record_autonomy_noop_outcome(
+                                "income_modules_pulse",
+                                reason="repeated_all_zero_same_signature",
+                            )
+                        else:
+                            clear_autonomy_noop_streak("income_modules_pulse")
                     except Exception:
                         pass
                     if self._autonomy_in_degraded_planner_mode():
@@ -4698,7 +6453,7 @@ class GuardianCore:
                                 )
                         except Exception:
                             pass
-                    self._module_last_invoked["income_modules"] = datetime.datetime.now().isoformat()
+                    mark_module_activity(self._module_last_invoked, "income_modules")
                 except Exception as e:
                     logger.debug("Autonomy income_modules_pulse: %s", e)
                     self._autonomy_last_advanced = False
@@ -4712,7 +6467,8 @@ class GuardianCore:
                     cd_until = float(getattr(self, "_tool_registry_pulse_cooldown_until", 0.0) or 0.0)
                     if time.time() < cd_until:
                         rem = int(cd_until - time.time())
-                        logger.info(
+                        log_autonomy_exploration_routine(
+                            logger,
                             "[Exploration] tool_registry_pulse suppressed (cooldown %ds; prefer other exploration)",
                             rem,
                         )
@@ -4734,14 +6490,17 @@ class GuardianCore:
                                 category="autonomy",
                                 priority=0.5,
                             )
-                            logger.info("[Autonomy] tool_registry_pulse skipped (minimal tool set not met)")
+                            log_autonomy_routine(
+                                logger, "[Autonomy] tool_registry_pulse skipped (minimal tool set not met)"
+                            )
                         else:
                             n, _names, diag = self._tool_registry_pulse_metrics(tr)
                             surf = diag.get("surface") if isinstance(diag.get("surface"), dict) else {}
                             excl = diag.get("exclusion_hint") or surf.get("filter_reason") or ""
                             if excl == "ok":
                                 excl = ""
-                            logger.info(
+                            log_autonomy_exploration_routine(
+                                logger,
                                 "[Exploration] tool_registry_pulse diag id=%s cls=%s raw_list_len=%s map=%s usable=%s "
                                 "return_type=%s raw_first=%s coerced_first=%s filter=%s coerce=%s",
                                 diag.get("registry_id"),
@@ -4782,7 +6541,8 @@ class GuardianCore:
                                     route_hint = f" route_registry_health->{route_to}"
                                     tied = r.get("diagnostic_tied_tools_at_winner_score")
                                     pick_rule = r.get("diagnostic_pick_rule") or ""
-                                    logger.info(
+                                    log_autonomy_exploration_routine(
+                                        logger,
                                         "[Exploration] registry_router_health_probe (task_type=routing_probe) "
                                         "reply routed_to=%s score=%s tied_at_winner_score=%s pick_rule=%s "
                                         "(health check only — no web/exec execution; tie-break policy, not tool visibility)",
@@ -4798,7 +6558,9 @@ class GuardianCore:
                                 category="autonomy",
                                 priority=0.55,
                             )
-                            logger.info("[Exploration] tool_registry_pulse: %d usable tools%s", n, route_hint)
+                            log_autonomy_exploration_routine(
+                                logger, "[Exploration] tool_registry_pulse: %d usable tools%s", n, route_hint
+                            )
                             self._module_last_invoked["tool_registry"] = datetime.datetime.now().isoformat()
                             meaningful = n >= 3
                             if isinstance(r, dict):
@@ -4821,9 +6583,20 @@ class GuardianCore:
                     submitted = 0
                     objective_id = None
                     if planner:
-                        # Pick first active objective and ensure it has pending tasks.
+                        md_wo = next_result.get("metadata") if isinstance(next_result.get("metadata"), dict) else {}
+                        preferred_objective_id = str(md_wo.get("objective_id") or "").strip()
+
+                        # Pick the best actionable objective and ensure it has pending tasks.
                         active = []
-                        if hasattr(planner, "list_active_objectives"):
+                        if hasattr(planner, "pick_next_actionable_objective"):
+                            picked = planner.pick_next_actionable_objective(preferred_objective_id=preferred_objective_id)
+                            if picked is not None:
+                                active = [picked]
+                        elif preferred_objective_id and hasattr(planner, "get_objective"):
+                            preferred = planner.get_objective(preferred_objective_id)
+                            if preferred is not None:
+                                active = [preferred]
+                        elif hasattr(planner, "list_active_objectives"):
                             active = planner.list_active_objectives() or []
                         elif hasattr(planner, "objectives"):
                             try:
@@ -4842,7 +6615,10 @@ class GuardianCore:
                             # Snapshot before for outcome scoring
                             before_pending = 0
                             try:
-                                if hasattr(planner, "get_objective_progress") and objective_id:
+                                if hasattr(planner, "get_objective_actionability") and objective_id:
+                                    actionability = planner.get_objective_actionability(objective_id) or {}
+                                    before_pending = int(actionability.get("pending_tasks", 0) or 0)
+                                elif hasattr(planner, "get_objective_progress") and objective_id:
                                     prog = planner.get_objective_progress(objective_id) or {}
                                     before_pending = int(prog.get("task_statuses", {}).get("pending", 0) or 0)
                             except Exception:
@@ -4850,6 +6626,8 @@ class GuardianCore:
 
                             # Breakdown only if no planned tasks exist yet.
                             task_ids = getattr(obj, "tasks", None) if obj is not None else None
+                            if task_ids is None and isinstance(obj, dict):
+                                task_ids = obj.get("tasks")
                             if (not task_ids) and isinstance(obj, object) and hasattr(planner, "breakdown_objective"):
                                 import asyncio
                                 loop = asyncio.new_event_loop()
@@ -4882,7 +6660,8 @@ class GuardianCore:
                             self._mistral_outcome_boost["work_on_objective"] = {"cycles": 3, "value": 4.0 * score}
                             self._last_work_on_objective_score = score
 
-                            logger.info(
+                            log_autonomy_routine(
+                                logger,
                                 "[Outcome] work_on_objective objective_id=%s tasks_created=%d submitted=%d score=%.2f changed=%s",
                                 objective_id,
                                 tasks_created,
@@ -4893,8 +6672,9 @@ class GuardianCore:
                             action_meaningful_success = bool(state_changed)
                             self._autonomy_last_advanced = bool(state_changed)
                             if not state_changed:
-                                logger.info(
-                                    "[Outcome] work_on_objective no-op (tasks_created=0, changed=False) — treated as low-value for cooldowns"
+                                log_autonomy_routine(
+                                    logger,
+                                    "[Outcome] work_on_objective no-op (tasks_created=0, changed=False) — treated as low-value for cooldowns",
                                 )
                                 try:
                                     from .planner_readiness import record_autonomy_noop_outcome
@@ -4928,11 +6708,11 @@ class GuardianCore:
                                 priority=0.6,
                             )
                         else:
-                            self.memory.remember("[Autonomy] work_on_objective: no active objectives found", category="autonomy", priority=0.5)
+                            self.memory.remember("[Autonomy] work_on_objective: no actionable objectives found", category="autonomy", priority=0.5)
                             try:
                                 from .planner_readiness import record_autonomy_noop_outcome
 
-                                record_autonomy_noop_outcome("work_on_objective", reason="no_active_objectives")
+                                record_autonomy_noop_outcome("work_on_objective", reason="no_actionable_objectives")
                             except Exception:
                                 pass
                     else:
@@ -4947,6 +6727,177 @@ class GuardianCore:
                 except Exception as e:
                     logger.debug("Autonomy work_on_objective: %s", e)
                     self.memory.remember(f"[Autonomy] work_on_objective error: {e}", category="error", priority=0.7)
+            elif action == "execute_task":
+                action_meaningful_success = False
+                md_et = next_result.get("metadata") if isinstance(next_result.get("metadata"), dict) else {}
+                tid_raw = md_et.get("task_id")
+                name_hint = str(md_et.get("name") or "").strip()
+                tid_int: Optional[int] = None
+                try:
+                    if tid_raw is not None:
+                        tid_int = int(tid_raw)
+                except (TypeError, ValueError):
+                    tid_int = None
+                task_row = self.tasks.get_task(tid_int) if tid_int is not None else None
+                if not task_row:
+                    logger.warning("[Autonomy] execute_task: missing or unknown task_id=%s", tid_raw)
+                    self.memory.remember(
+                        f"[Autonomy] execute_task skipped: invalid task_id={tid_raw}",
+                        category="error",
+                        priority=0.55,
+                    )
+                else:
+                    cat = str(task_row.get("category") or "").lower()
+                    nm = str(task_row.get("name") or "").strip().lower()
+                    if cat not in ("system", "safety", "adversarial"):
+                        self.tasks.log_task(tid_int, "[Autonomy] execute_task skipped (non auto category)", "info")
+                        action_meaningful_success = False
+                    else:
+                        self.tasks.update_task_status(tid_int, "in_progress")
+                        detail = ""
+                        try:
+                            if nm == "system_monitoring":
+                                mon = getattr(self, "monitor", None)
+                                if mon is not None and hasattr(mon, "get_system_health"):
+                                    h = mon.get_system_health()
+                                    detail = f"health_score={h.get('health_score')} status={h.get('status')}"
+                                    action_meaningful_success = True
+                                    try:
+                                        if hasattr(mon, "get_health_summary"):
+                                            summ = mon.get_health_summary()
+                                            if summ:
+                                                self.memory.remember(summ[:500], category="monitoring", priority=0.52)
+                                    except Exception:
+                                        pass
+                                else:
+                                    self.tasks.log_task(
+                                        tid_int,
+                                        "[Autonomy] system_monitoring tick (monitor unavailable)",
+                                        "warning",
+                                    )
+                                    action_meaningful_success = False
+                            elif nm == "safety_validation" and hasattr(self, "run_safety_check"):
+                                sr = self.run_safety_check()
+                                detail = str(sr.get("status", sr))[:120] if isinstance(sr, dict) else "ok"
+                                action_meaningful_success = True
+                            else:
+                                self.tasks.log_task(tid_int, f"[Autonomy] tick name={nm}", "progress")
+                                detail = f"generic category={cat}"
+                                action_meaningful_success = True
+                        except Exception as ex:
+                            logger.warning("[Autonomy] execute_task error: %s", ex)
+                            detail = str(ex)[:200]
+                            action_meaningful_success = False
+                        finally:
+                            try:
+                                self.tasks.update_task_status(tid_int, "pending")
+                            except Exception:
+                                pass
+                        if detail:
+                            self.tasks.log_task(tid_int, "[Autonomy] " + detail, "info")
+                        self.memory.remember(
+                            f"[Autonomy] execute_task id={tid_int} name={name_hint or nm} meaningful={action_meaningful_success}",
+                            category="autonomy",
+                            priority=0.58,
+                        )
+                        log_autonomy_routine(
+                            logger,
+                            "[Autonomy] execute_task done task_id=%s name=%s meaningful=%s",
+                            tid_int,
+                            name_hint or nm,
+                            action_meaningful_success,
+                        )
+                        try:
+                            from .planner_readiness import clear_autonomy_noop_streak, record_autonomy_noop_outcome
+
+                            if action_meaningful_success:
+                                clear_autonomy_noop_streak("execute_task")
+                            else:
+                                record_autonomy_noop_outcome(
+                                    "execute_task",
+                                    reason="autonomy_dispatch_failed_or_empty",
+                                )
+                        except Exception:
+                            pass
+                        try:
+                            _os = 1.0 if action_meaningful_success else 0.0
+                            self._mistral_outcome_boost["execute_task"] = {"cycles": 3, "value": 4.0 * _os}
+                            self._last_execute_task_score = _os
+                        except Exception:
+                            pass
+                self._module_last_invoked["tasks"] = datetime.datetime.now().isoformat()
+            elif action == "continue_mission":
+                action_meaningful_success = False
+                md_m = next_result.get("metadata") if isinstance(next_result.get("metadata"), dict) else {}
+                mname = str(md_m.get("mission") or "").strip()
+                if not mname:
+                    try:
+                        am = self.missions.get_active_missions()
+                        if am:
+                            mname = str(am[0].get("name", "") or "").strip()
+                    except Exception:
+                        mname = ""
+                if not mname:
+                    self.memory.remember(
+                        "[Autonomy] continue_mission skipped: no active mission",
+                        category="autonomy",
+                        priority=0.5,
+                    )
+                else:
+                    msg = (next_result.get("reason") or "Autonomy heartbeat").strip()
+                    if len(msg) > 420:
+                        msg = msg[:420]
+                    try:
+                        _cm_gap = float(cfg.get("continue_mission_min_interval_sec", 300) or 0.0)
+                    except (TypeError, ValueError):
+                        _cm_gap = 300.0
+                    _cm_last = getattr(self, "_continue_mission_last_log_ts", None)
+                    if not isinstance(_cm_last, dict):
+                        _cm_last = {}
+                        self._continue_mission_last_log_ts = _cm_last
+                    _now_cm = time.time()
+                    _prev_cm = float(_cm_last.get(mname) or 0.0)
+                    _cm_throttled = _cm_gap > 0.0 and (_now_cm - _prev_cm) < _cm_gap
+                    ok = False
+                    if _cm_throttled:
+                        log_autonomy_routine(
+                            logger,
+                            "[Autonomy] continue_mission throttled mission=%s (%.0fs since last log; min=%.0fs)",
+                            mname,
+                            _now_cm - _prev_cm,
+                            _cm_gap,
+                        )
+                        action_meaningful_success = False
+                    else:
+                        try:
+                            ok = bool(self.missions.log_progress(mname, f"[Autonomy] {msg}", progress=None))
+                        except Exception as ex:
+                            logger.warning("[Autonomy] continue_mission: %s", ex)
+                            self.memory.remember(
+                                f"[Autonomy] continue_mission error: {ex}",
+                                category="error",
+                                priority=0.55,
+                            )
+                        if ok and _cm_gap > 0.0:
+                            _cm_last[mname] = _now_cm
+                        action_meaningful_success = bool(ok)
+                        if ok:
+                            log_autonomy_routine(logger, "[Autonomy] continue_mission logged for mission=%s", mname)
+                            self.memory.remember(
+                                f"[Autonomy] continue_mission: progress log for {mname}",
+                                category="autonomy",
+                                priority=0.56,
+                            )
+                        else:
+                            self.memory.remember(
+                                f"[Autonomy] continue_mission: mission not found '{mname}'",
+                                category="autonomy",
+                                priority=0.5,
+                            )
+                try:
+                    self._module_last_invoked["missions"] = datetime.datetime.now().isoformat()
+                except Exception:
+                    pass
             elif isinstance(action, str) and action.startswith("use_capability/"):
                 from .capability_execution import execute_capability_kind, resolve_exec_target
 
@@ -4973,7 +6924,8 @@ class GuardianCore:
                     rt_auto, rsn_auto = infer_canonical_routing_task_type(
                         ctx, extra_context="autonomy_use_capability"
                     )
-                    logger.info(
+                    log_autonomy_routine(
+                        logger,
                         "[Autonomy] routing_task_type inferred=%s reason=%s context_sample=%s",
                         rt_auto,
                         rsn_auto,
@@ -5009,13 +6961,65 @@ class GuardianCore:
                                 if tid_fb:
                                     self._run_self_generated_task(str(tid_fb), t0, None)
                                     ok_exec = True
-                                    logger.info(
+                                    log_autonomy_routine(
+                                        logger,
                                         "[Autonomy] task_router empty; fell back to execute_self_task %s",
                                         tid_fb,
                                     )
                         except Exception as tr_fb:
                             logger.debug("task_router self_task fallback: %s", tr_fb)
-                    logger.info(
+                    action_meaningful_success = ok_exec
+                    if rk == "module" and rn in _stale_uc_mods and ok_exec:
+                        try:
+                            r0 = ex.get("result")
+                            if isinstance(r0, dict):
+                                sig_src = json.dumps(r0, sort_keys=True, default=str)
+                            else:
+                                sig_src = str(r0)
+                        except Exception:
+                            sig_src = str(ex.get("result", ex))[:800]
+                        fp = hashlib.sha256(sig_src.encode("utf-8", errors="replace")).hexdigest()[:48]
+                        st_fp = getattr(self, "_use_capability_autonomy_fp_state", None)
+                        if not isinstance(st_fp, dict):
+                            st_fp = {}
+                            self._use_capability_autonomy_fp_state = st_fp
+                        ent = dict(st_fp.get(rn) or {})
+                        prev = ent.get("sig")
+                        if prev == fp and len(sig_src) > 12:
+                            ent["streak"] = int(ent.get("streak", 0) or 0) + 1
+                        else:
+                            ent["streak"] = 0
+                        ent["sig"] = fp
+                        st_fp[rn] = ent
+                        st_n = int(ent.get("streak", 0) or 0)
+                        if rn == "income_generator":
+                            self._income_generator_autonomy_cap_streak = st_n
+                            self._income_generator_autonomy_cap_sig = fp
+                        if st_n >= 2:
+                            action_meaningful_success = False
+                            log_autonomy_routine(
+                                logger,
+                                "[AutonomySelector] use_capability %s/%s outcome=stale_summary "
+                                "no_advance streak=%d (selection deprioritized next cycle)",
+                                rk,
+                                rn,
+                                st_n,
+                            )
+                    elif rk == "module":
+                        st_fp2 = getattr(self, "_use_capability_autonomy_fp_state", None)
+                        if isinstance(st_fp2, dict):
+                            for _mn in _stale_uc_mods:
+                                if _mn == rn:
+                                    continue
+                                e0 = st_fp2.get(_mn)
+                                if isinstance(e0, dict):
+                                    e1 = dict(e0)
+                                    e1["streak"] = 0
+                                    st_fp2[_mn] = e1
+                                    if _mn == "income_generator":
+                                        self._income_generator_autonomy_cap_streak = 0
+                    log_autonomy_routine(
+                        logger,
                         "[Autonomy] use_capability kind=%s name=%s success=%s",
                         rk,
                         rn,
@@ -5028,7 +7032,7 @@ class GuardianCore:
                     )
                     mk = "tool_registry" if rk == "tool" else (rn if rk == "module" else "")
                     if mk:
-                        self._module_last_invoked[mk] = datetime.datetime.now().isoformat()
+                        mark_module_activity(self._module_last_invoked, mk)
                 try:
                     self._orchestration_registry.log_capability_usage(
                         task=(self._pre_decision_context or {}).get("task_context", "")[:500],
@@ -5075,8 +7079,15 @@ class GuardianCore:
             result["executed"] = True
             result["action"] = action
             result["reason"] = next_result.get("reason", "")
+            self._record_autonomy_execution_for_summary(str(action or ""))
             self._last_autonomy_result = result
             self._last_action_outcome = "success" if action_meaningful_success else "failure"
+            try:
+                from .autonomy_antiloop import record_autonomy_action_outcome_for_antiloop
+
+                record_autonomy_action_outcome_for_antiloop(self, str(action or ""), bool(action_meaningful_success))
+            except Exception:
+                pass
             try:
                 self._orchestration_log_cycle(
                     action,
@@ -5106,6 +7117,7 @@ class GuardianCore:
                 pass
         if not result.get("executed") and cfg.get("idle_capability_probe", True):
             self._idle_capability_probe_if_needed(cfg)
+        self._maybe_emit_autonomy_recent_summary()
         return result
 
     def _load_introspection_config(self) -> Dict[str, Any]:
@@ -5148,6 +7160,8 @@ class GuardianCore:
         Returns:
             Task ID
         """
+        if self.elysia_loop and not getattr(self.elysia_loop, "running", False):
+            self.elysia_loop.start()
         return self.elysia_loop.submit_task(
             func=func,
             args=args,
@@ -5374,6 +7388,9 @@ class GuardianCore:
             "replicate API key.txt": "REPLICATE_API_KEY",
             "alpha vantage API.txt": "ALPHA_VANTAGE_API_KEY",
             "brave search api key.txt": "BRAVE_SEARCH_API_KEY",
+            "gumroad access token.txt": "GUMROAD_ACCESS_TOKEN",
+            "stripe secret key.txt": "STRIPE_SECRET_KEY",
+            "stripe publishable key.txt": "STRIPE_PUBLISHABLE_KEY",
         }
         for filename, env_var in key_mapping.items():
             if os.environ.get(env_var):
@@ -5791,6 +7808,8 @@ class GuardianCore:
         )
         
         self._running = False
+        with GuardianCore._initialization_lock:
+            GuardianCore._any_instance_initialized = False
     
     def _read_control_task(self) -> Optional[str]:
         """

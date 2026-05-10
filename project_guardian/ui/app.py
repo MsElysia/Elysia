@@ -13,15 +13,29 @@ from datetime import datetime
 
 try:
     from fastapi import FastAPI, Request, Form, HTTPException
-    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+    from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
     from fastapi.templating import Jinja2Templates
     FASTAPI_AVAILABLE = True
+    FASTAPI_IMPORT_ERROR = None
 except ImportError:
     FASTAPI_AVAILABLE = False
+    FASTAPI_IMPORT_ERROR = "FastAPI dependencies are not installed"
     # Dummy classes if FastAPI not available
     class FastAPI:
         def __init__(self, *args, **kwargs):
             pass
+        def middleware(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+        def get(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+        def post(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
     class Request:
         pass
     class Form:
@@ -33,11 +47,21 @@ except ImportError:
             self.status_code = status_code
             self.detail = detail
     class HTMLResponse:
-        def __init__(self, content):
+        def __init__(self, content, status_code=200):
             self.content = content
+            self.status_code = status_code
     class JSONResponse:
         def __init__(self, content, status_code=200):
             self.content = content
+            self.status_code = status_code
+    class PlainTextResponse:
+        def __init__(self, content, status_code=200, media_type="text/plain"):
+            self.content = content
+            self.status_code = status_code
+            self.media_type = media_type
+    class RedirectResponse:
+        def __init__(self, url: str, status_code: int = 302):
+            self.url = url
             self.status_code = status_code
     class Jinja2Templates:
         def __init__(self, directory):
@@ -50,10 +74,35 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from project_guardian.review_queue import ReviewQueue, ReviewRequest
 from project_guardian.approval_store import ApprovalStore
-from fastapi.responses import RedirectResponse
+from project_guardian.eai_safety import EAISafetyFramework, load_eai_safety_config
 
 # Initialize FastAPI app
-app = FastAPI(title="Project Guardian Control Panel")
+try:
+    app = FastAPI(title="Project Guardian Control Panel")
+except Exception as exc:
+    FASTAPI_AVAILABLE = False
+    FASTAPI_IMPORT_ERROR = str(exc)
+
+    class _FallbackFastAPI:
+        def __init__(self, *args, **kwargs):
+            self.routes = []
+
+        def middleware(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+        def get(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+        def post(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+    app = _FallbackFastAPI(title="Project Guardian Control Panel")
 
 # Templates directory
 templates_dir = Path(__file__).parent / "templates"
@@ -274,6 +323,302 @@ def _write_control_md(current_task: str) -> bool:
     return False
 
 
+def _read_eai_safety_status() -> Dict[str, Any]:
+    """Read EAI safety config and local lineage registry for the dashboard."""
+
+    config_path = project_root / "config" / "eai_safety.json"
+    status: Dict[str, Any] = {
+        "enabled": False,
+        "lineage_records": 0,
+        "recent_lineage": [],
+        "updated_at": None,
+        "config_path": str(config_path),
+        "lineage_registry_path": str(project_root / "data" / "eai_lineage_registry.json"),
+        "audit_log_path": str(project_root / "data" / "eai_assessments.jsonl"),
+        "alert_state_path": str(project_root / "data" / "eai_alert_state.json"),
+        "audit_events": 0,
+    }
+
+    try:
+        config = load_eai_safety_config(config_path=str(config_path))
+        lineage_path = Path(config.get("lineage_registry_path") or "data/eai_lineage_registry.json")
+        if not lineage_path.is_absolute():
+            lineage_path = project_root / lineage_path
+        audit_path = Path(config.get("audit_log_path") or "data/eai_assessments.jsonl")
+        if not audit_path.is_absolute():
+            audit_path = project_root / audit_path
+        alert_state_path = Path(
+            config.get("alert_state_path") or "data/eai_alert_state.json"
+        )
+        if not alert_state_path.is_absolute():
+            alert_state_path = project_root / alert_state_path
+
+        status.update(
+            {
+                "enabled": bool(config.get("enabled", True)),
+                "autonomous_deployment_policy": config.get(
+                    "autonomous_deployment_policy",
+                    "deny",
+                ),
+                "review_threshold": config.get("review_threshold"),
+                "deny_threshold": config.get("deny_threshold"),
+                "lineage_registry_path": str(lineage_path),
+                "audit_log_path": str(audit_path),
+                "alert_state_path": str(alert_state_path),
+                "registry_exists": lineage_path.exists(),
+                "audit_log_exists": audit_path.exists(),
+                "alert_state_exists": alert_state_path.exists(),
+            }
+        )
+
+        if audit_path.exists():
+            try:
+                status["audit_events"] = sum(
+                    1
+                    for line in audit_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                )
+            except (IOError, OSError):
+                status["audit_events"] = 0
+
+        if not lineage_path.exists():
+            return status
+
+        data = json.loads(lineage_path.read_text(encoding="utf-8"))
+        records = data.get("records", {})
+        if not isinstance(records, dict):
+            records = {}
+
+        recent = sorted(
+            records.values(),
+            key=lambda item: str(item.get("created_at", "")) if isinstance(item, dict) else "",
+            reverse=True,
+        )
+        max_items = int(config.get("max_lineage_status_items") or 5)
+        status.update(
+            {
+                "lineage_records": len(records),
+                "recent_lineage": [
+                    {
+                        "artifact_id": str(item.get("artifact_id", "")),
+                        "artifact_type": str(item.get("artifact_type", "unknown")),
+                        "created_by": str(item.get("created_by", "unknown")),
+                        "created_at": item.get("created_at"),
+                    }
+                    for item in recent[:max(0, max_items)]
+                    if isinstance(item, dict)
+                ],
+                "updated_at": data.get("updated_at"),
+            }
+        )
+    except Exception as exc:
+        status["error"] = str(exc)
+
+    return status
+
+
+def _read_eai_audit(limit: int = 5, **filters: Any) -> Dict[str, Any]:
+    """Read recent EAI safety audit events for dashboard display."""
+
+    try:
+        framework = _local_eai_safety_framework()
+        events = framework.list_audit(limit=limit, **filters)
+        return {
+            "events": events,
+            "limit": limit,
+            "audit_log_path": str(framework.audit_path) if framework.audit_path else None,
+        }
+    except Exception as exc:
+        return {"events": [], "limit": limit, "error": str(exc)}
+
+
+def _read_eai_alerts(limit: int = 5, **filters: Any) -> Dict[str, Any]:
+    """Read computed EAI safety alerts for dashboard display."""
+
+    try:
+        framework = _local_eai_safety_framework()
+        alerts = framework.list_alerts(limit=limit, **filters)
+        return {
+            "alerts": alerts,
+            "limit": limit,
+            "audit_log_path": str(framework.audit_path) if framework.audit_path else None,
+        }
+    except Exception as exc:
+        return {"alerts": [], "limit": limit, "error": str(exc)}
+
+
+def _read_eai_summary(days: int = 1) -> Dict[str, Any]:
+    """Read a compact EAI safety summary for dashboard display."""
+
+    try:
+        framework = _local_eai_safety_framework()
+        return framework.get_daily_summary(days=days)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _local_eai_safety_framework() -> EAISafetyFramework:
+    """Create a local read-only EAI gate instance for dashboard dry-runs."""
+
+    config_path = project_root / "config" / "eai_safety.json"
+    config = load_eai_safety_config(config_path=str(config_path))
+    lineage_path = Path(config.get("lineage_registry_path") or "data/eai_lineage_registry.json")
+    if not lineage_path.is_absolute():
+        lineage_path = project_root / lineage_path
+    audit_path = Path(config.get("audit_log_path") or "data/eai_assessments.jsonl")
+    if not audit_path.is_absolute():
+        audit_path = project_root / audit_path
+    alert_state_path = Path(config.get("alert_state_path") or "data/eai_alert_state.json")
+    if not alert_state_path.is_absolute():
+        alert_state_path = project_root / alert_state_path
+
+    return EAISafetyFramework(
+        storage_path=str(lineage_path),
+        audit_path=str(audit_path),
+        alert_state_path=str(alert_state_path),
+        approval_store=approval_store,
+        review_queue=review_queue,
+        autonomous_deployment_policy=str(config.get("autonomous_deployment_policy", "deny")),
+        review_threshold=float(config.get("review_threshold", 0.45)),
+        deny_threshold=float(config.get("deny_threshold", 0.85)),
+        max_recent_assessments=int(config.get("max_recent_assessments", 25)),
+        max_lineage_status_items=int(config.get("max_lineage_status_items", 5)),
+    )
+
+
+def _resolve_report_output_dir(requested: Optional[Any] = None) -> str:
+    """Resolve report output under the project root for the local dashboard."""
+
+    requested_text = str(requested or "REPORTS").strip() or "REPORTS"
+    requested_path = Path(requested_text)
+    target = (
+        requested_path.resolve()
+        if requested_path.is_absolute()
+        else (project_root / requested_path).resolve()
+    )
+    try:
+        target.relative_to(project_root.resolve())
+    except ValueError as exc:
+        raise ValueError("output_dir must stay within project root") from exc
+    return str(target)
+
+
+def _assess_eai_dry_run(
+    data: Dict[str, Any],
+    framework: Optional[EAISafetyFramework] = None,
+) -> Dict[str, Any]:
+    """Run an action through the local EAI gate without registering lineage."""
+
+    if not isinstance(data, dict):
+        raise ValueError("JSON object body required")
+
+    action_type = str(data.get("action_type") or "").strip()
+    if not action_type:
+        raise ValueError("action_type required")
+
+    metadata = data.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata must be an object")
+
+    framework = framework or _local_eai_safety_framework()
+    assessment = framework.assess_action(
+        action_type=action_type[:120],
+        actor=str(data.get("actor") or "operator")[:160],
+        target=str(data.get("target") or "")[:500],
+        metadata=metadata,
+        lineage_parent_ids=data.get("lineage_parent_ids", data.get("parent_ids")),
+        artifact_content=data.get("artifact_content"),
+        dry_run=True,
+    )
+    payload = assessment.to_dict()
+    return {
+        "dry_run": True,
+        "lineage_mutated": False,
+        "decision": payload["decision"],
+        "risk_score": payload["risk_score"],
+        "flags": payload["flags"],
+        "selection_pressures": payload["selection_pressures"],
+        "required_controls": payload["required_controls"],
+        "assessment": payload,
+    }
+
+
+def _content_preview(value: Any, max_chars: int = 2000) -> Dict[str, Any]:
+    if value is None:
+        return {"present": False}
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    elif isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, sort_keys=True, default=str)
+    return {
+        "present": True,
+        "chars": len(text),
+        "truncated": len(text) > max_chars,
+        "preview": text[:max_chars],
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
+
+
+def _eai_review_context(data: Dict[str, Any], assessment_result: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = data.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    return {
+        "target": str(data.get("target") or ""),
+        "caller_identity": str(data.get("actor") or "operator"),
+        "task_id": str(data.get("task_id") or "eai-dry-run"),
+        "action_type": str(data.get("action_type") or ""),
+        "metadata": metadata,
+        "artifact_content": _content_preview(data.get("artifact_content")),
+        "lineage_parent_ids": data.get("lineage_parent_ids", data.get("parent_ids")),
+        "eai_safety": assessment_result.get("assessment", assessment_result),
+        "eai_decision": assessment_result.get("decision"),
+        "eai_risk_score": assessment_result.get("risk_score"),
+        "eai_flags": assessment_result.get("flags", []),
+        "eai_required_controls": assessment_result.get("required_controls", []),
+        "lineage_mutated": False,
+        "source": "eai_dry_run",
+    }
+
+
+def _create_eai_review_request(data: Dict[str, Any]) -> Dict[str, Any]:
+    framework = _local_eai_safety_framework()
+    assessment_result = _assess_eai_dry_run(data, framework=framework)
+    decision = str(assessment_result.get("decision") or "").lower()
+    if decision == "allow" and not data.get("force_review"):
+        return {
+            "created": False,
+            "reason": "assessment_allowed",
+            "assessment": assessment_result,
+        }
+
+    context = _eai_review_context(data, assessment_result)
+    request_id = review_queue.enqueue(
+        component="eai_safety",
+        action=str(data.get("action_type") or "unknown"),
+        context=context,
+    )
+    audit_event = framework.record_audit_event(
+        "review_request",
+        assessment_result.get("assessment", assessment_result),
+        review_request_id=request_id,
+        details={
+            "source": "dashboard",
+            "lineage_mutated": False,
+        },
+    )
+    return {
+        "created": True,
+        "request_id": request_id,
+        "review_url": f"/reviews/{request_id}",
+        "audit_id": audit_event.get("audit_id"),
+        "assessment": assessment_result,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def status_dashboard(request: Request):
     """Status dashboard - shows current task, last acceptance run, pending reviews"""
@@ -340,6 +685,10 @@ async def status_dashboard(request: Request):
         "last_run_once": last_run_once,
         "run_once_status": run_once_status,
         "run_once_result": run_once_result,
+        "eai_safety": _read_eai_safety_status(),
+        "eai_summary": _read_eai_summary(days=1),
+        "eai_alerts": _read_eai_alerts(limit=5),
+        "eai_audit": _read_eai_audit(limit=5),
         "bind_host_warning": bind_host_warning,
         "bind_host": bind_host
     })
@@ -789,9 +1138,248 @@ async def api_status():
         "last_acceptance": last_acceptance,
         "acceptance_status": acceptance_status,
         "acceptance_exit_code": acceptance_exit_code,
+        "eai_safety": _read_eai_safety_status(),
+        "eai_summary": _read_eai_summary(days=1),
+        "eai_alerts": _read_eai_alerts(limit=10),
+        "eai_audit": _read_eai_audit(limit=10),
         "local_only_enforced": True,
         "bind_host_warning": bind_host_warning
     })
+
+
+@app.post("/api/eai/assess")
+async def api_eai_assess(request: Request):
+    """Dry-run an Evolvable-AI-sensitive action through the local safety gate."""
+    try:
+        data = await request.json()
+        return JSONResponse(_assess_eai_dry_run(data))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/eai/audit")
+async def api_eai_audit(
+    limit: int = 50,
+    decision: Optional[str] = None,
+    flag: Optional[str] = None,
+    actor: Optional[str] = None,
+    target: Optional[str] = None,
+    event_type: Optional[str] = None,
+):
+    """List recent EAI safety audit events."""
+    try:
+        bounded_limit = max(1, min(500, int(limit)))
+        framework = _local_eai_safety_framework()
+        return JSONResponse(
+            {
+                "events": framework.list_audit(
+                    limit=bounded_limit,
+                    decision=decision,
+                    flag=flag,
+                    actor=actor,
+                    target=target,
+                    event_type=event_type,
+                ),
+                "limit": bounded_limit,
+            }
+        )
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/eai/audit/{identifier}")
+async def api_eai_audit_event(identifier: str):
+    """Get an EAI audit event by audit, assessment, or review request id."""
+    try:
+        framework = _local_eai_safety_framework()
+        event = framework.get_audit_event(identifier)
+        if event is None:
+            return JSONResponse({"error": "EAI audit event not found"}, status_code=404)
+        return JSONResponse(event)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/eai/alerts")
+async def api_eai_alerts(
+    limit: int = 25,
+    audit_limit: int = 500,
+    severity: Optional[str] = None,
+    rule: Optional[str] = None,
+    include_acknowledged: bool = True,
+    include_resolved: bool = False,
+):
+    """List computed EAI safety alerts from recent audit events."""
+    try:
+        bounded_limit = max(1, min(500, int(limit)))
+        bounded_audit_limit = max(1, min(5000, int(audit_limit)))
+        framework = _local_eai_safety_framework()
+        return JSONResponse(
+            {
+                "alerts": framework.list_alerts(
+                    limit=bounded_limit,
+                    audit_limit=bounded_audit_limit,
+                    severity=severity,
+                    rule=rule,
+                    include_acknowledged=include_acknowledged,
+                    include_resolved=include_resolved,
+                ),
+                "limit": bounded_limit,
+                "audit_limit": bounded_audit_limit,
+            }
+        )
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/eai/summary")
+async def api_eai_summary(
+    days: int = 1,
+    audit_limit: int = 5000,
+    include_resolved: bool = True,
+):
+    """Get a compact EAI safety daily summary."""
+    try:
+        bounded_days = max(1, min(365, int(days)))
+        bounded_audit_limit = max(1, min(20000, int(audit_limit)))
+        framework = _local_eai_safety_framework()
+        return JSONResponse(
+            framework.get_daily_summary(
+                days=bounded_days,
+                audit_limit=bounded_audit_limit,
+                include_resolved=include_resolved,
+            )
+        )
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/eai/summary.md")
+async def api_eai_summary_markdown(
+    days: int = 1,
+    audit_limit: int = 5000,
+    include_resolved: bool = True,
+):
+    """Get a Markdown EAI safety daily summary report."""
+    try:
+        bounded_days = max(1, min(365, int(days)))
+        bounded_audit_limit = max(1, min(20000, int(audit_limit)))
+        framework = _local_eai_safety_framework()
+        markdown = framework.render_daily_summary_markdown(
+            days=bounded_days,
+            audit_limit=bounded_audit_limit,
+            include_resolved=include_resolved,
+        )
+        return PlainTextResponse(markdown, media_type="text/markdown")
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/eai/summary/export")
+async def api_eai_summary_export(request: Request):
+    """Write a Markdown EAI safety summary report to disk."""
+    try:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+
+        bounded_days = max(1, min(365, int(data.get("days") or 1)))
+        bounded_audit_limit = max(1, min(20000, int(data.get("audit_limit") or 5000)))
+        framework = _local_eai_safety_framework()
+        result = framework.write_daily_summary_report(
+            output_dir=_resolve_report_output_dir(data.get("output_dir")),
+            days=bounded_days,
+            audit_limit=bounded_audit_limit,
+            include_resolved=bool(data.get("include_resolved", True)),
+            filename=(
+                str(data.get("filename"))
+                if data.get("filename") is not None
+                else None
+            ),
+        )
+        return JSONResponse(result, status_code=201)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/eai/alerts/{alert_id}/ack")
+async def api_eai_alert_ack(alert_id: str, request: Request):
+    """Acknowledge a computed EAI alert."""
+    try:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        framework = _local_eai_safety_framework()
+        state = framework.acknowledge_alert(
+            alert_id,
+            actor=str(data.get("actor") or "operator")[:160],
+            notes=str(data.get("notes") or "")[:1000],
+        )
+        return JSONResponse({"updated": True, "state": state})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/eai/alerts/{alert_id}/resolve")
+async def api_eai_alert_resolve(alert_id: str, request: Request):
+    """Resolve a computed EAI alert."""
+    try:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        framework = _local_eai_safety_framework()
+        state = framework.resolve_alert(
+            alert_id,
+            actor=str(data.get("actor") or "operator")[:160],
+            notes=str(data.get("notes") or "")[:1000],
+        )
+        return JSONResponse({"updated": True, "state": state})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/eai/review-request")
+async def api_eai_review_request(request: Request):
+    """Create a human review request from an EAI dry-run assessment."""
+    try:
+        data = await request.json()
+        result = _create_eai_review_request(data)
+        status_code = 201 if result.get("created") else 200
+        return JSONResponse(result, status_code=status_code)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/insights/overview")
+async def api_insights_overview_fastapi():
+    """Same data as Flask Control Panel /api/insights/overview (self-build, MCP, traces, RAG log)."""
+    if not FASTAPI_AVAILABLE:
+        return HTMLResponse("<p>FastAPI unavailable</p>", status_code=503)
+    try:
+        from project_guardian.operator_insights import build_insights_overview
+
+        return JSONResponse(build_insights_overview(trace_lines=40, rag_lines=30))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/api/acceptance-log")

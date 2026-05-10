@@ -1,0 +1,24 @@
+priority,reason,module
+low,package marker,project_guardian/bounded_browser/__init__.py
+low,package marker,project_guardian/context_pipeline/__init__.py
+low,package marker,project_guardian/diagnostics/__init__.py
+low,legacy snapshot subtree,project_guardian/elysia_cursor_ready_updated (1)/elysia/__init__.py
+low,legacy snapshot subtree,project_guardian/elysia_cursor_ready_updated (1)/elysia/config.py
+low,legacy snapshot subtree,project_guardian/elysia_cursor_ready_updated (1)/elysia/eliza.py
+low,legacy snapshot subtree,project_guardian/elysia_cursor_ready_updated (1)/elysia/feedback.py
+low,legacy snapshot subtree,project_guardian/elysia_cursor_ready_updated (1)/elysia/identity.py
+low,legacy snapshot subtree,project_guardian/elysia_cursor_ready_updated (1)/elysia/main.py
+low,legacy snapshot subtree,project_guardian/elysia_cursor_ready_updated (1)/elysia/models.py
+low,legacy snapshot subtree,project_guardian/elysia_cursor_ready_updated (1)/elysia/phantom.py
+low,legacy snapshot subtree,project_guardian/elysia_cursor_ready_updated (1)/elysia/router.py
+low,legacy snapshot subtree,project_guardian/elysia_cursor_ready_updated (1)/elysia/swarm.py
+low,legacy snapshot subtree,project_guardian/elysia_cursor_ready_updated (1)/elysia/task_controller.py
+low,example-only module,project_guardian/example.py
+low,example-only module,project_guardian/example_advanced.py
+low,package marker,project_guardian/implementer/__init__.py
+low,package marker,project_guardian/llm/__init__.py
+low,package marker,project_guardian/orchestration/judge/__init__.py
+low,protocol contract module,project_guardian/orchestration/judge/base.py
+low,package marker,project_guardian/orchestration/telemetry/__init__.py
+low,package marker,project_guardian/orchestration/tools/__init__.py
+low,package marker,project_guardian/prompts/core/__init__.py

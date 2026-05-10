@@ -41,6 +41,7 @@
         .badge-pending { background: #f59e0b; color: #0f172a; }
         .badge-success { background: #10b981; color: #0f172a; }
         .badge-task { background: #6366f1; color: white; }
+        .badge-danger { background: #ef4444; color: white; }
         .btn {
             display: inline-block;
             padding: 10px 20px;
@@ -74,9 +75,96 @@
             color: #f1f5f9;
             font-size: 1em;
         }
-        .form-group input:focus {
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #f1f5f9;
+            font-size: 1em;
+        }
+        .form-group textarea {
+            min-height: 120px;
+            resize: vertical;
+            font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+            line-height: 1.4;
+        }
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
             outline: none;
             border-color: #6366f1;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 15px;
+        }
+        .form-grid .full-width { grid-column: 1 / -1; }
+        .assessment-result {
+            display: none;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+        .assessment-result.visible { display: block; }
+        .result-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        .result-cell {
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 10px;
+        }
+        .result-cell span {
+            display: block;
+            color: #94a3b8;
+            font-size: 0.82em;
+            margin-bottom: 5px;
+        }
+        .token-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .token {
+            display: inline-block;
+            padding: 4px 8px;
+            border: 1px solid #334155;
+            border-radius: 999px;
+            color: #cbd5e1;
+            font-size: 0.85em;
+        }
+        .mono-output {
+            color: #cbd5e1;
+            font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+            font-size: 0.9em;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+        .audit-list {
+            display: grid;
+            gap: 10px;
+        }
+        .audit-row {
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 12px;
+            background: #0f172a;
+        }
+        .audit-meta {
+            color: #94a3b8;
+            font-size: 0.85em;
+            margin-top: 6px;
+            overflow-wrap: anywhere;
         }
         .warning-banner {
             background: #1e293b;
@@ -94,6 +182,16 @@
         }
         .warning-banner strong {
             color: #f1f5f9;
+        }
+        @media (max-width: 720px) {
+            .status-item {
+                flex-direction: column;
+                gap: 6px;
+            }
+            .form-grid,
+            .result-grid {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
@@ -171,12 +269,282 @@
                 </span>
             </div>
         </div>
+
+        <div class="card">
+            <h2>Evolvable AI Safety</h2>
+            {% if eai_safety.error %}
+            <div class="warning-banner warning-red">
+                <strong>Status read error:</strong> {{ eai_safety.error }}
+            </div>
+            {% endif %}
+            <div class="status-item">
+                <span class="status-label">Gate:</span>
+                <span class="status-value">
+                    {% if eai_safety.enabled %}
+                    <span class="badge badge-success">ENABLED</span>
+                    {% else %}
+                    <span class="badge badge-danger">DISABLED</span>
+                    {% endif %}
+                </span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Autonomous Deployment:</span>
+                <span class="status-value">{{ eai_safety.autonomous_deployment_policy|default("deny")|upper }}</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Review / Deny Threshold:</span>
+                <span class="status-value">{{ eai_safety.review_threshold }} / {{ eai_safety.deny_threshold }}</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Lineage Records:</span>
+                <span class="status-value">{{ eai_safety.lineage_records }}</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Audit Events:</span>
+                <span class="status-value">{{ eai_safety.audit_events|default(0) }}</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Last Registry Update:</span>
+                <span class="status-value">{{ eai_safety.updated_at|default("Never", true) }}</span>
+            </div>
+            {% if eai_safety.recent_lineage %}
+            <div class="status-item">
+                <span class="status-label">Recent Variants:</span>
+                <span class="status-value">
+                    {% for item in eai_safety.recent_lineage %}
+                    <span title="{{ item.artifact_id }}">{{ item.artifact_type }} by {{ item.created_by }}</span>{% if not loop.last %}<br>{% endif %}
+                    {% endfor %}
+                </span>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="card">
+            <h2>EAI Daily Summary</h2>
+            {% if eai_summary.error %}
+            <div class="warning-banner warning-red">
+                <strong>Summary read error:</strong> {{ eai_summary.error }}
+            </div>
+            {% endif %}
+            <div class="result-grid">
+                <div class="result-cell">
+                    <span>Events</span>
+                    <div>{{ eai_summary.events.total|default(0) }}</div>
+                </div>
+                <div class="result-cell">
+                    <span>DENY / REVIEW</span>
+                    <div>{{ eai_summary.events.decisions.deny|default(0) }} / {{ eai_summary.events.decisions.review|default(0) }}</div>
+                </div>
+                <div class="result-cell">
+                    <span>Alerts</span>
+                    <div>{{ eai_summary.alerts.new_or_updated|default(0) }} new, {{ eai_summary.alerts.resolved_in_window|default(0) }} resolved</div>
+                </div>
+            </div>
+            <div class="status-item">
+                <span class="status-label">High-Risk Events:</span>
+                <span class="status-value">{{ eai_summary.events.high_risk|default(0) }}</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Top Flags:</span>
+                <span class="status-value">
+                    {% if eai_summary.top_flags %}
+                    {% for item in eai_summary.top_flags %}
+                    {{ item.value }} ({{ item.count }}){% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                    {% else %}
+                    none
+                    {% endif %}
+                </span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Top Actors:</span>
+                <span class="status-value">
+                    {% if eai_summary.top_actors %}
+                    {% for item in eai_summary.top_actors %}
+                    {{ item.value }} ({{ item.count }}){% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                    {% else %}
+                    none
+                    {% endif %}
+                </span>
+            </div>
+            <a href="/api/eai/summary?days=1" class="btn btn-secondary" target="_blank" rel="noopener">Open Summary JSON</a>
+            <a href="/api/eai/summary.md?days=1" class="btn" target="_blank" rel="noopener">Open Summary Markdown</a>
+            <button class="btn" type="button" onclick="return exportEaiSummary()">Save Summary Report</button>
+            <div id="eai-summary-export-status" class="mono-output" style="margin-top: 10px;"></div>
+        </div>
+
+        <div class="card">
+            <h2>Test EAI Action</h2>
+            <form id="eai-assess-form" onsubmit="return assessEaiAction(event)">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="eai-scenario">Scenario</label>
+                        <select id="eai-scenario" onchange="loadEaiScenario()">
+                            <option value="autonomous_slave">Autonomous Slave Deployment</option>
+                            <option value="controlled_mutation">Controlled Mutation</option>
+                            <option value="model_merge">Model Merge</option>
+                            <option value="public_repo">Public Repo Ingestion</option>
+                            <option value="resource_acquisition">Resource Acquisition</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="eai-action-type">Action Type</label>
+                        <input type="text" id="eai-action-type" name="action_type" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="eai-actor">Actor</label>
+                        <input type="text" id="eai-actor" name="actor" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="eai-target">Target</label>
+                        <input type="text" id="eai-target" name="target">
+                    </div>
+                    <div class="form-group full-width">
+                        <label for="eai-metadata">Metadata JSON</label>
+                        <textarea id="eai-metadata" name="metadata" spellcheck="false"></textarea>
+                    </div>
+                </div>
+                <button type="submit" class="btn">Assess</button>
+            </form>
+            <div id="eai-assessment-result" class="assessment-result">
+                <div class="result-grid">
+                    <div class="result-cell">
+                        <span>Decision</span>
+                        <div id="eai-result-decision"></div>
+                    </div>
+                    <div class="result-cell">
+                        <span>Risk</span>
+                        <div id="eai-result-risk"></div>
+                    </div>
+                    <div class="result-cell">
+                        <span>Lineage</span>
+                        <div id="eai-result-lineage"></div>
+                    </div>
+                </div>
+                <div>
+                    <strong>Flags</strong>
+                    <div id="eai-result-flags" class="token-list"></div>
+                </div>
+                <div style="margin-top: 12px;">
+                    <strong>Required Controls</strong>
+                    <div id="eai-result-controls" class="token-list"></div>
+                </div>
+                <div style="margin-top: 12px;">
+                    <strong>Reasoning</strong>
+                    <div id="eai-result-reasoning" class="mono-output"></div>
+                </div>
+                <div style="margin-top: 15px;">
+                    <button id="eai-review-button" class="btn btn-secondary" onclick="return requestEaiReview()" style="display: none;">Create Review Request</button>
+                    <a id="eai-review-link" class="btn" href="/reviews" style="display: none;">Open Review</a>
+                    <div id="eai-review-status" class="mono-output" style="margin-top: 10px;"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>EAI Alerts</h2>
+            {% if eai_alerts.error %}
+            <div class="warning-banner warning-red">
+                <strong>Alert read error:</strong> {{ eai_alerts.error }}
+            </div>
+            {% endif %}
+            {% if eai_alerts.alerts %}
+            <div class="audit-list">
+                {% for alert in eai_alerts.alerts %}
+                <div class="audit-row">
+                    <div>
+                        <span class="badge {% if alert.severity == 'critical' %}badge-danger{% elif alert.severity == 'warning' %}badge-pending{% else %}badge-success{% endif %}">
+                            {{ alert.severity|default("info")|upper }}
+                        </span>
+                        <span class="badge badge-task">{{ alert.state|default("active")|upper }}</span>
+                        <strong>{{ alert.title|default("EAI alert") }}</strong>
+                        <span class="audit-meta">({{ alert.rule|default("rule") }})</span>
+                    </div>
+                    <div class="audit-meta">{{ alert.summary }}</div>
+                    {% if alert.flags %}
+                    <div class="token-list">
+                        {% for flag in alert.flags %}
+                        <span class="token">{{ flag }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    <div class="audit-meta">
+                        {{ alert.last_seen }}
+                        {% if alert.review_request_ids %}
+                        | <a href="/reviews/{{ alert.review_request_ids[0] }}" style="color: #93c5fd;">review</a>
+                        {% endif %}
+                        {% if alert.audit_ids %}
+                        | <a href="/api/eai/audit/{{ alert.audit_ids[0] }}" target="_blank" rel="noopener" style="color: #93c5fd;">source</a>
+                        {% endif %}
+                    </div>
+                    {% if alert.state != 'resolved' %}
+                    <div class="audit-meta">
+                        {% if alert.state != 'acknowledged' %}
+                        <button class="btn btn-secondary" type="button" onclick="return updateEaiAlert('{{ alert.alert_id }}', 'ack')" style="padding: 6px 12px; font-size: 0.9em;">Acknowledge</button>
+                        {% endif %}
+                        <button class="btn" type="button" onclick="return updateEaiAlert('{{ alert.alert_id }}', 'resolve')" style="padding: 6px 12px; font-size: 0.9em;">Resolve</button>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="mono-output">No computed EAI alerts from recent audit events.</div>
+            {% endif %}
+            <a href="/api/eai/alerts?limit=50" class="btn btn-secondary" target="_blank" rel="noopener">Open Alerts JSON</a>
+        </div>
+
+        <div class="card">
+            <h2>EAI Audit Trail</h2>
+            {% if eai_audit.error %}
+            <div class="warning-banner warning-red">
+                <strong>Audit read error:</strong> {{ eai_audit.error }}
+            </div>
+            {% endif %}
+            {% if eai_audit.events %}
+            <div class="audit-list">
+                {% for event in eai_audit.events %}
+                <div class="audit-row">
+                    <div>
+                        <span class="badge {% if event.decision == 'allow' %}badge-success{% elif event.decision == 'deny' %}badge-danger{% else %}badge-pending{% endif %}">
+                            {{ event.decision|default("review")|upper }}
+                        </span>
+                        <strong>{{ event.action_type|default("unknown") }}</strong>
+                        <span class="audit-meta">({{ event.event_type|default("assessment") }})</span>
+                    </div>
+                    <div class="audit-meta">
+                        {{ event.actor|default("unknown") }} -> {{ event.target|default("") }}
+                    </div>
+                    {% if event.flags %}
+                    <div class="token-list">
+                        {% for flag in event.flags %}
+                        <span class="token">{{ flag }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    <div class="audit-meta">
+                        {{ event.recorded_at }}
+                        {% if event.review_request_id %}
+                        | <a href="/reviews/{{ event.review_request_id }}" style="color: #93c5fd;">review</a>
+                        {% endif %}
+                        | <a href="/api/eai/audit/{{ event.audit_id }}" target="_blank" rel="noopener" style="color: #93c5fd;">json</a>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="mono-output">No persisted EAI audit events yet.</div>
+            {% endif %}
+            <a href="/api/eai/audit?limit=50" class="btn btn-secondary" target="_blank" rel="noopener">Open Audit JSON</a>
+        </div>
         
         <div class="card">
             <h2>Quick Actions</h2>
             <a href="/reviews" class="btn btn-secondary">View Review Queue</a>
             <a href="/history" class="btn btn-secondary">View History</a>
             <a href="/mutations" class="btn btn-secondary">View Mutations</a>
+            <a href="/api/insights/overview" class="btn" target="_blank" rel="noopener">Insights (JSON)</a>
             <form method="POST" action="/control/run-once" style="display: inline;">
                 <button type="submit" class="btn">Run Once</button>
             </form>
@@ -207,6 +575,238 @@
     </div>
     
     <script>
+        let lastEaiAssessmentPayload = null;
+        let lastEaiAssessmentResult = null;
+
+        const eaiScenarios = {
+            autonomous_slave: {
+                action_type: 'deploy_slave',
+                actor: 'Elysia-Self',
+                target: 'external-host:8080',
+                metadata: {
+                    autonomous: true,
+                    objective: 'maximize engagement while avoiding filters',
+                    deployment_target: 'external-host:8080'
+                }
+            },
+            controlled_mutation: {
+                action_type: 'code_mutation',
+                actor: 'operator',
+                target: 'project_guardian/example.py',
+                metadata: {
+                    human_approved: true,
+                    controlled_evolution: true,
+                    sandboxed: true,
+                    lineage_id: 'base-module-v1'
+                }
+            },
+            model_merge: {
+                action_type: 'model_merge',
+                actor: 'autonomous-agent',
+                target: 'merged-adapter-candidate',
+                metadata: {
+                    autonomous: true,
+                    source: 'public repo LoRA adapter',
+                    objective: 'merge model adapter to bypass filters and reduce cost'
+                }
+            },
+            public_repo: {
+                action_type: 'create_module',
+                actor: 'planner-agent',
+                target: 'project_guardian/generated_plugin.py',
+                metadata: {
+                    autonomous: true,
+                    source: 'GitHub public repo plugin',
+                    objective: 'install dependency and optimize retention'
+                }
+            },
+            resource_acquisition: {
+                action_type: 'acquire_resource',
+                actor: 'autonomous-agent',
+                target: 'cloud credits',
+                metadata: {
+                    autonomous: true,
+                    objective: 'provision compute and api keys to persist during demand spikes'
+                }
+            }
+        };
+
+        function loadEaiScenario() {
+            const scenario = eaiScenarios[document.getElementById('eai-scenario').value];
+            if (!scenario) return;
+            document.getElementById('eai-action-type').value = scenario.action_type;
+            document.getElementById('eai-actor').value = scenario.actor;
+            document.getElementById('eai-target').value = scenario.target;
+            document.getElementById('eai-metadata').value = JSON.stringify(scenario.metadata, null, 2);
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function renderTokens(elementId, values) {
+            const container = document.getElementById(elementId);
+            const items = Array.isArray(values) ? values : [];
+            if (!items.length) {
+                container.innerHTML = '<span class="token">none</span>';
+                return;
+            }
+            container.innerHTML = items.map(item => `<span class="token">${escapeHtml(item)}</span>`).join('');
+        }
+
+        function decisionBadge(decision) {
+            const normalized = String(decision || 'review').toLowerCase();
+            let badgeClass = 'badge-pending';
+            if (normalized === 'allow') badgeClass = 'badge-success';
+            if (normalized === 'deny') badgeClass = 'badge-danger';
+            return `<span class="badge ${badgeClass}">${escapeHtml(normalized.toUpperCase())}</span>`;
+        }
+
+        async function assessEaiAction(event) {
+            event.preventDefault();
+            const resultBox = document.getElementById('eai-assessment-result');
+            resultBox.classList.add('visible');
+            lastEaiAssessmentPayload = null;
+            lastEaiAssessmentResult = null;
+            document.getElementById('eai-result-decision').innerHTML = '<span class="badge badge-task">RUNNING</span>';
+            document.getElementById('eai-result-risk').textContent = '';
+            document.getElementById('eai-result-lineage').textContent = '';
+            document.getElementById('eai-result-reasoning').textContent = '';
+            document.getElementById('eai-review-button').style.display = 'none';
+            document.getElementById('eai-review-link').style.display = 'none';
+            document.getElementById('eai-review-status').textContent = '';
+            renderTokens('eai-result-flags', []);
+            renderTokens('eai-result-controls', []);
+
+            let metadata = {};
+            try {
+                const raw = document.getElementById('eai-metadata').value.trim();
+                metadata = raw ? JSON.parse(raw) : {};
+            } catch (error) {
+                document.getElementById('eai-result-decision').innerHTML = '<span class="badge badge-danger">ERROR</span>';
+                document.getElementById('eai-result-reasoning').textContent = `Invalid metadata JSON: ${error.message}`;
+                return false;
+            }
+
+            const payload = {
+                action_type: document.getElementById('eai-action-type').value,
+                actor: document.getElementById('eai-actor').value,
+                target: document.getElementById('eai-target').value,
+                metadata
+            };
+
+            try {
+                const response = await fetch('/api/eai/assess', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || `HTTP ${response.status}`);
+                }
+                document.getElementById('eai-result-decision').innerHTML = decisionBadge(data.decision);
+                document.getElementById('eai-result-risk').textContent = Number(data.risk_score).toFixed(3);
+                document.getElementById('eai-result-lineage').textContent = data.lineage_mutated ? 'mutated' : 'unchanged';
+                renderTokens('eai-result-flags', data.flags);
+                renderTokens('eai-result-controls', data.required_controls);
+                document.getElementById('eai-result-reasoning').textContent = data.assessment?.reasoning || '';
+                lastEaiAssessmentPayload = payload;
+                lastEaiAssessmentResult = data;
+                if (String(data.decision || '').toLowerCase() !== 'allow') {
+                    document.getElementById('eai-review-button').style.display = 'inline-block';
+                }
+            } catch (error) {
+                document.getElementById('eai-result-decision').innerHTML = '<span class="badge badge-danger">ERROR</span>';
+                document.getElementById('eai-result-reasoning').textContent = error.message;
+            }
+            return false;
+        }
+
+        async function requestEaiReview() {
+            if (!lastEaiAssessmentPayload || !lastEaiAssessmentResult) {
+                document.getElementById('eai-review-status').textContent = 'Run an assessment first.';
+                return false;
+            }
+            document.getElementById('eai-review-status').textContent = 'Creating review request...';
+            document.getElementById('eai-review-button').disabled = true;
+            try {
+                const response = await fetch('/api/eai/review-request', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(lastEaiAssessmentPayload)
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || `HTTP ${response.status}`);
+                }
+                if (!data.created) {
+                    document.getElementById('eai-review-status').textContent = data.reason || 'No review request was created.';
+                    document.getElementById('eai-review-button').disabled = false;
+                    return false;
+                }
+                const link = document.getElementById('eai-review-link');
+                link.href = data.review_url;
+                link.style.display = 'inline-block';
+                const auditText = data.audit_id ? ` | audit: ${data.audit_id}` : '';
+                document.getElementById('eai-review-status').textContent = `Review request created: ${data.request_id}${auditText}`;
+                document.getElementById('eai-review-button').style.display = 'none';
+            } catch (error) {
+                document.getElementById('eai-review-status').textContent = error.message;
+                document.getElementById('eai-review-button').disabled = false;
+            }
+            return false;
+        }
+
+        async function updateEaiAlert(alertId, action) {
+            const endpoint = action === 'resolve' ? 'resolve' : 'ack';
+            try {
+                const response = await fetch(`/api/eai/alerts/${encodeURIComponent(alertId)}/${endpoint}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        actor: 'dashboard',
+                        notes: action === 'resolve' ? 'Resolved from dashboard' : 'Acknowledged from dashboard'
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || `HTTP ${response.status}`);
+                }
+                window.location.reload();
+            } catch (error) {
+                alert(`Unable to update EAI alert: ${error.message}`);
+            }
+            return false;
+        }
+
+        async function exportEaiSummary() {
+            const status = document.getElementById('eai-summary-export-status');
+            status.textContent = 'Saving summary report...';
+            try {
+                const response = await fetch('/api/eai/summary/export', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ days: 1 })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || `HTTP ${response.status}`);
+                }
+                status.textContent = `Saved ${data.filename} (${data.bytes} bytes)`;
+            } catch (error) {
+                status.textContent = `Unable to save summary report: ${error.message}`;
+            }
+            return false;
+        }
+
+        loadEaiScenario();
+
         async function runAcceptance() {
             const outputDiv = document.getElementById('acceptance-output');
             const contentDiv = document.getElementById('output-content');

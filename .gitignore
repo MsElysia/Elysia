@@ -68,21 +68,42 @@ config/*secret*.json
 logs/
 *.log
 
-# Data files
+# Data files (top-level data/ only — nested runtime uses rules below)
 data/*.json
 data/*.jsonl
 data/*.db
 data/vault/
 data/backups/
-# Generated / local runtime under data (keep repo pushable)
 data/generated_reports/
 data/revenue_briefs/
 data/research_briefs/
 data/social_intelligence/
 !data/.gitkeep
 
+# Elysia / Project Guardian runtime state (safe-stack; entire tree — do not commit)
+data/runtime/
+
+# Generated context/prompt pipeline artifacts
+data/context_pipeline/
+data/prompt_registry/
+
+# Deployment/runtime output artifacts
+deployments/
+
+# Local process/log/temp outputs
+tmp_*.out
+tmp_*.err
+ollama_server_log.txt
+memory/heartbeat-state.json
+
+# Local report queues / generated reports
+REPORTS/*.json
+REPORTS/*.jsonl
+
 # Test files
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 *.cover

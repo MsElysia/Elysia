@@ -2,9 +2,11 @@
 
 **Related plan:** `docs/ONE_ENTRY_OPERATOR_INTERFACE_PLAN.md` - planning-only one-entry operator interface simplification.
 
-**Date:** 2026-05-21  
+**Date:** 2026-05-24 (post-commit audit)  
 **Status:** **Source of truth** for the safe-stack slice after UI marker restoration and governance visibility  
 **Scope:** Documentation only — no production behavior changed by this report.
+
+**Post-commit audit (milestone complete):** [`SAFE_STACK_POST_COMMIT_AUDIT.md`](SAFE_STACK_POST_COMMIT_AUDIT.md) — 10-commit chain, final smoke **386 passed**, index clean, unstaged server hunks excluded.
 
 **Related (historical / slice-specific):**
 
@@ -40,12 +42,14 @@ The **safe stack** is the operator-facing, fail-closed slice of Elysia / Project
 - **Memory ranking mutations** — `memory_ranking.enabled: false`, `allow_delete_proposals: false`
 - **Real LLM / external API calls** — smoke tests use mocks/offline paths only
 
-**Smoke (verified 2026-05-21):**
+**Smoke (verified 2026-05-24, post-commit audit):**
 
 ```text
 python scripts/run_safe_stack_smoke_tests.py
--> 385 passed, 3 warnings
+-> 386 passed, 3 warnings
 ```
+
+See [`SAFE_STACK_POST_COMMIT_AUDIT.md`](SAFE_STACK_POST_COMMIT_AUDIT.md) for full commit chain (`1ada6e8` … `ec458c5`) and worktree exclusions.
 
 ---
 
@@ -256,8 +260,10 @@ Default `config/brain_pipeline.json` (unchanged):
 
 ## Release readiness (git / commit hygiene)
 
-Before tagging or opening a safe-stack PR:
+**Milestone status (2026-05-24):** All 10 safe-stack commit groups landed; smoke **386 passed**. Worktree still mixed — see post-commit audit before push.
 
+- [`SAFE_STACK_POST_COMMIT_AUDIT.md`](SAFE_STACK_POST_COMMIT_AUDIT.md) — **final** commit chain, smoke, dirty-file exclusions  
+- [`SERVER_UNSTAGED_RISKY_HUNKS.md`](SERVER_UNSTAGED_RISKY_HUNKS.md) — do not stage remaining `elysia/api/server.py` hunks  
 - [`SAFE_STACK_RELEASE_READINESS_AUDIT.md`](SAFE_STACK_RELEASE_READINESS_AUDIT.md) — worktree categories and files to exclude  
 - [`SAFE_STACK_COMMIT_STAGING_PLAN.md`](SAFE_STACK_COMMIT_STAGING_PLAN.md) — **manual `git add` per group** (do not `git add -A`)
 

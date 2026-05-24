@@ -14,6 +14,8 @@ __all__ = [
     "RouteDecision",
     "NodeResult",
     "PipelineResult",
+    "run_think_decide_act_pipeline",
+    "ThinkDecideActTrace",
 ]
 
 
@@ -28,6 +30,14 @@ def __getattr__(name: str):
         from .broker import OrchestrationBroker as _OB
 
         return _OB
+    if name == "run_think_decide_act_pipeline":
+        from .think_decide_act import run_think_decide_act_pipeline as _run
+
+        return _run
+    if name == "ThinkDecideActTrace":
+        from .think_decide_act import ThinkDecideActTrace as _Trace
+
+        return _Trace
     raise AttributeError(name)
 
 

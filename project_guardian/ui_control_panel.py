@@ -23,8 +23,23 @@ import socket
 import time
 import os
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from datetime import datetime
+
+from project_guardian.safe_stack import responses as _safe_stack_responses
+from project_guardian.safe_stack.operator_chat import (
+    OperatorChatRequest,
+    OperatorChatResponderError,
+    OperatorChatResponderResult,
+    run_operator_chat_turn,
+)
+from .conversation_store import (
+    DEFAULT_CONVERSATIONS_DIR,
+    ConversationStore,
+    build_recent_transcript,
+    redact_chat_text,
+    sanitize_conversation_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +50,448 @@ _dashboard_start_attempts = 0
 
 # Bounded limits for UI/runtime memory access (avoid full-dump latency spikes)
 UI_MEMORY_RECENT_LIMIT = 200
+PROJECT_ROOT_PATH = Path(__file__).resolve().parent.parent
+BROWSER_AGENT_STATE_PATH = PROJECT_ROOT_PATH / "browser_agent_state.json"
+OPENCLAW_ACTIVITY_PATH = PROJECT_ROOT_PATH / "data" / "runtime" / "openclaw_activity.json"
+CURRENT_BACKEND_LOG_PATH = PROJECT_ROOT_PATH / "elysia_unified.log"
+SECONDARY_RUNTIME_LOG_PATH = PROJECT_ROOT_PATH / "logs" / "elysia_runtime.log"
+LEGACY_AUTONOMOUS_LOG_PATH = (
+    PROJECT_ROOT_PATH / "organized_project" / "data" / "logs" / "unified_autonomous_system.log"
+)
+EXTERNAL_ACTIVITY_RECENT_WINDOW_SEC = 15 * 60
+LIVE_LOG_STALE_AFTER_SEC = 6 * 60 * 60
+LEGACY_LOG_STALE_AFTER_SEC = 24 * 60 * 60
+# Legacy import-only path (not written at runtime; see ConversationStore.import_legacy_control_panel_json).
+CONTROL_PANEL_CHAT_HISTORY_PATH = PROJECT_ROOT_PATH / "data" / "runtime" / "control_panel_chat_history.json"
+CONTROL_PANEL_CHAT_MAX_MESSAGES = 60
+CONTROL_PANEL_CHAT_PROMPT_MESSAGES = 10
+CONTROL_PANEL_CHAT_PROMPT_CHAR_LIMIT = 6000
+CONTROL_PANEL_CHAT_RESPONSE_MESSAGES = 20
+
+_redact_control_panel_chat_text = redact_chat_text
+_control_panel_chat_session_id = sanitize_conversation_id
+
+try:
+    OPENCLAW_GATEWAY_PORT = int((os.environ.get("OPENCLAW_GATEWAY_PORT") or "18789").strip())
+except ValueError:
+    OPENCLAW_GATEWAY_PORT = 18789
+OPENCLAW_GATEWAY_HOST = (os.environ.get("OPENCLAW_GATEWAY_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+
+_JSON_FILE_CACHE_LOCK = threading.Lock()
+_JSON_FILE_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _load_cached_json(path: Path) -> Optional[Any]:
+    """Read a JSON file with a tiny mtime/size cache to keep /api/status cheap."""
+    key = str(path)
+    try:
+        stat = path.stat()
+    except OSError:
+        with _JSON_FILE_CACHE_LOCK:
+            _JSON_FILE_CACHE.pop(key, None)
+        return None
+    sig = (stat.st_mtime_ns, stat.st_size)
+    with _JSON_FILE_CACHE_LOCK:
+        cached = _JSON_FILE_CACHE.get(key)
+        if cached and cached.get("sig") == sig:
+            return cached.get("data")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug("External activity JSON load failed for %s: %s", path, e)
+        return None
+    with _JSON_FILE_CACHE_LOCK:
+        _JSON_FILE_CACHE[key] = {"sig": sig, "data": payload}
+    return payload
+
+
+def _tail_text_file(path: Path, *, max_lines: int = 120, max_bytes: int = 512_000) -> List[str]:
+    """Read the tail of a text file without loading huge legacy logs into memory."""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+    if len(raw) > max_bytes:
+        raw = raw[-max_bytes:]
+    lines = raw.decode("utf-8", errors="replace").splitlines()
+    limit = max(1, min(500, int(max_lines)))
+    return lines[-limit:]
+
+
+def _file_status(path: Path, *, label: str, role: str, stale_after_sec: int) -> Dict[str, Any]:
+    info: Dict[str, Any] = {
+        "label": label,
+        "role": role,
+        "path": str(path),
+        "exists": False,
+        "size_bytes": 0,
+        "mtime": None,
+        "age_seconds": None,
+        "stale": True,
+    }
+    try:
+        stat = path.stat()
+    except OSError:
+        return info
+    age = max(0.0, time.time() - stat.st_mtime)
+    try:
+        mtime = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")
+    except Exception:
+        mtime = None
+    info.update(
+        {
+            "exists": True,
+            "size_bytes": stat.st_size,
+            "mtime": mtime,
+            "age_seconds": round(age, 1),
+            "stale": age > stale_after_sec,
+        }
+    )
+    return info
+
+
+def _build_recent_log_payload(max_lines: int = 120) -> Dict[str, Any]:
+    """
+    Control-panel log view.
+
+    Prefer the current rotating backend log. The old autonomous-system log is a
+    historical trial-run file and is included only as metadata/fallback so stale
+    STATUS UPDATE blocks are not mistaken for live server output.
+    """
+    limit = max(10, min(500, int(max_lines)))
+    sources = [
+        (
+            CURRENT_BACKEND_LOG_PATH,
+            "Current backend log",
+            "live_backend",
+            LIVE_LOG_STALE_AFTER_SEC,
+        ),
+        (
+            SECONDARY_RUNTIME_LOG_PATH,
+            "Runtime package log",
+            "runtime_package",
+            LIVE_LOG_STALE_AFTER_SEC,
+        ),
+    ]
+    source_statuses = [
+        _file_status(path, label=label, role=role, stale_after_sec=stale_after)
+        for path, label, role, stale_after in sources
+    ]
+    legacy_status = _file_status(
+        LEGACY_AUTONOMOUS_LOG_PATH,
+        label="Legacy trial/autonomous log",
+        role="legacy_trial_history",
+        stale_after_sec=LEGACY_LOG_STALE_AFTER_SEC,
+    )
+
+    selected_status = next((status for status in source_statuses if status["exists"]), None)
+    if selected_status is None and legacy_status["exists"]:
+        selected_status = legacy_status
+
+    if selected_status is None:
+        return {
+            "success": False,
+            "message": "No Elysia log files were found.",
+            "source": None,
+            "sources": source_statuses,
+            "legacy_source": legacy_status,
+            "lines": [],
+        }
+
+    lines = _tail_text_file(Path(str(selected_status["path"])), max_lines=limit)
+    message = ""
+    if selected_status.get("role") == "legacy_trial_history":
+        message = "Showing legacy trial history only because no current backend log exists."
+    elif selected_status.get("stale"):
+        message = "Current backend log exists but has not been updated recently; backend may be stopped."
+
+    return {
+        "success": True,
+        "message": message,
+        "source": selected_status,
+        "sources": source_statuses,
+        "legacy_source": legacy_status,
+        "lines": lines,
+    }
+
+
+def _stripe_secret_key_mode() -> str:
+    """Classify Stripe secret from env prefix only (never return key material)."""
+    k = (os.environ.get("STRIPE_SECRET_KEY") or "").strip()
+    if not k:
+        return "unset"
+    if k.startswith("sk_live"):
+        return "live"
+    if k.startswith("sk_test"):
+        return "test"
+    return "custom"
+
+
+def _stripe_publishable_key_mode() -> str:
+    k = (os.environ.get("STRIPE_PUBLISHABLE_KEY") or "").strip()
+    if not k:
+        return "unset"
+    if k.startswith("pk_live"):
+        return "live"
+    if k.startswith("pk_test"):
+        return "test"
+    return "custom"
+
+
+def _build_payment_provider_status(unified: Any) -> Dict[str, Any]:
+    """
+    Gumroad + Stripe operator snapshot: env presence, key mode (test/live), HarvestEngine binding.
+    Does not call external APIs and does not expose secrets.
+    """
+    gum_token = bool((os.environ.get("GUMROAD_ACCESS_TOKEN") or "").strip())
+    stripe_secret = bool((os.environ.get("STRIPE_SECRET_KEY") or "").strip())
+    stripe_pub = bool((os.environ.get("STRIPE_PUBLISHABLE_KEY") or "").strip())
+    harvest_gum = False
+    harvest_stripe = False
+    if unified is not None:
+        modules = getattr(unified, "modules", None) or {}
+        he = modules.get("harvest_engine")
+        if he is not None:
+            harvest_gum = getattr(he, "gumroad_client", None) is not None
+            harvest_stripe = getattr(he, "stripe_client", None) is not None
+
+    def _row(env_ok: bool, harvest_ok: bool) -> str:
+        if env_ok and harvest_ok:
+            return "ok"
+        if env_ok and not harvest_ok:
+            return "env_only_restart_may_be_needed"
+        return "not_configured"
+
+    return {
+        "gumroad": {
+            "access_token_env": gum_token,
+            "harvest_client_bound": harvest_gum,
+            "summary": _row(gum_token, harvest_gum),
+        },
+        "stripe": {
+            "secret_key_env": stripe_secret,
+            "publishable_key_env": stripe_pub,
+            "secret_key_mode": _stripe_secret_key_mode(),
+            "publishable_key_mode": _stripe_publishable_key_mode(),
+            "harvest_client_bound": harvest_stripe,
+            "summary": _row(stripe_secret, harvest_stripe),
+        },
+    }
+
+
+def _normalize_preview_text(value: Any, limit: int = 320) -> Optional[str]:
+    if value is None:
+        return None
+    text = " ".join(str(value).split()).strip()
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _iso_from_epoch(value: Any) -> Optional[str]:
+    ts = _coerce_float(value)
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+    except Exception:
+        return None
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _seconds_since(ts: Optional[datetime]) -> Optional[float]:
+    if ts is None:
+        return None
+    now = datetime.now().astimezone()
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=now.tzinfo)
+    try:
+        return max(0.0, (now - ts).total_seconds())
+    except Exception:
+        return None
+
+
+def _is_tcp_endpoint_reachable(host: str, port: int, timeout: float = 0.15) -> bool:
+    if not host or not isinstance(port, int) or port <= 0:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _build_moltbook_activity_snapshot() -> Dict[str, Any]:
+    snapshot: Dict[str, Any] = {
+        "available": False,
+        "status": "never",
+        "last_seen_at": None,
+        "goal": None,
+        "summary": None,
+        "summary_source": None,
+        "readout_quality": "none",
+        "stop_reason": None,
+        "pages_visited": 0,
+        "step_count": 0,
+        "latest_url": None,
+        "latest_snippet": None,
+    }
+    payload = _load_cached_json(BROWSER_AGENT_STATE_PATH)
+    if not isinstance(payload, dict):
+        return snapshot
+
+    sessions = payload.get("sessions") or []
+    findings = payload.get("findings_log") or []
+    latest_session = sessions[-1] if sessions and isinstance(sessions[-1], dict) else {}
+    latest_finding = findings[-1] if findings and isinstance(findings[-1], dict) else {}
+    steps = latest_session.get("steps") or []
+    urls = [
+        str(step.get("url") or "").strip()
+        for step in steps
+        if isinstance(step, dict) and str(step.get("url") or "").strip()
+    ]
+
+    last_seen_at = _iso_from_epoch(latest_session.get("ts")) or _iso_from_epoch(latest_finding.get("ts"))
+    session_summary = _normalize_preview_text(latest_session.get("summary"), 420)
+    finding_summary = _normalize_preview_text(latest_finding.get("snippet"), 320)
+    summary_text = session_summary or finding_summary
+    summary_source = (
+        "session_summary"
+        if session_summary
+        else "latest_finding"
+        if finding_summary
+        else None
+    )
+    summary_word_count = len(str(summary_text or "").split())
+    readout_quality = "none"
+    if summary_text:
+        if len(set(urls)) >= 3 and summary_word_count >= 20:
+            readout_quality = "detailed"
+        elif summary_word_count >= 8:
+            readout_quality = "clear"
+        else:
+            readout_quality = "thin"
+
+    snapshot.update(
+        {
+            "available": bool(latest_session or latest_finding),
+            "last_seen_at": last_seen_at,
+            "goal": _normalize_preview_text(latest_session.get("goal"), 220),
+            "summary": summary_text,
+            "summary_source": summary_source,
+            "readout_quality": readout_quality,
+            "stop_reason": _normalize_preview_text(latest_session.get("stop_reason"), 80),
+            "pages_visited": len(set(urls)),
+            "step_count": len(steps) if isinstance(steps, list) else 0,
+            "latest_url": urls[-1] if urls else None,
+            "latest_snippet": _normalize_preview_text(latest_finding.get("snippet"), 240),
+        }
+    )
+
+    age_seconds = _seconds_since(_parse_iso_datetime(last_seen_at))
+    if snapshot["available"] and age_seconds is not None and age_seconds <= EXTERNAL_ACTIVITY_RECENT_WINDOW_SEC:
+        snapshot["status"] = "active_recently"
+    elif snapshot["available"]:
+        snapshot["status"] = "idle"
+    return snapshot
+
+
+def _build_openclaw_activity_snapshot() -> Dict[str, Any]:
+    snapshot: Dict[str, Any] = {
+        "available": False,
+        "status": "unseen",
+        "gateway_host": OPENCLAW_GATEWAY_HOST,
+        "gateway_port": OPENCLAW_GATEWAY_PORT,
+        "gateway_reachable": _is_tcp_endpoint_reachable(OPENCLAW_GATEWAY_HOST, OPENCLAW_GATEWAY_PORT),
+        "updated_at": None,
+        "request_count": 0,
+        "last_model": None,
+        "last_status": None,
+        "last_request_preview": None,
+        "last_reply_preview": None,
+        "last_error": None,
+        "recent_requests": [],
+    }
+    payload = _load_cached_json(OPENCLAW_ACTIVITY_PATH)
+    if isinstance(payload, dict):
+        recent_requests: List[Dict[str, Any]] = []
+        for item in list(payload.get("recent_requests") or [])[:3]:
+            if not isinstance(item, dict):
+                continue
+            recent_requests.append(
+                {
+                    "ts": item.get("ts"),
+                    "status": _normalize_preview_text(item.get("status"), 40),
+                    "model": _normalize_preview_text(item.get("model"), 80),
+                    "message_preview": _normalize_preview_text(item.get("message_preview"), 200),
+                    "reply_preview": _normalize_preview_text(item.get("reply_preview"), 220),
+                    "error": _normalize_preview_text(item.get("error"), 180),
+                }
+            )
+        snapshot.update(
+            {
+                "available": True,
+                "updated_at": payload.get("updated_at") or payload.get("last_request_at"),
+                "request_count": int(payload.get("request_count") or 0),
+                "last_model": _normalize_preview_text(payload.get("last_model"), 80),
+                "last_status": _normalize_preview_text(payload.get("last_status"), 40),
+                "last_request_preview": _normalize_preview_text(
+                    payload.get("last_request_preview") or payload.get("last_request_message"),
+                    220,
+                ),
+                "last_reply_preview": _normalize_preview_text(payload.get("last_reply_preview"), 240),
+                "last_error": _normalize_preview_text(payload.get("last_error"), 180),
+                "recent_requests": recent_requests,
+            }
+        )
+
+    age_seconds = _seconds_since(_parse_iso_datetime(snapshot.get("updated_at")))
+    if snapshot["available"] and age_seconds is not None and age_seconds <= EXTERNAL_ACTIVITY_RECENT_WINDOW_SEC:
+        snapshot["status"] = "active_recently"
+    elif snapshot["gateway_reachable"]:
+        snapshot["status"] = "gateway_ready"
+    elif snapshot["available"]:
+        snapshot["status"] = "idle"
+    return snapshot
+
+
+def _build_external_activity_snapshot(orchestrator: Any = None) -> Dict[str, Any]:
+    """MoltBook + OpenClaw file snapshots; optional USB/external data snapshot from UnifiedElysiaSystem."""
+    storage_snapshot: Dict[str, Any] = {}
+    if orchestrator is not None:
+        try:
+            unified = getattr(orchestrator, "_unified_system", None)
+            ev = getattr(unified, "_external_volume_snapshot", None) if unified is not None else None
+            if isinstance(ev, dict):
+                storage_snapshot = dict(ev)
+        except Exception as e:
+            logger.debug("external storage snapshot for UI: %s", e)
+    return {
+        "moltbook": _build_moltbook_activity_snapshot(),
+        "openclaw": _build_openclaw_activity_snapshot(),
+        "storage": storage_snapshot,
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
 
 
 # HTML Template for Control Panel - Enhanced Version
@@ -432,6 +889,38 @@ CONTROL_PANEL_TEMPLATE = """
         .badge.warning { background: var(--warning); color: white; }
         .badge.danger { background: var(--danger); color: white; }
         
+        .api-meter-stat-card h3 { margin-bottom: 8px; }
+        .api-meter-g-track {
+            height: 14px;
+            border-radius: 8px;
+            background: var(--bg-dark);
+            overflow: hidden;
+            margin-top: 10px;
+            border: 1px solid var(--border);
+        }
+        .api-meter-g-fill {
+            height: 100%;
+            border-radius: 8px;
+            transition: width 0.4s ease;
+        }
+        .api-meter-g-label {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .api-meter-g-msg {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 10px;
+            line-height: 1.45;
+            word-break: break-word;
+        }
+        .api-meter-chart-note {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+        }
+        
         @media (max-width: 768px) {
             .grid {
                 grid-template-columns: 1fr;
@@ -467,16 +956,60 @@ CONTROL_PANEL_TEMPLATE = """
             <button class="tab active" onclick="showTab('dashboard', this)">📊 Dashboard</button>
             <button class="tab" onclick="showTab('learning', this)">📚 Learning</button>
             <button class="tab" onclick="showTab('tasks', this)">📋 Tasks</button>
+            <button class="tab" onclick="showTab('workbench', this)">Workbench</button>
             <button class="tab" onclick="showTab('security', this)">🔒 Security</button>
             <button class="tab" onclick="showTab('memory', this)">🧠 Memory</button>
             <button class="tab" onclick="showTab('introspection', this)">🔍 Introspection</button>
             <button class="tab" onclick="showTab('control', this)">🎮 Control</button>
+            <button class="tab" onclick="showTab('insights', this)">📡 Insights</button>
+            <button class="tab" onclick="showTab('api-meter', this)">⛽ API meter</button>
             <button class="tab" onclick="showTab('logs', this)">📝 Logs</button>
         </div>
 
         <!-- Dashboard Tab -->
         <div id="dashboard" class="tab-content active">
             <div class="grid">
+                <div id="system-safety-status-card" class="card" style="grid-column: 1 / -1;">
+                    <h2>System Safety Status</h2>
+                    <p style="font-size: 12px; color: var(--text-secondary); margin: 0 0 10px 0; line-height: 1.5;">
+                        Plain-language summary for operators. Safe-stack panels below are read-only or review-only unless config says otherwise.
+                    </p>
+                    <ul style="font-size: 12px; color: var(--text-secondary); margin: 0; padding-left: 18px; line-height: 1.6;">
+                        <li><strong>Autonomy:</strong> Off unless explicitly enabled</li>
+                        <li><strong>Live execution:</strong> Off for safe-stack panels</li>
+                        <li><strong>Brain traces:</strong> Dry-run and config-gated</li>
+                        <li><strong>Memory ranking:</strong> Read-only</li>
+                        <li><strong>Self-improvement:</strong> Review/export only</li>
+                        <li><strong>Chat memory:</strong> Saved locally through ConversationStore</li>
+                    </ul>
+                </div>
+
+                <div class="card" style="grid-column: 1 / -1;">
+                    <h2>Start Here</h2>
+                    <p style="color: var(--text-secondary); margin-bottom: 16px; max-width: 920px; line-height: 1.6;">
+                        Use Elysia like a result engine: ask a question, pull in fresh source material, or jump straight to the latest opportunities and artifacts.
+                    </p>
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px;">
+                        <button onclick="quickFindOpportunities()">Find Opportunities</button>
+                        <button onclick="quickLearnFrom('twitter')">Learn From X</button>
+                        <button onclick="quickLearnFrom('chatgpt')">Learn From ChatGPT</button>
+                        <button onclick="quickLearnFrom('web')">Learn From Web</button>
+                        <button onclick="quickShowChanges()">Show What Changed</button>
+                    </div>
+                    <div class="input-group" style="margin-bottom: 10px;">
+                        <label>Ask Elysia:</label>
+                        <input type="text" id="dashboard-quick-ask" placeholder="e.g., What should I work on next to make this useful for real users?" onkeydown="if(event.key === 'Enter'){ quickAskElysia(); }">
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
+                        <button onclick="quickAskElysia()">Get Answer</button>
+                        <button onclick="quickAskElysia('What are the top operator-facing opportunities right now?')">Ask For Opportunities</button>
+                        <button onclick="quickAskElysia('Summarize the most useful change since the last run.')">Ask What Changed</button>
+                    </div>
+                    <div id="dashboard-quick-answer" style="padding: 14px; background: var(--bg-dark); border-radius: 10px; min-height: 66px; white-space: pre-wrap; font-size: 13px;">
+                        <em style="color: var(--text-secondary);">Ask a direct question and Elysia will answer here.</em>
+                    </div>
+                </div>
+
                 <div class="card">
                     <h2>System Status</h2>
                     <div class="metric">
@@ -498,8 +1031,24 @@ CONTROL_PANEL_TEMPLATE = """
                 </div>
 
                 <div class="card">
+                    <h2>API gas meter</h2>
+                    <p style="font-size: 11px; color: var(--text-secondary); margin: 0 0 8px 0;">
+                        Session usage (this process); resets on restart. Refreshes when you open Dashboard or click below.
+                    </p>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+                        <button type="button" onclick="refreshDashboardApiMeter()">Refresh meter</button>
+                    </div>
+                    <div id="dashboard-api-meter-summary" style="padding: 12px; background: var(--bg-dark); border-radius: 8px; font-size: 11px; font-family: monospace; color: var(--text-secondary); min-height: 120px; white-space: pre-wrap;">
+                        <em style="color: var(--text-muted);">Loading…</em>
+                    </div>
+                </div>
+
+                <div class="card">
                     <h2>Autonomy</h2>
-                    <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Elysia acts on its own when enabled</p>
+                    <p class="ui-clarity-helper" style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; line-height: 1.45;">
+                        High-impact controls. These should stay off unless you intentionally enable them and understand the consequences.
+                    </p>
+                    <p style="font-size: 10px; color: var(--warning); margin-bottom: 8px;">This may affect runtime behavior.</p>
                     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
                         <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
                             <input type="checkbox" id="autonomy-enabled" onchange="toggleAutonomy(this.checked)">
@@ -511,13 +1060,74 @@ CONTROL_PANEL_TEMPLATE = """
                 </div>
 
                 <div class="card">
-                    <h2>Next Action</h2>
-                    <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Unified decision: what the system should do next</p>
+                    <h2>Task / Next Action</h2>
+                    <p class="ui-clarity-helper" style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; line-height: 1.45;">
+                        Shows what Elysia thinks the next useful task or action is. Review before acting.
+                    </p>
+                    <p style="font-size: 10px; color: var(--warning); margin: 0 0 8px 0;">Review before using.</p>
                     <div id="next-action-display" style="padding: 12px; background: var(--bg-dark); border-radius: 8px; min-height: 80px; font-size: 13px;">
                         <em>Click "Suggest Next Action" to load...</em>
                     </div>
                     <button onclick="suggestNextAction()" style="margin-top: 8px;">Suggest Next Action</button>
                     <button onclick="executeNextAction()" id="execute-next-btn" style="margin-top: 8px; display: none;" class="danger">Execute</button>
+                </div>
+
+                <div class="card">
+                    <h2>Top Opportunity</h2>
+                    <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Latest operator-facing opportunity from Elysia's self-task output</p>
+                    <div id="dashboard-opportunity" style="padding: 12px; background: var(--bg-dark); border-radius: 8px; min-height: 96px; font-size: 13px;">
+                        <em>Loading workbench...</em>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Recent Artifact</h2>
+                    <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Most recent useful output ready for operator review</p>
+                    <div id="dashboard-artifact" style="padding: 12px; background: var(--bg-dark); border-radius: 8px; min-height: 96px; font-size: 13px;">
+                        <em>Loading workbench...</em>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Sales Launch</h2>
+                    <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Current offer, launch path, and the next transaction setup step</p>
+                    <div id="dashboard-sales-launch" style="padding: 12px; background: var(--bg-dark); border-radius: 8px; min-height: 120px; font-size: 13px;">
+                        <em>Loading workbench...</em>
+                    </div>
+                </div>
+
+                <div class="card" style="grid-column: 1 / -1;">
+                    <h2>External Activity</h2>
+                    <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 12px;">See what Elysia most recently observed on MoltBook (goal, readout, coverage), what OpenClaw is sending through the local chat bridge, and USB / external data mirror status from startup.</p>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px;">
+                        <div style="padding: 14px; border-radius: 10px; background: var(--bg-dark); border: 1px solid var(--border);">
+                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px;">
+                                <strong>MoltBook</strong>
+                                <span id="external-moltbook-badge" class="badge">Waiting</span>
+                            </div>
+                            <div id="external-moltbook-details" style="font-size: 13px; line-height: 1.55;">
+                                <em style="color: var(--text-secondary);">Waiting for MoltBook activity...</em>
+                            </div>
+                        </div>
+                        <div style="padding: 14px; border-radius: 10px; background: var(--bg-dark); border: 1px solid var(--border);">
+                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px;">
+                                <strong>OpenClaw</strong>
+                                <span id="external-openclaw-badge" class="badge">Waiting</span>
+                            </div>
+                            <div id="external-openclaw-details" style="font-size: 13px; line-height: 1.55;">
+                                <em style="color: var(--text-secondary);">Waiting for OpenClaw activity...</em>
+                            </div>
+                        </div>
+                        <div style="padding: 14px; border-radius: 10px; background: var(--bg-dark); border: 1px solid var(--border);">
+                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px;">
+                                <strong>Storage &amp; USB</strong>
+                                <span id="external-storage-badge" class="badge">Waiting</span>
+                            </div>
+                            <div id="external-storage-details" style="font-size: 13px; line-height: 1.55;">
+                                <em style="color: var(--text-secondary);">Waiting for status...</em>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="card">
@@ -533,6 +1143,18 @@ CONTROL_PANEL_TEMPLATE = """
                     <div class="metric">
                         <span class="metric-label">Last Snapshot:</span>
                         <span class="metric-value" id="last-snapshot">-</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Last Cleanup:</span>
+                        <span class="metric-value" id="last-cleanup-outcome">-</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Cleanup Reason:</span>
+                        <span class="metric-value" id="last-cleanup-reason">-</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Cleanup Target:</span>
+                        <span class="metric-value" id="last-cleanup-target">-</span>
                     </div>
                 </div>
 
@@ -563,6 +1185,77 @@ CONTROL_PANEL_TEMPLATE = """
                         <span class="metric-value" id="trust-components">-</span>
                     </div>
                 </div>
+
+                <div id="brain-visibility-panel" class="card" style="grid-column: 1 / -1;">
+                    <!-- brain-visibility-review-only-start -->
+                    <h2>Brain Trace &amp; Self-Improvement</h2>
+                    <p style="font-size: 11px; color: var(--warning); margin: 0 0 8px 0; line-height: 1.45;">
+                        Review-only summary. This does not apply code. Dry-run trace only; non-dry-run paths stay off.
+                    </p>
+                    <!-- brain-visibility-review-only-end -->
+                    <h3 style="margin-top: 12px;">Brain Trace</h3>
+                    <p class="ui-clarity-helper" style="font-size: 11px; color: var(--text-secondary); line-height: 1.45;">
+                        Shows what Elysia considered during the latest dry-run reasoning trace. This does not mean Elysia executed anything.
+                    </p>
+                    <p style="font-size: 10px; color: var(--warning); margin: 0 0 6px 0;">Dry-run/config-gated. Review-only: does not apply code.</p>
+                    <div id="brain-trace-summary" style="font-size: 12px; color: var(--text-secondary); min-height: 48px;">Loading…</div>
+                    <button type="button" style="margin-top: 8px;" onclick="refreshBrainTrace()">Refresh brain trace</button>
+
+                    <h3 style="margin-top: 16px;">Self-Improvement Proposals</h3>
+                    <p class="ui-clarity-helper" style="font-size: 11px; color: var(--text-secondary); line-height: 1.45;">
+                        Ideas Elysia found for improving itself. These are review-only. Nothing here changes code by itself.
+                    </p>
+                    <p style="font-size: 10px; color: var(--warning); margin: 0 0 6px 0;">Review-only: does not apply code.</p>
+                    <div id="self-improvement-proposals-list" style="font-size: 12px; min-height: 40px;">Loading…</div>
+                    <button type="button" style="margin-top: 8px;" onclick="refreshSelfImprovementProposals()">Refresh proposals</button>
+                    <div id="self-improvement-proposal-detail" style="margin-top: 12px; display: none;">
+                        <div id="self-improvement-proposal-detail-body"></div>
+                        <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px;">
+                            <button type="button" onclick="updateSelfImprovementProposalStatus('reviewing')">Reviewing</button>
+                            <button type="button" onclick="updateSelfImprovementProposalStatus('accepted')">Accepted</button>
+                            <button type="button" onclick="updateSelfImprovementProposalStatus('rejected')">Rejected</button>
+                            <button type="button" onclick="updateSelfImprovementProposalStatus('deferred')">Deferred</button>
+                            <button type="button" onclick="updateSelfImprovementProposalStatus('implemented')">Implemented</button>
+                        </div>
+                        <!-- self-improvement-prompt-export-start -->
+                        <h3 style="margin-top: 14px;">Proposal Export</h3>
+                        <p class="ui-clarity-helper" style="font-size: 11px; color: var(--text-secondary); line-height: 1.45;">
+                            Creates a copyable prompt for Cursor or Codex. Exporting does not apply changes.
+                        </p>
+                        <p style="font-size: 11px; color: var(--warning); margin: 10px 0 6px 0;">
+                            Export only. This does not apply code or run commands.
+                        </p>
+                        <div id="self-improvement-proposal-prompt-export" class="self-improvement-prompt-export">
+                            <button type="button" onclick="exportSelfImprovementProposalPrompt('cursor')">Export Cursor Prompt</button>
+                            <button type="button" onclick="exportSelfImprovementProposalPrompt('codex')">Export Codex Prompt</button>
+                            <button type="button" onclick="copySelfImprovementExportedPrompt()">Copy exported prompt</button>
+                            <pre id="self-improvement-prompt-export-text" style="margin-top: 8px; max-height: 160px; overflow: auto; font-size: 11px;"></pre>
+                        </div>
+                        <!-- self-improvement-prompt-export-end -->
+                    </div>
+
+                    <div id="memory-ranking-panel" style="margin-top: 18px;">
+                        <h3>Memory Ranking</h3>
+                        <p class="ui-clarity-helper" style="font-size: 11px; color: var(--text-secondary); line-height: 1.45;">
+                            Shows which recent memories look important, low-value, or worth reviewing. This is advisory only and does not edit memory.
+                        </p>
+                        <p style="font-size: 10px; color: var(--warning); margin: 0 0 6px 0;">Read-only advisory ranking. No memory changes are applied.</p>
+                        <div id="memory-ranking-summary" style="font-size: 12px; min-height: 40px;">Loading…</div>
+                        <button type="button" style="margin-top: 8px;" onclick="refreshMemoryRankingSummary()">Refresh memory ranking</button>
+                    </div>
+
+                    <div id="prompt-contract-panel" style="margin-top: 18px;">
+                        <!-- prompt-contract-visibility-start -->
+                        <h3>Prompt Contracts</h3>
+                        <p class="ui-clarity-helper" style="font-size: 11px; color: var(--text-secondary); line-height: 1.45;">
+                            Checks whether module outputs follow the expected JSON format. Defaults are off unless enabled in config.
+                        </p>
+                        <p style="font-size: 10px; color: var(--warning); margin: 0 0 6px 0;">Read-only validation status. No model calls from this panel. production chat is not blocked by default.</p>
+                        <div id="prompt-contract-status" style="font-size: 12px; min-height: 40px;">Loading…</div>
+                        <button type="button" style="margin-top: 8px;" onclick="refreshPromptContractStatus()">Refresh prompt contract status</button>
+                        <!-- prompt-contract-visibility-end -->
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -570,10 +1263,11 @@ CONTROL_PANEL_TEMPLATE = """
         <div id="learning" class="tab-content">
             <div class="section">
                 <div class="controls">
-                    <h2>📚 Learning Capabilities</h2>
-                    <p style="color: var(--text-secondary); margin-bottom: 20px;">
-                        Monitor and control Elysia's learning systems. Test learning from various sources including Reddit, web articles, and RSS feeds.
+                    <h2>📚 Learning</h2>
+                    <p class="ui-clarity-helper" style="color: var(--text-secondary); margin-bottom: 12px; line-height: 1.45;">
+                        Learning pulls information from external sources (Reddit, web pages, RSS). Test buttons preview a small sample; starting learning may use the network.
                     </p>
+                    <p style="font-size: 10px; color: var(--warning); margin: 0 0 16px 0;">Review before using. This may fetch external content.</p>
                     <div style="display: flex; gap: 12px; flex-wrap: wrap;">
                         <button onclick="testRedditLearning()">Test Reddit Learning</button>
                         <button onclick="getLearningSummary()">Learning Summary</button>
@@ -664,6 +1358,34 @@ CONTROL_PANEL_TEMPLATE = """
                 </div>
 
                 <div class="card">
+                    <h2>Income APIs (Gumroad &amp; Stripe)</h2>
+                    <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: 12px;">
+                        Saves to <code style="font-size: 11px;">config/api_keys.json</code> (same as other API keys). Environment variables still override the file.
+                        <strong>Harvest Engine reloads in this process</strong> when you save or clear keys here. Use a full Elysia restart only if another subsystem still shows stale state.
+                    </p>
+                    <div class="input-group" style="margin-bottom: 8px;">
+                        <label>Gumroad:</label>
+                        <span id="income-gumroad-status" style="font-size: 13px; color: var(--text-secondary);">…</span>
+                    </div>
+                    <div class="input-group" style="margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+                        <input type="password" id="income-gumroad-token" placeholder="Paste Gumroad access token" style="flex: 1; min-width: 200px;" autocomplete="off">
+                        <button type="button" onclick="saveIncomeKeys()">Save keys</button>
+                    </div>
+                    <div class="input-group" style="margin-bottom: 8px;">
+                        <label>Stripe:</label>
+                        <span id="income-stripe-status" style="font-size: 13px; color: var(--text-secondary);">…</span>
+                    </div>
+                    <div class="input-group" style="margin-bottom: 8px;">
+                        <input type="password" id="income-stripe-token" placeholder="Paste Stripe secret key (sk_…)" style="flex: 1; min-width: 200px;" autocomplete="off">
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;">
+                        <button type="button" class="secondary" onclick="clearIncomeKey('gumroad')">Remove Gumroad from config file</button>
+                        <button type="button" class="secondary" onclick="clearIncomeKey('stripe')">Remove Stripe from config file</button>
+                    </div>
+                    <p style="font-size: 11px; color: var(--text-secondary); margin-top: 10px;">Removing only deletes keys from the JSON file; unset env vars in your shell or system if those are set.</p>
+                </div>
+
+                <div class="card">
                     <h2>Learning Sources</h2>
                     <div style="margin-top: 16px;">
                         <div class="badge success" style="margin: 6px;">Reddit API</div>
@@ -687,11 +1409,89 @@ CONTROL_PANEL_TEMPLATE = """
         <div id="tasks" class="tab-content">
             <div class="card">
                 <h2>Task Queue</h2>
+                <p class="ui-clarity-helper" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; line-height: 1.45;">
+                    Lists work waiting for Elysia or Guardian. Refresh to see status; items here may run when autonomy or the event loop is active.
+                </p>
                 <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
                     Guardian <strong>TaskEngine</strong> items, Elysia loop <strong>GlobalTaskQueue</strong> jobs, and optional <strong>TASKS/*.md</strong> drop files.
                 </p>
+                <p style="font-size: 10px; color: var(--warning); margin: 0 0 10px 0;">Review before acting on queued tasks.</p>
                 <button type="button" onclick="refreshTaskQueue()">Refresh</button>
                 <div id="task-list" style="margin-top: 16px;"></div>
+            </div>
+        </div>
+
+        <!-- Workbench Tab -->
+        <div id="workbench" class="tab-content">
+            <div class="section">
+                <div class="controls">
+                    <h2>Operator Workbench</h2>
+                    <p class="ui-clarity-helper" style="color: var(--text-secondary); margin-bottom: 12px; line-height: 1.45;">
+                        See what Elysia has actually produced: opportunities, active self-tasks, learning digests, and recent artifacts. Read-only overview for operators.
+                    </p>
+                    <p style="font-size: 10px; color: var(--warning); margin: 0 0 16px 0;">Review-only: does not start new autonomous work from this tab.</p>
+                    <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                        <button onclick="refreshWorkbench()">Refresh Workbench</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid">
+                <div class="card">
+                    <h2>Workbench Snapshot</h2>
+                    <div id="workbench-metrics" style="font-size: 13px; line-height: 1.7;">
+                        <em>Loading snapshot...</em>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Top Opportunities</h2>
+                    <div id="workbench-opportunities" style="font-size: 12px;">
+                        <em>Loading opportunities...</em>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Active Self-Tasks</h2>
+                    <div id="workbench-active-tasks" style="font-size: 12px;">
+                        <em>Loading active tasks...</em>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Recent Useful Tasks</h2>
+                    <div id="workbench-successes" style="font-size: 12px;">
+                        <em>Loading recent task results...</em>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Sales Launch</h2>
+                    <div id="workbench-sales-launch" style="font-size: 12px;">
+                        <em>Loading sales launch plan...</em>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Learning Digests</h2>
+                    <div id="workbench-digests" style="font-size: 12px;">
+                        <em>Loading digests...</em>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Improvement Briefs</h2>
+                    <div id="workbench-improvements" style="font-size: 12px;">
+                        <em>Loading improvement briefs...</em>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
+                <h2>Recent Artifacts</h2>
+                <div id="workbench-artifacts" style="font-size: 12px;">
+                    <em>Loading artifacts...</em>
+                </div>
             </div>
         </div>
 
@@ -699,6 +1499,9 @@ CONTROL_PANEL_TEMPLATE = """
         <div id="security" class="tab-content">
             <div class="card">
                 <h2>Security Events</h2>
+                <p class="ui-clarity-helper" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 10px; line-height: 1.45;">
+                    Recent security-related events and alerts. Read-only log for investigation; does not change security policy.
+                </p>
                 <div id="security-events"></div>
             </div>
         </div>
@@ -706,7 +1509,11 @@ CONTROL_PANEL_TEMPLATE = """
         <!-- Memory Tab -->
         <div id="memory" class="tab-content">
             <div class="card">
-                <h2>Memory Operations</h2>
+                <h2>Memory</h2>
+                <p class="ui-clarity-helper" style="font-size: 12px; color: var(--text-secondary); line-height: 1.45; margin-bottom: 12px;">
+                    Saved information Elysia can use later. This may include conversation summaries, lessons, and important context.
+                </p>
+                <h3 style="margin-top: 0;">Memory Operations</h3>
                 <div class="input-group">
                     <label>Search Memories:</label>
                     <input type="text" id="memory-search" placeholder="Enter search query">
@@ -721,6 +1528,10 @@ CONTROL_PANEL_TEMPLATE = """
             <div class="section">
                 <div class="controls">
                     <h2>Introspection & Self-Analysis</h2>
+                    <p class="ui-clarity-helper" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 10px; line-height: 1.45;">
+                        Read-only analysis of memory health, focus, and behavior patterns. Buttons refresh reports; they do not rewrite memory.
+                    </p>
+                    <p style="font-size: 10px; color: var(--warning); margin: 0 0 10px 0;">Read-only: no memory changes are applied from this tab.</p>
                     <button onclick="refreshIntrospection()">Refresh All</button>
                     <button onclick="getComprehensiveReport()">Full Report</button>
                     <button onclick="checkMemoryHealth()">Memory Health</button>
@@ -811,7 +1622,12 @@ CONTROL_PANEL_TEMPLATE = """
         <!-- Control Tab -->
         <div id="control" class="tab-content">
             <div class="controls">
-                <h2>System Controls</h2>
+                <h2>Control</h2>
+                <p class="ui-clarity-helper" style="font-size: 12px; color: var(--text-secondary); line-height: 1.45; max-width: 920px;">
+                    Manual operator controls. These affect how Elysia is monitored or directed. Use carefully.
+                </p>
+                <p style="font-size: 10px; color: var(--warning); margin: 0 0 12px 0;">Review before using. This may affect runtime behavior.</p>
+                <h2 style="margin-top: 8px;">System Controls</h2>
                 <button onclick="pauseLoop()">Pause Event Loop</button>
                 <button onclick="resumeLoop()">Resume Event Loop</button>
                 <button onclick="createSnapshot()">Create Memory Snapshot</button>
@@ -838,11 +1654,20 @@ CONTROL_PANEL_TEMPLATE = """
 
                 <h3 style="margin-top: 24px;">APIs &amp; Tools</h3>
                 <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: 12px;">Trigger income, research, harvest, and AI chat from the dashboard.</p>
+                <h3 style="margin-top: 16px;">Conversation Chat</h3>
+                <p class="ui-clarity-helper" style="font-size: 12px; color: var(--text-secondary); line-height: 1.45;">
+                    This is your conversation with Elysia. Messages are saved locally so refreshes do not erase the thread.
+                </p>
                 <div class="input-group" style="margin-bottom: 12px;">
-                    <label>Chat with AI (OpenAI/OpenRouter):</label>
+                    <label>Chat with Elysia:</label>
+                    <div style="font-size: 11px; color: var(--text-secondary); margin: 4px 0;">
+                        Conversation: <span id="api-chat-conv-label">control_panel</span>
+                        · Stored under <code>data/runtime/conversations/</code>
+                    </div>
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                         <input type="text" id="api-chat-message" placeholder="Ask anything..." style="flex: 1; min-width: 200px;">
-                        <button onclick="sendApiChat()">Send</button>
+                        <button type="button" onclick="sendApiChat()">Send message to Elysia</button>
+                        <button type="button" onclick="startNewApiChat()">Start new conversation</button>
                     </div>
                     <div id="api-chat-result" style="margin-top: 8px; padding: 10px; background: var(--bg-dark); border-radius: 8px; font-size: 13px; min-height: 40px; white-space: pre-wrap;"></div>
                 </div>
@@ -851,6 +1676,19 @@ CONTROL_PANEL_TEMPLATE = """
                     <button onclick="runHarvestReport()">Harvest Report</button>
                     <button onclick="runResearchProposal()">Research Proposal (WebScout)</button>
                     <button onclick="runPromptEvolution()">Run Prompt Evolution</button>
+                </div>
+                <p style="color: var(--text-secondary); font-size: 11px; margin: 0 0 10px 0;">
+                    Gumroad / Stripe: environment and HarvestEngine wiring only (no secrets). Refresh with <strong>Income / API Status</strong>.
+                </p>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 14px;">
+                    <div style="padding: 12px; background: var(--bg-dark); border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
+                        <div style="font-weight: 600; margin-bottom: 6px;">Gumroad</div>
+                        <div id="payment-status-gumroad" style="font-size: 12px; color: var(--text-secondary); white-space: pre-wrap;">—</div>
+                    </div>
+                    <div style="padding: 12px; background: var(--bg-dark); border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
+                        <div style="font-weight: 600; margin-bottom: 6px;">Stripe</div>
+                        <div id="payment-status-stripe" style="font-size: 12px; color: var(--text-secondary); white-space: pre-wrap;">—</div>
+                    </div>
                 </div>
                 <h4 style="margin: 16px 0 8px 0;">Wallet accounts</h4>
                 <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: 8px;">
@@ -866,10 +1704,182 @@ CONTROL_PANEL_TEMPLATE = """
             </div>
         </div>
 
+        <!-- Insights: RAG / traces / MCP (operator observability) -->
+        <div id="insights" class="tab-content">
+            <div class="card">
+                <h2>📡 What Elysia is doing</h2>
+                <p class="ui-clarity-helper" style="color: var(--text-secondary); font-size: 13px; max-width: 900px; line-height: 1.45;">
+                    Observability only: RAG paths, optional LLM trace files, recent log lines, and MCP readiness. Refresh buttons reload data; they do not run new jobs.
+                </p>
+                <p style="color: var(--text-secondary); font-size: 12px; max-width: 900px; margin-top: 8px;">
+                    Self-build RAG paths, optional LLM JSONL traces (<code>ELYSIA_LLM_TRACE_JSONL</code>),
+                    recent <code>selfbuild_rag</code> log lines, and MCP readiness — same data as scripts, in one place.
+                </p>
+                <div style="display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0;">
+                    <button onclick="refreshInsightsOverview()">Refresh overview</button>
+                    <button onclick="refreshInsightsTraces()">Reload trace tail</button>
+                    <button onclick="refreshInsightsRagLog()">Reload RAG log tail</button>
+                </div>
+            </div>
+            <div class="grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px;">
+                <div class="card">
+                    <h3>USB / paths</h3>
+                    <div id="insights-storage-summary" style="font-size: 12px; font-family: monospace; color: var(--text-secondary); min-height: 88px;">—</div>
+                </div>
+                <div class="card">
+                    <h3>Local Ollama</h3>
+                    <div id="insights-ollama-summary" style="font-size: 12px; font-family: monospace; color: var(--text-secondary); min-height: 88px; white-space: pre-wrap;">—</div>
+                </div>
+                <div class="card">
+                    <h3>API gas meter</h3>
+                    <p style="font-size: 11px; color: var(--text-secondary); margin: 0 0 8px 0;">
+                        This process only — resets on restart. Paid chat vs local vs structured OpenAI paths.
+                    </p>
+                    <div id="insights-api-meter-summary" style="font-size: 11px; font-family: monospace; color: var(--text-secondary); min-height: 120px; white-space: pre-wrap;">—</div>
+                </div>
+                <div class="card">
+                    <h3>Self-build</h3>
+                    <div id="insights-selfbuild-summary" style="font-size: 12px; font-family: monospace; color: var(--text-secondary); min-height: 72px;">—</div>
+                </div>
+                <div class="card">
+                    <h3>MCP</h3>
+                    <div id="insights-mcp-summary" style="font-size: 12px; font-family: monospace; color: var(--text-secondary); min-height: 72px;">—</div>
+                </div>
+                <div class="card">
+                    <h3>LLM trace file</h3>
+                    <div id="insights-trace-summary" style="font-size: 12px; font-family: monospace; color: var(--text-secondary); min-height: 72px;">—</div>
+                </div>
+                <div class="card">
+                    <h3>RAG log</h3>
+                    <div id="insights-rag-summary" style="font-size: 12px; font-family: monospace; color: var(--text-secondary); min-height: 72px;">—</div>
+                </div>
+                <div class="card">
+                    <h3>Brains / routing</h3>
+                    <div id="insights-brains-summary" style="font-size: 11px; font-family: monospace; color: var(--text-secondary); min-height: 120px; white-space: pre-wrap;">—</div>
+                </div>
+                <div class="card">
+                    <h3>Mission / topics</h3>
+                    <div id="insights-mission-summary" style="font-size: 11px; font-family: monospace; color: var(--text-secondary); min-height: 120px; white-space: pre-wrap;">—</div>
+                </div>
+            </div>
+            <div class="card" style="margin-top: 14px;">
+                <h3>Full JSON</h3>
+                <pre id="insights-json-overview" style="max-height: 420px; overflow: auto; font-size: 11px; background: #0f3460; padding: 12px; border-radius: 6px; margin: 0;">Click &quot;Refresh overview&quot;…</pre>
+            </div>
+            <div class="card" style="margin-top: 14px;">
+                <h3>Trace tail (raw lines)</h3>
+                <pre id="insights-trace-lines" style="max-height: 220px; overflow: auto; font-size: 11px; background: #16213e; padding: 10px; border-radius: 6px;">—</pre>
+            </div>
+            <div class="card" style="margin-top: 14px;">
+                <h3>Unified LLM log — selfbuild_rag lines</h3>
+                <pre id="insights-rag-lines" style="max-height: 220px; overflow: auto; font-size: 11px; background: #16213e; padding: 10px; border-radius: 6px;">—</pre>
+            </div>
+        </div>
+
+        <!-- API Meter Tab (graphical) -->
+        <div id="api-meter" class="tab-content">
+            <div class="card" style="margin-bottom: 16px;">
+                <h2>⛽ API gas meter</h2>
+                <p style="color: var(--text-secondary); font-size: 14px; max-width: 920px; line-height: 1.55;">
+                    Session-scoped usage for this process (resets on restart). Charts mirror <code>/api/insights/api-meter</code>.
+                    Green/red stacks are successful vs failed calls per channel; doughnut is router decision counts; bars are reported tokens.
+                </p>
+                <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px;">
+                    <button type="button" onclick="refreshApiMeterTab()">Refresh charts</button>
+                </div>
+            </div>
+            <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                <div class="card api-meter-stat-card">
+                    <h3>Session uptime</h3>
+                    <div id="api-meter-stat-uptime" style="font-size: 26px; font-weight: 700;">—</div>
+                </div>
+                <div class="card api-meter-stat-card">
+                    <h3>Calls OK</h3>
+                    <div id="api-meter-stat-ok" style="font-size: 26px; font-weight: 700; color: var(--success);">—</div>
+                </div>
+                <div class="card api-meter-stat-card">
+                    <h3>Calls fail</h3>
+                    <div id="api-meter-stat-fail" style="font-size: 26px; font-weight: 700; color: var(--danger);">—</div>
+                </div>
+                <div class="card api-meter-stat-card">
+                    <h3>Tokens reported</h3>
+                    <div id="api-meter-stat-tokens" style="font-size: 26px; font-weight: 700; color: var(--primary);">—</div>
+                </div>
+            </div>
+            <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 20px; margin-top: 8px;">
+                <div class="card">
+                    <h3>Calls by channel</h3>
+                    <p class="api-meter-chart-note">Stacked: OK vs failed completions per transport channel.</p>
+                    <div id="api-meter-fallback-transport" style="display:none;font-size:12px;color:var(--text-secondary);"></div>
+                    <div class="chart-container" style="height: 300px; position: relative;">
+                        <canvas id="api-meter-canvas-transport"></canvas>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>Router choices</h3>
+                    <p class="api-meter-chart-note">Counts from <code>select_best_api</code> (probes excluded).</p>
+                    <div id="api-meter-fallback-router" style="display:none;font-size:12px;color:var(--text-secondary);"></div>
+                    <div class="chart-container" style="height: 300px; position: relative;">
+                        <canvas id="api-meter-canvas-router"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="card" style="margin-top: 8px;">
+                <h3>Tokens by channel</h3>
+                <p class="api-meter-chart-note">Sum of provider-reported tokens (mostly OpenAI structured paths).</p>
+                <div id="api-meter-fallback-tokens" style="display:none;font-size:12px;color:var(--text-secondary);"></div>
+                <div class="chart-container" style="height: 280px; position: relative;">
+                    <canvas id="api-meter-canvas-tokens"></canvas>
+                </div>
+            </div>
+            <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 8px;">
+                <div class="card">
+                    <h3>OpenAI routing</h3>
+                    <div id="api-meter-gauge-openai"></div>
+                </div>
+                <div class="card">
+                    <h3>OpenRouter</h3>
+                    <div id="api-meter-gauge-openrouter"></div>
+                </div>
+                <div class="card">
+                    <h3>Anthropic (trust)</h3>
+                    <div id="api-meter-gauge-anthropic"></div>
+                </div>
+            </div>
+            <div class="card" style="margin-top: 8px;">
+                <h3>Session meter &amp; unified budget</h3>
+                <pre id="api-meter-detail-text" style="max-height: 220px; overflow: auto; font-size: 11px; background: var(--bg-dark); padding: 12px; border-radius: 8px; white-space: pre-wrap; margin: 0;">—</pre>
+            </div>
+            <div class="card" style="margin-top: 8px;">
+                <h3>All configured APIs &amp; usage hints</h3>
+                <p style="color: var(--text-secondary); font-size: 12px; margin: 0 0 10px 0; max-width: 920px;">
+                    Key present (file/env), routing where applicable, local Brave/Tavily month counters (~plan limits),
+                    Alpha Vantage / Replicate env-only visibility. Nothing secret is echoed.
+                </p>
+                <pre id="api-meter-availability-block" style="max-height: 300px; overflow: auto; font-size: 11px; background: var(--bg-dark); padding: 12px; border-radius: 8px; white-space: pre-wrap; margin: 0;">—</pre>
+            </div>
+        </div>
+
         <!-- Logs Tab -->
         <div id="logs" class="tab-content">
-            <div class="console" id="console-logs">
-                <div class="log-entry">[System] Control Panel initialized</div>
+            <div class="card" style="margin-bottom: 12px;">
+                <h2>Backend Log Tail</h2>
+                <p style="font-size: 12px; color: var(--text-secondary); margin: 0 0 10px 0; line-height: 1.45;">
+                    Reads the current rotating backend log first: <code>elysia_unified.log</code>. The old
+                    <code>unified_autonomous_system.log</code> is treated as legacy trial history.
+                </p>
+                <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px;">
+                    <button type="button" onclick="refreshBackendLogs()">Refresh backend logs</button>
+                    <span id="backend-log-source" style="font-size: 12px; color: var(--text-secondary);">Not loaded yet.</span>
+                </div>
+                <div id="legacy-log-warning" style="font-size: 12px; color: var(--warning); margin-bottom: 8px;"></div>
+                <pre id="backend-log-lines" style="max-height: 460px; overflow: auto; font-size: 11px; background: var(--bg-dark); padding: 12px; border-radius: 8px; white-space: pre-wrap; margin: 0;">Click "Refresh backend logs" to load the live log tail.</pre>
+            </div>
+            <div class="card">
+                <h2>Control Panel Events</h2>
+                <div class="console" id="console-logs">
+                    <div class="log-entry">[System] Control Panel initialized</div>
+                </div>
             </div>
         </div>
     </div>
@@ -897,6 +1907,58 @@ CONTROL_PANEL_TEMPLATE = """
         
         // Make addLog globally available
         window.addLog = addLog;
+
+        function formatLogAge(seconds) {
+            if (seconds === null || seconds === undefined) return 'unknown age';
+            var n = Number(seconds);
+            if (!isFinite(n)) return 'unknown age';
+            if (n < 60) return Math.round(n) + 's ago';
+            if (n < 3600) return Math.round(n / 60) + 'm ago';
+            if (n < 86400) return Math.round(n / 3600) + 'h ago';
+            return Math.round(n / 86400) + 'd ago';
+        }
+
+        window.refreshBackendLogs = function() {
+            const linesEl = document.getElementById('backend-log-lines');
+            const sourceEl = document.getElementById('backend-log-source');
+            const legacyEl = document.getElementById('legacy-log-warning');
+            if (linesEl) linesEl.textContent = 'Loading backend log tail...';
+            if (sourceEl) sourceEl.textContent = 'Loading...';
+            if (legacyEl) legacyEl.textContent = '';
+
+            fetch('/api/logs/recent?lines=160', {headers: {'Accept': 'application/json'}})
+                .then(function(r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status + ': ' + r.statusText);
+                    return r.json();
+                })
+                .then(function(data) {
+                    const source = data.source || {};
+                    if (sourceEl) {
+                        if (source.exists) {
+                            sourceEl.textContent = source.label + ' - updated ' + formatLogAge(source.age_seconds) + ' - ' + source.path;
+                        } else {
+                            sourceEl.textContent = data.message || 'No backend log found.';
+                        }
+                    }
+                    if (linesEl) {
+                        const lines = Array.isArray(data.lines) ? data.lines : [];
+                        linesEl.textContent = lines.length ? lines.join('\n') : (data.message || 'No log lines found.');
+                    }
+                    const legacy = data.legacy_source || {};
+                    if (legacyEl && legacy.exists) {
+                        var warning = 'Legacy trial log: ' + legacy.path + ' - updated ' + formatLogAge(legacy.age_seconds) + '.';
+                        if (legacy.stale) warning += ' This is historical, not the live backend log.';
+                        if (source.role === 'legacy_trial_history') warning += ' Current backend log was not found, so this fallback is being shown.';
+                        legacyEl.textContent = warning;
+                    }
+                    if (data.message && window.addLog) addLog(data.message, source.stale ? 'warning' : 'info');
+                })
+                .catch(function(err) {
+                    if (linesEl) linesEl.textContent = 'Could not load backend logs: ' + err;
+                    if (sourceEl) sourceEl.textContent = 'Backend log fetch failed.';
+                    if (window.addLog) addLog('Backend log fetch failed: ' + err, 'error');
+                });
+        };
         
         // Define toggleTheme and showTab early so buttons work even before full script loads
         window.toggleTheme = function() {
@@ -926,13 +1988,23 @@ CONTROL_PANEL_TEMPLATE = """
             if (tabName === 'learning') {
                 if (typeof window.refreshLinkedAccounts === 'function') window.refreshLinkedAccounts();
                 if (typeof window.refreshLearningSettings === 'function') window.refreshLearningSettings();
+                if (typeof window.refreshIncomeKeysStatus === 'function') window.refreshIncomeKeysStatus();
             }
             if (tabName === 'dashboard') {
                 if (typeof window.suggestNextAction === 'function') window.suggestNextAction();
                 if (typeof window.refreshAutonomyStatus === 'function') window.refreshAutonomyStatus();
+                if (typeof window.refreshDashboardApiMeter === 'function') window.refreshDashboardApiMeter();
             }
             if (tabName === 'tasks' && typeof window.refreshTaskQueue === 'function')
                 window.refreshTaskQueue();
+            if (tabName === 'workbench' && typeof window.refreshWorkbench === 'function')
+                window.refreshWorkbench();
+            if (tabName === 'insights' && typeof window.refreshInsightsOverview === 'function')
+                window.refreshInsightsOverview();
+            if (tabName === 'api-meter' && typeof window.refreshApiMeterTab === 'function')
+                window.refreshApiMeterTab();
+            if (tabName === 'logs' && typeof window.refreshBackendLogs === 'function')
+                window.refreshBackendLogs();
         };
         
         const socket = (typeof io !== 'undefined') ? io() : null;
@@ -958,6 +2030,31 @@ CONTROL_PANEL_TEMPLATE = """
                         console.error(e);
                     }
                 }, 100);
+                setTimeout(function() {
+                    try {
+                        if (typeof window.refreshDashboardApiMeter === 'function') window.refreshDashboardApiMeter();
+                    } catch (e) { console.error(e); }
+                }, 350);
+                setTimeout(function() {
+                    try {
+                        if (typeof window.refreshWorkbench === 'function') window.refreshWorkbench();
+                    } catch (e) {
+                        addLog('refreshWorkbench error: ' + e.message, 'error');
+                        console.error(e);
+                    }
+                }, 600);
+                setTimeout(function() {
+                    try {
+                        if (typeof window.refreshApiChatHistory === 'function') window.refreshApiChatHistory();
+                        if (typeof window.refreshBrainTrace === 'function') window.refreshBrainTrace();
+                        if (typeof window.refreshSelfImprovementProposals === 'function') window.refreshSelfImprovementProposals();
+                        if (typeof window.refreshMemoryRankingSummary === 'function') window.refreshMemoryRankingSummary();
+                        if (typeof window.refreshPromptContractStatus === 'function') window.refreshPromptContractStatus();
+                    } catch (e) {
+                        addLog('refreshApiChatHistory error: ' + e.message, 'warning');
+                        console.error(e);
+                    }
+                }, 750);
             } catch (e) {
                 console.error('DOMContentLoaded error:', e);
                 if (window.addLog) addLog('Init error: ' + e.message, 'error');
@@ -1129,6 +2226,16 @@ CONTROL_PANEL_TEMPLATE = """
                         // Don't update status on error - keep showing last known status
                     });
             }, 2000);
+
+            setInterval(function() {
+                try {
+                    if (typeof window.refreshDashboardApiMeter === 'function')
+                        window.refreshDashboardApiMeter();
+                    var am = document.getElementById('api-meter');
+                    if (am && am.classList.contains('active') && typeof window.refreshApiMeterTab === 'function')
+                        window.refreshApiMeterTab();
+                } catch (e) { /* ignore */ }
+            }, 30000);
         }
 
         function updateDashboard(data) {
@@ -1238,6 +2345,27 @@ CONTROL_PANEL_TEMPLATE = """
                 if (vectorEnabledEl) {
                     vectorEnabledEl.textContent = (data.memory.vector_memory_enabled || data.memory.vector_enabled) ? 'Yes' : 'No';
                 }
+                const cleanup = data.memory.last_cleanup || {};
+                const cleanupOutcomeEl = document.getElementById('last-cleanup-outcome');
+                if (cleanupOutcomeEl) {
+                    cleanupOutcomeEl.textContent = cleanup.outcome || 'none';
+                }
+                const cleanupReasonEl = document.getElementById('last-cleanup-reason');
+                if (cleanupReasonEl) {
+                    cleanupReasonEl.textContent = cleanup.reason || '-';
+                }
+                const cleanupTargetEl = document.getElementById('last-cleanup-target');
+                if (cleanupTargetEl) {
+                    const target = cleanup.trim_target;
+                    const floor = cleanup.effective_emergency_floor;
+                    if (target !== undefined && target !== null) {
+                        cleanupTargetEl.textContent = floor !== undefined && floor !== null
+                            ? (String(target) + ' (floor ' + String(floor) + ')')
+                            : String(target);
+                    } else {
+                        cleanupTargetEl.textContent = '-';
+                    }
+                }
             }
             
             if (data.security) {
@@ -1253,6 +2381,216 @@ CONTROL_PANEL_TEMPLATE = """
                 if (policyLoadedEl) {
                     policyLoadedEl.textContent = data.security.policy_loaded ? 'Yes' : 'No';
                 }
+            }
+
+            if (data.external) {
+                renderExternalActivity(data.external);
+            }
+        }
+
+        function externalEscape(value) {
+            if (value === undefined || value === null) return '';
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function externalFormatTime(value) {
+            if (!value) return 'Never';
+            const dt = new Date(value);
+            if (Number.isNaN(dt.getTime())) return externalEscape(value);
+            return externalEscape(dt.toLocaleString());
+        }
+
+        function externalBadgeState(status) {
+            switch (status) {
+                case 'active_recently':
+                    return {label: 'Active recently', className: 'badge success'};
+                case 'gateway_ready':
+                    return {label: 'Gateway ready', className: 'badge warning'};
+                case 'idle':
+                    return {label: 'Idle', className: 'badge'};
+                case 'never':
+                    return {label: 'No sessions', className: 'badge'};
+                default:
+                    return {label: 'Waiting', className: 'badge'};
+            }
+        }
+
+        function externalStorageBadgeState(hintLevel) {
+            const hl = String(hintLevel || '').trim();
+            if (hl === 'mirror_active') return {label: 'Data mirror on', className: 'badge success'};
+            if (hl === 'removable_present') return {label: 'USB / removable', className: 'badge warning'};
+            return {label: 'Local only', className: 'badge'};
+        }
+
+        function externalMoltbookSummarySourceLabel(source) {
+            switch (source) {
+                case 'session_summary':
+                    return 'Session readout';
+                case 'latest_finding':
+                    return 'Latest captured text';
+                default:
+                    return 'Readout';
+            }
+        }
+
+        function externalHumanizeStopReason(reason) {
+            const raw = String(reason || '').trim();
+            if (!raw) return '';
+            if (raw === 'completed') return 'Completed planned scan';
+            if (raw === 'page_budget') return 'Stopped at page budget';
+            if (raw === 'step_budget') return 'Stopped at step budget';
+            if (raw.startsWith('navigation_error:')) {
+                return 'Navigation error: ' + raw.split(':').slice(1).join(':');
+            }
+            return raw.replace(/_/g, ' ');
+        }
+
+        function renderExternalActivity(external) {
+            const moltbook = external.moltbook || {};
+            const openclaw = external.openclaw || {};
+            const storage = external.storage || {};
+
+            const moltbookBadge = externalBadgeState(moltbook.status);
+            const moltbookBadgeEl = document.getElementById('external-moltbook-badge');
+            if (moltbookBadgeEl) {
+                moltbookBadgeEl.className = moltbookBadge.className;
+                moltbookBadgeEl.textContent = moltbookBadge.label;
+            }
+
+            const openclawBadge = externalBadgeState(openclaw.status);
+            const openclawBadgeEl = document.getElementById('external-openclaw-badge');
+            if (openclawBadgeEl) {
+                openclawBadgeEl.className = openclawBadge.className;
+                openclawBadgeEl.textContent = openclawBadge.label;
+            }
+
+            const moltbookLines = [];
+            if (moltbook.last_seen_at) {
+                moltbookLines.push('<div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 6px;">Last seen: ' + externalFormatTime(moltbook.last_seen_at) + '</div>');
+            }
+            if (moltbook.goal) {
+                moltbookLines.push('<div><strong>Goal:</strong> ' + externalEscape(moltbook.goal) + '</div>');
+            }
+            if (moltbook.summary) {
+                const summaryLabel = externalMoltbookSummarySourceLabel(moltbook.summary_source);
+                moltbookLines.push('<div style="margin-top: 8px;"><strong>' + externalEscape(summaryLabel) + ':</strong> ' + externalEscape(moltbook.summary) + '</div>');
+            }
+            if (moltbook.latest_snippet && (!moltbook.summary || moltbook.latest_snippet !== moltbook.summary)) {
+                moltbookLines.push('<div style="margin-top: 8px; font-size: 12px; color: var(--text-secondary);"><strong>Observed excerpt:</strong> ' + externalEscape(moltbook.latest_snippet) + '</div>');
+            }
+            const moltbookMeta = [];
+            if (moltbook.readout_quality && moltbook.readout_quality !== 'none') {
+                moltbookMeta.push('Readout: ' + externalEscape(moltbook.readout_quality));
+            }
+            const stopLabel = externalHumanizeStopReason(moltbook.stop_reason);
+            if (stopLabel) moltbookMeta.push('Ended: ' + externalEscape(stopLabel));
+            if (moltbook.pages_visited || moltbook.step_count) {
+                moltbookMeta.push(
+                    'Coverage: ' +
+                    externalEscape(moltbook.pages_visited || 0) +
+                    ' page(s), ' +
+                    externalEscape(moltbook.step_count || 0) +
+                    ' step(s)'
+                );
+            }
+            if (moltbook.latest_url) moltbookMeta.push('Last URL: ' + externalEscape(moltbook.latest_url));
+            if (moltbookMeta.length) {
+                moltbookLines.push('<div style="margin-top: 8px; font-size: 11px; color: var(--text-secondary);">' + moltbookMeta.join(' | ') + '</div>');
+            }
+            if (!moltbookLines.length) {
+                moltbookLines.push('<em style="color: var(--text-secondary);">No MoltBook sessions recorded yet. Start a bounded MoltBook browse and this panel will show goal, readout, and captured text.</em>');
+            }
+            const moltbookDetailsEl = document.getElementById('external-moltbook-details');
+            if (moltbookDetailsEl) {
+                moltbookDetailsEl.innerHTML = moltbookLines.join('');
+            }
+
+            const openclawLines = [];
+            const gatewayLabel = (openclaw.gateway_host || '127.0.0.1') + ':' + (openclaw.gateway_port || 18789);
+            openclawLines.push(
+                '<div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 6px;">Gateway ' +
+                externalEscape(gatewayLabel) +
+                ' is ' +
+                (openclaw.gateway_reachable ? '<span style="color: var(--success);">reachable</span>' : '<span style="color: var(--text-secondary);">not reachable</span>') +
+                '</div>'
+            );
+            if (openclaw.updated_at) {
+                openclawLines.push('<div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 6px;">Last activity: ' + externalFormatTime(openclaw.updated_at) + '</div>');
+            }
+            const openclawMeta = [];
+            if (openclaw.request_count !== undefined && openclaw.request_count !== null) openclawMeta.push('Requests: ' + externalEscape(openclaw.request_count));
+            if (openclaw.last_model) openclawMeta.push('Model: ' + externalEscape(openclaw.last_model));
+            if (openclaw.last_status) openclawMeta.push('Status: ' + externalEscape(openclaw.last_status));
+            if (openclawMeta.length) {
+                openclawLines.push('<div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">' + openclawMeta.join(' | ') + '</div>');
+            }
+            if (openclaw.last_request_preview) {
+                openclawLines.push('<div><strong>Latest user message:</strong> ' + externalEscape(openclaw.last_request_preview) + '</div>');
+            }
+            if (openclaw.last_reply_preview) {
+                openclawLines.push('<div style="margin-top: 8px;"><strong>Latest reply:</strong> ' + externalEscape(openclaw.last_reply_preview) + '</div>');
+            }
+            if (openclaw.last_error) {
+                openclawLines.push('<div style="margin-top: 8px; color: var(--warning);"><strong>Last error:</strong> ' + externalEscape(openclaw.last_error) + '</div>');
+            }
+            if (openclaw.recent_requests && openclaw.recent_requests.length) {
+                const recentHtml = openclaw.recent_requests.map(function(item) {
+                    const bits = [];
+                    if (item.ts) bits.push(externalFormatTime(item.ts));
+                    if (item.status) bits.push(externalEscape(item.status));
+                    if (item.model) bits.push(externalEscape(item.model));
+                    let html = '<div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">';
+                    if (bits.length) {
+                        html += '<div style="font-size: 11px; color: var(--text-secondary);">' + bits.join(' | ') + '</div>';
+                    }
+                    if (item.message_preview) {
+                        html += '<div style="margin-top: 4px;"><strong>In:</strong> ' + externalEscape(item.message_preview) + '</div>';
+                    }
+                    if (item.reply_preview) {
+                        html += '<div style="margin-top: 4px;"><strong>Out:</strong> ' + externalEscape(item.reply_preview) + '</div>';
+                    }
+                    return html + '</div>';
+                }).join('');
+                openclawLines.push('<div style="margin-top: 10px;"><div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); margin-bottom: 4px;">Recent bridge traffic</div>' + recentHtml + '</div>');
+            } else if (!openclaw.last_request_preview) {
+                openclawLines.push('<em style="color: var(--text-secondary);">No OpenClaw requests recorded yet. After restart, this panel will fill as traffic hits /v1/chat/completions.</em>');
+            }
+            const openclawDetailsEl = document.getElementById('external-openclaw-details');
+            if (openclawDetailsEl) {
+                openclawDetailsEl.innerHTML = openclawLines.join('');
+            }
+
+            const storageBadge = externalStorageBadgeState(storage.hint_level);
+            const storageBadgeEl = document.getElementById('external-storage-badge');
+            if (storageBadgeEl) {
+                storageBadgeEl.className = storageBadge.className;
+                storageBadgeEl.textContent = storageBadge.label;
+            }
+            const storageLines = [];
+            if (storage.external_data_mirror_active && storage.external_data_mirror_path) {
+                storageLines.push('<div><strong>External data dir:</strong> ' + externalEscape(String(storage.external_data_mirror_path)) + '</div>');
+            }
+            const vols = storage.removable_volumes || [];
+            if (vols.length) {
+                storageLines.push('<div style="margin-top: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary);">Detected volumes</div>');
+                vols.forEach(function(v) {
+                    const mp = externalEscape(String(v.mountpoint || ''));
+                    const fg = v.free_gb != null ? externalEscape(String(v.free_gb)) : '?';
+                    const tg = v.total_gb != null ? externalEscape(String(v.total_gb)) : '?';
+                    storageLines.push('<div style="margin-top: 6px;">' + mp + ' · ~' + fg + ' GB free · ' + tg + ' GB total</div>');
+                });
+                storageLines.push('<div style="margin-top: 10px; font-size: 11px; color: var(--text-secondary);">To use for Project Guardian data: configure <code style="font-size: 11px;">config/external_storage.json</code> or set <code style="font-size: 11px;">ELYSIA_THUMB_DRIVE</code> / ELYSIA_MEMORY marker.</div>');
+            } else if (!storage.external_data_mirror_active) {
+                storageLines.push('<em style="color: var(--text-secondary);">No removable volumes matched at startup (or none reported). Plug in a USB stick and restart to refresh; mirror path requires config.</em>');
+            }
+            const storageDetailsEl = document.getElementById('external-storage-details');
+            if (storageDetailsEl) {
+                storageDetailsEl.innerHTML = storageLines.length ? storageLines.join('') : '<em style="color: var(--text-secondary);">Unified system did not expose storage snapshot yet.</em>';
             }
         }
 
@@ -1443,6 +2781,312 @@ CONTROL_PANEL_TEMPLATE = """
                 .replace(/"/g, '&quot;');
         };
 
+        window.openTabAndFocus = function(tabName, elementId) {
+            if (typeof window.showTab === 'function') window.showTab(tabName);
+            setTimeout(function() {
+                const el = document.getElementById(elementId);
+                if (el) {
+                    try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
+                    if (typeof el.focus === 'function') {
+                        try { el.focus(); } catch (_) {}
+                    }
+                }
+            }, 120);
+        };
+
+        window.quickFindOpportunities = function() {
+            if (typeof window.showTab === 'function') window.showTab('workbench');
+            if (typeof window.refreshWorkbench === 'function') window.refreshWorkbench();
+            setTimeout(function() {
+                const el = document.getElementById('workbench-opportunities');
+                if (el) {
+                    try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
+                }
+            }, 160);
+        };
+
+        window.quickShowChanges = function() {
+            if (typeof window.showTab === 'function') window.showTab('workbench');
+            if (typeof window.refreshWorkbench === 'function') window.refreshWorkbench();
+            setTimeout(function() {
+                const el = document.getElementById('workbench-artifacts');
+                if (el) {
+                    try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
+                }
+            }, 160);
+        };
+
+        window.quickLearnFrom = function(platform) {
+            if (typeof window.showTab === 'function') window.showTab('learning');
+            const select = document.getElementById('learning-platform');
+            const query = document.getElementById('learning-query');
+            const result = document.getElementById('learning-results');
+            const defaults = {
+                twitter: {
+                    query: 'AI agents, automation pain point',
+                    message: 'Ready to learn from X. Adjust the query if needed, then click "Start Learning".'
+                },
+                chatgpt: {
+                    query: 'operator-ready offers, next steps',
+                    message: 'Ready to mine ChatGPT conversations for useful goals and offers.'
+                },
+                web: {
+                    query: 'https://example.com/article',
+                    message: 'Paste one or more URLs, then click "Start Learning".'
+                }
+            };
+            const preset = defaults[platform] || { query: '', message: 'Learning ready.' };
+            if (select) select.value = platform;
+            if (query) query.value = preset.query;
+            if (result) {
+                result.innerHTML = '<div style="color: var(--text-secondary);">' + window._escapeHtml(preset.message) + '</div>';
+            }
+            setTimeout(function() {
+                if (query) {
+                    try { query.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
+                    try { query.focus(); query.select(); } catch (_) {}
+                }
+            }, 140);
+            if (platform === 'twitter' && typeof window.refreshLinkedAccounts === 'function') {
+                window.refreshLinkedAccounts();
+            }
+        };
+
+        window.quickAskElysia = function(prefill) {
+            const input = document.getElementById('dashboard-quick-ask');
+            const result = document.getElementById('dashboard-quick-answer');
+            const message = String(prefill || (input && input.value) || '').trim();
+            if (!message) {
+                if (result) result.innerHTML = '<span style="color: var(--warning);">Enter a question first.</span>';
+                if (input) input.focus();
+                return;
+            }
+            if (input) input.value = message;
+            if (result) result.innerHTML = '<span style="color: var(--warning);">Thinking...</span>';
+            const controlInput = document.getElementById('api-chat-message');
+            if (controlInput) controlInput.value = message;
+            fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: message, conversation_id: window.getApiChatConversationId() })
+            })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        const reply = data.reply || data.response || '(no reply)';
+                        if (data.conversation_id) window.setApiChatConversationId(data.conversation_id);
+                        const lab = document.getElementById('api-chat-conv-label');
+                        if (lab && data.conversation_id) lab.textContent = data.conversation_id;
+                        if (result) result.textContent = reply;
+                        if (window.addLog) addLog('Quick ask answered', 'info');
+                        const controlResult = document.getElementById('api-chat-result');
+                        if (controlResult && typeof window.renderApiChatHistory === 'function') {
+                            window.renderApiChatHistory(data.history || [
+                                { role: 'user', content: message },
+                                { role: 'assistant', content: reply }
+                            ]);
+                        } else if (controlResult) {
+                            controlResult.textContent = reply;
+                        }
+                    } else {
+                        const err = data.error || 'No reply available';
+                        if (result) result.innerHTML = '<span style="color: var(--danger);">' + window._escapeHtml(err) + '</span>';
+                        if (window.addLog) addLog('Quick ask failed: ' + err, 'error');
+                    }
+                })
+                .catch(function(err) {
+                    if (result) result.innerHTML = '<span style="color: var(--danger);">' + window._escapeHtml(String(err)) + '</span>';
+                    if (window.addLog) addLog('Quick ask error: ' + err, 'error');
+                });
+        };
+
+        window.ELYSIA_CP_CONV_LS = 'elysia_control_panel_conversation_id';
+        window.getApiChatConversationId = function() {
+            try {
+                var id = localStorage.getItem(window.ELYSIA_CP_CONV_LS);
+                if (id && String(id).trim()) return String(id).trim();
+            } catch (_) {}
+            return 'control_panel';
+        };
+        window.setApiChatConversationId = function(id) {
+            try {
+                if (id) localStorage.setItem(window.ELYSIA_CP_CONV_LS, String(id));
+            } catch (_) {}
+        };
+
+        window.renderApiChatHistory = function(history) {
+            const el = document.getElementById('api-chat-result');
+            if (!el) return;
+            const rows = Array.isArray(history) ? history : [];
+            if (!rows.length) {
+                el.innerHTML = '<em style="color: var(--text-secondary);">Start a conversation with Elysia.</em>';
+                return;
+            }
+            el.innerHTML = rows.map(function(row) {
+                const role = String(row.role || '').toLowerCase() === 'user' ? 'You' : 'Elysia';
+                const color = role === 'You' ? 'var(--accent)' : 'var(--secondary)';
+                return '<div style="margin-bottom: 8px;"><strong style="color:' + color + ';">' +
+                    role + ':</strong> ' + window._escapeHtml(row.content || '') + '</div>';
+            }).join('');
+        };
+
+
+        window._selectedSelfImprovementProposalId = '';
+
+        window.refreshBrainTrace = function() {
+            var el = document.getElementById('brain-trace-summary');
+            if (!el) return;
+            el.textContent = 'Loading…';
+            fetch('/api/brain/trace/latest')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data || data.trace_exists === false) {
+                        el.textContent = data && data.message ? data.message : 'No brain trace has been recorded yet.';
+                        return;
+                    }
+                    var t = data.trace || data;
+                    el.textContent = [
+                        'ID: ' + (t.brain_pipeline_id || data.brain_pipeline_id || '—'),
+                        'Risk: ' + (t.risk_level || data.risk_level || '—'),
+                        'Dry run: ' + String(t.dry_run != null ? t.dry_run : data.brain_dry_run),
+                        'Transitions: ' + (t.transition_count || data.brain_transition_count || 0)
+                    ].join('\n');
+                })
+                .catch(function(err) { el.textContent = 'Could not load trace: ' + err; });
+        };
+        window.refreshBrainTraceVisibility = window.refreshBrainTrace;
+
+        window.renderSelfImprovementProposals = function(rows) {
+            var el = document.getElementById('self-improvement-proposals-list');
+            if (!el) return;
+            rows = Array.isArray(rows) ? rows : [];
+            if (!rows.length) { el.innerHTML = '<em>No self-improvement proposals yet.</em>'; return; }
+            el.innerHTML = rows.map(function(p) {
+                var pid = String(p.proposal_id || '').replace(/'/g, '');
+                return '<div style="padding:6px 0;border-bottom:1px solid var(--border);">' +
+                    '<button type="button" style="font-size:11px;" onclick="window._selectSelfImprovementProposal(\'' + pid + '\')">' +
+                    window._escapeHtml(p.title || p.proposal_id || 'proposal') + '</button>' +
+                    ' <span style="color:var(--text-secondary);font-size:10px;">' + window._escapeHtml(p.status || '') + '</span></div>';
+            }).join('');
+        };
+
+        window._selectSelfImprovementProposal = function(pid) {
+            window._selectedSelfImprovementProposalId = pid || '';
+            fetch('/api/self-improvement/proposals/' + encodeURIComponent(pid))
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var panel = document.getElementById('self-improvement-proposal-detail');
+                    var body = document.getElementById('self-improvement-proposal-detail-body');
+                    if (!panel || !body) return;
+                    var p = data.proposal || {};
+                    body.textContent = (p.title || '') + '\n' + (p.problem_summary || '');
+                    panel.style.display = 'block';
+                })
+                .catch(function(err) { if (window.addLog) addLog('Proposal detail error: ' + err, 'warning'); });
+        };
+
+        window.refreshSelfImprovementProposals = function() {
+            fetch('/api/self-improvement/proposals?limit=50')
+                .then(function(r) { return r.json(); })
+                .then(function(data) { if (data.success) window.renderSelfImprovementProposals(data.proposals || []); })
+                .catch(function(err) { if (window.addLog) addLog('Proposals load error: ' + err, 'warning'); });
+        };
+
+        window.updateSelfImprovementProposalStatus = function(status) {
+            var pid = window._selectedSelfImprovementProposalId;
+            if (!pid) return;
+            fetch('/api/self-improvement/proposals/' + encodeURIComponent(pid) + '/status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: status })
+            })
+                .then(function(r) { return r.json(); })
+                .then(function() { window.refreshSelfImprovementProposals(); })
+                .catch(function(err) { if (window.addLog) addLog('Proposal status error: ' + err, 'warning'); });
+        };
+
+        window.exportSelfImprovementProposalPrompt = function(target) {
+            var pid = window._selectedSelfImprovementProposalId;
+            if (!pid) return;
+            fetch('/api/self-improvement/proposals/' + encodeURIComponent(pid) + '/export_prompt?target=' + encodeURIComponent(target || 'cursor'))
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var pre = document.getElementById('self-improvement-prompt-export-text');
+                    if (pre) pre.textContent = data.prompt || data.export || '';
+                })
+                .catch(function(err) { if (window.addLog) addLog('Export prompt error: ' + err, 'warning'); });
+        };
+
+        window.copySelfImprovementExportedPrompt = function() {
+            var pre = document.getElementById('self-improvement-prompt-export-text');
+            if (!pre || !pre.textContent) return;
+            try {
+                navigator.clipboard.writeText(pre.textContent);
+                if (window.addLog) addLog('Copied export prompt', 'info');
+            } catch (e) { if (window.addLog) addLog('Copy failed: ' + e, 'warning'); }
+        };
+
+        window.refreshMemoryRankingSummary = function() {
+            var el = document.getElementById('memory-ranking-summary');
+            if (!el) return;
+            el.textContent = 'Loading…';
+            fetch('/api/memory/ranking/summary?limit=10')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data.available) { el.textContent = data.message || 'No recent memories found to rank.'; return; }
+                    el.textContent = 'Memories ranked: ' + (data.memory_count || 0) + ' · source: ' + (data.sample_source || '—');
+                })
+                .catch(function(err) { el.textContent = 'Could not load ranking: ' + err; });
+        };
+
+        window.refreshPromptContractStatus = function() {
+            var el = document.getElementById('prompt-contract-status');
+            if (!el) return;
+            el.textContent = 'Loading…';
+            fetch('/api/prompt-contracts/status')
+                .then(function(r) { return r.json(); })
+                .then(function(data) { el.textContent = JSON.stringify(data, null, 2).slice(0, 1200); })
+                .catch(function(err) { el.textContent = 'Could not load contracts: ' + err; });
+        };
+
+        window.refreshApiChatHistory = function() {
+            var cid = encodeURIComponent(window.getApiChatConversationId());
+            fetch('/api/chat/history?conversation_id=' + cid)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.conversation_id) {
+                        window.setApiChatConversationId(data.conversation_id);
+                        var lab = document.getElementById('api-chat-conv-label');
+                        if (lab) lab.textContent = data.conversation_id;
+                    }
+                    if (data.success && typeof window.renderApiChatHistory === 'function') {
+                        window.renderApiChatHistory(data.history || []);
+                    }
+                })
+                .catch(function(err) {
+                    if (window.addLog) addLog('Chat history load error: ' + err, 'warning');
+                });
+        };
+
+        window.startNewApiChat = function() {
+            fetch('/api/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success && data.conversation_id) {
+                        window.setApiChatConversationId(data.conversation_id);
+                        var lab = document.getElementById('api-chat-conv-label');
+                        if (lab) lab.textContent = data.conversation_id;
+                        if (typeof window.renderApiChatHistory === 'function') window.renderApiChatHistory([]);
+                        if (window.addLog) addLog('Started new conversation', 'info');
+                    } else if (window.addLog) {
+                        addLog('Could not start new conversation', 'warning');
+                    }
+                })
+                .catch(function(err) {
+                    if (window.addLog) addLog('New chat error: ' + err, 'error');
+                });
+        };
+
         window.refreshTaskQueue = function() {
             const el = document.getElementById('task-list');
             if (!el) return;
@@ -1489,15 +3133,273 @@ CONTROL_PANEL_TEMPLATE = """
                 });
         };
 
+        window.refreshWorkbench = function() {
+            function setHtml(id, html) {
+                const el = document.getElementById(id);
+                if (el) el.innerHTML = html;
+            }
+
+            function fmt(text) {
+                if (text === undefined || text === null) return '';
+                return window._escapeHtml(text);
+            }
+
+            function emptyState(message) {
+                return '<p style="color: var(--text-secondary); margin: 0;">' + fmt(message) + '</p>';
+            }
+
+            function metricCard(label, value) {
+                return '<div style="padding: 12px; border-radius: 10px; background: var(--bg-dark); border: 1px solid var(--border); min-width: 140px;">' +
+                    '<div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary);">' + fmt(label) + '</div>' +
+                    '<div style="font-size: 22px; font-weight: 700; margin-top: 8px;">' + fmt(value) + '</div>' +
+                    '</div>';
+            }
+
+            function listHtml(items, renderer, emptyMessage) {
+                if (!items || items.length === 0) return emptyState(emptyMessage);
+                return items.map(renderer).join('');
+            }
+
+            function salesLaunchHtml(item, compact) {
+                if (!item || (!item.offer_name && (!item.docs || !item.docs.length))) {
+                    return emptyState('No sales launch plan yet. Generate an offer pack to seed this panel.');
+                }
+
+                let html = '';
+                if (item.recommended_path) {
+                    html += '<div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary);">Recommended path</div>';
+                    html += '<div style="font-weight: 700; margin-top: 4px;">' + fmt(item.recommended_path) + '</div>';
+                }
+                if (item.offer_name) {
+                    html += '<div style="margin-top: 10px;"><strong>' + fmt(item.offer_name) + '</strong></div>';
+                }
+                if (item.offer_summary) {
+                    html += '<div style="margin-top: 6px; line-height: 1.5;">' + fmt(item.offer_summary) + '</div>';
+                }
+                if (item.price_points && item.price_points.length) {
+                    html += '<div style="margin-top: 8px; font-size: 11px; color: var(--text-secondary);">Pricing: ' + fmt(item.price_points.join(' | ')) + '</div>';
+                }
+                if (item.next_step) {
+                    html += '<div style="margin-top: 8px; font-size: 12px;"><strong>Next:</strong> ' + fmt(item.next_step) + '</div>';
+                }
+                if (!compact && item.validation_prompt) {
+                    html += '<div style="margin-top: 8px; font-size: 11px; color: var(--text-secondary);"><strong>Validation prompt:</strong> ' + fmt(item.validation_prompt) + '</div>';
+                }
+                if (item.docs && item.docs.length) {
+                    html += '<div style="margin-top: 10px;">';
+                    html += '<div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); margin-bottom: 6px;">Launch docs</div>';
+                    item.docs.forEach(function(doc) {
+                        html += '<div style="padding: 10px; margin-bottom: 8px; border-radius: 8px; background: var(--bg-card); border: 1px solid var(--border);">';
+                        html += '<div style="font-weight: 700;">' + fmt(doc.title || doc.file_name || 'Launch doc') + '</div>';
+                        if (doc.summary) html += '<div style="margin-top: 6px; line-height: 1.5;">' + fmt(doc.summary) + '</div>';
+                        if (doc.path) html += '<div style="margin-top: 6px; font-size: 11px; color: var(--text-secondary);">' + fmt(doc.path) + '</div>';
+                        html += '</div>';
+                    });
+                    html += '</div>';
+                }
+                return html || emptyState('No sales launch plan yet.');
+            }
+
+            function artifactMeta(item) {
+                const bits = [];
+                if (item.artifact_type) bits.push(fmt(item.artifact_type));
+                if (item.created_at) bits.push(fmt(item.created_at));
+                return bits.length ? '<div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">' + bits.join(' | ') + '</div>' : '';
+            }
+
+            setHtml('workbench-metrics', '<em style="color: var(--text-secondary);">Loading...</em>');
+            setHtml('workbench-opportunities', emptyState('Loading opportunities...'));
+            setHtml('workbench-active-tasks', emptyState('Loading active self-tasks...'));
+            setHtml('workbench-successes', emptyState('Loading recent wins...'));
+            setHtml('workbench-sales-launch', emptyState('Loading sales launch plan...'));
+            setHtml('workbench-digests', emptyState('Loading learning digests...'));
+            setHtml('workbench-improvements', emptyState('Loading improvement briefs...'));
+            setHtml('workbench-artifacts', emptyState('Loading artifacts...'));
+            setHtml('dashboard-sales-launch', emptyState('Loading sales launch plan...'));
+
+            fetch('/api/workbench/summary')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data.success) throw new Error(data.error || 'Could not load workbench');
+
+                    const wb = data.workbench || {};
+                    const counts = wb.counts || {};
+                    const opportunities = wb.top_opportunities || [];
+                    const activeTasks = wb.active_self_tasks || [];
+                    const recentSuccesses = wb.recent_successes || [];
+                    const salesLaunch = wb.sales_launch || {};
+                    const digests = wb.learning_digests || [];
+                    const improvements = wb.improvement_briefs || [];
+                    const artifacts = wb.recent_artifacts || [];
+
+                    setHtml(
+                        'workbench-metrics',
+                        '<div style="display:flex; flex-wrap:wrap; gap:12px;">' +
+                            metricCard('Opportunities', counts.opportunities_total || 0) +
+                            metricCard('Active Self-Tasks', counts.active_self_tasks || 0) +
+                            metricCard('Useful Outputs', counts.useful_outputs || 0) +
+                            metricCard('Artifacts', counts.artifacts_total || 0) +
+                            '</div>'
+                    );
+
+                    setHtml(
+                        'workbench-opportunities',
+                        listHtml(opportunities, function(item) {
+                            let html = '<div style="padding: 12px; margin-bottom: 10px; border-radius: 10px; background: var(--bg-dark); border: 1px solid var(--border);">';
+                            html += '<div style="font-weight: 700;">' + fmt(item.title || 'Opportunity') + '</div>';
+                            if (item.rationale) html += '<div style="margin-top: 6px; line-height: 1.5;">' + fmt(item.rationale) + '</div>';
+                            const meta = [];
+                            if (item.required_capability) meta.push('Capability: ' + fmt(item.required_capability));
+                            if (item.difficulty) meta.push('Difficulty: ' + fmt(item.difficulty));
+                            if (item.expected_value) meta.push('Value: ' + fmt(item.expected_value));
+                            if (meta.length) html += '<div style="margin-top: 8px; font-size: 11px; color: var(--text-secondary);">' + meta.join(' | ') + '</div>';
+                            html += '</div>';
+                            return html;
+                        }, 'No opportunities yet. Generate a revenue shortlist or learning digest to seed this panel.')
+                    );
+
+                    setHtml(
+                        'workbench-active-tasks',
+                        listHtml(activeTasks, function(item) {
+                            let html = '<div style="padding: 12px; margin-bottom: 10px; border-radius: 10px; background: var(--bg-dark); border: 1px solid var(--border);">';
+                            html += '<div style="font-weight: 700;">' + fmt(item.title || item.task_id || 'Self-task') + '</div>';
+                            if (item.goal) html += '<div style="margin-top: 6px; line-height: 1.5;">' + fmt(item.goal) + '</div>';
+                            const meta = [];
+                            if (item.status) meta.push('Status: ' + fmt(item.status));
+                            if (item.category) meta.push('Category: ' + fmt(item.category));
+                            if (item.priority !== undefined && item.priority !== null) meta.push('Priority: ' + fmt(item.priority));
+                            if (meta.length) html += '<div style="margin-top: 8px; font-size: 11px; color: var(--text-secondary);">' + meta.join(' | ') + '</div>';
+                            html += '</div>';
+                            return html;
+                        }, 'No active self-tasks right now.')
+                    );
+
+                    setHtml(
+                        'workbench-successes',
+                        listHtml(recentSuccesses, function(item) {
+                            let html = '<div style="padding: 12px; margin-bottom: 10px; border-radius: 10px; background: var(--bg-dark); border: 1px solid var(--border);">';
+                            html += '<div style="font-weight: 700;">' + fmt(item.title || item.task_id || 'Useful output') + '</div>';
+                            if (item.summary) html += '<div style="margin-top: 6px; line-height: 1.5;">' + fmt(item.summary) + '</div>';
+                            html += artifactMeta(item);
+                            html += '</div>';
+                            return html;
+                        }, 'No successful artifacts yet.')
+                    );
+
+                    setHtml(
+                        'workbench-sales-launch',
+                        salesLaunchHtml(salesLaunch, false)
+                    );
+
+                    setHtml(
+                        'workbench-digests',
+                        listHtml(digests, function(item) {
+                            let html = '<div style="padding: 12px; margin-bottom: 10px; border-radius: 10px; background: var(--bg-dark); border: 1px solid var(--border);">';
+                            html += '<div style="font-weight: 700;">' + fmt(item.headline || 'Learning digest') + '</div>';
+                            if (item.summary) html += '<div style="margin-top: 6px; line-height: 1.5;">' + fmt(item.summary) + '</div>';
+                            if (item.top_insights && item.top_insights.length) {
+                                html += '<div style="margin-top: 8px; font-size: 12px;"><strong>Top insights:</strong> ' + fmt(item.top_insights.join(' | ')) + '</div>';
+                            }
+                            if (item.recommended_followup_tasks && item.recommended_followup_tasks.length) {
+                                html += '<div style="margin-top: 6px; font-size: 11px; color: var(--text-secondary);">Next: ' + fmt(item.recommended_followup_tasks.join(', ')) + '</div>';
+                            }
+                            html += artifactMeta(item);
+                            html += '</div>';
+                            return html;
+                        }, 'No learning digests yet.')
+                    );
+
+                    setHtml(
+                        'workbench-improvements',
+                        listHtml(improvements, function(item) {
+                            let html = '<div style="padding: 12px; margin-bottom: 10px; border-radius: 10px; background: var(--bg-dark); border: 1px solid var(--border);">';
+                            html += '<div style="font-weight: 700;">' + fmt(item.headline || 'Improvement brief') + '</div>';
+                            if (item.summary) html += '<div style="margin-top: 6px; line-height: 1.5;">' + fmt(item.summary) + '</div>';
+                            if (item.key_points && item.key_points.length) {
+                                html += '<div style="margin-top: 8px; font-size: 11px; color: var(--text-secondary);">' + fmt(item.key_points.join(' | ')) + '</div>';
+                            }
+                            html += artifactMeta(item);
+                            html += '</div>';
+                            return html;
+                        }, 'No improvement briefs yet.')
+                    );
+
+                    setHtml(
+                        'workbench-artifacts',
+                        listHtml(artifacts, function(item) {
+                            let html = '<div style="padding: 12px; margin-bottom: 10px; border-radius: 10px; background: var(--bg-dark); border: 1px solid var(--border);">';
+                            html += '<div style="font-weight: 700;">' + fmt(item.headline || item.file_name || 'Artifact') + '</div>';
+                            if (item.summary) html += '<div style="margin-top: 6px; line-height: 1.5;">' + fmt(item.summary) + '</div>';
+                            html += artifactMeta(item);
+                            html += '</div>';
+                            return html;
+                        }, 'No artifacts yet.')
+                    );
+
+                    if (opportunities.length) {
+                        const item = opportunities[0];
+                        let html = '<div><strong>' + fmt(item.title || 'Opportunity') + '</strong></div>';
+                        if (item.rationale) html += '<div style="margin-top: 6px; line-height: 1.5;">' + fmt(item.rationale) + '</div>';
+                        const meta = [];
+                        if (item.required_capability) meta.push(fmt(item.required_capability));
+                        if (item.expected_value) meta.push('Value: ' + fmt(item.expected_value));
+                        if (meta.length) html += '<div style="margin-top: 8px; font-size: 11px; color: var(--text-secondary);">' + meta.join(' | ') + '</div>';
+                        setHtml('dashboard-opportunity', html);
+                    } else {
+                        setHtml('dashboard-opportunity', emptyState('No opportunity shortlist yet.'));
+                    }
+
+                    if (artifacts.length) {
+                        const item = artifacts[0];
+                        let html = '<div><strong>' + fmt(item.headline || item.file_name || 'Artifact') + '</strong></div>';
+                        if (item.summary) html += '<div style="margin-top: 6px; line-height: 1.5;">' + fmt(item.summary) + '</div>';
+                        html += artifactMeta(item);
+                        setHtml('dashboard-artifact', html);
+                    } else {
+                        setHtml('dashboard-artifact', emptyState('No recent artifacts yet.'));
+                    }
+
+                    setHtml('dashboard-sales-launch', salesLaunchHtml(salesLaunch, true));
+                })
+                .catch(function(err) {
+                    const message = 'Workbench error: ' + err;
+                    setHtml('workbench-metrics', '<span style="color: var(--danger);">' + fmt(message) + '</span>');
+                    setHtml('workbench-opportunities', emptyState(message));
+                    setHtml('workbench-active-tasks', emptyState(message));
+                    setHtml('workbench-successes', emptyState(message));
+                    setHtml('workbench-sales-launch', emptyState(message));
+                    setHtml('workbench-digests', emptyState(message));
+                    setHtml('workbench-improvements', emptyState(message));
+                    setHtml('workbench-artifacts', emptyState(message));
+                    setHtml('dashboard-opportunity', emptyState(message));
+                    setHtml('dashboard-artifact', emptyState(message));
+                    setHtml('dashboard-sales-launch', emptyState(message));
+                    if (window.addLog) addLog(message, 'error');
+                });
+        };
+
         window.sendApiChat = function() {
             const msg = (document.getElementById('api-chat-message') || {}).value;
             const el = document.getElementById('api-chat-result');
             if (!msg) { if (el) el.textContent = 'Enter a message first.'; return; }
             if (el) el.textContent = 'Sending...';
-            fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) })
+            fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: msg, conversation_id: window.getApiChatConversationId() })
+            })
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
-                    if (el) el.textContent = data.reply || data.error || JSON.stringify(data);
+                    if (data.conversation_id) {
+                        window.setApiChatConversationId(data.conversation_id);
+                        var lab = document.getElementById('api-chat-conv-label');
+                        if (lab) lab.textContent = data.conversation_id;
+                    }
+                    if (data.success && typeof window.renderApiChatHistory === 'function') {
+                        window.renderApiChatHistory(data.history || []);
+                    } else if (el) {
+                        el.textContent = data.reply || data.response || data.error || JSON.stringify(data);
+                    }
                     addLog('Chat: ' + (data.success ? 'OK' : (data.error || '')), data.success ? 'info' : 'error');
                 })
                 .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Chat error: ' + err, 'error'); });
@@ -1536,13 +3438,41 @@ CONTROL_PANEL_TEMPLATE = """
                 .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Wallet add error: ' + err, 'error'); });
         };
 
+        function renderPaymentProviders(pp) {
+            var gEl = document.getElementById('payment-status-gumroad');
+            var sEl = document.getElementById('payment-status-stripe');
+            if (!gEl || !sEl) return;
+            if (!pp) {
+                gEl.textContent = '—';
+                sEl.textContent = '—';
+                return;
+            }
+            var g = pp.gumroad || {};
+            var s = pp.stripe || {};
+            var nl = String.fromCharCode(10);
+            var gl = [];
+            gl.push('Token in env: ' + (g.access_token_env ? 'yes' : 'no'));
+            gl.push('Harvest client: ' + (g.harvest_client_bound ? 'bound' : 'not bound'));
+            gl.push('Overall: ' + (g.summary || '—'));
+            gEl.textContent = gl.join(nl);
+            var sl = [];
+            sl.push('Secret in env: ' + (s.secret_key_env ? 'yes' : 'no'));
+            sl.push('Publishable in env: ' + (s.publishable_key_env ? 'yes' : 'no'));
+            sl.push('Secret mode: ' + (s.secret_key_mode || '—'));
+            sl.push('Publishable mode: ' + (s.publishable_key_mode || '—'));
+            sl.push('Harvest client: ' + (s.harvest_client_bound ? 'bound' : 'not bound'));
+            sl.push('Overall: ' + (s.summary || '—'));
+            sEl.textContent = sl.join(nl);
+        }
+
         window.refreshIncomeStatus = function() {
             const el = document.getElementById('api-tools-result');
             if (el) el.textContent = 'Loading...';
             fetch('/api/income-status')
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
-                    if (el) el.textContent = JSON.stringify(data.income_modules || data, null, 2);
+                    renderPaymentProviders(data.payment_providers);
+                    if (el) el.textContent = JSON.stringify(data, null, 2);
                     addLog('Income status refreshed', 'info');
                 })
                 .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Income status error: ' + err, 'error'); });
@@ -1631,6 +3561,449 @@ CONTROL_PANEL_TEMPLATE = """
                     const div = document.getElementById('introspection-debug');
                     if (div) div.innerHTML = '<em>Failed to load</em>';
                 });
+        };
+
+        function _setText(id, text) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = text;
+        }
+
+        /** Shared formatter for Insights + Dashboard API meter cards */
+        window.renderApiGasMeterText = function(gm) {
+            var brs = String.fromCharCode(10);
+            if (!gm || gm.error)
+                return (gm && gm.error) ? ('error: ' + gm.error) : '—';
+            var parts = [gm.summary_text || '—'];
+            var av = String(gm.availability_text || '').trim();
+            if (av)
+                parts.push(av);
+            return parts.join(brs + brs);
+        };
+
+        window.refreshDashboardApiMeter = function() {
+            fetch('/api/insights/api-meter')
+                .then(function(r) { return r.json(); })
+                .then(function(gm) {
+                    _setText('dashboard-api-meter-summary', window.renderApiGasMeterText(gm));
+                })
+                .catch(function(err) {
+                    _setText('dashboard-api-meter-summary', 'Could not load API meter: ' + (err && err.message ? err.message : String(err)));
+                });
+        };
+
+        window._apiMeterChartHandles = {};
+        window._destroyApiMeterCharts = function() {
+            var H = window._apiMeterChartHandles || {};
+            ['transport', 'router', 'tokens'].forEach(function(k) {
+                try {
+                    if (H[k] && typeof H[k].destroy === 'function') H[k].destroy();
+                } catch (e) { /* ignore */ }
+                H[k] = null;
+            });
+            window._apiMeterChartHandles = {};
+        };
+
+        window._fmtUptime = function(sec) {
+            var s = parseFloat(sec) || 0;
+            if (s < 60) return Math.round(s) + 's';
+            if (s < 3600) return (Math.round(s / 60 * 10) / 10) + ' min';
+            var h = Math.floor(s / 3600);
+            var m = Math.floor((s % 3600) / 60);
+            return h + 'h ' + m + 'm';
+        };
+
+        window._paletteRouter = ['#6366f1', '#8b5cf6', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#84cc16'];
+
+        window._renderApiMeterGauges = function(gm) {
+            var openaiEl = document.getElementById('api-meter-gauge-openai');
+            var orEl = document.getElementById('api-meter-gauge-openrouter');
+            var anEl = document.getElementById('api-meter-gauge-anthropic');
+            if (!openaiEl || !orEl || !anEl) return;
+            var ut = (gm.usable_cloud_routing || {}).openai || {};
+            var oaOk = ut.usable_for_routing === true;
+            openaiEl.innerHTML = '';
+            var l1 = document.createElement('div');
+            l1.className = 'api-meter-g-label';
+            l1.style.color = oaOk ? 'var(--success)' : 'var(--danger)';
+            l1.textContent = oaOk ? 'Routable' : 'Not routable';
+            openaiEl.appendChild(l1);
+            var tr = document.createElement('div');
+            tr.className = 'api-meter-g-track';
+            var fi = document.createElement('div');
+            fi.className = 'api-meter-g-fill';
+            fi.style.width = oaOk ? '100%' : '0%';
+            fi.style.background = oaOk ? 'var(--success)' : 'var(--danger)';
+            tr.appendChild(fi);
+            openaiEl.appendChild(tr);
+            var m1 = document.createElement('div');
+            m1.className = 'api-meter-g-msg';
+            m1.textContent = ut.routing_block_message || (oaOk ? 'Keys + guards allow OpenAI for routing.' : '');
+            openaiEl.appendChild(m1);
+
+            var pt = gm.provider_truth || {};
+            var orU = (pt.openrouter || {}).usable === true;
+            orEl.innerHTML = '';
+            var l2 = document.createElement('div');
+            l2.className = 'api-meter-g-label';
+            l2.style.color = orU ? 'var(--success)' : 'var(--warning)';
+            l2.textContent = orU ? 'Usable (reasoning)' : 'Not usable';
+            orEl.appendChild(l2);
+            var tr2 = document.createElement('div');
+            tr2.className = 'api-meter-g-track';
+            var fi2 = document.createElement('div');
+            fi2.className = 'api-meter-g-fill';
+            fi2.style.width = orU ? '100%' : '0%';
+            fi2.style.background = orU ? 'var(--success)' : 'var(--warning)';
+            tr2.appendChild(fi2);
+            orEl.appendChild(tr2);
+            var m2 = document.createElement('div');
+            m2.className = 'api-meter-g-msg';
+            m2.textContent = (pt.openrouter || {}).blocked_reason
+                ? String((pt.openrouter || {}).blocked_reason)
+                : (orU ? 'Key + policy allow OpenRouter for reasoning.' : 'Missing key, policy off, or not trusted.');
+            orEl.appendChild(m2);
+
+            var anU = (pt.anthropic || {}).usable === true;
+            anEl.innerHTML = '';
+            var l3 = document.createElement('div');
+            l3.className = 'api-meter-g-label';
+            l3.style.color = anU ? 'var(--success)' : 'var(--text-secondary)';
+            l3.textContent = anU ? 'Trusted for reasoning' : 'Not trusted';
+            anEl.appendChild(l3);
+            var tr3 = document.createElement('div');
+            tr3.className = 'api-meter-g-track';
+            var fi3 = document.createElement('div');
+            fi3.className = 'api-meter-g-fill';
+            fi3.style.width = anU ? '100%' : '0%';
+            fi3.style.background = anU ? 'var(--success)' : 'var(--bg-hover)';
+            tr3.appendChild(fi3);
+            anEl.appendChild(tr3);
+            var m3 = document.createElement('div');
+            m3.className = 'api-meter-g-msg';
+            m3.textContent = (pt.anthropic || {}).blocked_reason
+                ? String((pt.anthropic || {}).blocked_reason)
+                : (anU ? 'ELYSIA_ANTHROPIC_REASONING_TRUST enabled.' : 'Requires key + ELYSIA_ANTHROPIC_REASONING_TRUST.');
+            anEl.appendChild(m3);
+        };
+
+        window.refreshApiMeterTab = function() {
+            fetch('/api/insights/api-meter')
+                .then(function(r) { return r.json(); })
+                .then(function(gm) {
+                    var detail = document.getElementById('api-meter-detail-text');
+                    if (gm.error) {
+                        _setText('api-meter-stat-uptime', '—');
+                        _setText('api-meter-stat-ok', '—');
+                        _setText('api-meter-stat-fail', '—');
+                        _setText('api-meter-stat-tokens', '—');
+                        if (detail) detail.textContent = 'error: ' + gm.error;
+                        _setText('api-meter-availability-block', '—');
+                        window._destroyApiMeterCharts();
+                        return;
+                    }
+                    var m = gm.meter || {};
+                    var tt = m.transport_totals || {};
+                    _setText('api-meter-stat-uptime', window._fmtUptime(m.uptime_sec));
+                    _setText('api-meter-stat-ok', String(tt.calls_ok != null ? tt.calls_ok : 0));
+                    _setText('api-meter-stat-fail', String(tt.calls_fail != null ? tt.calls_fail : 0));
+                    _setText('api-meter-stat-tokens', String(tt.total_tokens_reported != null ? tt.total_tokens_reported : 0));
+                    if (detail) detail.textContent = gm.summary_text || '—';
+                    var avBlk = ((gm.availability_text || '').trim()) || '—';
+                    _setText('api-meter-availability-block', avBlk);
+                    window._renderApiMeterGauges(gm);
+
+                    var fbT = document.getElementById('api-meter-fallback-transport');
+                    var fbR = document.getElementById('api-meter-fallback-router');
+                    var fbK = document.getElementById('api-meter-fallback-tokens');
+                    if (fbT) { fbT.style.display = 'none'; fbT.textContent = ''; }
+                    if (fbR) { fbR.style.display = 'none'; fbR.textContent = ''; }
+                    if (fbK) { fbK.style.display = 'none'; fbK.textContent = ''; }
+
+                    window._destroyApiMeterCharts();
+
+                    if (typeof Chart === 'undefined') {
+                        if (fbT) { fbT.style.display = 'block'; fbT.textContent = 'Chart.js not loaded — open browser network tab or allow cdn.jsdelivr.net.'; }
+                        return;
+                    }
+
+                    try {
+                        Chart.defaults.color = '#94a3b8';
+                        Chart.defaults.borderColor = 'rgba(148, 163, 184, 0.25)';
+                    } catch (e1) { /* ignore */ }
+
+                    var transport = m.transport || {};
+                    var labels = Object.keys(transport).sort();
+                    if (labels.length === 0) labels = ['(no calls yet)'];
+                    var okArr = labels.map(function(l) {
+                        if (l === '(no calls yet)') return 0;
+                        return parseInt((transport[l] || {}).calls_ok, 10) || 0;
+                    });
+                    var failArr = labels.map(function(l) {
+                        if (l === '(no calls yet)') return 0;
+                        return parseInt((transport[l] || {}).calls_fail, 10) || 0;
+                    });
+                    var tokArr = labels.map(function(l) {
+                        if (l === '(no calls yet)') return 0;
+                        return parseInt((transport[l] || {}).total_tokens, 10) || 0;
+                    });
+
+                    var ctxT = document.getElementById('api-meter-canvas-transport');
+                    if (ctxT) {
+                        window._apiMeterChartHandles.transport = new Chart(ctxT, {
+                            type: 'bar',
+                            data: {
+                                labels: labels,
+                                datasets: [
+                                    { label: 'OK', data: okArr, backgroundColor: '#10b981', stack: 's' },
+                                    { label: 'Fail', data: failArr, backgroundColor: '#ef4444', stack: 's' }
+                                ]
+                            },
+                            options: {
+                                indexAxis: 'y',
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: { position: 'bottom', labels: { boxWidth: 12 } },
+                                    title: { display: false }
+                                },
+                                scales: {
+                                    x: { stacked: true, beginAtZero: true, ticks: { precision: 0 } },
+                                    y: { stacked: true, ticks: { autoSkip: false } }
+                                }
+                            }
+                        });
+                    }
+
+                    var rc = m.router_choices || {};
+                    var rLabels = Object.keys(rc).sort(function(a, b) { return (rc[b] || 0) - (rc[a] || 0); });
+                    var rData = rLabels.map(function(k) { return parseInt(rc[k], 10) || 0; });
+                    var rSum = rData.reduce(function(a, b) { return a + b; }, 0);
+                    var rCol = rLabels.map(function(_, i) {
+                        return window._paletteRouter[i % window._paletteRouter.length];
+                    });
+                    if (rSum === 0) {
+                        rLabels = ['No router picks yet'];
+                        rData = [1];
+                        rCol = ['#64748b'];
+                    }
+                    var ctxR = document.getElementById('api-meter-canvas-router');
+                    if (ctxR) {
+                        window._apiMeterChartHandles.router = new Chart(ctxR, {
+                            type: 'doughnut',
+                            data: {
+                                labels: rLabels,
+                                datasets: [{ data: rData, backgroundColor: rCol, borderWidth: 1 }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: { position: 'right', labels: { boxWidth: 11, font: { size: 11 } } }
+                                }
+                            }
+                        });
+                    }
+
+                    var ctxK = document.getElementById('api-meter-canvas-tokens');
+                    if (ctxK) {
+                        window._apiMeterChartHandles.tokens = new Chart(ctxK, {
+                            type: 'bar',
+                            data: {
+                                labels: labels,
+                                datasets: [{ label: 'Tokens', data: tokArr, backgroundColor: '#6366f1' }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: { legend: { display: false } },
+                                scales: {
+                                    y: { beginAtZero: true, ticks: { precision: 0 } },
+                                    x: { ticks: { autoSkip: false, maxRotation: 45, minRotation: 0 } }
+                                }
+                            }
+                        });
+                    }
+                })
+                .catch(function(err) {
+                    var detail = document.getElementById('api-meter-detail-text');
+                    if (detail) detail.textContent = 'fetch error: ' + (err && err.message ? err.message : String(err));
+                    _setText('api-meter-availability-block', '—');
+                    window._destroyApiMeterCharts();
+                });
+        };
+
+        window.refreshInsightsOverview = function() {
+            fetch('/api/insights/overview?trace_lines=45&rag_lines=35')
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    const pre = document.getElementById('insights-json-overview');
+                    if (pre) pre.textContent = JSON.stringify(d, null, 2);
+                    const sa = d.storage_alignment || {};
+                    var brs = String.fromCharCode(10);
+                    var stTxt = '';
+                    if (sa.warnings && sa.warnings.length) {
+                        stTxt = '⚠ ' + sa.warnings.join(brs + '⚠ ');
+                    } else {
+                        stTxt = 'Paths aligned (no warnings).';
+                    }
+                    stTxt += brs + 'learned: ' + (sa.learned_root || '—');
+                    var extReach = 'n/a';
+                    if (sa.configured_external_drive)
+                        extReach = sa.configured_drive_root_exists ? 'yes' : 'no';
+                    stTxt += brs + 'external_drive reachable: ' + extReach;
+                    _setText('insights-storage-summary', stTxt);
+                    const om = d.ollama_runtime || {};
+                    var omTxt = '';
+                    if (om.startup_error) {
+                        omTxt = 'error: ' + om.startup_error;
+                    } else {
+                        omTxt = 'readiness: ' + (om.readiness_label || '—') + brs;
+                        omTxt += 'effective: ' + (om.effective_model || '—');
+                        if (om.env_model_override)
+                            omTxt += brs + 'env: ' + om.env_model_override;
+                        const st = om.startup || {};
+                        omTxt += brs + 'reachable: ' + (st.ollama_reachable ? 'yes' : 'no') +
+                            '  installed: ' + (st.model_installed ? 'yes' : 'no') +
+                            '  health: ' + (st.startup_health_ok ? 'ok' : 'no');
+                        if (st.startup_detail)
+                            omTxt += brs + 'detail: ' + String(st.startup_detail).slice(0, 200);
+                        if (om.config_file_primary)
+                            omTxt += brs + 'config primary: ' + om.config_file_primary;
+                        if (om.resolution_note)
+                            omTxt += brs + om.resolution_note;
+                        const th = st.installed_model_tags_head;
+                        if (th && th.length)
+                            omTxt += brs + 'tags: ' + th.join(', ');
+                    }
+                    _setText('insights-ollama-summary', omTxt || '—');
+                    _setText('insights-api-meter-summary', window.renderApiGasMeterText(d.api_gas_meter || {}));
+                    _setText('dashboard-api-meter-summary', window.renderApiGasMeterText(d.api_gas_meter || {}));
+                    const sb = d.selfbuild || {};
+                    if (!sb.error) {
+                        const arts = sb.artifacts || {};
+                        const ri = sb.rag_inject_effective || {};
+                        const miss = Object.keys(arts).filter(function(k) { return !arts[k].exists; });
+                        var br = String.fromCharCode(10);
+                        var ragLine = (ri.top_k !== undefined)
+                            ? br + 'RAG inject: top_k=' + ri.top_k + ' min_score=' + ri.min_score +
+                              ' max_chars=' + ri.max_chars + ' index_rows≤' + ri.max_index_rows
+                            : '';
+                        var er = sb.embed_ram_pressure || {};
+                        var ramHint = '';
+                        if (er.host_ram_used_fraction != null && er.host_ram_used_fraction !== undefined && !er.error) {
+                            ramHint = br + 'host RAM ~' + (Math.round(er.host_ram_used_fraction * 1000) / 10) + '%';
+                            if (er.embed_cap_would_apply)
+                                ramHint += ' (embed export chunks/batch capped per memory_pressure.json)';
+                        }
+                        _setText('insights-selfbuild-summary',
+                            (sb.selfbuild_dir_exists ? 'dir: ok' : 'dir: missing') + br + 'learned: ' + (sb.learned_root || '') +
+                            (miss.length ? br + 'missing: ' + miss.join(', ') : br + 'artifacts: ok') + ragLine + ramHint);
+                    } else {
+                        _setText('insights-selfbuild-summary', sb.error || 'error');
+                    }
+                    const m = d.mcp || {};
+                    var br2 = String.fromCharCode(10);
+                    _setText('insights-mcp-summary',
+                        'sdk: ' + (m.mcp_sdk_installed ? 'yes' : 'no') + br2 +
+                        'chat MCP: ' + (m.chat_mcp_capability_active ? 'on' : 'off') + br2 +
+                        'allowlist: ' + (m.allowlist_exists ? (m.allowlist_enabled ? 'enabled' : 'present') : 'missing'));
+                    const tr = d.llm_traces || {};
+                    var br3 = String.fromCharCode(10);
+                    _setText('insights-trace-summary',
+                        tr.enabled ? ((tr.exists ? 'file ok' + br3 : 'file missing' + br3) + (tr.path || '')) : (tr.note || 'traces off'));
+                    const rg = d.rag_unified_log || {};
+                    var br4 = String.fromCharCode(10);
+                    _setText('insights-rag-summary',
+                        (rg.source_log ? ('from ' + rg.source_log + br4) : '') +
+                        ((rg.lines && rg.lines.length) ? (rg.lines.length + ' lines') : (rg.note || 'no lines')));
+                    const tl = document.getElementById('insights-trace-lines');
+                    if (tl) tl.textContent = (tr.lines && tr.lines.length) ? tr.lines.join(String.fromCharCode(10)) : '—';
+                    const rl = document.getElementById('insights-rag-lines');
+                    if (rl) rl.textContent = (rg.lines && rg.lines.length) ? rg.lines.join(String.fromCharCode(10)) : '—';
+                    const pb = d.parallel_brains || {};
+                    var brz = String.fromCharCode(10);
+                    var brainsTxt = 'unified router (mistral_decider): ' + (pb.unified_chat_llm_router_enabled ? 'on' : 'off');
+                    if (pb.cloud_only_when_router_disabled)
+                        brainsTxt += brz + '⚠ When off, operator chat uses cloud-only fallback (no local ordering).';
+                    const uxs = pb.unified_route_scenarios || [];
+                    brainsTxt += brz + brz + 'Unified try-order (sample scenarios):';
+                    for (var i = 0; i < uxs.length && i < 6; i++) {
+                        var row = uxs[i];
+                        if (row.error) {
+                            brainsTxt += brz + 'error: ' + row.error;
+                            break;
+                        }
+                        brainsTxt += brz + row.id + ' [' + (row.route_task_type || '?') + ']: ' +
+                            (row.try_order || []).join(' → ');
+                    }
+                    var mar = pb.multi_api_router || {};
+                    if (mar.error)
+                        brainsTxt += brz + brz + 'multi_api_router: ' + mar.error;
+                    else if (mar.reasoning && mar.reasoning.chosen) {
+                        brainsTxt += brz + brz + 'multi_api_router picks: reasoning→' + mar.reasoning.chosen +
+                            ', autonomy_safe→' + ((mar.reasoning_autonomy_safe && mar.reasoning_autonomy_safe.chosen) || '—') +
+                            ', embedding→' + ((mar.embedding && mar.embedding.chosen) || '—');
+                    }
+                    if (pb.orchestration_parallel_pipeline && pb.orchestration_parallel_pipeline.pipeline_id)
+                        brainsTxt += brz + brz + 'parallel pipeline: ' + pb.orchestration_parallel_pipeline.pipeline_id;
+                    _setText('insights-brains-summary', brainsTxt);
+                    const mc = d.mission_clarity || {};
+                    var mTxt = '';
+                    if (mc.core_mission_excerpt)
+                        mTxt = mc.core_mission_excerpt.slice(0, 280) + (mc.core_mission_excerpt.length > 280 ? '…' : '');
+                    const fms = mc.focus_missions || [];
+                    if (fms.length) {
+                        mTxt += (mTxt ? brz + brz : '') + 'Focus (max 5):';
+                        for (var j = 0; j < fms.length; j++) {
+                            var fm = fms[j];
+                            mTxt += brz + '• ' + (fm.title || fm.id || '') +
+                                (fm.purpose ? ' — ' + String(fm.purpose).slice(0, 120) : '');
+                        }
+                    }
+                    var samp = mc.merged_guidance_keywords_sample || [];
+                    if (samp.length)
+                        mTxt += brz + brz + 'Keywords (sample): ' + samp.slice(0, 18).join(', ');
+                    var ca = mc.corpus_keyword_alignment || {};
+                    if (ca.rows_scanned !== undefined)
+                        mTxt += brz + brz + 'Corpus vs keywords: scanned=' + ca.rows_scanned +
+                            ' aligned=' + ca.aligned_rows + ' misaligned=' + ca.misaligned_rows +
+                            (ca.alignment_ratio !== undefined ? ' ratio=' + ca.alignment_ratio : '');
+                    _setText('insights-mission-summary', mTxt || '—');
+                    addLog('Insights overview refreshed', 'info');
+                })
+                .catch(function(err) {
+                    addLog('Insights error: ' + err, 'error');
+                    _setText('insights-json-overview', 'Error: ' + err);
+                });
+        };
+
+        window.refreshInsightsTraces = function() {
+            fetch('/api/insights/traces?lines=60')
+                .then(function(r) { return r.json(); })
+                .then(function(tr) {
+                    const tl = document.getElementById('insights-trace-lines');
+                    if (tl) tl.textContent = (tr.lines && tr.lines.length) ? tr.lines.join(String.fromCharCode(10)) : '—';
+                    var br5 = String.fromCharCode(10);
+                    _setText('insights-trace-summary',
+                        tr.enabled ? ((tr.exists ? 'file ok' + br5 : 'file missing' + br5) + (tr.path || '')) : (tr.note || 'off'));
+                    addLog('Trace tail reloaded', 'info');
+                })
+                .catch(function(err) { addLog('Trace tail error: ' + err, 'error'); });
+        };
+
+        window.refreshInsightsRagLog = function() {
+            fetch('/api/insights/rag-log?lines=40')
+                .then(function(r) { return r.json(); })
+                .then(function(rg) {
+                    const rl = document.getElementById('insights-rag-lines');
+                    if (rl) rl.textContent = (rg.lines && rg.lines.length) ? rg.lines.join(String.fromCharCode(10)) : '—';
+                    var br6 = String.fromCharCode(10);
+                    _setText('insights-rag-summary',
+                        (rg.source_log ? ('from ' + rg.source_log + br6) : '') +
+                        ((rg.lines && rg.lines.length) ? (rg.lines.length + ' lines') : (rg.note || '—')));
+                    addLog('RAG log tail reloaded', 'info');
+                })
+                .catch(function(err) { addLog('RAG log error: ' + err, 'error'); });
         };
 
         window.getComprehensiveReport = function() {
@@ -1946,6 +4319,100 @@ CONTROL_PANEL_TEMPLATE = """
                 .catch(function(err) { addLog('Link failed: ' + err, 'error'); });
         };
 
+        window.refreshIncomeKeysStatus = function() {
+            fetch('/api/settings/income-keys')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data.success) return;
+                    function fmt(eff, source, env, file, folder) {
+                        var parts = [];
+                        parts.push(eff ? 'active' : 'not set');
+                        if (eff && source === 'api_keys_folder') parts.push('API keys folder');
+                        else if (eff && source === 'env') parts.push('env');
+                        else if (eff && source === 'config_file') parts.push('config file');
+                        if (eff && folder && (env || file)) parts.push('folder overrides');
+                        else if (eff && env && file) parts.push('env overrides file');
+                        return parts.join(' · ');
+                    }
+                    var g = document.getElementById('income-gumroad-status');
+                    var s = document.getElementById('income-stripe-status');
+                    if (g) {
+                        g.textContent = fmt(
+                            data.gumroad_configured,
+                            data.gumroad_effective_source,
+                            data.gumroad_from_env,
+                            data.gumroad_in_config_file,
+                            data.gumroad_in_api_keys_folder
+                        );
+                        g.style.color = data.gumroad_configured ? 'var(--success)' : 'var(--text-secondary)';
+                    }
+                    if (s) {
+                        s.textContent = fmt(
+                            data.stripe_configured,
+                            data.stripe_effective_source,
+                            data.stripe_from_env,
+                            data.stripe_in_config_file,
+                            data.stripe_in_api_keys_folder
+                        );
+                        s.style.color = data.stripe_configured ? 'var(--success)' : 'var(--text-secondary)';
+                    }
+                })
+                .catch(function() {
+                    var g = document.getElementById('income-gumroad-status');
+                    var s = document.getElementById('income-stripe-status');
+                    if (g) { g.textContent = 'Could not load status'; g.style.color = 'var(--danger)'; }
+                    if (s) { s.textContent = 'Could not load status'; s.style.color = 'var(--danger)'; }
+                });
+        };
+
+        window.saveIncomeKeys = function() {
+            var gt = document.getElementById('income-gumroad-token');
+            var st = document.getElementById('income-stripe-token');
+            var body = {};
+            if (gt && gt.value.trim()) body.gumroad_access_token = gt.value.trim();
+            if (st && st.value.trim()) body.stripe_secret_key = st.value.trim();
+            if (Object.keys(body).length === 0) {
+                addLog('Paste at least one new key before saving', 'warning');
+                return;
+            }
+            fetch('/api/settings/income-keys', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        if (gt) gt.value = '';
+                        if (st) st.value = '';
+                        addLog(data.message || 'Income API keys saved to config file', 'info');
+                        if (typeof window.refreshIncomeKeysStatus === 'function') window.refreshIncomeKeysStatus();
+                    } else {
+                        addLog('Save failed: ' + (data.error || 'Unknown'), 'error');
+                    }
+                })
+                .catch(function(err) { addLog('Save failed: ' + err, 'error'); });
+        };
+
+        window.clearIncomeKey = function(which) {
+            var body = which === 'gumroad' ? { clear_gumroad: true } : { clear_stripe: true };
+            fetch('/api/settings/income-keys', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        addLog(data.message || 'Removed from config file', 'info');
+                        if (typeof window.refreshIncomeKeysStatus === 'function') window.refreshIncomeKeysStatus();
+                    } else {
+                        addLog('Clear failed: ' + (data.error || 'Unknown'), 'error');
+                    }
+                })
+                .catch(function(err) { addLog('Clear failed: ' + err, 'error'); });
+        };
+
         window.startLearning = function() {
             const platform = document.getElementById('learning-platform').value;
             const query = document.getElementById('learning-query').value;
@@ -2007,6 +4474,21 @@ CONTROL_PANEL_TEMPLATE = """
                 });
         };
     </script>
+
+        <!-- ui-clarity-empty-states -->
+        <span id="ui-empty-brain-trace" hidden>No brain trace has been recorded yet.</span>
+        <span id="ui-empty-proposals" hidden>No self-improvement proposals yet.</span>
+        <span id="ui-empty-memory-ranking" hidden>No recent memories found to rank.</span>
+        <span id="ui-empty-prompt-contracts" hidden>No validation results recorded yet.</span>
+        <span id="ui-empty-conversation-chat" hidden>Start a conversation with Elysia.</span>
+        <span id="ui-helper-learning" hidden>Learning pulls information from external sources</span>
+        <span id="ui-helper-tasks" hidden>Lists work waiting for Elysia or Guardian</span>
+        <span id="ui-helper-workbench" hidden>Read-only overview for operators</span>
+        <span id="ui-helper-security" hidden>Recent security-related events and alerts</span>
+        <span id="ui-helper-memory" hidden>Read-only analysis of memory health</span>
+        <span id="ui-helper-insights" hidden>Observability only: RAG paths</span>
+
+        <!-- ui-clarity-secondary-tabs -->
 </body>
 </html>
 """
@@ -2035,20 +4517,246 @@ class UIControlPanel:
         self.port = port
         self.app = Flask(__name__)
         self.socketio = SocketIO(self.app, cors_allowed_origins="*")
+        raw_legacy = getattr(orchestrator, "control_panel_chat_history_path", None)
+        if not isinstance(raw_legacy, (str, os.PathLike)):
+            raw_legacy = CONTROL_PANEL_CHAT_HISTORY_PATH
+        self._legacy_chat_history_path = Path(raw_legacy)
+        raw_conv_dir = getattr(orchestrator, "conversation_store_dir", None)
+        if not isinstance(raw_conv_dir, (str, os.PathLike)):
+            raw_conv_dir = DEFAULT_CONVERSATIONS_DIR
+        self._conversation_store = ConversationStore(Path(raw_conv_dir))
         self._setup_routes()
         self._setup_socketio()
         self.running = False
         self._server_ready = threading.Event()
+        self._server_listening = False
         self._server_error = None
         self._actual_port = None
 
     def is_ready(self) -> bool:
         """
         Return True only when the dashboard server is actually ready/listening.
-        Uses the running flag and the internal _server_ready event.
+        Uses the running flag and a positive socket readiness probe.
         """
-        return bool(self.running) and self._server_ready.is_set()
-        
+        if not bool(getattr(self, "running", False)) or getattr(self, "_server_error", None):
+            self._server_listening = False
+            return False
+        if bool(getattr(self, "_server_listening", False)):
+            return True
+        self._server_listening = self._probe_server_listening(timeout=0.05)
+        return self._server_listening
+
+    def get_readiness_state(self) -> Dict[str, Any]:
+        """Return diagnostic dashboard readiness state for startup/status surfaces."""
+        ready = self.is_ready()
+        return {
+            "running": bool(getattr(self, "running", False)),
+            "ready": ready,
+            "listening": bool(getattr(self, "_server_listening", False)),
+            "startup_checked": self._server_ready.is_set(),
+            "host": getattr(self, "host", None),
+            "port": getattr(self, "_actual_port", None) or getattr(self, "port", None),
+            "error": getattr(self, "_server_error", None),
+        }
+
+    def _ensure_legacy_control_panel_import(self) -> None:
+        """Import legacy control_panel_chat_history.json once (marker-gated; no legacy reads after)."""
+        from project_guardian.conversation_store import legacy_import_marker_path
+
+        if legacy_import_marker_path(self._conversation_store.base_dir).exists():
+            return
+        try:
+            self._conversation_store.import_legacy_control_panel_json(self._legacy_chat_history_path)
+        except Exception as exc:
+            logger.debug("legacy control panel chat import skipped: %s", exc)
+
+    def _chat_history_for_response(self, session_id: str) -> List[Dict[str, Any]]:
+        self._ensure_legacy_control_panel_import()
+        cid = _control_panel_chat_session_id(session_id)
+        rows = self._conversation_store.list_messages(cid, limit=CONTROL_PANEL_CHAT_RESPONSE_MESSAGES)
+        return [
+            {
+                "role": r.get("role"),
+                "content": r.get("content"),
+                "created_at": r.get("created_at"),
+                "message_id": r.get("message_id"),
+            }
+            for r in rows
+        ]
+
+    def _append_chat_history(self, session_id: str, role: str, content: str) -> None:
+        cid = _control_panel_chat_session_id(session_id)
+        self._conversation_store.append_message(cid, role=role, content=content)
+
+    def _clear_chat_history(self, session_id: str) -> None:
+        cid = _control_panel_chat_session_id(session_id)
+        self._conversation_store.delete_conversation(cid)
+
+    def _build_chat_prompt_with_history(self, session_id: str, message: str) -> str:
+        cid = _control_panel_chat_session_id(session_id)
+        msgs = self._conversation_store.get_messages(cid, limit=CONTROL_PANEL_CHAT_PROMPT_MESSAGES)
+        block = build_recent_transcript(
+            msgs,
+            max_messages=CONTROL_PANEL_CHAT_PROMPT_MESSAGES,
+            max_chars=CONTROL_PANEL_CHAT_PROMPT_CHAR_LIMIT,
+        )
+        if not block.strip():
+            return message
+        return block + "\n\nCurrent user message:\n" + message
+
+    def _remember_chat_exchange(self, session_id: str, user_message: str, reply: str) -> None:
+        memory = getattr(self.orchestrator, "memory", None)
+        if memory is None or not hasattr(memory, "remember"):
+            return
+        try:
+            memory.remember(
+                (
+                    "Control panel conversation: "
+                    f"user={_redact_control_panel_chat_text(user_message)[:300]!r}; "
+                    f"elysia={_redact_control_panel_chat_text(reply)[:300]!r}"
+                ),
+                category="conversation",
+                priority=0.62,
+                metadata={"source": "control_panel", "conversation_id": _control_panel_chat_session_id(session_id)},
+            )
+        except Exception as exc:
+            logger.debug("Control panel chat memory write skipped: %s", exc)
+
+    def _maybe_run_brain_operator_chat_trace(self, message: str, http_context: str) -> Dict[str, Any]:
+        """Config-gated BrainPipeline trace for panel /api/chat (dry-run unless live flag set)."""
+        try:
+            from project_guardian.brain.config import get_brain_pipeline_config
+            from project_guardian.brain.runtime import run_brain_pipeline_for_operator_event
+
+            cfg = get_brain_pipeline_config()
+            if not cfg.enabled or not cfg.entrypoint_enabled("operator_chat"):
+                return {}
+
+            guardian = getattr(self.orchestrator, "guardian", None) or getattr(
+                self.orchestrator, "_guardian", None
+            )
+            res = run_brain_pipeline_for_operator_event(
+                {
+                    "message": message,
+                    "source": "operator",
+                    "metadata": {"http_context": str(http_context)[:240]},
+                },
+                guardian=guardian,
+                source_entrypoint="operator_chat",
+                config=cfg,
+            )
+            if isinstance(res, dict) and res.get("bypass"):
+                return {}
+
+            trace, _dash = res
+            rc = trace.run_context or {}
+            transitions = getattr(trace, "transitions", None)
+            transition_count = len(transitions) if isinstance(transitions, list) else 0
+            last_transition = str(transitions[-1])[:120] if transition_count else ""
+            risk = getattr(trace, "risk", None)
+            execution = getattr(trace, "execution", None)
+            return {
+                "brain_trace_enabled": True,
+                "brain_trace_id": trace.brain_pipeline_id or "",
+                "brain_trace_path": str(cfg.trace_path),
+                "brain_dry_run": bool(rc.get("dry_run")),
+                "brain_risk_level": getattr(getattr(risk, "level", None), "value", getattr(risk, "level", None))
+                if risk
+                else None,
+                "brain_tda_used": trace.think_decide_act_trace is not None,
+                "brain_execution_success": bool(getattr(execution, "success", False)) if execution else False,
+                "brain_transition_count": transition_count,
+                "brain_last_transition": last_transition,
+            }
+        except Exception as exc:
+            logger.warning("BrainPipeline operator chat trace failed (chat continues): %s", exc)
+            return {"brain_trace_error": str(exc)[:400]}
+
+    def _make_panel_operator_chat_responder(self, get_unified_system: Callable[[], Any]):
+        def responder(req: OperatorChatRequest) -> OperatorChatResponderResult:
+            us = get_unified_system()
+            if us and hasattr(us, "chat_with_llm"):
+                reply, err = us.chat_with_llm(req.composed_prompt)
+                if err:
+                    raise OperatorChatResponderError(str(err))
+                return OperatorChatResponderResult(
+                    reply_text=reply or "",
+                    extra_fields={"backend": "chat_with_llm"},
+                )
+            if hasattr(self.orchestrator, "ask_ai"):
+                reply = self.orchestrator.ask_ai(req.composed_prompt) or "(no reply)"
+                return OperatorChatResponderResult(
+                    reply_text=reply,
+                    extra_fields={"backend": "ask_ai"},
+                )
+            raise OperatorChatResponderError(
+                "No chat backend available (unified system or ask_ai)"
+            )
+
+        return responder
+
+    def _jsonify_panel_operator_chat_result(self, result: Any) -> Any:
+        history = self._chat_history_for_response(result.conversation_id)
+        body: Dict[str, Any] = {
+            "conversation_id": result.conversation_id,
+            "history": history,
+        }
+        if result.brain_metadata:
+            body.update(result.brain_metadata)
+
+        if not result.ok:
+            err = str(result.error or "chat failed")
+            if err.startswith("user_persist_failed") or err.startswith("assistant_persist_failed"):
+                return jsonify({"error": err}), 500
+            body.update(
+                {
+                    "success": False,
+                    "error": err,
+                    "reply": None,
+                }
+            )
+            return jsonify(body), 200
+
+        body.update(
+            {
+                "success": True,
+                "reply": result.reply,
+                "error": None,
+            }
+        )
+        return jsonify(body), 200
+
+    def _handle_control_panel_operator_chat(
+        self,
+        message: str,
+        conversation_id: str,
+        get_unified_system: Callable[[], Any],
+    ) -> Any:
+        self._ensure_legacy_control_panel_import()
+        us = get_unified_system()
+        has_unified = bool(us and hasattr(us, "chat_with_llm"))
+        has_ask_ai = hasattr(self.orchestrator, "ask_ai")
+        if not has_unified and not has_ask_ai:
+            return jsonify({"error": "No chat backend available (unified system or ask_ai)"}), 400
+
+        result = run_operator_chat_turn(
+            message,
+            conversation_id=conversation_id,
+            conversation_store=self._conversation_store,
+            responder=self._make_panel_operator_chat_responder(get_unified_system),
+            brain_trace_callback=self._maybe_run_brain_operator_chat_trace,
+            after_persist_callback=lambda cid, user, reply, _brain, _extra: self._remember_chat_exchange(
+                cid, user, reply
+            ),
+            history_limit=CONTROL_PANEL_CHAT_PROMPT_MESSAGES,
+            history_char_limit=CONTROL_PANEL_CHAT_PROMPT_CHAR_LIMIT,
+            http_context="control_panel",
+            source_entrypoint="control_panel_operator_chat",
+            default_conversation_id="control_panel",
+            persist_user_before_responder=False,
+        )
+        return self._jsonify_panel_operator_chat_result(result)
+
     def _setup_routes(self):
         """Setup Flask routes."""
         
@@ -2165,6 +4873,7 @@ class UIControlPanel:
                     "orchestrator": self.orchestrator is not None if hasattr(self, 'orchestrator') else False,
                     "port": getattr(self, 'port', None),
                     "running": getattr(self, 'running', False),
+                    "readiness": self.get_readiness_state(),
                 }
                 if self.orchestrator:
                     info["has_memory"] = hasattr(self.orchestrator, 'memory') and self.orchestrator.memory is not None
@@ -2173,11 +4882,104 @@ class UIControlPanel:
                 return jsonify(info), 200
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
+
+        @self.app.route("/api/logs/recent")
+        def api_logs_recent():
+            """Tail the current backend log; legacy trial logs are clearly labeled as historical."""
+            try:
+                n = request.args.get("lines", "120")
+                try:
+                    nl = max(10, min(500, int(n)))
+                except (TypeError, ValueError):
+                    nl = 120
+                return jsonify(_build_recent_log_payload(max_lines=nl)), 200
+            except Exception as e:
+                logger.error("logs recent: %s", e, exc_info=True)
+                return jsonify({"error": str(e), "success": False}), 500
+
+        @self.app.route("/api/insights/overview")
+        def api_insights_overview():
+            """Operator observability: self-build, MCP, LLM trace tail, RAG log tail."""
+            try:
+                from .operator_insights import build_insights_overview
+
+                tl = request.args.get("trace_lines", "40")
+                rl = request.args.get("rag_lines", "30")
+                try:
+                    tln = max(5, min(120, int(tl)))
+                except (TypeError, ValueError):
+                    tln = 40
+                try:
+                    rln = max(5, min(120, int(rl)))
+                except (TypeError, ValueError):
+                    rln = 30
+                return jsonify(build_insights_overview(trace_lines=tln, rag_lines=rln)), 200
+            except Exception as e:
+                logger.error("insights overview: %s", e, exc_info=True)
+                return jsonify({"error": str(e)}), 500
+
+        @self.app.route("/api/insights/api-meter")
+        def api_insights_api_meter():
+            """Lightweight session API usage + availability for Dashboard meter card."""
+            try:
+                from .operator_insights import build_api_gas_meter_bundle
+
+                return jsonify(build_api_gas_meter_bundle()), 200
+            except Exception as e:
+                logger.error("insights api-meter: %s", e, exc_info=True)
+                return jsonify({"error": str(e)}), 500
+
+        @self.app.route("/api/insights/selfbuild")
+        def api_insights_selfbuild():
+            try:
+                from .operator_insights import build_selfbuild_bundle
+
+                return jsonify(build_selfbuild_bundle()), 200
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
+        @self.app.route("/api/insights/mcp")
+        def api_insights_mcp():
+            try:
+                from .operator_insights import build_mcp_bundle
+
+                return jsonify(build_mcp_bundle()), 200
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
+        @self.app.route("/api/insights/traces")
+        def api_insights_traces():
+            try:
+                from .operator_insights import build_llm_trace_bundle
+
+                n = request.args.get("lines", "50")
+                try:
+                    nl = max(5, min(200, int(n)))
+                except (TypeError, ValueError):
+                    nl = 50
+                return jsonify(build_llm_trace_bundle(max_lines=nl)), 200
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
+        @self.app.route("/api/insights/rag-log")
+        def api_insights_rag_log():
+            try:
+                from .operator_insights import build_rag_log_bundle
+
+                n = request.args.get("lines", "35")
+                try:
+                    nl = max(5, min(150, int(n)))
+                except (TypeError, ValueError):
+                    nl = 35
+                return jsonify(build_rag_log_bundle(max_lines=nl)), 200
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
             
         @self.app.route('/api/status')
         def get_status():
             """Get comprehensive system status - optimized for fast response."""
             try:
+                external_activity = _build_external_activity_snapshot(getattr(self, "orchestrator", None))
                 # Quick check - return fast if orchestrator is None
                 if not hasattr(self, 'orchestrator') or self.orchestrator is None:
                     return jsonify({
@@ -2186,6 +4988,7 @@ class UIControlPanel:
                         "memory": {"total_entries": 0, "total_memories": 0},
                         "security": {"policy_loaded": False, "recent_violations": 0, "pending_reviews": 0},
                         "trust": {"components": 0, "average_trust": 0},
+                        "external": external_activity,
                         "timestamp": datetime.now().isoformat()
                     }), 200
                 
@@ -2244,6 +5047,30 @@ class UIControlPanel:
                     "start_time": None,
                     "operational_stats": {}
                 }
+                try:
+                    from .mission_autonomy import mission_purpose_state_snapshot
+
+                    system_status["mission_purpose_state"] = mission_purpose_state_snapshot() or {}
+                except Exception:
+                    system_status["mission_purpose_state"] = {}
+                try:
+                    unified = getattr(self.orchestrator, "_unified_system", None)
+                    if unified is not None and hasattr(unified, "get_status"):
+                        ustat = unified.get_status() or {}
+                        system_status["openclaw_enabled"] = bool(ustat.get("openclaw_enabled", False))
+                        system_status["openclaw_available"] = bool(ustat.get("openclaw_available", False))
+                        system_status["openclaw_skills_count"] = int(ustat.get("openclaw_skills_count", 0) or 0)
+                        system_status["last_openclaw_task"] = ustat.get("last_openclaw_task")
+                        system_status["last_openclaw_error"] = ustat.get("last_openclaw_error")
+                except Exception as e:
+                    logger.debug(f"Error getting unified openclaw status: {e}")
+                try:
+                    if hasattr(self.orchestrator, "get_context_pipeline_runtime_status"):
+                        system_status["context_pipeline_runtime_status"] = (
+                            self.orchestrator.get_context_pipeline_runtime_status() or {}
+                        )
+                except Exception as e:
+                    logger.debug(f"Error getting context pipeline runtime status: {e}")
                 
                 # Safely get start_time
                 if hasattr(self.orchestrator, 'start_time') and self.orchestrator.start_time:
@@ -2340,6 +5167,26 @@ class UIControlPanel:
                         memory_stats = {"total_entries": 0, "total_memories": 0}
                 else:
                     memory_stats = {"total_entries": 0, "total_memories": 0}
+
+                # Add latest cleanup policy/result details when available.
+                monitor_obj = None
+                monitor_sources = [
+                    self.orchestrator,
+                    getattr(self.orchestrator, "guardian_core", None),
+                    getattr(self.orchestrator, "core", None),
+                ]
+                for src in monitor_sources:
+                    if src is None:
+                        continue
+                    maybe_monitor = getattr(src, "monitor", None)
+                    if maybe_monitor is not None:
+                        monitor_obj = maybe_monitor
+                        break
+                if monitor_obj and hasattr(monitor_obj, "get_last_cleanup_result"):
+                    try:
+                        memory_stats["last_cleanup"] = monitor_obj.get_last_cleanup_result()
+                    except Exception as e:
+                        logger.debug(f"Error getting cleanup status: {e}")
                 
                 # Get security status (quick check)
                 security_status = {}
@@ -2363,6 +5210,7 @@ class UIControlPanel:
                     "memory": convert_paths(memory_stats),
                     "security": convert_paths(security_status),
                     "trust": convert_paths(trust_status),
+                    "external": convert_paths(external_activity),
                     "timestamp": datetime.now().isoformat()
                 }
                 
@@ -2387,6 +5235,7 @@ class UIControlPanel:
                     "memory": {"total_entries": 0, "total_memories": 0},
                     "security": {"policy_loaded": False, "recent_violations": 0, "pending_reviews": 0},
                     "trust": {"components": 0, "average_trust": 0},
+                    "external": _build_external_activity_snapshot(getattr(self, "orchestrator", None)),
                     "timestamp": datetime.now().isoformat()
                 }), 200
                 
@@ -2519,38 +5368,693 @@ class UIControlPanel:
             """Unified Elysia system when guardian is run under Elysia (for chat, income, harvest, etc.)."""
             return getattr(self.orchestrator, '_unified_system', None)
 
+        def _ui_data_roots() -> List[Path]:
+            override = getattr(self.orchestrator, "ui_data_roots", None)
+            if override:
+                raw_roots = override if isinstance(override, (list, tuple, set)) else [override]
+            else:
+                raw_roots = [Path(__file__).resolve().parent.parent / "data"]
+                storage_path = getattr(self.orchestrator, "storage_path", None)
+                if storage_path:
+                    storage_root = Path(storage_path)
+                    raw_roots.append(storage_root if storage_root.name == "data" else storage_root / "data")
+
+            roots: List[Path] = []
+            seen = set()
+            for raw_root in raw_roots:
+                try:
+                    root = Path(raw_root).expanduser()
+                except TypeError:
+                    continue
+                key = str(root.resolve()) if root.exists() else str(root)
+                if key in seen:
+                    continue
+                seen.add(key)
+                roots.append(root)
+            return roots
+
+        def _load_json_file(path: Path) -> Any:
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                logger.debug("Workbench JSON load failed for %s: %s", path, exc)
+                return None
+
+        def _project_root() -> Path:
+            return Path(__file__).resolve().parent.parent
+
+        def _ui_doc_roots() -> List[Path]:
+            raw_roots: List[Path] = []
+            configured = getattr(self.orchestrator, "ui_doc_roots", None)
+            if isinstance(configured, (list, tuple, set)):
+                raw_roots.extend(Path(item) for item in configured if item)
+            raw_roots.append(_project_root() / "docs")
+
+            roots: List[Path] = []
+            seen = set()
+            for raw_root in raw_roots:
+                try:
+                    root = Path(raw_root).expanduser()
+                except Exception:
+                    continue
+                key = str(root.resolve()) if root.exists() else str(root)
+                if key in seen:
+                    continue
+                seen.add(key)
+                roots.append(root)
+            return roots
+
+        def _doc_excerpt(text: str) -> str:
+            if not isinstance(text, str):
+                return ""
+            lines: List[str] = []
+            for raw_line in text.splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or line.startswith("```"):
+                    continue
+                lines.append(line)
+                if len(" ".join(lines)) >= 220:
+                    break
+            excerpt = " ".join(lines).strip()
+            return excerpt[:280]
+
+        def _coerce_timestamp(value: Any, fallback: float = 0.0) -> float:
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return fallback
+                if text.endswith("Z"):
+                    text = text[:-1] + "+00:00"
+                try:
+                    return datetime.fromisoformat(text).timestamp()
+                except ValueError:
+                    pass
+                try:
+                    return float(text)
+                except ValueError:
+                    return fallback
+            return fallback
+
+        def _artifact_contract_label(contract_id: Optional[str]) -> str:
+            labels = {
+                "revenue_shortlist": "Revenue shortlist",
+                "learned_digest": "Learning digest",
+                "system_improvement_proposal": "System improvement",
+                "capability_gap_report": "Capability gap report",
+                "research_brief": "Research brief",
+                "offer_pack": "Offer pack",
+            }
+            if not contract_id:
+                return "Artifact"
+            return labels.get(contract_id, contract_id.replace("_", " ").strip().title())
+
+        def _artifact_headline(blob: Dict[str, Any], payload: Any, fallback_name: str) -> str:
+            if isinstance(payload, dict):
+                for key in ("title", "product_name", "summary", "one_liner", "why_they_matter"):
+                    value = payload.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                insights = payload.get("top_insights")
+                if isinstance(insights, list):
+                    for item in insights:
+                        if isinstance(item, str) and item.strip():
+                            return item.strip()
+                opportunities = payload.get("opportunities")
+                if isinstance(opportunities, list):
+                    for item in opportunities:
+                        if isinstance(item, dict):
+                            title = item.get("title")
+                            if isinstance(title, str) and title.strip():
+                                return title.strip()
+            for key in ("title", "archetype", "contract_id"):
+                value = blob.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.replace("_", " ").strip().title()
+            return fallback_name.replace("_", " ").replace("-", " ").strip().title()
+
+        def _artifact_summary(blob: Dict[str, Any], payload: Any) -> str:
+            if isinstance(payload, dict):
+                for key in ("one_liner", "why_buy_now", "why_they_matter"):
+                    value = payload.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                why = payload.get("why_they_matter")
+                if isinstance(why, str) and why.strip():
+                    return why.strip()
+                validation = payload.get("validation_prompt")
+                if isinstance(validation, str) and validation.strip():
+                    return validation.strip()
+                recommendations = payload.get("recommended_followup_tasks")
+                if isinstance(recommendations, list) and recommendations:
+                    trimmed = [str(item).strip() for item in recommendations if str(item).strip()]
+                    if trimmed:
+                        return "Next: " + ", ".join(trimmed[:3])
+                opportunities = payload.get("opportunities")
+                if isinstance(opportunities, list) and opportunities:
+                    titles = []
+                    for item in opportunities:
+                        if isinstance(item, dict):
+                            title = item.get("title")
+                            if isinstance(title, str) and title.strip():
+                                titles.append(title.strip())
+                        if len(titles) >= 2:
+                            break
+                    if titles:
+                        return "Opportunities: " + "; ".join(titles)
+                for key in ("summary", "notes"):
+                    value = payload.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+            for key in ("reason", "goal"):
+                value = blob.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return ""
+
+        def _load_artifact_entries() -> List[Dict[str, Any]]:
+            entries: List[Dict[str, Any]] = []
+            contract_defaults = {
+                "generated_reports": None,
+                "revenue_briefs": "revenue_shortlist",
+                "research_briefs": "research_brief",
+            }
+            for root in _ui_data_roots():
+                for folder_name, default_contract in contract_defaults.items():
+                    folder = root / folder_name
+                    if not folder.exists():
+                        continue
+                    for path in folder.glob("*.json"):
+                        blob = _load_json_file(path)
+                        if not isinstance(blob, dict):
+                            continue
+                        payload = blob.get("payload")
+                        contract_id = blob.get("contract_id") or default_contract
+                        mtime = path.stat().st_mtime
+                        created_ts = _coerce_timestamp(
+                            blob.get("created_at") or blob.get("finished_at") or blob.get("updated_at"),
+                            fallback=mtime,
+                        )
+                        created_at = (
+                            blob.get("created_at")
+                            or blob.get("finished_at")
+                            or blob.get("updated_at")
+                            or datetime.fromtimestamp(created_ts).isoformat()
+                        )
+                        entries.append(
+                            {
+                                "task_id": blob.get("task_id"),
+                                "contract_id": contract_id,
+                                "artifact_type": _artifact_contract_label(contract_id),
+                                "headline": _artifact_headline(blob, payload, path.stem),
+                                "summary": _artifact_summary(blob, payload),
+                                "created_at": created_at,
+                                "file_name": path.name,
+                                "path": str(path),
+                                "source_dir": folder_name,
+                                "payload": payload,
+                                "_sort_ts": created_ts,
+                            }
+                        )
+            entries.sort(key=lambda item: item.get("_sort_ts", 0.0), reverse=True)
+            return entries
+
+        def _load_self_task_entries() -> List[Dict[str, Any]]:
+            task_map: Dict[str, Dict[str, Any]] = {}
+            for root in _ui_data_roots():
+                path = root / "self_task_queue.json"
+                if not path.exists():
+                    continue
+                blob = _load_json_file(path)
+                task_rows: List[Any] = []
+                if isinstance(blob, dict):
+                    if isinstance(blob.get("tasks"), list):
+                        task_rows.extend(blob["tasks"])
+                    else:
+                        for key in ("active", "queued", "completed", "failed"):
+                            value = blob.get(key)
+                            if isinstance(value, list):
+                                task_rows.extend(value)
+                elif isinstance(blob, list):
+                    task_rows.extend(blob)
+                for row in task_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    task_id = row.get("task_id") or row.get("id") or f"task-{len(task_map)}"
+                    sort_ts = _coerce_timestamp(row.get("updated_at") or row.get("created_at"), 0.0)
+                    merged = dict(row)
+                    merged["_sort_ts"] = sort_ts
+                    existing = task_map.get(task_id)
+                    if existing is None or sort_ts >= existing.get("_sort_ts", 0.0):
+                        task_map[task_id] = merged
+            tasks = list(task_map.values())
+            tasks.sort(key=lambda item: item.get("_sort_ts", 0.0), reverse=True)
+            return tasks
+
+        def _load_sales_launch_docs() -> List[Dict[str, Any]]:
+            specs = [
+                ("STRIPE_PAYMENT_LINK_SETUP.md", "Stripe Payment Link Setup"),
+                ("TRANSACTION_SETUP_CHECKLIST.md", "Transaction Setup Checklist"),
+                ("FIRST_OFFER_LAUNCH_BUNDLE.md", "First Offer Launch Bundle"),
+                ("FIRST_BUYER_SIGNAL_LOG.md", "First Buyer Signal Log"),
+            ]
+            entries: List[Dict[str, Any]] = []
+            candidate_roots: List[Path] = []
+            candidate_roots.extend(_ui_doc_roots())
+            for root in _ui_data_roots():
+                candidate_roots.append(root / "generated_reports")
+
+            for file_name, title in specs:
+                chosen_path: Optional[Path] = None
+                for root in candidate_roots:
+                    path = root / file_name
+                    if path.exists():
+                        chosen_path = path
+                        break
+                if chosen_path is None:
+                    continue
+                try:
+                    text = chosen_path.read_text(encoding="utf-8")
+                except Exception as exc:
+                    logger.debug("Launch doc load failed for %s: %s", chosen_path, exc)
+                    continue
+                entries.append(
+                    {
+                        "title": title,
+                        "file_name": file_name,
+                        "path": str(chosen_path),
+                        "summary": _doc_excerpt(text),
+                    }
+                )
+            return entries
+
+        def _build_workbench_summary() -> Dict[str, Any]:
+            artifacts = _load_artifact_entries()
+            tasks = _load_self_task_entries()
+            launch_docs = _load_sales_launch_docs()
+
+            active_statuses = {"queued", "pending", "running", "in_progress", "ready", "submitted"}
+            completed_statuses = {"completed", "complete", "success", "succeeded", "finished", "done"}
+
+            active_self_tasks = []
+            recent_successes = []
+            for task in tasks:
+                status = str(task.get("status") or "").strip().lower()
+                summary = str(task.get("goal") or task.get("reason") or "").strip()
+                task_row = {
+                    "task_id": task.get("task_id"),
+                    "title": task.get("title") or task.get("task_id") or "Self-task",
+                    "goal": summary,
+                    "status": task.get("status"),
+                    "category": task.get("category"),
+                    "priority": task.get("priority"),
+                    "created_at": task.get("updated_at") or task.get("created_at"),
+                    "artifact_type": _artifact_contract_label(task.get("output_contract_id")),
+                }
+                if status in active_statuses:
+                    active_self_tasks.append(task_row)
+                if status in completed_statuses:
+                    recent_successes.append(
+                        {
+                            "task_id": task.get("task_id"),
+                            "title": task_row["title"],
+                            "summary": summary,
+                            "created_at": task_row["created_at"],
+                            "artifact_type": task_row["artifact_type"],
+                        }
+                    )
+
+            top_opportunities = []
+            seen_titles = set()
+            for artifact in artifacts:
+                if artifact.get("contract_id") != "revenue_shortlist":
+                    continue
+                payload = artifact.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                opportunities = payload.get("opportunities")
+                if not isinstance(opportunities, list):
+                    continue
+                for item in opportunities:
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(item.get("title") or "").strip()
+                    if not title:
+                        continue
+                    key = title.lower()
+                    if key in seen_titles:
+                        continue
+                    seen_titles.add(key)
+                    top_opportunities.append(
+                        {
+                            "title": title,
+                            "rationale": item.get("rationale"),
+                            "required_capability": item.get("required_capability"),
+                            "difficulty": item.get("difficulty"),
+                            "expected_value": item.get("expected_value"),
+                            "created_at": artifact.get("created_at"),
+                            "artifact_type": artifact.get("artifact_type"),
+                        }
+                    )
+                    if len(top_opportunities) >= 6:
+                        break
+                if len(top_opportunities) >= 6:
+                    break
+
+            learning_digests = []
+            improvement_briefs = []
+            recent_artifacts = []
+            improvement_contracts = {"system_improvement_proposal", "capability_gap_report", "research_brief"}
+
+            for artifact in artifacts[:8]:
+                recent_artifacts.append(
+                    {
+                        "task_id": artifact.get("task_id"),
+                        "headline": artifact.get("headline"),
+                        "summary": artifact.get("summary"),
+                        "created_at": artifact.get("created_at"),
+                        "artifact_type": artifact.get("artifact_type"),
+                        "file_name": artifact.get("file_name"),
+                        "path": artifact.get("path"),
+                    }
+                )
+
+            for artifact in artifacts:
+                payload = artifact.get("payload")
+                if artifact.get("contract_id") == "learned_digest":
+                    insights = payload.get("top_insights") if isinstance(payload, dict) else []
+                    followups = payload.get("recommended_followup_tasks") if isinstance(payload, dict) else []
+                    learning_digests.append(
+                        {
+                            "headline": artifact.get("headline"),
+                            "summary": artifact.get("summary"),
+                            "created_at": artifact.get("created_at"),
+                            "artifact_type": artifact.get("artifact_type"),
+                            "top_insights": [str(item) for item in insights[:3]] if isinstance(insights, list) else [],
+                            "recommended_followup_tasks": [str(item) for item in followups[:3]] if isinstance(followups, list) else [],
+                        }
+                    )
+                if artifact.get("contract_id") in improvement_contracts:
+                    key_points: List[str] = []
+                    if isinstance(payload, dict):
+                        for key in ("recommendations", "gaps", "sources_or_origin", "recommended_followup_tasks"):
+                            value = payload.get(key)
+                            if isinstance(value, list):
+                                key_points = [str(item) for item in value[:3]]
+                                if key_points:
+                                    break
+                    improvement_briefs.append(
+                        {
+                            "headline": artifact.get("headline"),
+                            "summary": artifact.get("summary"),
+                            "created_at": artifact.get("created_at"),
+                            "artifact_type": artifact.get("artifact_type"),
+                            "key_points": key_points,
+                        }
+                    )
+
+            if not recent_successes:
+                recent_successes = [
+                    {
+                        "task_id": artifact.get("task_id"),
+                        "title": artifact.get("headline"),
+                        "summary": artifact.get("summary"),
+                        "created_at": artifact.get("created_at"),
+                        "artifact_type": artifact.get("artifact_type"),
+                    }
+                    for artifact in recent_artifacts[:5]
+                ]
+
+            latest_offer_pack: Optional[Dict[str, Any]] = None
+            for artifact in artifacts:
+                if artifact.get("contract_id") == "offer_pack":
+                    latest_offer_pack = artifact
+                    break
+
+            sales_launch: Dict[str, Any] = {
+                "recommended_path": "Stripe Payment Links",
+                "next_step": "Create one live $79 Signal Test payment link, then send it to 3 real prospects.",
+                "docs": launch_docs[:4],
+            }
+            if isinstance(latest_offer_pack, dict):
+                payload = latest_offer_pack.get("payload") if isinstance(latest_offer_pack.get("payload"), dict) else {}
+                pricing = payload.get("pricing_options") if isinstance(payload, dict) else []
+                price_points: List[str] = []
+                if isinstance(pricing, list):
+                    for option in pricing[:4]:
+                        if not isinstance(option, dict):
+                            continue
+                        name = str(option.get("name") or "").strip()
+                        price = str(option.get("price") or "").strip()
+                        if name and price:
+                            price_points.append(f"{name}: {price}")
+                        elif price:
+                            price_points.append(price)
+                sales_launch.update(
+                    {
+                        "offer_name": latest_offer_pack.get("headline"),
+                        "offer_summary": latest_offer_pack.get("summary"),
+                        "offer_path": latest_offer_pack.get("path"),
+                        "created_at": latest_offer_pack.get("created_at"),
+                        "validation_prompt": str(payload.get("validation_prompt") or "").strip() if isinstance(payload, dict) else "",
+                        "next_step": str(payload.get("recommended_next_step") or sales_launch["next_step"]).strip(),
+                        "price_points": price_points,
+                    }
+                )
+
+            return {
+                "counts": {
+                    "opportunities_total": len(top_opportunities),
+                    "active_self_tasks": len(active_self_tasks),
+                    "useful_outputs": len(recent_successes),
+                    "artifacts_total": len(artifacts),
+                    "learning_digests": len(learning_digests),
+                    "improvement_briefs": len(improvement_briefs),
+                },
+                "top_opportunities": top_opportunities,
+                "active_self_tasks": active_self_tasks[:6],
+                "recent_successes": recent_successes[:5],
+                "sales_launch": sales_launch,
+                "learning_digests": learning_digests[:4],
+                "improvement_briefs": improvement_briefs[:4],
+                "recent_artifacts": recent_artifacts[:6],
+            }
+
+        @self.app.route('/api/workbench/summary', methods=['GET'])
+        def api_workbench_summary():
+            """Aggregate useful artifacts, self-tasks, and opportunities for the operator workbench."""
+            try:
+                return jsonify({"success": True, "workbench": _build_workbench_summary()})
+            except Exception as e:
+                logger.error("Workbench summary error: %s", e, exc_info=True)
+                return jsonify({"success": False, "error": str(e)}), 500
+
         @self.app.route('/api/chat', methods=['POST'])
         def api_chat():
             """Chat with AI (OpenAI/OpenRouter via unified system or guardian.ask_ai fallback)."""
             try:
                 data = request.get_json() or {}
-                message = (data.get('message') or '').strip()
+                message = (data.get("message") or "").strip()
+                conversation_id = _control_panel_chat_session_id(
+                    data.get("conversation_id") or data.get("session_id") or "control_panel"
+                )
                 if not message:
                     return jsonify({"error": "message is required"}), 400
-                us = _get_unified_system()
-                if us and hasattr(us, 'chat_with_llm'):
-                    reply, err = us.chat_with_llm(message)
-                    if err:
-                        return jsonify({"success": False, "error": err, "reply": None}), 200
-                    return jsonify({"success": True, "reply": reply, "error": None})
-                if hasattr(self.orchestrator, 'ask_ai'):
-                    reply = self.orchestrator.ask_ai(message)
-                    return jsonify({"success": True, "reply": reply or "(no reply)", "error": None})
-                return jsonify({"error": "No chat backend available (unified system or ask_ai)"}), 400
+                return self._handle_control_panel_operator_chat(
+                    message, conversation_id, _get_unified_system
+                )
             except Exception as e:
-                logger.error(f"Chat error: {e}", exc_info=True)
+                logger.error("Chat error: %s", e, exc_info=True)
                 return jsonify({"error": str(e)}), 500
+
+        @self.app.route("/api/conversations", methods=["GET"])
+        def api_conversations_list():
+            body, code = _safe_stack_responses.build_conversations_list_response(
+                self._conversation_store
+            )
+            return jsonify(body), code
+
+        @self.app.route("/api/conversations", methods=["POST"])
+        def api_conversations_create():
+            """Allocate a new conversation id (no messages yet)."""
+            body, code = _safe_stack_responses.build_conversation_create_response(
+                self._conversation_store
+            )
+            return jsonify(body), code
+
+        @self.app.route("/api/conversations/<conversation_id>", methods=["GET"])
+        def api_conversations_get(conversation_id: str):
+            body, code = _safe_stack_responses.build_conversation_detail_response(
+                self._conversation_store,
+                conversation_id,
+                message_limit=CONTROL_PANEL_CHAT_RESPONSE_MESSAGES,
+            )
+            return jsonify(body), code
+
+        @self.app.route("/api/conversations/<conversation_id>/messages", methods=["POST"])
+        def api_conversations_append(conversation_id: str):
+            try:
+                body = request.get_json(silent=True) or {}
+                role = str(body.get("role") or "user").strip().lower()
+                content = str(body.get("content") or "").strip()
+                if not content:
+                    return jsonify({"success": False, "error": "content is required"}), 400
+                cid = _control_panel_chat_session_id(conversation_id)
+                msg = self._conversation_store.append_message(cid, role=role, content=content)
+                return jsonify({"success": True, "message": msg})
+            except Exception as e:
+                logger.error("conversations append: %s", e, exc_info=True)
+                return jsonify({"success": False, "error": str(e)}), 500
+
+        @self.app.route("/api/conversations/<conversation_id>", methods=["DELETE"])
+        def api_conversations_delete(conversation_id: str):
+            body, code = _safe_stack_responses.build_conversation_delete_response(
+                self._conversation_store, conversation_id
+            )
+            return jsonify(body), code
+
+        @self.app.route('/api/chat/history', methods=['GET'])
+        def api_chat_history():
+            """Return bounded, redacted control-panel chat history."""
+            self._ensure_legacy_control_panel_import()
+            conversation_id = (
+                request.args.get("conversation_id")
+                or request.args.get("session_id")
+                or "control_panel"
+            )
+            body, code = _safe_stack_responses.build_chat_history_response(
+                self._conversation_store,
+                conversation_id,
+                limit=CONTROL_PANEL_CHAT_RESPONSE_MESSAGES,
+            )
+            return jsonify(body), code
+
+        @self.app.route('/api/chat/history', methods=['DELETE'])
+        def api_chat_history_clear():
+            """Clear one control-panel chat history session."""
+            data = request.get_json(silent=True) or {}
+            conversation_id = (
+                data.get("conversation_id")
+                or data.get("session_id")
+                or request.args.get("conversation_id")
+                or "control_panel"
+            )
+            body, code = _safe_stack_responses.build_chat_history_clear_response(
+                self._conversation_store, str(conversation_id)
+            )
+            return jsonify(body), code
+
+        @self.app.route("/api/brain/trace/latest", methods=["GET"])
+        def api_brain_trace_latest():
+            """Sanitized BrainPipeline trace summary (read-only)."""
+            body, code = _safe_stack_responses.build_brain_trace_latest_response()
+            return jsonify(body), code
+
+        @self.app.route("/api/prompt-contracts/status", methods=["GET"])
+        def api_prompt_contracts_status():
+            """Read-only prompt-contract config and latest validation summary."""
+            body, code = _safe_stack_responses.build_prompt_contracts_status_response()
+            return jsonify(body), code
+
+        @self.app.route("/api/governance/operator-confirmations", methods=["GET"])
+        def api_governance_operator_confirmations_list():
+            """Read-only operator confirmation diagnostics (mirrors Runtime API)."""
+            try:
+                limit = min(max(int(request.args.get("limit", 25)), 1), 50)
+            except (TypeError, ValueError):
+                limit = 25
+            body, code = _safe_stack_responses.build_operator_confirmations_list_response(
+                limit=limit,
+                conversation_id=request.args.get("conversation_id"),
+                status_filter=request.args.get("status"),
+            )
+            return jsonify(body), code
+
+        @self.app.route(
+            "/api/governance/operator-confirmations/<operator_confirmation_id>",
+            methods=["GET"],
+        )
+        def api_governance_operator_confirmation_detail(operator_confirmation_id: str):
+            body, code = _safe_stack_responses.build_operator_confirmation_detail_response(
+                operator_confirmation_id
+            )
+            return jsonify(body), code
+
+        @self.app.route("/api/self-improvement/proposals", methods=["GET"])
+        def api_self_improvement_proposals_list():
+            from project_guardian.self_improvement.proposal_queue import get_default_proposal_queue
+
+            limit = min(max(int(request.args.get("limit", 50)), 1), 200)
+            body, code = _safe_stack_responses.build_self_improvement_proposals_list_response(
+                get_default_proposal_queue(), limit=limit
+            )
+            return jsonify(body), code
+
+        @self.app.route("/api/memory/ranking/summary", methods=["GET"])
+        def api_memory_ranking_summary():
+            try:
+                limit = min(max(int(request.args.get("limit", 10)), 1), 50)
+            except (TypeError, ValueError):
+                limit = 10
+            body, code = _safe_stack_responses.build_memory_ranking_summary_response(
+                conversation_store=self._conversation_store,
+                limit=limit,
+            )
+            return jsonify(body), code
+
+        @self.app.route("/api/self-improvement/proposals/<proposal_id>", methods=["GET"])
+        def api_self_improvement_proposal_get(proposal_id: str):
+            from project_guardian.self_improvement.proposal_queue import get_default_proposal_queue
+
+            body, code = _safe_stack_responses.build_self_improvement_proposal_detail_response(
+                get_default_proposal_queue(), proposal_id
+            )
+            return jsonify(body), code
+
+        @self.app.route("/api/self-improvement/proposals/<proposal_id>/export_prompt", methods=["GET"])
+        def api_self_improvement_proposal_export_prompt(proposal_id: str):
+            from project_guardian.self_improvement.proposal_queue import get_default_proposal_queue
+
+            body, code = _safe_stack_responses.build_self_improvement_prompt_export_response(
+                get_default_proposal_queue(),
+                proposal_id,
+                target=request.args.get("target", "cursor"),
+            )
+            return jsonify(body), code
+
+        @self.app.route("/api/self-improvement/proposals/<proposal_id>/status", methods=["POST"])
+        def api_self_improvement_proposal_status(proposal_id: str):
+            from project_guardian.self_improvement.proposal_queue import get_default_proposal_queue
+
+            body_json = request.get_json(force=True, silent=True) or {}
+            status = str(body_json.get("status") or "").strip().lower()
+            note = body_json.get("note")
+            body, code = _safe_stack_responses.build_self_improvement_proposal_status_update_response(
+                get_default_proposal_queue(),
+                proposal_id,
+                status,
+                note=str(note) if note is not None else None,
+            )
+            return jsonify(body), code
 
         @self.app.route('/api/income-status', methods=['GET'])
         def api_income_status():
             """Income/API module status (income_generator, harvest_engine, etc.) from unified system."""
             try:
                 us = _get_unified_system()
+                payload: Dict[str, Any] = {
+                    "success": True,
+                    "payment_providers": _build_payment_provider_status(us),
+                }
                 if us and hasattr(us, 'get_status'):
                     status = us.get_status()
                     income = status.get('income_modules') or {}
-                    return jsonify({"success": True, "income_modules": income})
-                return jsonify({"success": True, "income_modules": {}, "message": "Unified system not available"})
+                    payload["income_modules"] = income
+                    return jsonify(payload)
+                payload["income_modules"] = {}
+                payload["message"] = "Unified system not available"
+                return jsonify(payload)
             except Exception as e:
                 logger.error(f"Income status error: {e}", exc_info=True)
                 return jsonify({"error": str(e)}), 500
@@ -2612,7 +6116,7 @@ class UIControlPanel:
                     return jsonify({"error": "HarvestEngine not available"}), 400
                 report = None
                 if hasattr(he, 'generate_income_report'):
-                    report = he.generate_income_report()
+                    report = he.generate_income_report("all")
                 elif hasattr(he, 'get_account_status'):
                     report = he.get_account_status()
                 else:
@@ -2934,14 +6438,14 @@ class UIControlPanel:
                 logger.error("list_tasks: %s", e, exc_info=True)
                 return jsonify({"success": False, "error": str(e)}), 500
                 
-        # Introspection API Endpoints (placeholder - can be extended)
+        # Introspection API Endpoints (behavior / correlations / patterns backed by core + memory)
         @self.app.route('/api/introspection/comprehensive')
         def get_comprehensive_report():
             """Get comprehensive introspection report."""
             try:
                 # Build a text report for frontend parsing; fallback to reflector if available
                 report_text = "[Guardian Identity]\nSystem: Elysia / Project Guardian\nStatus: Operational\n\n"
-                report_text += "[Guardian Behavior]\nBehavior introspection not yet fully implemented.\n"
+                report_text += "[Guardian Behavior]\nRuntime snapshot (autonomy / introspection / decider tail).\n"
                 if hasattr(self.orchestrator, 'reflector') and self.orchestrator.reflector:
                     try:
                         r = self.orchestrator.reflector
@@ -2957,6 +6461,25 @@ class UIControlPanel:
                                 report_text = "[Guardian Identity]\n" + str(ident) + "\n\n" + report_text.split("[Guardian Behavior]", 1)[-1]
                     except Exception:
                         pass
+                try:
+                    orch = self.orchestrator
+                    snap: Dict[str, Any] = {}
+                    for key, attr in (
+                        ("last_autonomy", "_last_autonomy_result"),
+                        ("last_introspection", "_last_introspection_result"),
+                        ("last_autonomy_next", "_last_autonomy_next_result"),
+                    ):
+                        v = getattr(orch, attr, None)
+                        if v is not None:
+                            snap[key] = v if isinstance(v, (dict, list, str, int, float, bool)) else str(v)[:2000]
+                    ra = getattr(orch, "_decider_recent_actions", None)
+                    if isinstance(ra, list) and ra:
+                        snap["decider_recent_actions_tail"] = [str(x) for x in ra[-20:]]
+                    if snap:
+                        report_text += "\n[Runtime behavior snapshot]\n"
+                        report_text += json.dumps(snap, ensure_ascii=False, indent=0)[:8000] + "\n"
+                except Exception:
+                    pass
                 return jsonify({"success": True, "report": report_text})
             except Exception as e:
                 logger.error(f"Comprehensive report error: {e}", exc_info=True)
@@ -3002,12 +6525,19 @@ class UIControlPanel:
                 
         @self.app.route('/api/introspection/behavior')
         def get_behavior_report():
-            """Get behavior report."""
+            """Get behavior report from last autonomy / introspection / decider tail."""
             try:
-                return jsonify({
-                    "success": True,
-                    "behavior": {"note": "Behavior introspection not yet implemented"}
-                })
+                orch = self.orchestrator
+                behavior: Dict[str, Any] = {
+                    "last_autonomy": getattr(orch, "_last_autonomy_result", None),
+                    "last_introspection": getattr(orch, "_last_introspection_result", None),
+                    "last_autonomy_next": getattr(orch, "_last_autonomy_next_result", None),
+                    "decider_recent_actions_tail": list(getattr(orch, "_decider_recent_actions", []) or [])[-24:],
+                }
+                for k, v in list(behavior.items()):
+                    if v is not None and not isinstance(v, (dict, list, str, int, float, bool)):
+                        behavior[k] = str(v)[:4000]
+                return jsonify({"success": True, "behavior": behavior})
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
                 
@@ -3099,12 +6629,37 @@ class UIControlPanel:
                         ),
                         400,
                     )
+                try:
+                    thr = float(request.args.get("threshold", 0.3) or 0.3)
+                except (TypeError, ValueError):
+                    thr = 0.3
+                hits: List[Dict[str, Any]] = []
+                mem = getattr(self.orchestrator, "memory", None)
+                if mem is not None and hasattr(mem, "search_memories"):
+                    try:
+                        rows = mem.search_memories(keyword, limit=40) or []
+                    except Exception:
+                        rows = []
+                    for r in rows:
+                        if not isinstance(r, dict):
+                            continue
+                        thought = str(r.get("thought") or "")
+                        hits.append(
+                            {
+                                "time": r.get("time"),
+                                "category": r.get("category"),
+                                "snippet": thought[:400],
+                                "keyword_match": keyword.lower() in thought.lower(),
+                            }
+                        )
                 return jsonify(
                     {
                         "success": True,
                         "correlations": {
-                            "note": "Memory correlations not yet implemented",
                             "keyword": keyword,
+                            "threshold": thr,
+                            "hit_count": len(hits),
+                            "hits": hits[:24],
                         },
                     }
                 )
@@ -3113,12 +6668,31 @@ class UIControlPanel:
                 
         @self.app.route('/api/introspection/patterns')
         def get_memory_patterns():
-            """Get memory patterns."""
+            """Category distribution from recent memories (lightweight patterns)."""
             try:
-                return jsonify({
-                    "success": True,
-                    "patterns": {"note": "Memory patterns not yet implemented"}
-                })
+                patterns: Dict[str, Any] = {
+                    "categories": {},
+                    "sample_count": 0,
+                    "source": "recent_memory_categories",
+                }
+                mem = getattr(self.orchestrator, "memory", None)
+                if mem is not None and hasattr(mem, "get_recent_memories"):
+                    try:
+                        entries = mem.get_recent_memories(
+                            limit=min(UI_MEMORY_RECENT_LIMIT, 120),
+                            load_if_needed=True,
+                        )
+                    except Exception:
+                        entries = []
+                    patterns["sample_count"] = len(entries)
+                    cats: Dict[str, int] = {}
+                    for m in entries or []:
+                        if not isinstance(m, dict):
+                            continue
+                        c = str(m.get("category") or "general").strip() or "general"
+                        cats[c] = cats.get(c, 0) + 1
+                    patterns["categories"] = cats
+                return jsonify({"success": True, "patterns": patterns})
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
         
@@ -3272,6 +6846,76 @@ class UIControlPanel:
                 return jsonify({"success": True, "linked": bool(token), "message": "X (Twitter) account linked" if token else "Twitter token cleared"})
             except Exception as e:
                 logger.error(f"Link Twitter error: {e}", exc_info=True)
+                return jsonify({"success": False, "error": str(e)}), 500
+
+        @self.app.route('/api/settings/income-keys', methods=['GET'])
+        def get_income_keys_settings():
+            """Income API keys status for Control Panel (no secrets)."""
+            try:
+                from project_guardian.api_key_manager import income_keys_ui_status
+
+                return jsonify({"success": True, **income_keys_ui_status()})
+            except Exception as e:
+                logger.error(f"Income keys GET error: {e}", exc_info=True)
+                return jsonify({"success": False, "error": str(e)}), 500
+
+        @self.app.route('/api/settings/income-keys', methods=['POST'])
+        def post_income_keys_settings():
+            """Save Gumroad/Stripe to config/api_keys.json or clear file entries (does not change env)."""
+            try:
+                data = request.get_json() or {}
+                clear_gumroad = bool(data.get("clear_gumroad"))
+                clear_stripe = bool(data.get("clear_stripe"))
+                raw_g = data.get("gumroad_access_token")
+                raw_s = data.get("stripe_secret_key")
+                g_arg = raw_g.strip() if isinstance(raw_g, str) and raw_g.strip() else None
+                s_arg = raw_s.strip() if isinstance(raw_s, str) and raw_s.strip() else None
+                if not clear_gumroad and not clear_stripe and not g_arg and not s_arg:
+                    return jsonify({"success": False, "error": "Nothing to save or clear"}), 400
+                from project_guardian.api_key_manager import persist_income_keys_to_config_file
+
+                persist_income_keys_to_config_file(
+                    gumroad_access_token=g_arg,
+                    stripe_secret_key=s_arg,
+                    clear_gumroad=clear_gumroad,
+                    clear_stripe=clear_stripe,
+                )
+                harvest_refreshed = False
+                harvest_refresh_detail: Optional[Dict[str, Any]] = None
+                try:
+                    orch = getattr(self, "orchestrator", None)
+                    us = getattr(orch, "_unified_system", None) if orch is not None else None
+                    mods = getattr(us, "modules", None) if us is not None else None
+                    if isinstance(mods, dict):
+                        from elysia_sub_modules import refresh_harvest_engine_in_modules
+
+                        harvest_refresh_detail = refresh_harvest_engine_in_modules(mods)
+                        harvest_refreshed = bool(harvest_refresh_detail.get("ok"))
+                except Exception as ex:
+                    logger.warning("Harvest Engine refresh after income keys save: %s", ex)
+                msg_parts = []
+                if clear_gumroad:
+                    msg_parts.append("Gumroad removed from config file")
+                if clear_stripe:
+                    msg_parts.append("Stripe removed from config file")
+                if g_arg:
+                    msg_parts.append("Gumroad token saved")
+                if s_arg:
+                    msg_parts.append("Stripe key saved")
+                if harvest_refreshed:
+                    msg_parts.append("Harvest Engine reloaded in this process")
+                elif harvest_refresh_detail and not harvest_refresh_detail.get("ok"):
+                    msg_parts.append("Harvest reload skipped or failed (see logs)")
+                return jsonify(
+                    {
+                        "success": True,
+                        "message": "; ".join(msg_parts) or "Updated",
+                        "harvest_engine_refreshed": harvest_refreshed,
+                        "harvest_refresh": harvest_refresh_detail,
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Income keys POST error: {e}", exc_info=True)
                 return jsonify({"success": False, "error": str(e)}), 500
 
         @self.app.route('/api/learning/start', methods=['POST'])
@@ -3454,10 +7098,9 @@ class UIControlPanel:
         """Check if a port is available for binding."""
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(1)
-                result = s.connect_ex((host, port))
-                return result != 0  # 0 means port is in use
-        except Exception:
+                s.bind((host, int(port)))
+                return True
+        except (OSError, TypeError, ValueError):
             return False
     
     def _find_available_port(self, start_port: int, max_attempts: int = 10) -> int:
@@ -3467,6 +7110,15 @@ class UIControlPanel:
             if self._check_port_available(self.host, port):
                 return port
         raise OSError(f"Could not find available port in range {start_port}-{start_port + max_attempts - 1}")
+
+    def _probe_server_listening(self, timeout: float = 0.5) -> bool:
+        """Probe the configured dashboard socket once."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                return s.connect_ex((self.host, self._actual_port or self.port)) == 0
+        except Exception:
+            return False
     
     def _wait_for_server_ready(self, timeout: float = 10.0) -> bool:
         """Wait for server to be ready by checking if port is listening."""
@@ -3477,15 +7129,11 @@ class UIControlPanel:
                 logger.error(f"[DASHBOARD] Server error detected during readiness check: {self._server_error}")
                 return False
             
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.settimeout(0.5)
-                    result = s.connect_ex((self.host, self._actual_port or self.port))
-                    if result == 0:  # Port is listening
-                        return True
-            except Exception:
-                pass
+            if self._probe_server_listening(timeout=0.5):
+                self._server_listening = True
+                return True
             time.sleep(0.1)
+        self._server_listening = False
         return False
             
     def start(self, debug: bool = False, source: str = "unknown"):
@@ -3533,6 +7181,7 @@ class UIControlPanel:
             
             # Reset readiness event
             self._server_ready.clear()
+            self._server_listening = False
             self._server_error = None
             self._actual_port = self.port
             
@@ -3571,6 +7220,7 @@ class UIControlPanel:
                 with _dashboard_start_lock:
                     _dashboard_started = False
                     self.running = False
+                    self._server_listening = False
             except Exception as e:
                 logger.error(f"[DASHBOARD] Server error: {e}", exc_info=True)
                 self._server_error = str(e)
@@ -3578,15 +7228,19 @@ class UIControlPanel:
                 with _dashboard_start_lock:
                     _dashboard_started = False
                     self.running = False
+                    self._server_listening = False
             finally:
-                self._server_ready.set()  # Signal even on error
+                if self._server_error:
+                    self._server_ready.set()
             
         server_thread = threading.Thread(target=run_server, daemon=True, name="UIControlPanel-Server")
         server_thread.start()
         
-        # Wait briefly so startup doesn't stall the main thread (was 10s, now 2s max; never raise)
+        # Wait briefly so startup doesn't stall the main thread. Timeouts stay non-fatal,
+        # but immediate server errors are surfaced to direct callers.
         time.sleep(0.3)
         if self._wait_for_server_ready(timeout=2.0):
+            self._server_listening = True
             self._server_ready.set()
             logger.info(
                 f"[DASHBOARD] Server is listening on http://{self.host}:{self.port} (PID: {os.getpid()})"
@@ -3594,7 +7248,8 @@ class UIControlPanel:
         else:
             self._server_ready.set()
             if self._server_error:
-                logger.warning(f"[DASHBOARD] Server may still be starting: {self._server_error}")
+                logger.warning(f"[DASHBOARD] Server failed readiness check: {self._server_error}")
+                raise RuntimeError(f"Dashboard failed to start: {self._server_error}")
             else:
                 logger.warning(
                     "[DASHBOARD] Server did not become ready in 2s (panel may load in a few seconds); continuing startup"
@@ -3606,6 +7261,7 @@ class UIControlPanel:
         with _dashboard_start_lock:
             _dashboard_started = False
             self.running = False
+            self._server_listening = False
         logger.info("Control panel stopped")
 
 
@@ -3633,4 +7289,3 @@ def create_control_panel(orchestrator, host: str = "127.0.0.1", port: int = 5000
         UIControlPanel instance
     """
     return UIControlPanel(orchestrator, host, port)
-

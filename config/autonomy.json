@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "interval_seconds": 45,
   "use_mistral_decision_engine": true,
   "allowed_actions": [

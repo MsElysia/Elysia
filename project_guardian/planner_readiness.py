@@ -709,3 +709,46 @@ def planner_context_for_snapshot(decision_cycle: int) -> Dict[str, Any]:
         "planner_gate_reason": reason,
         "latency": recent_planner_latency_summary(),
     }
+
+def _autonomy_routine_info_forced_when_ready() -> bool:
+    """Return True when env forces INFO-level autonomy routine logs while ready."""
+    for _key in (
+        "ELYSIA_AUTONOMY_ROUTINE_INFO_WHEN_READY",
+        "ELYSIA_EXPLORATION_INFO_WHEN_READY",
+    ):
+        try:
+            v = (os.environ.get(_key) or "").strip().lower()
+            if v in ("1", "true", "yes", "always", "force"):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def autonomy_exploration_log_use_debug() -> bool:
+    """Use DEBUG for routine autonomy logs when planner readiness is ready."""
+    if _autonomy_routine_info_forced_when_ready():
+        return False
+    try:
+        return compute_readiness_label() == "ready"
+    except Exception:
+        return False
+
+
+autonomy_routine_log_use_debug = autonomy_exploration_log_use_debug
+
+
+def log_autonomy_routine(
+    log: logging.Logger, fmt: str, *args: Any, **kwargs: Any
+) -> None:
+    """Routine autonomy chatter: INFO normally; DEBUG when planner readiness is ready."""
+    lvl = logging.DEBUG if autonomy_exploration_log_use_debug() else logging.INFO
+    log.log(lvl, fmt, *args, **kwargs)
+
+
+def log_autonomy_exploration_routine(
+    log: logging.Logger, fmt: str, *args: Any, **kwargs: Any
+) -> None:
+    """Same as log_autonomy_routine ([Exploration] prefix convention)."""
+    log_autonomy_routine(log, fmt, *args, **kwargs)
+

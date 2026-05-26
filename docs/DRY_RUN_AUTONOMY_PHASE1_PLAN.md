@@ -226,6 +226,8 @@ Tests are listed in implementation order; Phase 1a lands these as **xfail or ski
 
 Safe-stack operator chat / read-only panels remain valid; they do **not** certify autonomy safety.
 
+**Worktree quarantine (2026-05-25):** Local unstaged hunks in `project_guardian/core.py` (~180 insertions: autonomy decision trace, candidate scoring, minor runtime tweaks) are **outside Phase 1b.1** and must not be staged with guard commits. See [`CORE_UNSTAGED_RISKY_HUNKS.md`](CORE_UNSTAGED_RISKY_HUNKS.md).
+
 ---
 
 ## Verification (planning pass)

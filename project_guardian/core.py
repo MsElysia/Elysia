@@ -5695,10 +5695,11 @@ class GuardianCore:
             return result
         if not cfg.get("enabled", False):
             return result
-        if autonomy_dry_run_only(cfg):
-            # autonomy_context + apply_live_execution_guard_to_context (phase1 dry-run path)
-            return run_autonomous_phase1_dry_run(self, cfg, source="run_autonomous_cycle")
-        allowed = set(cfg.get("allowed_actions", []))
+        # Phase 1: non-overridable dry-run when enabled (config dry_run_only:false is ignored).
+        assert autonomy_dry_run_only(cfg)
+        # autonomy_context + apply_live_execution_guard_to_context (phase1 dry-run path)
+        return run_autonomous_phase1_dry_run(self, cfg, source="run_autonomous_cycle")
+        allowed = set(cfg.get("allowed_actions", []))  # unreachable during Phase 1
         if not allowed:
             return result
         now = datetime.datetime.now()

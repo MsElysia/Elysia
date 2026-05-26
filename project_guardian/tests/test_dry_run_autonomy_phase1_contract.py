@@ -215,6 +215,50 @@ def test_run_autonomous_cycle_dry_run_mode_never_calls_execute_capability() -> N
     assert calls == []
 
 
+def test_autonomy_dry_run_only_false_is_non_overridable_in_phase1() -> None:
+    from project_guardian.autonomy_dry_run_guard import autonomy_dry_run_only
+
+    assert autonomy_dry_run_only({"dry_run_only": False}) is True
+    assert autonomy_dry_run_only({"enabled": True, "dry_run_only": False}) is True
+
+
+def test_run_autonomous_cycle_dry_run_only_false_never_calls_execute_capability() -> None:
+    from project_guardian.core import GuardianCore
+
+    calls: List[Any] = []
+
+    def _track(*_a: Any, **_k: Any) -> Dict[str, Any]:
+        calls.append(True)
+        return {"ok": False}
+
+    stub = object.__new__(GuardianCore)
+    stub._load_autonomy_config = lambda: {  # type: ignore[method-assign]
+        "enabled": True,
+        "dry_run_only": False,
+        "allowed_actions": ["use_capability/test"],
+        "max_actions_per_hour": 40,
+        "allow_dynamic_capability_actions": True,
+    }
+    stub.get_next_action = lambda: {  # type: ignore[method-assign]
+        "action": "use_capability/test",
+        "can_auto_execute": True,
+        "metadata": {},
+    }
+    stub._load_mistral_decider_config = lambda: {}  # type: ignore[method-assign]
+    stub._autonomy_action_times = []  # type: ignore[attr-defined]
+
+    with patch(
+        "project_guardian.capability_execution.execute_capability_kind",
+        side_effect=_track,
+    ):
+        out = GuardianCore.run_autonomous_cycle(stub)
+
+    assert out.get("executed") is False
+    assert out.get("dry_run") is True
+    assert out.get("reason") == "dry_run_only"
+    assert calls == []
+
+
 # --- 5. mutation denied in dry-run (xfail) ---
 
 

@@ -37,9 +37,12 @@ def autonomy_kill_switch_active() -> bool:
 
 
 def autonomy_dry_run_only(cfg: Dict[str, Any]) -> bool:
-    """Phase 1 default: dry-run even when autonomy is enabled in config."""
-    if cfg.get("dry_run_only") is False:
-        return False
+    """Phase 1: dry-run is mandatory whenever autonomy is enabled.
+
+    The config key ``dry_run_only`` is reserved for a future rollout phase and is
+    ignored during Phase 1, including explicit ``dry_run_only: false``.
+    """
+    _ = cfg  # reserved for post-Phase-1 policy; must not disable dry-run in Phase 1
     return True
 
 

@@ -1,11 +1,12 @@
 # Autonomy Entrypoint & Execution-Capable Path Audit
 
-**Date:** 2026-05-24 (updated after verification pass)  
+**Date:** 2026-05-25 (updated after Phase 0 config + Phase 1 plan)  
 **Role:** Committer-side auditor (read-only; no config/code changes in this pass)  
 **Safe-stack baseline:** `aea5f8b` (`docs(safe-stack): add final post-commit audit`) — smoke **386 passed**  
+**Phase 0 config:** `14a5fbe` — `config/autonomy.json` defaults to **`"enabled": false`**  
+**Phase 1 plan:** [`DRY_RUN_AUTONOMY_PHASE1_PLAN.md`](DRY_RUN_AUTONOMY_PHASE1_PLAN.md) — dry-run guard design (tests-first; no wiring in plan pass)  
 **Verdict:** **Do not run autonomy mode yet.**  
-**Phase 0 blocker:** `config/autonomy.json` has **`"enabled": true`** — must default to **`false`** before any autonomy testing.  
-Safe dry-run autonomy must **not** be attempted until legacy autonomy config is off **and** all autonomy/execution entrypoints route through **BrainPipeline/TDA + `live_execution_guard`**.
+Safe dry-run autonomy must **not** be attempted until Phase 1 tests pass **and** all autonomy/execution entrypoints route through **BrainPipeline/TDA + `live_execution_guard`**.
 
 ---
 
@@ -26,7 +27,7 @@ The safe-stack milestone (`1ada6e8` … `aea5f8b`) governs **operator-facing dry
 | `GuardianCore.run_autonomous_cycle` | **No** | Executes when `autonomy.json` enabled + heartbeat/UI trigger |
 | `live_execution_guard` on autonomy actions | **No** | Guard denies `is_autonomy_context` if called — **autonomy path does not call guard today** |
 
-Enabling autonomy via UI (`POST /api/autonomy`) or the current **`config/autonomy.json`** (`enabled: true`, `max_actions_per_hour: 32`, broad `allowed_actions`) can run learning, mutation, capabilities, self-tasks, OpenClaw delegation, and related side effects **without** BrainPipeline trace or live-execution guard integration.
+If an operator re-enables autonomy via UI (`POST /api/autonomy`) while legacy guards are unwired, **`run_autonomous_cycle`** can still run learning, mutation, capabilities, self-tasks, OpenClaw delegation, and related side effects **without** BrainPipeline trace or live-execution guard integration. Committed default is **`enabled: false`** (`14a5fbe`).
 
 **Verification addendum (2026-05-24):** Five additional execution-capable surfaces were missing from the first draft and are inventoried below — alternate API host task enqueue, FastAPI acceptance runner, Architect proposal API, Implementer agent subprocess/pytest, and legacy autonomy config defaults.
 
@@ -50,7 +51,7 @@ Risk levels: **Critical** (unattended mutate/execute/LLM), **High** (loop + side
 | `project_guardian/ui_control_panel.py` | `suggestNextAction` / `executeNextAction` | Mission UI buttons | Can chain POSTs | dream-cycle, execute-cycle | dream/mutation paths | **Yes** | **No** | **No** | **High** |
 | `project_guardian/ui_control_panel.py` | `POST /api/control/dream-cycle` | JS after suggest / manual | No | No | No (memory) | **Possible** (dreams component) | **No** | **No** | **Medium** |
 | `project_guardian/ui_control_panel.py` | `POST /api/control/pause` / `resume` | Control panel | No | No | No | No | **No** | **No** | **Medium** |
-| `config/autonomy.json` | `enabled`, `allowed_actions`, … | File edit via UI POST or manual; **default on disk: `enabled: true`** | Enables heartbeat | Defines actions | — | — | **No** | **No** | **Critical** (Phase 0 blocker) |
+| `config/autonomy.json` | `enabled`, `allowed_actions`, … | File edit via UI POST or manual; **committed default: `enabled: false`** (`14a5fbe`) | Enables heartbeat when toggled on | Defines actions | — | — | **No** | **No** | **High** (operator can re-enable via UI) |
 | `config/brain_pipeline.json` | `entrypoints.autonomy` | Brain config loader | N/A | N/A | N/A | N/A | Gate only if wired | If wired | **Low** (off) |
 | `project_guardian/elysia_loop_core.py` | `ElysiaLoopCore.start()` / task queue | `system_orchestrator`, singleton | **Yes** | Task funcs vary | Varies | Varies | **No** | **No** | **High** |
 | `project_guardian/system_orchestrator.py` | Wires `elysia_loop`, `runtime_loop` | Startup | **Yes** | Yes | Yes | Yes | **No** | **No** | **High** |
@@ -77,7 +78,7 @@ Risk levels: **Critical** (unattended mutate/execute/LLM), **High** (loop + side
 
 ### Representative `allowed_actions` (from `config/autonomy.json` on branch)
 
-Current file (verified): `"enabled": true`, `"interval_seconds": 60`, `"max_actions_per_hour": 32`, `"require_approval_for": []`, `"autonomy_auto_execute_guardian_tasks": true`.
+Committed file (`14a5fbe`): `"enabled": false`, `"interval_seconds": 45`, `"max_actions_per_hour": 40`, `"require_approval_for": []`. Worktree copies may differ if locally edited.
 
 Includes: `consider_learning`, `consider_dream_cycle`, `consider_prompt_evolution`, `consider_adversarial_learning`, `consider_mutation`, `execute_self_task`, `delegate_openclaw`, `use_capability/*` (dynamic), `execute_task`, `process_queue`, `continue_mission`, income/harvest pulses, etc.
 
@@ -122,7 +123,7 @@ Paths that can **execute tools**, **mutate files**, **run subprocess/shell**, **
 
 ### Highest-risk paths (prioritized)
 
-1. **`config/autonomy.json` `enabled: true`** — heartbeat can auto-run `run_autonomous_cycle` every 60s with 32 actions/hour.  
+1. **Unguarded `run_autonomous_cycle` when operator sets `enabled: true`** — heartbeat can auto-run cycles on `interval_seconds` with `max_actions_per_hour`.  
 2. **`run_autonomous_cycle` + `POST /api/autonomy/execute-cycle`** — full legacy autonomy executor.  
 3. **`POST /api/tasks`** — programmatic enqueue of mutation/tool/implementer callables without governance.  
 4. **`elysia/agents/implementer.py`** — repo file mutation + **`subprocess.run(pytest)`**.  
@@ -158,7 +159,7 @@ Before any production or operator “autonomy mode”:
 
 | Requirement | Current state |
 |-------------|---------------|
-| All autonomy entrypoints default **dry-run** | **Gap** — `autonomy.json` historically `enabled: true`; actions execute for real |
+| All autonomy entrypoints default **dry-run** | **Gap** — `enabled: false` default done; dry-run wrapper + guard not wired |
 | All action proposals through **BrainPipeline/TDA trace** | **Gap** — `core.py` has zero `run_brain_pipeline` / guard calls |
 | Any execution calls **live_execution_guard** | **Gap** — guard has `AUTONOMY_CONTEXT_DENIED` but autonomy doesn’t invoke guard |
 | Tool/capability **allowlist** | Partial — dynamic `use_capability/*`; needs central registry + deny-by-default |
@@ -180,8 +181,8 @@ Before any production or operator “autonomy mode”:
 
 | Phase | Goal | Run in production? |
 |-------|------|--------------------|
-| **0** | **Blocker:** set `config/autonomy.json` **`enabled: false`** (do not change in this doc pass — document only); disable heartbeat autonomy block or env kill switch; do not call `execute-cycle` or `POST /api/tasks` for mutation/implementer targets | **No execution** |
-| **1** | **Dry-run autonomy trace only** — wrap `get_next_action` + cycle in BrainPipeline/TDA trace; force `dry_run`; no `executed: true` side effects; inventory includes `api_server`/`proposal_api`/`implementer` as out-of-scope until gated | Logs only |
+| **0** | **`enabled: false` default** — **Done** (`14a5fbe`); do not call `execute-cycle` or `POST /api/tasks` for mutation/implementer targets | **No execution** |
+| **1** | **Dry-run autonomy trace only** — see [`DRY_RUN_AUTONOMY_PHASE1_PLAN.md`](DRY_RUN_AUTONOMY_PHASE1_PLAN.md): BrainPipeline/TDA + `live_execution_guard` with `autonomy_context=True`; bounded cycle; audit JSONL; tests before wiring | Logs only |
 | **2** | Guarded **recommendations** — return proposed actions; no tool/file execution | Advisory UI |
 | **3** | **Single** allowlisted low-risk action (e.g. `continue_monitoring` or read-only diagnostic) with guard + confirmation in non-production | Controlled experiment |
 | **4** | Broader autonomy only after full governance test suite + operator runbooks | Staged rollout |
@@ -221,17 +222,17 @@ Existing: `test_autonomy_loop_guards.py`, `test_autonomy_safe_fallback.py`, smok
 
 **No.**
 
-### Phase 0 blocker (configuration)
+### Phase 0 (configuration) — resolved
 
-**`config/autonomy.json` currently has `"enabled": true`.** That is a **hard blocker** before any autonomy testing, dry-run or otherwise. Safe-stack did not change this file. Operators starting the backend with the committed config can get **automatic** `run_autonomous_cycle` invocations from `monitoring.py` without touching the control panel.
+**`config/autonomy.json` defaults to `"enabled": false`** (`14a5fbe`). Heartbeat and startup threads in `monitoring.py` still **call** `run_autonomous_cycle` when an operator re-enables autonomy via UI or config edit — those paths remain **unguarded** and can execute real side effects until Phase 1 wiring lands.
 
-**Required before Phase 1:** default **`enabled: false`** in repo (separate config commit — not performed in this audit pass).
+**Required before running autonomy:** complete Phase 1 per [`DRY_RUN_AUTONOMY_PHASE1_PLAN.md`](DRY_RUN_AUTONOMY_PHASE1_PLAN.md).
 
 ### Safe dry-run autonomy
 
 **Do not attempt** safe dry-run autonomy until **all** of the following:
 
-1. **Phase 0:** `config/autonomy.json` **`enabled: false`** (and heartbeat/UI cannot re-enable without explicit operator intent + audit).
+1. **Phase 0:** `config/autonomy.json` **`enabled: false`** — **done** (`14a5fbe`). UI can still re-enable; Phase 1 must force dry-run when enabled.
 2. **Phase 1 wiring:** `run_autonomous_cycle`, `get_next_action`, and any future autonomy entrypoints call **BrainPipeline/TDA** (trace persisted, dry-run default).
 3. **Guard:** any non-dry execution path calls **`apply_live_execution_guard`** (including blocking `is_autonomy_context` until a dedicated autonomy governance design exists).
 4. **Surfaces:** `POST /api/tasks`, `proposal_api.py`, `ImplementerAgent`, and `run-acceptance` inventoried and either disabled, gated, or excluded from production profiles.

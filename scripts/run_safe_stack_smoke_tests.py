@@ -44,6 +44,7 @@ REQUIRED_TEST_PATHS: Tuple[str, ...] = (
     "project_guardian/tests/test_live_execution_governance_docs.py",
     "project_guardian/tests/test_live_execution_guard.py",
     "project_guardian/tests/test_live_execution_guard_runtime_integration.py",
+    "project_guardian/tests/test_dry_run_autonomy_phase1_contract.py",
     "project_guardian/tests/test_operator_confirmation_context_plan.py",
     "project_guardian/tests/test_operator_confirmation_store.py",
     "project_guardian/tests/test_operator_confirmation_guard_integration.py",

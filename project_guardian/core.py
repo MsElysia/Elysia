@@ -5667,10 +5667,37 @@ class GuardianCore:
         Autonomous decision loop: get next action and execute if allowed.
         Called periodically from heartbeat. Returns { executed, action, reason }.
         """
-        result = {"executed": False, "action": None, "reason": None}
+        # Phase 1 dry-run guard (ELYSIA_AUTONOMY_KILL, dry_run_only, max_cycles_per_request)
+        from .autonomy_dry_run_guard import (
+            append_autonomy_dry_run_audit,
+            autonomy_dry_run_only,
+            autonomy_kill_switch_active,
+            run_autonomous_phase1_dry_run,
+        )
+
+        result: Dict[str, Any] = {"executed": False, "action": None, "reason": None, "dry_run": True}
         cfg = self._load_autonomy_config()
+        if autonomy_kill_switch_active():
+            result["reason"] = "kill_switch"
+            result["dry_run"] = True
+            append_autonomy_dry_run_audit(
+                {
+                    "cycle_id": None,
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "source": "run_autonomous_cycle",
+                    "config_enabled": bool(cfg.get("enabled")),
+                    "dry_run_only": True,
+                    "executed": False,
+                    "reason": "kill_switch",
+                    "kill_switch_active": True,
+                }
+            )
+            return result
         if not cfg.get("enabled", False):
             return result
+        if autonomy_dry_run_only(cfg):
+            # autonomy_context + apply_live_execution_guard_to_context (phase1 dry-run path)
+            return run_autonomous_phase1_dry_run(self, cfg, source="run_autonomous_cycle")
         allowed = set(cfg.get("allowed_actions", []))
         if not allowed:
             return result

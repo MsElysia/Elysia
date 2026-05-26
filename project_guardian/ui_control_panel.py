@@ -4832,9 +4832,12 @@ class UIControlPanel:
                     result = self.orchestrator.run_autonomous_cycle()
                     return jsonify({
                         "success": True,
+                        "dry_run": bool(result.get("dry_run", True)),
                         "executed": result.get("executed", False),
                         "action": result.get("action"),
                         "reason": result.get("reason"),
+                        "trace_id": result.get("trace_id"),
+                        "guard_reasons": result.get("guard_reasons"),
                         "ask_user_question": result.get("ask_user_question"),
                     })
                 return jsonify({"success": False, "error": "Autonomy not available"}), 503

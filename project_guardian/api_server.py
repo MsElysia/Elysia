@@ -205,6 +205,43 @@ class APIServer:
 
         return roots
 
+    AUTONOMY_SENSITIVE_TASK_ROOTS = frozenset(
+        {
+            "mutation_router",
+            "mutation_engine",
+            "implementer_core",
+            "tool_executor",
+            "run_autonomous_cycle",
+        }
+    )
+
+    def _deny_autonomy_sensitive_task(
+        self,
+        data: Dict[str, Any],
+        function_name: str,
+        module_name: Optional[str] = None,
+    ) -> Optional[str]:
+        """Block sensitive callable roots when ``autonomy_context`` is set on the request."""
+        if not data.get("autonomy_context"):
+            return None
+        name = str(function_name or "").strip()
+        parts = [p for p in name.split(".") if p]
+        root = str(module_name or (parts[0] if parts else "")).strip()
+        if root in self.AUTONOMY_SENSITIVE_TASK_ROOTS:
+            return f"autonomy_context denies task root '{root}'"
+        if parts and parts[0] in self.AUTONOMY_SENSITIVE_TASK_ROOTS:
+            return f"autonomy_context denies task root '{parts[0]}'"
+        return None
+
+    def _task_denied_in_autonomy_context(
+        self,
+        data: Dict[str, Any],
+        function_name: str,
+        module_name: Optional[str] = None,
+    ) -> Optional[str]:
+        """Alias for autonomy-sensitive task denial (Phase 1 dry-run safety)."""
+        return self._deny_autonomy_sensitive_task(data, function_name, module_name)
+
     def _resolve_task_callable(
         self,
         function_name: str,
@@ -1186,6 +1223,11 @@ class APIServer:
                     return jsonify({"error": "args must be a list"}), 400
                 if not isinstance(kwargs, dict):
                     return jsonify({"error": "kwargs must be an object"}), 400
+
+                denied = self._deny_autonomy_sensitive_task(data, task_func_name, module)
+                if denied:
+                    self._record_request(success=False)
+                    return jsonify({"error": denied, "autonomy_context": True}), 403
 
                 task_function, resolved_function = self._resolve_task_callable(task_func_name, module)
                 task_module = str(module or resolved_function.split(".", 1)[0] or "api")

@@ -192,6 +192,11 @@ class TestInvariant2_TrustEngine:
                 pytest.fail(f"validate_trust_for_action() failed: {e}")
             
             assert True, "TrustMatrix returns TrustDecision objects"
+
+        except ImportError:
+            pytest.skip("TrustMatrix not found - TrustEngine check skipped")
+        except Exception as e:
+            pytest.fail(f"Error testing TrustEngine gating: {e}")
     
     def test_review_decision_enqueues_request(self):
         """Test that review decision enqueues request and raises TrustReviewRequiredError"""
@@ -368,11 +373,6 @@ class TestInvariant2_TrustEngine:
             pytest.skip(f"Required modules not available: {e}")
         except Exception as e:
             pytest.fail(f"Error testing context mismatch: {e}")
-            
-        except ImportError:
-            pytest.skip("TrustMatrix not found - TrustEngine check skipped")
-        except Exception as e:
-            pytest.fail(f"Error testing TrustEngine gating: {e}")
 
 
 class TestInvariant3_MutationFlow:
@@ -476,8 +476,6 @@ class TestInvariant3_MutationFlow:
                         assert True, f"MutationEngine raises exception for governance files (protection): {e}"
                 else:
                     pytest.skip("CONTROL.md not found - cannot test governance protection")
-                else:
-                    assert True, "MutationEngine.apply() appears to check for governance paths"
                     
             except Exception as e:
                 # If we can't inspect source, try behavioral test

@@ -695,3 +695,141 @@ def test_run_autonomous_cycle_result_contains_decision_trace_summary() -> None:
     assert summary["execution_summary"]["executed"] is False
     assert summary["safety_summary"]["capability_called"] is False
     assert summary["safety_summary"]["legacy_executor_reached"] is False
+
+
+# --- 16. Phase 1d-B.3 dry-run decision report (observation only) ---
+
+REPORT_REQUIRED_FIELDS: frozenset[str] = frozenset(
+    {
+        "report_id",
+        "generated_at",
+        "source",
+        "cycle_id",
+        "status",
+        "proposed_action",
+        "proposed_action_kind",
+        "proposed_action_summary",
+        "dry_run",
+        "executed",
+        "blocked",
+        "block_reasons",
+        "safety_checks",
+        "execution_checks",
+        "human_summary",
+        "raw_trace",
+        "raw_summary",
+    }
+)
+
+
+def _sample_dry_run_result() -> Dict[str, Any]:
+    from project_guardian.autonomy_dry_run_guard import (
+        build_dry_run_decision_trace,
+        summarize_dry_run_decision_trace,
+    )
+
+    trace = build_dry_run_decision_trace(
+        cycle_id="cyc-report-1",
+        source="run_autonomous_cycle",
+        proposed_action="use_capability/test",
+        guard_meta={"allowed": False, "reasons": ["live_execution_disabled"]},
+        extra_block_reasons=["dry_run_only"],
+    )
+    summary = summarize_dry_run_decision_trace(trace)
+    return {
+        "executed": False,
+        "action": "use_capability/test",
+        "reason": "dry_run_only",
+        "dry_run": True,
+        "cycle_id": "cyc-report-1",
+        "decision_trace": trace,
+        "decision_trace_summary": summary,
+    }
+
+
+def test_build_dry_run_report_is_serializable_and_preserves_invariants() -> None:
+    from project_guardian.autonomy_dry_run_guard import build_dry_run_decision_report
+
+    result = _sample_dry_run_result()
+    report = build_dry_run_decision_report(result=result)
+
+    assert REPORT_REQUIRED_FIELDS <= set(report.keys())
+    json.dumps(report)
+
+    assert report["dry_run"] is True
+    assert report["executed"] is False
+    assert report["blocked"] is True
+    assert report["status"] == "dry_run_blocked_not_executed"
+    assert report["safety_checks"] == {
+        "capability_called": False,
+        "mutation_called": False,
+        "proposal_implementation_called": False,
+        "legacy_executor_reached": False,
+    }
+    assert report["execution_checks"]["executed"] is False
+    assert report["execution_checks"]["dry_run"] is True
+    assert "dry_run_only" in report["block_reasons"]
+    assert report["proposed_action"] == "use_capability/test"
+    assert report["proposed_action_kind"] == "use_capability"
+    assert isinstance(report["raw_trace"], dict)
+    assert isinstance(report["raw_summary"], dict)
+
+
+def test_build_dry_run_report_does_not_mutate_input() -> None:
+    from project_guardian.autonomy_dry_run_guard import build_dry_run_decision_report
+    import copy
+
+    result = _sample_dry_run_result()
+    before = copy.deepcopy(result)
+    build_dry_run_decision_report(result=result)
+    assert result == before
+
+
+def test_build_dry_run_report_tolerates_missing_fields() -> None:
+    from project_guardian.autonomy_dry_run_guard import build_dry_run_decision_report
+
+    report = build_dry_run_decision_report(result={})
+    assert REPORT_REQUIRED_FIELDS <= set(report.keys())
+    json.dumps(report)
+    assert report["executed"] is False
+    assert report["dry_run"] is True
+    assert report["blocked"] is True
+
+
+@pytest.mark.xfail(
+    _phase1_autonomy_guard_wired() is False,
+    reason=PHASE1_XFAIL_REASON,
+    strict=False,
+)
+def test_run_autonomous_cycle_result_contains_dry_run_report() -> None:
+    from project_guardian.core import GuardianCore
+
+    calls: List[Any] = []
+
+    def _track(*_a: Any, **_k: Any) -> Dict[str, Any]:
+        calls.append(True)
+        raise AssertionError("execute_capability_kind must not run in Phase 1 dry-run")
+
+    stub = _dry_run_stub(dry_run_only=False)
+
+    with patch(
+        "project_guardian.capability_execution.execute_capability_kind",
+        side_effect=_track,
+    ):
+        out = GuardianCore.run_autonomous_cycle(stub)
+
+    assert calls == []
+    assert out.get("executed") is False
+    assert out.get("dry_run") is True
+
+    report = out.get("dry_run_report")
+    assert isinstance(report, dict)
+    assert REPORT_REQUIRED_FIELDS <= set(report.keys())
+    json.dumps(report)
+    assert report["dry_run"] is True
+    assert report["executed"] is False
+    assert report["blocked"] is True
+    assert report["safety_checks"]["capability_called"] is False
+    assert report["safety_checks"]["mutation_called"] is False
+    assert report["safety_checks"]["proposal_implementation_called"] is False
+    assert report["safety_checks"]["legacy_executor_reached"] is False

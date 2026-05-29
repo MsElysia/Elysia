@@ -207,6 +207,78 @@ def summarize_dry_run_decision_trace(trace: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def build_dry_run_decision_report(
+    *,
+    result: Optional[Dict[str, Any]] = None,
+    trace: Optional[Dict[str, Any]] = None,
+    summary: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a readable, observation-only dry-run report from a dry-run result.
+
+    Derived purely from the Phase 1 dry-run ``result`` (or an explicit ``trace`` /
+    ``summary``). Pure function: does not mutate inputs, does not execute anything,
+    tolerates missing optional fields, and returns a JSON-serializable dict.
+    """
+    result = result if isinstance(result, dict) else {}
+    trace = trace if isinstance(trace, dict) else (result.get("decision_trace") or {})
+    trace = trace if isinstance(trace, dict) else {}
+    summary = summary if isinstance(summary, dict) else (result.get("decision_trace_summary") or {})
+    summary = summary if isinstance(summary, dict) else {}
+
+    if not summary and trace:
+        summary = summarize_dry_run_decision_trace(trace)
+
+    def _pick(key: str, default: Any = "") -> Any:
+        if key in trace:
+            return trace.get(key)
+        if key in result:
+            return result.get(key)
+        return default
+
+    executed = bool(_pick("executed", False))
+    dry_run_raw = trace.get("dry_run", result.get("dry_run", True))
+    dry_run = True if dry_run_raw is None else bool(dry_run_raw)
+    blocked = bool(summary.get("blocked", (not executed) and dry_run))
+
+    block_reasons = [str(r) for r in (summary.get("block_reasons") or trace.get("block_reasons") or [])][:20]
+
+    safety_checks = {
+        "capability_called": bool(trace.get("capability_called", False)),
+        "mutation_called": bool(trace.get("mutation_called", False)),
+        "proposal_implementation_called": bool(trace.get("proposal_implementation_called", False)),
+        "legacy_executor_reached": bool(trace.get("legacy_executor_reached", False)),
+    }
+    execution_checks = {
+        "dry_run": dry_run,
+        "executed": executed,
+        "blocked": blocked,
+    }
+
+    status = str(summary.get("outcome") or ("dry_run_blocked_not_executed" if blocked else "not_executed"))
+
+    return {
+        "report_id": str(uuid.uuid4()),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": str(_pick("source", "")),
+        "cycle_id": str(_pick("cycle_id", "")),
+        "status": status,
+        "proposed_action": str(_pick("proposed_action", "") or ""),
+        "proposed_action_kind": str(trace.get("proposed_action_kind") or summary.get("proposed_action_kind") or "none"),
+        "proposed_action_summary": str(
+            trace.get("proposed_action_summary") or summary.get("proposed_action_summary") or ""
+        ),
+        "dry_run": dry_run,
+        "executed": executed,
+        "blocked": blocked,
+        "block_reasons": block_reasons,
+        "safety_checks": safety_checks,
+        "execution_checks": execution_checks,
+        "human_summary": str(summary.get("human_summary") or ""),
+        "raw_trace": dict(trace),
+        "raw_summary": dict(summary),
+    }
+
+
 def run_brain_pipeline_for_autonomy_event(
     guardian: Any,
     *,
@@ -247,6 +319,7 @@ def _autonomy_phase1_dry_run(
             extra_block_reasons=["max_cycles_per_request"],
             notes="cycle budget exhausted for this request",
         )
+        _decision_summary = summarize_dry_run_decision_trace(_decision_trace)
         out = {
             "executed": False,
             "action": None,
@@ -254,8 +327,11 @@ def _autonomy_phase1_dry_run(
             "dry_run": True,
             "cycle_id": cycle_id,
             "decision_trace": _decision_trace,
-            "decision_trace_summary": summarize_dry_run_decision_trace(_decision_trace),
+            "decision_trace_summary": _decision_summary,
         }
+        out["dry_run_report"] = build_dry_run_decision_report(
+            result=out, trace=_decision_trace, summary=_decision_summary
+        )
         append_autonomy_dry_run_audit(
             {
                 "cycle_id": cycle_id,
@@ -290,6 +366,7 @@ def _autonomy_phase1_dry_run(
             guard_meta=guard_meta,
             extra_block_reasons=["dry_run_only"],
         )
+        decision_summary = summarize_dry_run_decision_trace(decision_trace)
         out = {
             "executed": False,
             "action": action,
@@ -301,8 +378,11 @@ def _autonomy_phase1_dry_run(
             "can_auto_execute": bool(next_result.get("can_auto_execute")),
             "live_execution_guard": guard_meta,
             "decision_trace": decision_trace,
-            "decision_trace_summary": summarize_dry_run_decision_trace(decision_trace),
+            "decision_trace_summary": decision_summary,
         }
+        out["dry_run_report"] = build_dry_run_decision_report(
+            result=out, trace=decision_trace, summary=decision_summary
+        )
         append_autonomy_dry_run_audit(
             {
                 "cycle_id": cycle_id,

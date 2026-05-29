@@ -582,3 +582,116 @@ def test_decision_trace_dry_run_only_false_still_blocks_execution() -> None:
     assert trace["executed"] is False
     assert trace["legacy_executor_reached"] is False
     assert "dry_run_only" in trace["block_reasons"]
+
+
+# --- 15. Phase 1d-B.2 dry-run trace summary (observation only) ---
+
+SUMMARY_REQUIRED_FIELDS: frozenset[str] = frozenset(
+    {
+        "summary_id",
+        "trace_id",
+        "source",
+        "proposed_action_kind",
+        "proposed_action_summary",
+        "outcome",
+        "blocked",
+        "block_reasons",
+        "safety_summary",
+        "execution_summary",
+        "human_summary",
+    }
+)
+
+
+def _sample_decision_trace() -> Dict[str, Any]:
+    from project_guardian.autonomy_dry_run_guard import build_dry_run_decision_trace
+
+    return build_dry_run_decision_trace(
+        cycle_id="cyc-summary-1",
+        source="run_autonomous_cycle",
+        proposed_action="use_capability/test",
+        guard_meta={"allowed": False, "reasons": ["live_execution_disabled"]},
+        extra_block_reasons=["dry_run_only"],
+    )
+
+
+def test_summarize_decision_trace_is_serializable_and_reports_invariants() -> None:
+    from project_guardian.autonomy_dry_run_guard import summarize_dry_run_decision_trace
+
+    trace = _sample_decision_trace()
+    summary = summarize_dry_run_decision_trace(trace)
+
+    assert SUMMARY_REQUIRED_FIELDS <= set(summary.keys())
+    json.dumps(summary)
+
+    assert summary["blocked"] is True
+    assert summary["outcome"] == "dry_run_blocked_not_executed"
+    assert summary["execution_summary"]["dry_run"] is True
+    assert summary["execution_summary"]["executed"] is False
+    assert summary["safety_summary"] == {
+        "capability_called": False,
+        "mutation_called": False,
+        "proposal_implementation_called": False,
+        "legacy_executor_reached": False,
+    }
+    assert "live_execution_disabled" in summary["block_reasons"]
+    assert "dry_run_only" in summary["block_reasons"]
+    assert summary["proposed_action_kind"] == "use_capability"
+
+
+def test_summarize_decision_trace_does_not_mutate_input() -> None:
+    from project_guardian.autonomy_dry_run_guard import summarize_dry_run_decision_trace
+    import copy
+
+    trace = _sample_decision_trace()
+    before = copy.deepcopy(trace)
+    summarize_dry_run_decision_trace(trace)
+    assert trace == before
+
+
+def test_summarize_decision_trace_tolerates_missing_fields() -> None:
+    from project_guardian.autonomy_dry_run_guard import summarize_dry_run_decision_trace
+
+    summary = summarize_dry_run_decision_trace({})
+    assert SUMMARY_REQUIRED_FIELDS <= set(summary.keys())
+    json.dumps(summary)
+    # Empty trace: no execution recorded => treated as dry-run blocked/not executed.
+    assert summary["execution_summary"]["executed"] is False
+    assert summary["blocked"] is True
+
+
+@pytest.mark.xfail(
+    _phase1_autonomy_guard_wired() is False,
+    reason=PHASE1_XFAIL_REASON,
+    strict=False,
+)
+def test_run_autonomous_cycle_result_contains_decision_trace_summary() -> None:
+    from project_guardian.core import GuardianCore
+
+    calls: List[Any] = []
+
+    def _track(*_a: Any, **_k: Any) -> Dict[str, Any]:
+        calls.append(True)
+        raise AssertionError("execute_capability_kind must not run in Phase 1 dry-run")
+
+    stub = _dry_run_stub(dry_run_only=False)
+
+    with patch(
+        "project_guardian.capability_execution.execute_capability_kind",
+        side_effect=_track,
+    ):
+        out = GuardianCore.run_autonomous_cycle(stub)
+
+    assert calls == []
+    assert out.get("executed") is False
+    assert out.get("dry_run") is True
+
+    summary = out.get("decision_trace_summary")
+    assert isinstance(summary, dict)
+    assert SUMMARY_REQUIRED_FIELDS <= set(summary.keys())
+    json.dumps(summary)
+    assert summary["blocked"] is True
+    assert summary["outcome"] == "dry_run_blocked_not_executed"
+    assert summary["execution_summary"]["executed"] is False
+    assert summary["safety_summary"]["capability_called"] is False
+    assert summary["safety_summary"]["legacy_executor_reached"] is False

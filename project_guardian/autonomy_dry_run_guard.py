@@ -139,6 +139,74 @@ def build_dry_run_decision_trace(
     }
 
 
+def summarize_dry_run_decision_trace(trace: Dict[str, Any]) -> Dict[str, Any]:
+    """Derive a human-readable, observation-only summary of a dry-run decision trace.
+
+    Pure function: does not mutate ``trace``, does not execute anything, and tolerates
+    missing optional fields. The returned dict is JSON-serializable and deterministic
+    given the same input.
+    """
+    trace = trace if isinstance(trace, dict) else {}
+
+    def _bool(key: str) -> bool:
+        return bool(trace.get(key))
+
+    executed = _bool("executed")
+    dry_run = trace.get("dry_run", True)
+    dry_run = True if dry_run is None else bool(dry_run)
+    blocked = (not executed) and dry_run
+    block_reasons = [str(r) for r in (trace.get("block_reasons") or [])][:20]
+
+    capability_called = _bool("capability_called")
+    mutation_called = _bool("mutation_called")
+    proposal_implementation_called = _bool("proposal_implementation_called")
+    legacy_executor_reached = _bool("legacy_executor_reached")
+
+    action_kind = str(trace.get("proposed_action_kind") or "none")
+    action_summary = str(trace.get("proposed_action_summary") or "")
+
+    if blocked:
+        outcome = "dry_run_blocked_not_executed"
+    elif executed:
+        outcome = "executed"  # not reachable in Phase 1; reported for completeness
+    else:
+        outcome = "not_executed"
+
+    safety_summary = {
+        "capability_called": capability_called,
+        "mutation_called": mutation_called,
+        "proposal_implementation_called": proposal_implementation_called,
+        "legacy_executor_reached": legacy_executor_reached,
+    }
+    execution_summary = {
+        "dry_run": dry_run,
+        "executed": executed,
+        "blocked": blocked,
+    }
+
+    reasons_text = ", ".join(block_reasons) if block_reasons else "none recorded"
+    human_summary = (
+        f"Dry-run autonomy proposed '{action_summary or action_kind}' "
+        f"({action_kind}); outcome={outcome}; "
+        f"executed={executed}, dry_run={dry_run}; "
+        f"reasons: {reasons_text}."
+    )
+
+    return {
+        "summary_id": str(uuid.uuid4()),
+        "trace_id": str(trace.get("trace_id") or ""),
+        "source": str(trace.get("source") or ""),
+        "proposed_action_kind": action_kind,
+        "proposed_action_summary": action_summary,
+        "outcome": outcome,
+        "blocked": blocked,
+        "block_reasons": block_reasons,
+        "safety_summary": safety_summary,
+        "execution_summary": execution_summary,
+        "human_summary": human_summary,
+    }
+
+
 def run_brain_pipeline_for_autonomy_event(
     guardian: Any,
     *,
@@ -172,19 +240,21 @@ def _autonomy_phase1_dry_run(
     cycle_id = str(uuid.uuid4())
     depth = int(getattr(guardian, "_autonomy_phase1_cycle_depth", 0) or 0)
     if depth >= max_cycles_per_request:
+        _decision_trace = build_dry_run_decision_trace(
+            cycle_id=cycle_id,
+            source=source,
+            proposed_action=None,
+            extra_block_reasons=["max_cycles_per_request"],
+            notes="cycle budget exhausted for this request",
+        )
         out = {
             "executed": False,
             "action": None,
             "reason": "max_cycles_per_request",
             "dry_run": True,
             "cycle_id": cycle_id,
-            "decision_trace": build_dry_run_decision_trace(
-                cycle_id=cycle_id,
-                source=source,
-                proposed_action=None,
-                extra_block_reasons=["max_cycles_per_request"],
-                notes="cycle budget exhausted for this request",
-            ),
+            "decision_trace": _decision_trace,
+            "decision_trace_summary": summarize_dry_run_decision_trace(_decision_trace),
         }
         append_autonomy_dry_run_audit(
             {
@@ -231,6 +301,7 @@ def _autonomy_phase1_dry_run(
             "can_auto_execute": bool(next_result.get("can_auto_execute")),
             "live_execution_guard": guard_meta,
             "decision_trace": decision_trace,
+            "decision_trace_summary": summarize_dry_run_decision_trace(decision_trace),
         }
         append_autonomy_dry_run_audit(
             {

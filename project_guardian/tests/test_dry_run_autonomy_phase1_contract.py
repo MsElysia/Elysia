@@ -1054,3 +1054,98 @@ def test_batch_persist_true_is_ignored_with_warning() -> None:
 
     assert "persistence_not_implemented_ignored" in batch["warnings"]
     assert batch["summary"]["persisted"] is False
+
+
+# --- 18. Phase 1d-E safe dry-run report command (observation only) ---
+
+DRY_RUN_REPORT_SCRIPT = ROOT / "scripts" / "run_elysia_dry_run_report.py"
+
+
+def _load_dry_run_report_module():
+    spec = importlib.util.spec_from_file_location("run_elysia_dry_run_report", DRY_RUN_REPORT_SCRIPT)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_dry_run_report_script_exists_and_uses_bounded_helper() -> None:
+    assert DRY_RUN_REPORT_SCRIPT.is_file()
+    text = _read_text(DRY_RUN_REPORT_SCRIPT)
+    assert "run_phase1_dry_run_batch" in text
+    assert "HARD_MAX_CYCLES = 3" in text
+
+
+def test_dry_run_report_command_exits_zero_for_safe_batch() -> None:
+    mod = _load_dry_run_report_module()
+    rc = mod.main([])
+    assert rc == 0
+
+
+def test_dry_run_report_command_text_includes_final_verdict(capsys) -> None:
+    mod = _load_dry_run_report_module()
+    rc = mod.main([])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "final safety verdict: SAFE" in captured.out
+
+
+def test_dry_run_report_command_json_is_parseable(capsys) -> None:
+    mod = _load_dry_run_report_module()
+    rc = mod.main(["--json"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    payload = json.loads(captured.out.strip())
+    assert payload["safe"] is True
+    assert payload["batch"]["any_executed"] is False
+    assert payload["batch"]["all_dry_run"] is True
+    assert payload["batch"]["execution_call_count"] == 0
+    assert payload["batch"]["legacy_fallback_reached"] is False
+
+
+def test_dry_run_report_run_report_helper_is_safe_and_bounded() -> None:
+    mod = _load_dry_run_report_module()
+    result = mod.run_report(cycles=3)
+    assert result["safe"] is True
+    assert result["problems"] == []
+    assert result["batch"]["completed_cycles"] == 3
+    # Hard cap: requesting more than the cap is clamped, never exceeded.
+    result_capped = mod.run_report(cycles=99)
+    assert result_capped["batch"]["requested_cycles"] == mod.HARD_MAX_CYCLES
+    assert result_capped["safe"] is True
+
+
+def test_dry_run_report_unsafe_batch_is_reported_fail_closed() -> None:
+    mod = _load_dry_run_report_module()
+    # An executed batch must be flagged unsafe by the evaluator.
+    unsafe_batch = {
+        "batch_id": "x",
+        "requested_cycles": 1,
+        "completed_cycles": 1,
+        "all_dry_run": True,
+        "any_executed": True,
+        "execution_call_count": 1,
+        "legacy_fallback_reached": False,
+        "reports": [{"dry_run": True, "executed": True, "blocked": False}],
+    }
+    problems = mod.evaluate_batch_safety(unsafe_batch)
+    assert problems
+    assert "execution_detected" in problems
+
+
+def test_dry_run_report_command_writes_no_files(tmp_path, monkeypatch) -> None:
+    mod = _load_dry_run_report_module()
+    monkeypatch.chdir(tmp_path)
+    before = set(p.name for p in tmp_path.iterdir())
+    rc = mod.main([])
+    after = set(p.name for p in tmp_path.iterdir())
+    assert rc == 0
+    assert before == after  # no files created in cwd by default
+
+
+def test_dry_run_report_does_not_require_autonomy_enabled() -> None:
+    # Committed config remains disabled; the command must still succeed.
+    data = json.loads(_read_text(AUTONOMY_CONFIG))
+    assert data.get("enabled") is False
+    mod = _load_dry_run_report_module()
+    assert mod.main([]) == 0

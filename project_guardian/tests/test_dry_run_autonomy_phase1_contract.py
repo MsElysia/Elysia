@@ -439,3 +439,146 @@ def test_safe_stack_smoke_includes_phase1_contract_tests() -> None:
 def test_safe_stack_smoke_script_lists_phase1_contract_in_required_paths() -> None:
     text = _read_text(SMOKE_SCRIPT)
     assert PHASE1_CONTRACT_TEST in text
+
+
+# --- 14. Phase 1d-B dry-run decision trace (observation only) ---
+
+DECISION_TRACE_REQUIRED_FIELDS: frozenset[str] = frozenset(
+    {
+        "trace_id",
+        "timestamp",
+        "source",
+        "cycle_id",
+        "proposed_action",
+        "proposed_action_kind",
+        "proposed_action_summary",
+        "dry_run",
+        "executed",
+        "block_reasons",
+        "live_execution_guard",
+        "capability_called",
+        "mutation_called",
+        "proposal_implementation_called",
+        "legacy_executor_reached",
+        "notes",
+    }
+)
+
+
+def _dry_run_stub(*, dry_run_only: bool):
+    from project_guardian.core import GuardianCore
+
+    stub = object.__new__(GuardianCore)
+    stub._load_autonomy_config = lambda: {  # type: ignore[method-assign]
+        "enabled": True,
+        "dry_run_only": dry_run_only,
+        "allowed_actions": ["use_capability/test"],
+        "max_actions_per_hour": 40,
+        "allow_dynamic_capability_actions": True,
+    }
+    stub.get_next_action = lambda: {  # type: ignore[method-assign]
+        "action": "use_capability/test",
+        "can_auto_execute": True,
+        "metadata": {},
+    }
+    stub._load_mistral_decider_config = lambda: {}  # type: ignore[method-assign]
+    stub._autonomy_action_times = []  # type: ignore[attr-defined]
+    return stub
+
+
+def test_decision_trace_helper_builds_required_fields_with_invariants() -> None:
+    from project_guardian.autonomy_dry_run_guard import build_dry_run_decision_trace
+
+    trace = build_dry_run_decision_trace(
+        cycle_id="cyc-1",
+        source="run_autonomous_cycle",
+        proposed_action="use_capability/test",
+        guard_meta={"allowed": False, "reasons": ["live_execution_disabled"]},
+        extra_block_reasons=["dry_run_only"],
+    )
+
+    assert DECISION_TRACE_REQUIRED_FIELDS <= set(trace.keys())
+    assert trace["dry_run"] is True
+    assert trace["executed"] is False
+    assert trace["capability_called"] is False
+    assert trace["mutation_called"] is False
+    assert trace["proposal_implementation_called"] is False
+    assert trace["legacy_executor_reached"] is False
+    assert trace["proposed_action_kind"] == "use_capability"
+    assert "live_execution_disabled" in trace["block_reasons"]
+    assert "dry_run_only" in trace["block_reasons"]
+    # Must be JSON-serializable (no side effects, no live objects).
+    json.dumps(trace)
+
+
+@pytest.mark.xfail(
+    _phase1_autonomy_guard_wired() is False,
+    reason=PHASE1_XFAIL_REASON,
+    strict=False,
+)
+def test_run_autonomous_cycle_emits_decision_trace_without_executing() -> None:
+    from project_guardian.core import GuardianCore
+
+    calls: List[Any] = []
+
+    def _track(*_a: Any, **_k: Any) -> Dict[str, Any]:
+        calls.append(True)
+        raise AssertionError("execute_capability_kind must not run in Phase 1 dry-run")
+
+    stub = _dry_run_stub(dry_run_only=True)
+
+    with patch(
+        "project_guardian.capability_execution.execute_capability_kind",
+        side_effect=_track,
+    ):
+        out = GuardianCore.run_autonomous_cycle(stub)
+
+    assert calls == []
+    assert out.get("executed") is False
+    assert out.get("dry_run") is True
+
+    trace = out.get("decision_trace")
+    assert isinstance(trace, dict)
+    assert DECISION_TRACE_REQUIRED_FIELDS <= set(trace.keys())
+    assert trace["dry_run"] is True
+    assert trace["executed"] is False
+    assert trace["capability_called"] is False
+    assert trace["mutation_called"] is False
+    assert trace["proposal_implementation_called"] is False
+    assert trace["legacy_executor_reached"] is False
+    assert trace["proposed_action"] == "use_capability/test"
+
+
+@pytest.mark.xfail(
+    _phase1_autonomy_guard_wired() is False,
+    reason=PHASE1_XFAIL_REASON,
+    strict=False,
+)
+def test_decision_trace_dry_run_only_false_still_blocks_execution() -> None:
+    from project_guardian.core import GuardianCore
+
+    calls: List[Any] = []
+
+    def _track(*_a: Any, **_k: Any) -> Dict[str, Any]:
+        calls.append(True)
+        raise AssertionError("execute_capability_kind must not run even with dry_run_only=False")
+
+    stub = _dry_run_stub(dry_run_only=False)
+
+    with patch(
+        "project_guardian.capability_execution.execute_capability_kind",
+        side_effect=_track,
+    ):
+        out = GuardianCore.run_autonomous_cycle(stub)
+
+    assert calls == []
+    assert out.get("executed") is False
+    assert out.get("dry_run") is True
+    assert out.get("reason") == "dry_run_only"
+
+    trace = out.get("decision_trace")
+    assert isinstance(trace, dict)
+    assert trace["dry_run"] is True
+    assert trace["executed"] is False
+    assert trace["legacy_executor_reached"] is False
+    assert "dry_run_only" in trace["block_reasons"]

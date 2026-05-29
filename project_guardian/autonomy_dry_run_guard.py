@@ -86,6 +86,59 @@ def _evaluate_autonomy_live_execution_guard(
     return guard_meta
 
 
+def _classify_proposed_action_kind(action: str) -> str:
+    """Coarse, side-effect-free classification of a proposed action string."""
+    a = (action or "").strip()
+    if not a:
+        return "none"
+    if a.startswith("use_capability/"):
+        return "use_capability"
+    head = a.split("/", 1)[0].strip()
+    return head or "none"
+
+
+def build_dry_run_decision_trace(
+    *,
+    cycle_id: str,
+    source: str,
+    proposed_action: Optional[str],
+    guard_meta: Optional[Dict[str, Any]] = None,
+    extra_block_reasons: Optional[list] = None,
+    notes: str = "",
+) -> Dict[str, Any]:
+    """Build a serializable, observation-only Phase 1 dry-run decision trace.
+
+    This helper has no side effects and must not influence action selection,
+    scoring, routing, or execution. Phase 1 invariants are hard-coded: the
+    proposed action is never executed and no capability/mutation/proposal/legacy
+    path is reachable from here.
+    """
+    guard_meta = guard_meta or {}
+    action = str(proposed_action or "")
+    reasons: list = []
+    for reason in list(guard_meta.get("reasons") or []) + list(extra_block_reasons or []):
+        if reason not in reasons:
+            reasons.append(reason)
+    return {
+        "trace_id": str(uuid.uuid4()),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "cycle_id": cycle_id,
+        "proposed_action": action,
+        "proposed_action_kind": _classify_proposed_action_kind(action),
+        "proposed_action_summary": action[:80],
+        "dry_run": True,
+        "executed": False,
+        "block_reasons": reasons[:20],
+        "live_execution_guard": guard_meta,
+        "capability_called": False,
+        "mutation_called": False,
+        "proposal_implementation_called": False,
+        "legacy_executor_reached": False,
+        "notes": str(notes or ""),
+    }
+
+
 def run_brain_pipeline_for_autonomy_event(
     guardian: Any,
     *,
@@ -125,6 +178,13 @@ def _autonomy_phase1_dry_run(
             "reason": "max_cycles_per_request",
             "dry_run": True,
             "cycle_id": cycle_id,
+            "decision_trace": build_dry_run_decision_trace(
+                cycle_id=cycle_id,
+                source=source,
+                proposed_action=None,
+                extra_block_reasons=["max_cycles_per_request"],
+                notes="cycle budget exhausted for this request",
+            ),
         }
         append_autonomy_dry_run_audit(
             {
@@ -153,6 +213,13 @@ def _autonomy_phase1_dry_run(
         )
         guard_meta = trace.get("live_execution_guard") or {}
         guard_reasons = list(guard_meta.get("reasons") or [])
+        decision_trace = build_dry_run_decision_trace(
+            cycle_id=cycle_id,
+            source=source,
+            proposed_action=action,
+            guard_meta=guard_meta,
+            extra_block_reasons=["dry_run_only"],
+        )
         out = {
             "executed": False,
             "action": action,
@@ -163,6 +230,7 @@ def _autonomy_phase1_dry_run(
             "guard_reasons": guard_reasons,
             "can_auto_execute": bool(next_result.get("can_auto_execute")),
             "live_execution_guard": guard_meta,
+            "decision_trace": decision_trace,
         }
         append_autonomy_dry_run_audit(
             {

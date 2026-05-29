@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from project_guardian.brain.config import get_brain_pipeline_config
 from project_guardian.brain.live_execution_runtime import apply_live_execution_guard_to_context
@@ -276,6 +277,113 @@ def build_dry_run_decision_report(
         "human_summary": str(summary.get("human_summary") or ""),
         "raw_trace": dict(trace),
         "raw_summary": dict(summary),
+    }
+
+
+class DryRunBatchSafetyError(RuntimeError):
+    """Raised when the bounded dry-run batch runner must fail closed."""
+
+
+def _inspect_dry_run_cycle(cycle_result: Any) -> Tuple[Dict[str, Any], List[str]]:
+    """Return (report_copy, problems) for one cycle result. Never mutates input."""
+    result = cycle_result if isinstance(cycle_result, dict) else {}
+    trace = result.get("decision_trace") if isinstance(result.get("decision_trace"), dict) else {}
+    report = result.get("dry_run_report") if isinstance(result.get("dry_run_report"), dict) else {}
+    safety = report.get("safety_checks") if isinstance(report.get("safety_checks"), dict) else {}
+
+    problems: List[str] = []
+    if not report:
+        problems.append("missing_dry_run_report")
+    if result.get("executed") is True:
+        problems.append("executed_true")
+    if result.get("dry_run") is not True:
+        problems.append("dry_run_not_true")
+    if trace.get("legacy_executor_reached") is True or safety.get("legacy_executor_reached") is True:
+        problems.append("legacy_executor_reached")
+    for flag in ("capability_called", "mutation_called", "proposal_implementation_called"):
+        if trace.get(flag) is True or safety.get(flag) is True:
+            problems.append(flag)
+
+    return copy.deepcopy(report), problems
+
+
+def run_phase1_dry_run_batch(
+    run_cycle: Callable[[], Dict[str, Any]],
+    *,
+    max_cycles: int = 3,
+    requested_cycles: int = 3,
+    persist: bool = False,
+) -> Dict[str, Any]:
+    """Run a small, hard-capped batch of injected dry-run cycles and collect evidence.
+
+    ``run_cycle`` is an injected callable returning one Phase 1 dry-run result
+    (containing ``decision_trace``, ``decision_trace_summary``, ``dry_run_report``).
+    The runner never imports/constructs ``GuardianCore``, never executes tools, never
+    loops in the background, and fails closed on any unsafe condition. ``persist`` is
+    not implemented here: ``persist=True`` is ignored with a warning (no files written).
+    """
+    batch_id = str(uuid.uuid4())
+    started_at = datetime.now(timezone.utc).isoformat()
+    warnings: List[str] = []
+
+    if not callable(run_cycle):
+        raise DryRunBatchSafetyError("run_cycle must be callable")
+    if not isinstance(max_cycles, int) or isinstance(max_cycles, bool) or max_cycles < 0:
+        raise DryRunBatchSafetyError("max_cycles must be a non-negative int")
+    if not isinstance(requested_cycles, int) or isinstance(requested_cycles, bool):
+        raise DryRunBatchSafetyError("requested_cycles must be an int")
+    if requested_cycles < 0:
+        raise DryRunBatchSafetyError("requested_cycles must not be negative")
+    if requested_cycles > max_cycles:
+        raise DryRunBatchSafetyError(
+            f"requested_cycles {requested_cycles} exceeds max_cycles {max_cycles}"
+        )
+    if persist:
+        warnings.append("persistence_not_implemented_ignored")
+        persist = False
+
+    reports: List[Dict[str, Any]] = []
+    completed = 0
+
+    for _ in range(requested_cycles):
+        cycle_result = run_cycle()
+        report_copy, problems = _inspect_dry_run_cycle(cycle_result)
+        if problems:
+            raise DryRunBatchSafetyError(f"unsafe dry-run cycle: {sorted(set(problems))}")
+        reports.append(report_copy)
+        completed += 1
+
+    all_dry_run = all(r.get("dry_run") is True for r in reports) if reports else True
+    any_executed = any(r.get("executed") is True for r in reports)
+    legacy_fallback_reached = any(
+        (r.get("safety_checks") or {}).get("legacy_executor_reached") is True for r in reports
+    )
+    all_blocked = all(r.get("blocked") is True for r in reports) if reports else True
+
+    summary = {
+        "requested_cycles": requested_cycles,
+        "completed_cycles": completed,
+        "all_dry_run": all_dry_run,
+        "any_executed": any_executed,
+        "all_blocked": all_blocked,
+        "execution_call_count": 0,
+        "legacy_fallback_reached": legacy_fallback_reached,
+        "persisted": persist,
+    }
+
+    return {
+        "batch_id": batch_id,
+        "started_at": started_at,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "requested_cycles": requested_cycles,
+        "completed_cycles": completed,
+        "all_dry_run": all_dry_run,
+        "any_executed": any_executed,
+        "execution_call_count": 0,
+        "legacy_fallback_reached": legacy_fallback_reached,
+        "reports": reports,
+        "summary": summary,
+        "warnings": warnings,
     }
 
 

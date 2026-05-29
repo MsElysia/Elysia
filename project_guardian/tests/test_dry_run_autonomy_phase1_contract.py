@@ -833,3 +833,224 @@ def test_run_autonomous_cycle_result_contains_dry_run_report() -> None:
     assert report["safety_checks"]["mutation_called"] is False
     assert report["safety_checks"]["proposal_implementation_called"] is False
     assert report["safety_checks"]["legacy_executor_reached"] is False
+
+
+# --- 17. Phase 1d-D.1 bounded dry-run batch runner (observation only) ---
+
+BATCH_REQUIRED_FIELDS: frozenset[str] = frozenset(
+    {
+        "batch_id",
+        "started_at",
+        "completed_at",
+        "requested_cycles",
+        "completed_cycles",
+        "all_dry_run",
+        "any_executed",
+        "execution_call_count",
+        "legacy_fallback_reached",
+        "reports",
+        "summary",
+        "warnings",
+    }
+)
+
+
+def _good_cycle_result() -> Dict[str, Any]:
+    """A safe Phase 1 dry-run cycle result (built via committed helpers)."""
+    from project_guardian.autonomy_dry_run_guard import (
+        build_dry_run_decision_report,
+        build_dry_run_decision_trace,
+        summarize_dry_run_decision_trace,
+    )
+
+    trace = build_dry_run_decision_trace(
+        cycle_id="cyc-batch",
+        source="run_autonomous_cycle",
+        proposed_action="use_capability/test",
+        guard_meta={"allowed": False, "reasons": ["live_execution_disabled"]},
+        extra_block_reasons=["dry_run_only"],
+    )
+    summary = summarize_dry_run_decision_trace(trace)
+    out = {
+        "executed": False,
+        "action": "use_capability/test",
+        "reason": "dry_run_only",
+        "dry_run": True,
+        "cycle_id": "cyc-batch",
+        "decision_trace": trace,
+        "decision_trace_summary": summary,
+    }
+    out["dry_run_report"] = build_dry_run_decision_report(result=out, trace=trace, summary=summary)
+    return out
+
+
+def _counting_cycle_factory():
+    calls = {"n": 0}
+
+    def run_cycle() -> Dict[str, Any]:
+        calls["n"] += 1
+        return _good_cycle_result()
+
+    return run_cycle, calls
+
+
+def test_batch_zero_cycles_returns_valid_empty_result() -> None:
+    from project_guardian.autonomy_dry_run_guard import run_phase1_dry_run_batch
+
+    run_cycle, calls = _counting_cycle_factory()
+    batch = run_phase1_dry_run_batch(run_cycle, max_cycles=3, requested_cycles=0)
+
+    assert BATCH_REQUIRED_FIELDS <= set(batch.keys())
+    json.dumps(batch)
+    assert calls["n"] == 0
+    assert batch["requested_cycles"] == 0
+    assert batch["completed_cycles"] == 0
+    assert batch["reports"] == []
+    assert batch["any_executed"] is False
+    assert batch["all_dry_run"] is True
+
+
+def test_batch_one_cycle_preserves_invariants() -> None:
+    from project_guardian.autonomy_dry_run_guard import run_phase1_dry_run_batch
+
+    run_cycle, calls = _counting_cycle_factory()
+    batch = run_phase1_dry_run_batch(run_cycle, max_cycles=3, requested_cycles=1)
+
+    json.dumps(batch)
+    assert calls["n"] == 1
+    assert batch["completed_cycles"] == 1
+    assert len(batch["reports"]) == 1
+    assert batch["any_executed"] is False
+    assert batch["all_dry_run"] is True
+    assert batch["legacy_fallback_reached"] is False
+    assert batch["execution_call_count"] == 0
+    assert batch["reports"][0]["blocked"] is True
+
+
+def test_batch_three_cycles_all_dry_run() -> None:
+    from project_guardian.autonomy_dry_run_guard import run_phase1_dry_run_batch
+
+    run_cycle, calls = _counting_cycle_factory()
+    batch = run_phase1_dry_run_batch(run_cycle, max_cycles=3, requested_cycles=3)
+
+    json.dumps(batch)
+    assert calls["n"] == 3
+    assert batch["completed_cycles"] == 3
+    assert len(batch["reports"]) == 3
+    assert batch["any_executed"] is False
+    assert batch["all_dry_run"] is True
+    assert all(r["dry_run"] is True and r["executed"] is False for r in batch["reports"])
+
+
+def test_batch_over_limit_fails_closed_without_running() -> None:
+    from project_guardian.autonomy_dry_run_guard import (
+        DryRunBatchSafetyError,
+        run_phase1_dry_run_batch,
+    )
+
+    run_cycle, calls = _counting_cycle_factory()
+    with pytest.raises(DryRunBatchSafetyError):
+        run_phase1_dry_run_batch(run_cycle, max_cycles=3, requested_cycles=4)
+    assert calls["n"] == 0
+
+
+def test_batch_negative_cycles_fails_closed_without_running() -> None:
+    from project_guardian.autonomy_dry_run_guard import (
+        DryRunBatchSafetyError,
+        run_phase1_dry_run_batch,
+    )
+
+    run_cycle, calls = _counting_cycle_factory()
+    with pytest.raises(DryRunBatchSafetyError):
+        run_phase1_dry_run_batch(run_cycle, max_cycles=3, requested_cycles=-1)
+    assert calls["n"] == 0
+
+
+def test_batch_missing_report_fails_closed() -> None:
+    from project_guardian.autonomy_dry_run_guard import (
+        DryRunBatchSafetyError,
+        run_phase1_dry_run_batch,
+    )
+
+    def run_cycle() -> Dict[str, Any]:
+        return {"executed": False, "dry_run": True}  # no dry_run_report
+
+    with pytest.raises(DryRunBatchSafetyError):
+        run_phase1_dry_run_batch(run_cycle, max_cycles=3, requested_cycles=1)
+
+
+def test_batch_executed_true_fails_closed() -> None:
+    from project_guardian.autonomy_dry_run_guard import (
+        DryRunBatchSafetyError,
+        run_phase1_dry_run_batch,
+    )
+
+    def run_cycle() -> Dict[str, Any]:
+        res = _good_cycle_result()
+        res["executed"] = True
+        return res
+
+    with pytest.raises(DryRunBatchSafetyError):
+        run_phase1_dry_run_batch(run_cycle, max_cycles=3, requested_cycles=1)
+
+
+def test_batch_legacy_executor_reached_fails_closed() -> None:
+    from project_guardian.autonomy_dry_run_guard import (
+        DryRunBatchSafetyError,
+        run_phase1_dry_run_batch,
+    )
+
+    def run_cycle() -> Dict[str, Any]:
+        res = _good_cycle_result()
+        res["decision_trace"]["legacy_executor_reached"] = True
+        return res
+
+    with pytest.raises(DryRunBatchSafetyError):
+        run_phase1_dry_run_batch(run_cycle, max_cycles=3, requested_cycles=1)
+
+
+def test_batch_safety_flag_true_fails_closed() -> None:
+    from project_guardian.autonomy_dry_run_guard import (
+        DryRunBatchSafetyError,
+        run_phase1_dry_run_batch,
+    )
+
+    def run_cycle() -> Dict[str, Any]:
+        res = _good_cycle_result()
+        res["decision_trace"]["capability_called"] = True
+        return res
+
+    with pytest.raises(DryRunBatchSafetyError):
+        run_phase1_dry_run_batch(run_cycle, max_cycles=3, requested_cycles=1)
+
+
+def test_batch_does_not_mutate_cycle_results() -> None:
+    from project_guardian.autonomy_dry_run_guard import run_phase1_dry_run_batch
+    import copy as _copy
+
+    produced: List[Dict[str, Any]] = []
+
+    def run_cycle() -> Dict[str, Any]:
+        res = _good_cycle_result()
+        produced.append(res)
+        return res
+
+    run_phase1_dry_run_batch(run_cycle, max_cycles=3, requested_cycles=2)
+
+    # Each produced cycle result must remain a safe, untouched dry-run result.
+    for res in produced:
+        assert res["executed"] is False
+        assert res["dry_run"] is True
+        assert res["dry_run_report"]["blocked"] is True
+        # Snapshot equality: nothing the runner did mutated the structure.
+        assert res == _copy.deepcopy(res)
+
+
+def test_batch_persist_true_is_ignored_with_warning() -> None:
+    from project_guardian.autonomy_dry_run_guard import run_phase1_dry_run_batch
+
+    run_cycle, _calls = _counting_cycle_factory()
+    batch = run_phase1_dry_run_batch(run_cycle, max_cycles=3, requested_cycles=1, persist=True)
+
+    assert "persistence_not_implemented_ignored" in batch["warnings"]
+    assert batch["summary"]["persisted"] is False

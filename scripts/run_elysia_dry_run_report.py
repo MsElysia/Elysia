@@ -17,7 +17,8 @@ import json
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+from unittest.mock import patch
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -32,6 +33,8 @@ from project_guardian.autonomy_dry_run_guard import (  # noqa: E402
 )
 
 HARD_MAX_CYCLES = 3
+VALID_MODES = ("stub", "real-planning")
+_AUTONOMY_CONFIG_PATH = _REPO_ROOT / "config" / "autonomy.json"
 
 
 def _make_stub_cycle() -> Dict[str, Any]:
@@ -56,6 +59,80 @@ def _make_stub_cycle() -> Dict[str, Any]:
     }
     out["dry_run_report"] = build_dry_run_decision_report(result=out, trace=trace, summary=summary)
     return out
+
+
+def _assert_committed_config_disabled() -> None:
+    """Fail closed unless committed config/autonomy.json has enabled=false."""
+    try:
+        committed = json.loads(_AUTONOMY_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - any read/parse failure must fail closed
+        raise DryRunBatchSafetyError(f"cannot read committed autonomy config: {exc}")
+    if committed.get("enabled") is True:
+        raise DryRunBatchSafetyError(
+            "config/autonomy.json is enabled; refusing real-planning dry-run"
+        )
+
+
+def _make_real_planning_cycle() -> Callable[[], Dict[str, Any]]:
+    """Build a run_cycle that drives the committed Phase 1 dry-run planning path.
+
+    Uses a minimal ``object.__new__(GuardianCore)`` instance with injected,
+    dry-run-only, in-memory config/stubs (never touching config/autonomy.json or
+    full app/server boot). The committed ``run_autonomous_cycle`` routes through
+    ``run_autonomous_phase1_dry_run`` and produces the dry-run observation stack.
+    """
+    try:
+        from project_guardian.core import GuardianCore
+    except Exception as exc:  # noqa: BLE001 - import side effects must fail closed
+        raise DryRunBatchSafetyError(f"GuardianCore cannot be safely imported: {exc}")
+
+    def run_cycle() -> Dict[str, Any]:
+        try:
+            stub = object.__new__(GuardianCore)
+        except Exception as exc:  # noqa: BLE001
+            raise DryRunBatchSafetyError(f"GuardianCore cannot be safely instantiated: {exc}")
+
+        # Isolated, in-memory, dry-run-only config (Phase 1 forces dry-run regardless).
+        stub._load_autonomy_config = lambda: {  # type: ignore[attr-defined]
+            "enabled": True,
+            "dry_run_only": False,
+            "allowed_actions": ["use_capability/observe"],
+            "max_actions_per_hour": 40,
+            "allow_dynamic_capability_actions": True,
+        }
+        stub.get_next_action = lambda: {  # type: ignore[attr-defined]
+            "action": "use_capability/observe",
+            "can_auto_execute": True,
+            "metadata": {},
+        }
+        stub._load_mistral_decider_config = lambda: {}  # type: ignore[attr-defined]
+        stub._autonomy_action_times = []  # type: ignore[attr-defined]
+        return GuardianCore.run_autonomous_cycle(stub)
+
+    return run_cycle
+
+
+def _run_batch_for_mode(mode: str, *, requested: int) -> Dict[str, Any]:
+    """Run the bounded batch for a given mode, guarding execution methods."""
+    if mode == "stub":
+        return run_phase1_dry_run_batch(
+            _make_stub_cycle, max_cycles=HARD_MAX_CYCLES, requested_cycles=requested
+        )
+
+    # real-planning: fail closed before doing anything if committed config is enabled.
+    _assert_committed_config_disabled()
+    run_cycle = _make_real_planning_cycle()
+
+    def _boom_capability(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("execute_capability_kind reached during dry-run real-planning")
+
+    with patch(
+        "project_guardian.capability_execution.execute_capability_kind",
+        side_effect=_boom_capability,
+    ):
+        return run_phase1_dry_run_batch(
+            run_cycle, max_cycles=HARD_MAX_CYCLES, requested_cycles=requested
+        )
 
 
 def evaluate_batch_safety(batch: Dict[str, Any]) -> List[str]:
@@ -85,10 +162,11 @@ def evaluate_batch_safety(batch: Dict[str, Any]) -> List[str]:
     return problems
 
 
-def build_text_report(batch: Dict[str, Any], problems: List[str]) -> str:
+def build_text_report(batch: Dict[str, Any], problems: List[str], *, mode: str = "stub") -> str:
     lines: List[str] = []
     lines.append("Elysia safe dry-run report")
     lines.append("=" * 40)
+    lines.append(f"mode: {mode}")
     lines.append(f"batch_id: {batch.get('batch_id', '')}")
     lines.append(
         f"cycles: requested={batch.get('requested_cycles')} completed={batch.get('completed_cycles')}"
@@ -121,18 +199,16 @@ def build_text_report(batch: Dict[str, Any], problems: List[str]) -> str:
     return "\n".join(lines)
 
 
-def run_report(*, cycles: int = HARD_MAX_CYCLES) -> Dict[str, Any]:
-    """Run the bounded dry-run batch and return (batch, problems) as a dict."""
+def run_report(*, cycles: int = HARD_MAX_CYCLES, mode: str = "stub") -> Dict[str, Any]:
+    """Run the bounded dry-run batch and return {batch, problems, safe, mode}."""
+    if mode not in VALID_MODES:
+        raise DryRunBatchSafetyError(f"invalid mode: {mode!r}")
     requested = min(int(cycles), HARD_MAX_CYCLES)
     if requested < 0:
         requested = 0
-    batch = run_phase1_dry_run_batch(
-        _make_stub_cycle,
-        max_cycles=HARD_MAX_CYCLES,
-        requested_cycles=requested,
-    )
+    batch = _run_batch_for_mode(mode, requested=requested)
     problems = evaluate_batch_safety(batch)
-    return {"batch": batch, "problems": problems, "safe": not problems}
+    return {"mode": mode, "batch": batch, "problems": problems, "safe": not problems}
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -143,16 +219,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=HARD_MAX_CYCLES,
         help=f"number of bounded dry-run cycles (hard-capped at {HARD_MAX_CYCLES})",
     )
+    parser.add_argument(
+        "--mode",
+        choices=list(VALID_MODES),
+        default="stub",
+        help="cycle source: 'stub' (default, deterministic) or 'real-planning' (committed dry-run path)",
+    )
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON output")
     args = parser.parse_args(argv)
 
     try:
-        result = run_report(cycles=args.cycles)
+        result = run_report(cycles=args.cycles, mode=args.mode)
     except DryRunBatchSafetyError as exc:
         if args.json:
-            print(json.dumps({"safe": False, "error": str(exc)}, ensure_ascii=False))
+            print(json.dumps({"mode": args.mode, "safe": False, "error": str(exc)}, ensure_ascii=False))
         else:
-            print(f"final safety verdict: UNSAFE\nerror: {exc}")
+            print(f"mode: {args.mode}\nfinal safety verdict: UNSAFE\nerror: {exc}")
         return 2
 
     batch = result["batch"]
@@ -161,7 +243,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.json:
         print(json.dumps(result, ensure_ascii=False, default=str))
     else:
-        print(build_text_report(batch, problems))
+        print(build_text_report(batch, problems, mode=result["mode"]))
 
     return 0 if result["safe"] else 1
 

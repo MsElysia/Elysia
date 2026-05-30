@@ -1149,3 +1149,118 @@ def test_dry_run_report_does_not_require_autonomy_enabled() -> None:
     assert data.get("enabled") is False
     mod = _load_dry_run_report_module()
     assert mod.main([]) == 0
+
+
+# --- 19. Phase 1d-F.1 real-planning dry-run command mode (observation only) ---
+
+
+def test_dry_run_report_default_mode_is_stub(capsys) -> None:
+    mod = _load_dry_run_report_module()
+    rc = mod.main([])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "mode: stub" in captured.out
+
+
+def test_dry_run_report_explicit_stub_mode_works(capsys) -> None:
+    mod = _load_dry_run_report_module()
+    rc = mod.main(["--mode", "stub"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "mode: stub" in captured.out
+    assert "final safety verdict: SAFE" in captured.out
+
+
+def test_dry_run_report_invalid_mode_fails() -> None:
+    mod = _load_dry_run_report_module()
+    with pytest.raises(SystemExit) as exc:
+        mod.main(["--mode", "live"])
+    assert exc.value.code != 0
+
+
+def test_dry_run_report_real_planning_mode_is_accepted_and_safe() -> None:
+    mod = _load_dry_run_report_module()
+    # Guard the capability execution path to raise if reached.
+    calls: List[Any] = []
+
+    def _track(*_a: Any, **_k: Any) -> Any:
+        calls.append(True)
+        raise AssertionError("execute_capability_kind must not run")
+
+    with patch(
+        "project_guardian.capability_execution.execute_capability_kind",
+        side_effect=_track,
+    ):
+        result = mod.run_report(cycles=3, mode="real-planning")
+
+    assert calls == []
+    if result["safe"]:
+        batch = result["batch"]
+        assert batch["any_executed"] is False
+        assert batch["all_dry_run"] is True
+        assert batch["execution_call_count"] == 0
+        assert batch["legacy_fallback_reached"] is False
+        assert batch["completed_cycles"] == 3
+        for report in batch["reports"]:
+            assert report["dry_run"] is True
+            assert report["executed"] is False
+            assert report["blocked"] is True
+            assert report["safety_checks"]["capability_called"] is False
+            assert report["safety_checks"]["mutation_called"] is False
+            assert report["safety_checks"]["proposal_implementation_called"] is False
+            assert report["safety_checks"]["legacy_executor_reached"] is False
+    else:
+        # Fail-closed is acceptable: must report problems and never execute.
+        assert result["problems"]
+
+
+def test_dry_run_report_real_planning_does_not_require_config_enabled() -> None:
+    data = json.loads(_read_text(AUTONOMY_CONFIG))
+    assert data.get("enabled") is False
+    mod = _load_dry_run_report_module()
+    rc = mod.main(["--mode", "real-planning"])
+    # Either safe success (0) or fail-closed (nonzero); never a crash.
+    assert rc in (0, 1, 2)
+
+
+def test_dry_run_report_real_planning_command_does_not_call_execute_capability() -> None:
+    mod = _load_dry_run_report_module()
+    calls: List[Any] = []
+
+    def _track(*_a: Any, **_k: Any) -> Any:
+        calls.append(True)
+        raise AssertionError("execute_capability_kind must not run")
+
+    with patch(
+        "project_guardian.capability_execution.execute_capability_kind",
+        side_effect=_track,
+    ):
+        rc = mod.main(["--mode", "real-planning"])
+
+    assert calls == []
+    assert rc in (0, 1, 2)
+
+
+def test_dry_run_report_real_planning_json_is_parseable(capsys) -> None:
+    mod = _load_dry_run_report_module()
+    rc = mod.main(["--mode", "real-planning", "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out.strip())
+    assert payload["mode"] == "real-planning"
+    assert "safe" in payload
+    if rc == 0:
+        assert payload["safe"] is True
+        assert payload["batch"]["any_executed"] is False
+    else:
+        # Fail-closed JSON must still be parseable and flag unsafe/error.
+        assert payload["safe"] is False
+
+
+def test_dry_run_report_real_planning_writes_no_files(tmp_path, monkeypatch) -> None:
+    mod = _load_dry_run_report_module()
+    monkeypatch.chdir(tmp_path)
+    before = set(p.name for p in tmp_path.iterdir())
+    rc = mod.main(["--mode", "real-planning"])
+    after = set(p.name for p in tmp_path.iterdir())
+    assert rc in (0, 1, 2)
+    assert before == after

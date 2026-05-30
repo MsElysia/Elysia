@@ -1264,3 +1264,73 @@ def test_dry_run_report_real_planning_writes_no_files(tmp_path, monkeypatch) -> 
     after = set(p.name for p in tmp_path.iterdir())
     assert rc in (0, 1, 2)
     assert before == after
+
+
+# --- 20. Phase 1d-F.1a audit-write suppression ---
+
+AUTONOMY_AUDIT_PATH = ROOT / "data" / "runtime" / "autonomy_dry_run_audit.jsonl"
+
+
+def _audit_line_count() -> int:
+    if not AUTONOMY_AUDIT_PATH.is_file():
+        return 0
+    return sum(1 for _ in AUTONOMY_AUDIT_PATH.read_text(encoding="utf-8").splitlines())
+
+
+def test_default_stub_command_does_not_append_audit() -> None:
+    mod = _load_dry_run_report_module()
+    before = _audit_line_count()
+    assert mod.main([]) == 0
+    assert mod.main(["--json"]) == 0
+    assert _audit_line_count() == before
+
+
+def test_real_planning_command_does_not_append_audit_by_default() -> None:
+    mod = _load_dry_run_report_module()
+    before = _audit_line_count()
+    rc_text = mod.main(["--mode", "real-planning"])
+    rc_json = mod.main(["--mode", "real-planning", "--json"])
+    after = _audit_line_count()
+    assert rc_text in (0, 1, 2)
+    assert rc_json in (0, 1, 2)
+    assert after == before
+
+
+def test_real_planning_run_report_suppresses_audit_and_stays_safe() -> None:
+    mod = _load_dry_run_report_module()
+    before = _audit_line_count()
+
+    calls: List[Any] = []
+
+    def _track(*_a: Any, **_k: Any) -> Any:
+        calls.append(True)
+        raise AssertionError("execute_capability_kind must not run")
+
+    with patch(
+        "project_guardian.capability_execution.execute_capability_kind",
+        side_effect=_track,
+    ):
+        result = mod.run_report(cycles=3, mode="real-planning")
+
+    assert calls == []
+    assert _audit_line_count() == before
+    if result["safe"]:
+        assert result["batch"]["any_executed"] is False
+        assert result["batch"]["execution_call_count"] == 0
+        assert result["batch"]["legacy_fallback_reached"] is False
+        for report in result["batch"]["reports"]:
+            assert report["dry_run"] is True
+            assert report["executed"] is False
+            assert report["blocked"] is True
+    else:
+        assert result["problems"]
+
+
+def test_audit_suppression_does_not_require_config_enabled() -> None:
+    data = json.loads(_read_text(AUTONOMY_CONFIG))
+    assert data.get("enabled") is False
+    mod = _load_dry_run_report_module()
+    before = _audit_line_count()
+    rc = mod.main(["--mode", "real-planning"])
+    assert rc in (0, 1, 2)
+    assert _audit_line_count() == before

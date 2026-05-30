@@ -112,9 +112,17 @@ def _make_real_planning_cycle() -> Callable[[], Dict[str, Any]]:
     return run_cycle
 
 
-def _run_batch_for_mode(mode: str, *, requested: int) -> Dict[str, Any]:
-    """Run the bounded batch for a given mode, guarding execution methods."""
+def _run_batch_for_mode(mode: str, *, requested: int, write_audit: bool = False) -> Dict[str, Any]:
+    """Run the bounded batch for a given mode, guarding execution methods.
+
+    Real-planning routes through the committed dry-run wrapper, which would append
+    to ``data/runtime/autonomy_dry_run_audit.jsonl``. By default this command writes
+    no files: the module-level audit writer is replaced with an in-memory no-op for
+    the duration of the run (no change to global audit semantics). Pass
+    ``write_audit=True`` to allow the normal audit append.
+    """
     if mode == "stub":
+        # Stub builds reports directly from helpers; it never appends audit. No-op.
         return run_phase1_dry_run_batch(
             _make_stub_cycle, max_cycles=HARD_MAX_CYCLES, requested_cycles=requested
         )
@@ -126,13 +134,24 @@ def _run_batch_for_mode(mode: str, *, requested: int) -> Dict[str, Any]:
     def _boom_capability(*_a: Any, **_k: Any) -> Any:
         raise AssertionError("execute_capability_kind reached during dry-run real-planning")
 
+    def _noop_audit(*_a: Any, **_k: Any) -> bool:
+        return True  # default: command writes no files
+
     with patch(
         "project_guardian.capability_execution.execute_capability_kind",
         side_effect=_boom_capability,
     ):
-        return run_phase1_dry_run_batch(
-            run_cycle, max_cycles=HARD_MAX_CYCLES, requested_cycles=requested
-        )
+        if write_audit:
+            return run_phase1_dry_run_batch(
+                run_cycle, max_cycles=HARD_MAX_CYCLES, requested_cycles=requested
+            )
+        with patch(
+            "project_guardian.autonomy_dry_run_guard.append_autonomy_dry_run_audit",
+            side_effect=_noop_audit,
+        ):
+            return run_phase1_dry_run_batch(
+                run_cycle, max_cycles=HARD_MAX_CYCLES, requested_cycles=requested
+            )
 
 
 def evaluate_batch_safety(batch: Dict[str, Any]) -> List[str]:
@@ -199,14 +218,16 @@ def build_text_report(batch: Dict[str, Any], problems: List[str], *, mode: str =
     return "\n".join(lines)
 
 
-def run_report(*, cycles: int = HARD_MAX_CYCLES, mode: str = "stub") -> Dict[str, Any]:
+def run_report(
+    *, cycles: int = HARD_MAX_CYCLES, mode: str = "stub", write_audit: bool = False
+) -> Dict[str, Any]:
     """Run the bounded dry-run batch and return {batch, problems, safe, mode}."""
     if mode not in VALID_MODES:
         raise DryRunBatchSafetyError(f"invalid mode: {mode!r}")
     requested = min(int(cycles), HARD_MAX_CYCLES)
     if requested < 0:
         requested = 0
-    batch = _run_batch_for_mode(mode, requested=requested)
+    batch = _run_batch_for_mode(mode, requested=requested, write_audit=write_audit)
     problems = evaluate_batch_safety(batch)
     return {"mode": mode, "batch": batch, "problems": problems, "safe": not problems}
 
@@ -226,10 +247,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="cycle source: 'stub' (default, deterministic) or 'real-planning' (committed dry-run path)",
     )
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON output")
+    parser.add_argument(
+        "--write-audit",
+        action="store_true",
+        help="allow appending the dry-run audit line (default: write no files)",
+    )
     args = parser.parse_args(argv)
 
     try:
-        result = run_report(cycles=args.cycles, mode=args.mode)
+        result = run_report(cycles=args.cycles, mode=args.mode, write_audit=args.write_audit)
     except DryRunBatchSafetyError as exc:
         if args.json:
             print(json.dumps({"mode": args.mode, "safe": False, "error": str(exc)}, ensure_ascii=False))

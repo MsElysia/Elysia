@@ -305,6 +305,7 @@ python scripts/run_elysia_dry_run_report.py --mode real-planning
 
 | Version | Commit | Notes |
 |---------|--------|-------|
-| 1.0 | *(this commit)* | Phase 2 design only — no implementation |
+| 1.0 | `cb018fa` | Phase 2 design only — no implementation |
+| 1.1 | feat(autonomy): add passive live-action gate scaffolding | Passive scaffolding in `project_guardian/live_action_gate.py`; validation only; **live execution remains disabled**; not wired to runtime |
 
 **This document does not enable live execution or autonomy.**

@@ -123,3 +123,78 @@ class TestConfigNormalizationOrdering:
         assert len(arm_changes) == 1
         assert arm_changes[0]["new_value"] is False
         assert arm_changes[0]["old_value"] == "yes"
+
+
+class TestExternalStorageStartupFallback:
+    """External storage health honors drive fallbacks and local fallback path."""
+
+    def test_missing_primary_drive_uses_local_fallback(self, project_root, mock_learned_storage, tmp_path, monkeypatch):
+        ext = project_root / "config" / "external_storage.json"
+        ext.write_text(
+            json.dumps(
+                {
+                    "use_external_storage": True,
+                    "external_drive": "Z:\\",
+                    "fallback_drives": ["Y:\\", "X:\\"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        local_fallback = tmp_path / "local_memory"
+        monkeypatch.setattr(
+            "project_guardian.external_storage.get_default_fallback_path",
+            lambda: local_fallback,
+        )
+
+        passed, issues, details = run_startup_health_check(project_root)
+
+        assert passed is True
+        assert details.get("critical") is False
+        assert any("using local fallback" in m for m in issues)
+        assert (local_fallback / ".health_check").exists() is False
+
+    def test_writable_fallback_drive_passes_with_warning(self, project_root, mock_learned_storage, tmp_path):
+        alt_drive = tmp_path / "alt_drive"
+        alt_drive.mkdir()
+        ext = project_root / "config" / "external_storage.json"
+        ext.write_text(
+            json.dumps(
+                {
+                    "use_external_storage": True,
+                    "external_drive": "Z:\\",
+                    "fallback_drives": [str(alt_drive), "Y:\\"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        passed, issues, details = run_startup_health_check(project_root)
+
+        assert passed is True
+        assert details.get("critical") is False
+        assert any("using fallback drive" in m for m in issues)
+        assert (alt_drive / "ProjectGuardian" / ".health_check").exists() is False
+
+    def test_no_writable_path_is_critical(self, tmp_path, monkeypatch):
+        from project_guardian.startup_health import _assess_external_storage_startup
+
+        cfg = {
+            "use_external_storage": True,
+            "external_drive": "Z:\\",
+            "fallback_drives": ["Y:\\"],
+        }
+        local_fallback = tmp_path / "blocked_local"
+        monkeypatch.setattr(
+            "project_guardian.external_storage.get_default_fallback_path",
+            lambda: local_fallback,
+        )
+
+        def _fail_write(self, *args, **kwargs):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "write_text", _fail_write)
+
+        critical, issues = _assess_external_storage_startup(cfg)
+
+        assert critical is True
+        assert any("local fallback failed" in m for m in issues)

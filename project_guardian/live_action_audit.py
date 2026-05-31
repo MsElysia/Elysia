@@ -69,11 +69,28 @@ def _result_from_validation(validation: LiveActionValidationResult) -> str:
     return "unknown"
 
 
-def _rollback_event_status(rollback_plan: str) -> LiveActionAuditEventStatus:
-    plan = (rollback_plan or "").strip()
+def _rollback_event_status(rollback_plan: Union[str, Dict[str, Any], None]) -> LiveActionAuditEventStatus:
+    if isinstance(rollback_plan, dict):
+        availability = str(rollback_plan.get("availability", "")).strip().upper()
+        if availability in ("AVAILABLE", "PARTIAL"):
+            return LiveActionAuditEventStatus.ROLLBACK_AVAILABLE
+        if availability == "NOT_APPLICABLE":
+            return LiveActionAuditEventStatus.ROLLBACK_UNAVAILABLE
+        return LiveActionAuditEventStatus.ROLLBACK_UNAVAILABLE
+
+    plan = (rollback_plan or "").strip() if isinstance(rollback_plan, str) else ""
     if plan and plan.lower() not in ("none", "n/a", "na"):
         return LiveActionAuditEventStatus.ROLLBACK_AVAILABLE
     return LiveActionAuditEventStatus.ROLLBACK_UNAVAILABLE
+
+
+def _rollback_info_from_request(
+    request: LiveActionApprovalRequest,
+    rollback_plan_summary: Optional[Dict[str, Any]] = None,
+) -> str:
+    if rollback_plan_summary is not None:
+        return json.dumps(rollback_plan_summary, ensure_ascii=False)
+    return request.rollback_plan
 
 
 @dataclass(frozen=True)
@@ -108,13 +125,17 @@ def build_live_action_audit_record(
     executor: str = "",
     event_status: Optional[LiveActionAuditEventStatus] = None,
     timestamp: Optional[str] = None,
+    rollback_plan_summary: Optional[Dict[str, Any]] = None,
 ) -> LiveActionAuditRecord:
     """Build a passive audit record from an approval request and validation result."""
     decision = validation.decision
     if request.allowlist_decision is not None:
         decision = request.allowlist_decision
 
-    rollback_status = _rollback_event_status(request.rollback_plan)
+    rollback_info = _rollback_info_from_request(request, rollback_plan_summary)
+    rollback_status = _rollback_event_status(
+        rollback_plan_summary if rollback_plan_summary is not None else request.rollback_plan
+    )
     resolved_event = event_status or _event_status_from_validation(validation)
 
     return LiveActionAuditRecord(
@@ -128,7 +149,7 @@ def build_live_action_audit_record(
         executor=executor,
         target=request.target,
         result=_result_from_validation(validation),
-        rollback_info=request.rollback_plan,
+        rollback_info=rollback_info,
         safety_verdict=validation.safety_verdict,
         reasons=tuple(validation.reasons),
         writes_files=request.writes_files,

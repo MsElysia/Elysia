@@ -311,5 +311,6 @@ python scripts/run_elysia_dry_run_report.py --mode real-planning
 | 1.3 | feat(autonomy): add passive live-action rollback scaffolding | Passive rollback schema/validation in `project_guardian/live_action_rollback.py`; **does not execute rollback**; not wired to runtime |
 | 1.4 | feat(autonomy): add passive live-action approval packets | Passive packet builder in `project_guardian/live_action_approval_packet.py`; combines gate/audit/rollback metadata; **execution remains blocked**; not wired to runtime |
 | 1.5 | feat(autonomy): add passive operator decision scaffolding | Passive approve/deny schema/validation in `project_guardian/live_action_operator_decision.py`; **approval still does not permit execution**; not wired to runtime |
+| 1.6 | feat(autonomy): add passive live-mode readiness gate | Passive readiness evaluator in `project_guardian/live_action_readiness.py`; **currently reports not ready** for limited live mode until blockers are cleared |
 
 **This document does not enable live execution or autonomy.**

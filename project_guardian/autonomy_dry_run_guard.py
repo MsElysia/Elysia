@@ -280,6 +280,59 @@ def build_dry_run_decision_report(
     }
 
 
+def build_dry_run_observer_envelope(
+    batch: Dict[str, Any],
+    *,
+    mode: str,
+    problems: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build passive Safe Observer reporting fields from a dry-run batch.
+
+    Pure function: no side effects, no execution, no file writes. Adds compact
+    ``decision_trace_summaries`` and ``observability_warnings`` without duplicating
+    full ``batch`` counters already present on the batch dict.
+    """
+    problems = list(problems or [])
+    summaries: List[Dict[str, Any]] = []
+    observability_warnings: List[str] = []
+
+    for idx, report in enumerate(batch.get("reports") or [], start=1):
+        if not isinstance(report, dict):
+            observability_warnings.append(f"cycle_{idx}_report_malformed")
+            continue
+        raw_summary = report.get("raw_summary")
+        if not isinstance(raw_summary, dict) or not raw_summary:
+            observability_warnings.append(f"cycle_{idx}_missing_decision_trace_summary")
+            raw_summary = {}
+        raw_trace = report.get("raw_trace")
+        if not isinstance(raw_trace, dict) or not str(raw_trace.get("trace_id") or "").strip():
+            observability_warnings.append(f"cycle_{idx}_missing_or_malformed_trace")
+
+        summaries.append(
+            {
+                "cycle": idx,
+                "trace_id": str(raw_summary.get("trace_id") or (raw_trace or {}).get("trace_id") or ""),
+                "outcome": str(raw_summary.get("outcome") or report.get("status") or ""),
+                "proposed_action_kind": str(
+                    raw_summary.get("proposed_action_kind") or report.get("proposed_action_kind") or ""
+                ),
+                "proposed_action_summary": str(
+                    raw_summary.get("proposed_action_summary") or report.get("proposed_action_summary") or ""
+                )[:80],
+                "blocked": bool(raw_summary.get("blocked", report.get("blocked"))),
+            }
+        )
+
+    safety_verdict = "SAFE" if not problems else "UNSAFE"
+    return {
+        "mode": mode,
+        "safe": not problems,
+        "safety_verdict": safety_verdict,
+        "decision_trace_summaries": summaries,
+        "observability_warnings": observability_warnings,
+    }
+
+
 class DryRunBatchSafetyError(RuntimeError):
     """Raised when the bounded dry-run batch runner must fail closed."""
 

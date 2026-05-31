@@ -1334,3 +1334,67 @@ def test_audit_suppression_does_not_require_config_enabled() -> None:
     rc = mod.main(["--mode", "real-planning"])
     assert rc in (0, 1, 2)
     assert _audit_line_count() == before
+
+
+# --- 21. Safe Observer passive observability envelope ---
+
+
+def test_build_dry_run_observer_envelope_includes_summaries_and_verdict() -> None:
+    from project_guardian.autonomy_dry_run_guard import build_dry_run_observer_envelope
+
+    batch = {
+        "requested_cycles": 1,
+        "completed_cycles": 1,
+        "reports": [
+            {
+                "status": "dry_run_blocked_not_executed",
+                "proposed_action_kind": "use_capability",
+                "proposed_action_summary": "use_capability/observe",
+                "blocked": True,
+                "raw_trace": {"trace_id": "t1"},
+                "raw_summary": {
+                    "trace_id": "t1",
+                    "outcome": "dry_run_blocked_not_executed",
+                    "proposed_action_kind": "use_capability",
+                    "proposed_action_summary": "use_capability/observe",
+                    "blocked": True,
+                },
+            }
+        ],
+    }
+    envelope = build_dry_run_observer_envelope(batch, mode="stub", problems=[])
+    assert envelope["safe"] is True
+    assert envelope["safety_verdict"] == "SAFE"
+    assert len(envelope["decision_trace_summaries"]) == 1
+    assert envelope["decision_trace_summaries"][0]["outcome"] == "dry_run_blocked_not_executed"
+    assert envelope["observability_warnings"] == []
+
+
+def test_build_dry_run_observer_envelope_warns_on_missing_trace() -> None:
+    from project_guardian.autonomy_dry_run_guard import build_dry_run_observer_envelope
+
+    batch = {"reports": [{"raw_summary": {}, "raw_trace": {}}]}
+    envelope = build_dry_run_observer_envelope(batch, mode="stub", problems=[])
+    assert "cycle_1_missing_decision_trace_summary" in envelope["observability_warnings"]
+    assert "cycle_1_missing_or_malformed_trace" in envelope["observability_warnings"]
+
+
+def test_dry_run_report_json_includes_observer_envelope_fields(capsys) -> None:
+    mod = _load_dry_run_report_module()
+    rc = mod.main(["--json"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    payload = json.loads(captured.out.strip())
+    assert payload["safety_verdict"] == "SAFE"
+    assert payload["decision_trace_summaries"]
+    assert payload["observability_warnings"] == []
+    assert payload["decision_trace_summaries"][0]["blocked"] is True
+
+
+def test_dry_run_report_text_includes_decision_trace_summaries(capsys) -> None:
+    mod = _load_dry_run_report_module()
+    rc = mod.main([])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "decision trace summaries:" in captured.out
+    assert "outcome=dry_run_blocked_not_executed" in captured.out

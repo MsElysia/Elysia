@@ -28,6 +28,7 @@ from project_guardian.autonomy_dry_run_guard import (  # noqa: E402
     DryRunBatchSafetyError,
     build_dry_run_decision_report,
     build_dry_run_decision_trace,
+    build_dry_run_observer_envelope,
     run_phase1_dry_run_batch,
     summarize_dry_run_decision_trace,
 )
@@ -181,7 +182,14 @@ def evaluate_batch_safety(batch: Dict[str, Any]) -> List[str]:
     return problems
 
 
-def build_text_report(batch: Dict[str, Any], problems: List[str], *, mode: str = "stub") -> str:
+def build_text_report(
+    batch: Dict[str, Any],
+    problems: List[str],
+    *,
+    mode: str = "stub",
+    decision_trace_summaries: Optional[List[Dict[str, Any]]] = None,
+    observability_warnings: Optional[List[str]] = None,
+) -> str:
     lines: List[str] = []
     lines.append("Elysia safe dry-run report")
     lines.append("=" * 40)
@@ -212,6 +220,22 @@ def build_text_report(batch: Dict[str, Any], problems: List[str], *, mode: str =
         lines.append("problems:")
         for p in problems:
             lines.append(f"  - {p}")
+    if observability_warnings:
+        lines.append("observability warnings:")
+        for w in observability_warnings:
+            lines.append(f"  - {w}")
+    if decision_trace_summaries:
+        lines.append("decision trace summaries:")
+        for item in decision_trace_summaries:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"  cycle {item.get('cycle', '?')}: "
+                f"outcome={item.get('outcome', '?')} "
+                f"kind={item.get('proposed_action_kind', '?')} "
+                f"summary={item.get('proposed_action_summary', '')!r} "
+                f"blocked={item.get('blocked')}"
+            )
     lines.append("")
     lines.append("Note: no tools, capabilities, mutation, proposal implementation,")
     lines.append("WebScout, browser, server, or live execution were run.")
@@ -229,7 +253,16 @@ def run_report(
         requested = 0
     batch = _run_batch_for_mode(mode, requested=requested, write_audit=write_audit)
     problems = evaluate_batch_safety(batch)
-    return {"mode": mode, "batch": batch, "problems": problems, "safe": not problems}
+    envelope = build_dry_run_observer_envelope(batch, mode=mode, problems=problems)
+    return {
+        "mode": mode,
+        "batch": batch,
+        "problems": problems,
+        "safe": envelope["safe"],
+        "safety_verdict": envelope["safety_verdict"],
+        "decision_trace_summaries": envelope["decision_trace_summaries"],
+        "observability_warnings": envelope["observability_warnings"],
+    }
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -258,7 +291,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         result = run_report(cycles=args.cycles, mode=args.mode, write_audit=args.write_audit)
     except DryRunBatchSafetyError as exc:
         if args.json:
-            print(json.dumps({"mode": args.mode, "safe": False, "error": str(exc)}, ensure_ascii=False))
+            print(
+                json.dumps(
+                    {
+                        "mode": args.mode,
+                        "safe": False,
+                        "safety_verdict": "UNSAFE",
+                        "error": str(exc),
+                    },
+                    ensure_ascii=False,
+                )
+            )
         else:
             print(f"mode: {args.mode}\nfinal safety verdict: UNSAFE\nerror: {exc}")
         return 2
@@ -269,7 +312,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.json:
         print(json.dumps(result, ensure_ascii=False, default=str))
     else:
-        print(build_text_report(batch, problems, mode=result["mode"]))
+        print(
+            build_text_report(
+                batch,
+                problems,
+                mode=result["mode"],
+                decision_trace_summaries=result.get("decision_trace_summaries"),
+                observability_warnings=result.get("observability_warnings"),
+            )
+        )
 
     return 0 if result["safe"] else 1
 

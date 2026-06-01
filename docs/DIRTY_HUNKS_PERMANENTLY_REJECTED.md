@@ -78,10 +78,10 @@ python scripts/run_safe_stack_smoke_tests.py
 
 ## 5. Readiness gate impact
 
-After this cleanup, default evidence for `evaluate_live_mode_readiness()` should set:
+After this cleanup, default evidence for `evaluate_live_mode_readiness()` sets:
 
-- `DIRTY_CORE_CLEANED` → **true**
-- `DIRTY_SERVER_CLEANED` → **true**
+- `DIRTY_CORE_CLEANED` → **true** (updated in `fix(autonomy): update live-mode readiness after dirty cleanup`)
+- `DIRTY_SERVER_CLEANED` → **true** (same)
 
 Remaining blockers for limited live mode (unchanged):
 

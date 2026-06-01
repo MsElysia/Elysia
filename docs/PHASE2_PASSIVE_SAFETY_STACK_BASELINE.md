@@ -121,8 +121,8 @@ Default evaluation via `evaluate_live_mode_readiness()` (no overrides):
 
 | Blocker | Evidence |
 |---------|----------|
-| Dirty `project_guardian/core.py` | Quarantined unstaged hunks — not cleaned or safely committed |
-| Dirty `elysia/api/server.py` | Quarantined unstaged hunks — not cleaned or safely committed |
+| ~~Dirty `project_guardian/core.py`~~ | **Resolved** — permanently rejected at `4982a60`; file matches HEAD |
+| ~~Dirty `elysia/api/server.py`~~ | **Resolved** — permanently rejected at `4982a60`; file matches HEAD |
 | Missing live executor | No approval-gated live executor implementation |
 | Missing UI/API approval route | No operator approval UI or API route wired |
 | Missing harmless live-action smoke verification | No verified harmless live-action smoke test run |
@@ -153,7 +153,7 @@ At checkpoint `9a5e93b`, the following guarantees hold:
 | No server/API routes added for Phase 2 scaffolding | Verified |
 | Safe Observer dry-run passes | `python scripts/run_elysia_dry_run_report.py --mode real-planning` → exit 0, SAFE, zero execution |
 | Safe-stack smoke tests pass | `python scripts/run_safe_stack_smoke_tests.py` → 454 passed |
-| Quarantined dirty files not staged | `project_guardian/core.py`, `elysia/api/server.py` remain unstaged |
+| Quarantined dirty files cleaned | `project_guardian/core.py`, `elysia/api/server.py` restored to HEAD at `4982a60` |
 
 Targeted Phase 2 passive test slice (gate, audit, rollback, packet, operator decision, readiness): **91 passed**.
 
@@ -177,9 +177,9 @@ Work should proceed in isolated branches. **None of these branches enable live m
 
 **Recommend Branch A before any executor or route work:**
 
-Permanently clean or reject the quarantined dirty hunks in `project_guardian/core.py` and `elysia/api/server.py`. Those files contain mixed autonomy trace, auto-implement-on-approve, and WebScout expansion hunks that must not be adopted as-is. Until they are resolved, the readiness gate correctly reports **not ready for limited live mode**.
+**Branch A (dirty hunk cleanup) is complete** at `4982a60`. Readiness default evidence no longer treats `core.py` / `server.py` as blockers. Proceed to Branch B (pytest classification) or design-only Branches C/D/E — **not** before re-verifying Safe Observer and smoke after any future changes.
 
-Do **not** proceed to live executor implementation, UI/API approval routes, or harmless live-action smoke execution until Branch A is complete and re-verified.
+Do **not** proceed to live executor implementation, UI/API approval routes, or harmless live-action smoke execution until remaining readiness blockers are addressed on clean branches.
 
 ---
 

@@ -34,21 +34,21 @@ class TestDefaultReadiness:
         assert report.status in (ReadinessStatus.NOT_READY, ReadinessStatus.BLOCKED)
         assert report.safety_verdict == "NOT_READY_FOR_LIVE_MODE"
 
-    def test_default_blockers_include_dirty_core(self) -> None:
+    def test_default_dirty_core_cleaned_passes(self) -> None:
         report = evaluate_live_mode_readiness()
         item = _item_for(report, ReadinessCheck.DIRTY_CORE_CLEANED)
 
-        assert item.passed is False
-        assert item.blocker is True
-        assert any("DIRTY_CORE_CLEANED" in blocker for blocker in report.blockers)
+        assert item.passed is True
+        assert item.blocker is False
+        assert not any("DIRTY_CORE_CLEANED" in blocker for blocker in report.blockers)
 
-    def test_default_blockers_include_dirty_server(self) -> None:
+    def test_default_dirty_server_cleaned_passes(self) -> None:
         report = evaluate_live_mode_readiness()
         item = _item_for(report, ReadinessCheck.DIRTY_SERVER_CLEANED)
 
-        assert item.passed is False
-        assert item.blocker is True
-        assert any("DIRTY_SERVER_CLEANED" in blocker for blocker in report.blockers)
+        assert item.passed is True
+        assert item.blocker is False
+        assert not any("DIRTY_SERVER_CLEANED" in blocker for blocker in report.blockers)
 
     def test_default_blockers_include_missing_live_executor(self) -> None:
         report = evaluate_live_mode_readiness()
@@ -73,6 +73,18 @@ class TestDefaultReadiness:
         assert item.passed is False
         assert item.blocker is True
         assert any("HARMLESS_LIVE_ACTION_SMOKE_VERIFIED" in blocker for blocker in report.blockers)
+
+    def test_default_requires_full_runtime_tests_classification(self) -> None:
+        report = evaluate_live_mode_readiness()
+        item = _item_for(report, ReadinessCheck.FULL_RUNTIME_TESTS_CLASSIFIED)
+
+        assert item.passed is False
+        assert item.blocker is False
+        assert item.status is ReadinessStatus.NOT_READY
+        assert any(
+            "FULL_RUNTIME_TESTS_CLASSIFIED" in action or "Classify full runtime" in action
+            for action in report.next_required_actions
+        )
 
 
 class TestAllChecksPassing:

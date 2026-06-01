@@ -51,9 +51,9 @@ class TestSubprocessBackgroundAudit:
         return ReviewQueue()
     
     @pytest.fixture
-    def approval_store(self):
-        """Create ApprovalStore"""
-        return ApprovalStore()
+    def approval_store(self, tmp_path):
+        """Create isolated ApprovalStore"""
+        return ApprovalStore(store_file=tmp_path / "approval_store.json")
     
     @pytest.fixture
     def tmp_reports_dir(self, tmp_path):
@@ -201,9 +201,8 @@ class TestSubprocessBackgroundAudit:
         # Original sensitive arg should not appear
         assert "token=abc123" not in str(command)
     
-    def test_replay_approved_writes_audit_with_request_id(self, subprocess_runner, tmp_reports_dir, approval_store):
+    def test_replay_approved_writes_audit_with_request_id(self, subprocess_runner, tmp_reports_dir, approval_store, review_queue):
         """Verify replay-approved background launch writes audit with request_id"""
-        request_id = "test-request-123"
         context = {
             "component": "SubprocessRunner",
             "action": SUBPROCESS_EXECUTION,
@@ -211,11 +210,10 @@ class TestSubprocessBackgroundAudit:
             "args": 1,
             "background": True,
             "caller_identity": "TestCaller",
-            "task_id": "TASK-001"
+            "task_id": "TASK-001",
         }
-        
-        # Pre-approve the request
-        approval_store.approve(request_id, context, approver="test", notes="Test approval")
+        request_id = review_queue.enqueue("SubprocessRunner", SUBPROCESS_EXECUTION, context)
+        approval_store.approve(request_id, approver="test", notes="Test approval", context=context)
         
         # Mock subprocess.Popen
         mock_process = MagicMock()

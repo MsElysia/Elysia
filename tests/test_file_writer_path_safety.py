@@ -174,20 +174,20 @@ class TestFileWriterPathSafety:
         assert "Successfully wrote" in result
     
     def test_blocks_path_outside_repo_via_resolve(self, file_writer, tmp_path):
-        """Verify paths that resolve outside repo root are blocked"""
-        # Create a subdirectory structure
-        subdir = tmp_path / "inside"
-        subdir.mkdir()
-        
-        # Try to write a path that would resolve outside (even without explicit ..)
-        # This tests the resolve() + relative_to() check
+        """Verify paths with traversal segments are blocked before resolve."""
+        (tmp_path / "inside").mkdir()
+
         with pytest.raises(TrustDeniedError) as exc_info:
-            # Use a path that would escape via symlink or other means
-            # Since we can't easily create symlinks in tests, we'll test the relative_to check
-            # by using a path that doesn't start with repo_root
-            pass  # This is handled by the traversal check above
-        
-        # Instead, test that a valid path within repo works
+            file_writer.write_file(
+                file_path="../outside_escape.txt",
+                content="test",
+                caller_identity="TestCaller",
+                task_id="TASK-001"
+            )
+
+        assert exc_info.value.reason == "PATH_TRAVERSAL_BLOCKED"
+        assert exc_info.value.context.get("reason") == "traversal_detected"
+
         result = file_writer.write_file(
             file_path="inside/test.txt",
             content="test",
@@ -298,7 +298,7 @@ class TestFileWriterPathSafety:
         assert call_args[0][0] == "FileWriter"
         assert call_args[0][1] == FILE_WRITE
         context = call_args[1]["context"]
-        assert context["target"] == "REPORTS/test.txt"  # Relative path
+        assert Path(context["target"]).as_posix() == "REPORTS/test.txt"  # Relative path
         assert "bytes" in context
         assert "mode" in context
     
@@ -354,6 +354,6 @@ class TestFileWriterPathSafety:
         
         # Should be relative, not absolute
         assert not Path(target).is_absolute()
-        assert target == "REPORTS/test.txt"
+        assert Path(target).as_posix() == "REPORTS/test.txt"
         assert "bytes" in context
         assert "allow_overwrite" in context

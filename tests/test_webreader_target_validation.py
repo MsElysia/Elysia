@@ -6,7 +6,8 @@ Tests for SSRF safety floor (scheme validation + internal target blocking).
 
 import pytest
 from unittest.mock import Mock, patch, MagicMock
-from pathlib import Path
+
+from tests.gateway_test_helpers import make_fetch_response, make_urlopen_json_response
 
 try:
     from project_guardian.external import WebReader, TrustDeniedError, TrustReviewRequiredError
@@ -73,23 +74,13 @@ class TestWebReaderTargetValidation:
     
     def test_scheme_validation_http_allowed(self, web_reader):
         """Verify http:// scheme is allowed"""
-        # Mock network call
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = "OK"
-        
-        with patch.object(web_reader.session, 'get', return_value=mock_response):
+        with patch.object(web_reader.session, 'get', return_value=make_fetch_response()):
             result = web_reader.fetch("http://example.com/")
             assert result is not None
     
     def test_scheme_validation_https_allowed(self, web_reader):
         """Verify https:// scheme is allowed"""
-        # Mock network call
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = "OK"
-        
-        with patch.object(web_reader.session, 'get', return_value=mock_response):
+        with patch.object(web_reader.session, 'get', return_value=make_fetch_response()):
             result = web_reader.fetch("https://example.com/")
             assert result is not None
     
@@ -145,12 +136,7 @@ class TestWebReaderTargetValidation:
     
     def test_external_host_allowed_with_trustmatrix_allow(self, web_reader):
         """Verify external host is allowed when TrustMatrix allows"""
-        # Mock network call
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = "OK"
-        
-        with patch.object(web_reader.session, 'get', return_value=mock_response):
+        with patch.object(web_reader.session, 'get', return_value=make_fetch_response()):
             result = web_reader.fetch("https://example.com/")
             assert result is not None
     
@@ -209,12 +195,7 @@ class TestWebReaderTargetValidation:
     
     def test_allow_internal_with_trustmatrix_allow_proceeds(self, web_reader):
         """Verify allow_internal=True with TrustMatrix allow proceeds"""
-        # Mock network call
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = "OK"
-        
-        with patch.object(web_reader.session, 'get', return_value=mock_response):
+        with patch.object(web_reader.session, 'get', return_value=make_fetch_response()):
             result = web_reader.fetch("http://127.0.0.1/", allow_internal=True)
             assert result is not None
     
@@ -255,13 +236,7 @@ class TestWebReaderTargetValidation:
     
     def test_request_json_allow_internal_with_allow_proceeds(self, web_reader):
         """Verify request_json allow_internal with allow proceeds"""
-        # Mock urllib
-        mock_response = MagicMock()
-        mock_response.getcode.return_value = 200
-        mock_response.headers = {"Content-Type": "application/json"}
-        mock_response.read.return_value = b'{"success": true}'
-        
-        with patch('urllib.request.urlopen', return_value=mock_response):
+        with patch('urllib.request.urlopen', return_value=make_urlopen_json_response({"success": True})):
             result = web_reader.request_json(
                 method="POST",
                 url="http://127.0.0.1/api",
@@ -282,12 +257,7 @@ class TestWebReaderTargetValidation:
         
         web_reader.trust_matrix.validate_trust_for_action = Mock(side_effect=capture_context)
         
-        # Mock network call
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = "OK"
-        
-        with patch.object(web_reader.session, 'get', return_value=mock_response):
+        with patch.object(web_reader.session, 'get', return_value=make_fetch_response()):
             web_reader.fetch("https://example.com/", allow_internal=False)
         
         # Verify context
@@ -306,12 +276,7 @@ class TestWebReaderTargetValidation:
         
         web_reader.trust_matrix.validate_trust_for_action = Mock(side_effect=capture_context)
         
-        # Mock network call
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = "OK"
-        
-        with patch.object(web_reader.session, 'get', return_value=mock_response):
+        with patch.object(web_reader.session, 'get', return_value=make_fetch_response()):
             web_reader.fetch("http://127.0.0.1/", allow_internal=True)
         
         # Verify context includes blocked_reason

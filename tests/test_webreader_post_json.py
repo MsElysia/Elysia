@@ -30,9 +30,9 @@ class TestWebReaderRequestJson:
         return MemoryCore()
     
     @pytest.fixture
-    def trust_matrix(self):
+    def trust_matrix(self, memory):
         """Create TrustMatrix that allows all actions"""
-        trust = TrustMatrix()
+        trust = TrustMatrix(memory)
         # Mock to allow all actions by default
         trust.validate_trust_for_action = Mock(return_value=TrustDecision(
             allowed=True,

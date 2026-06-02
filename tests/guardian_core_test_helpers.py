@@ -3,12 +3,37 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional, Tuple
 from unittest.mock import MagicMock, patch
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_CORE_SMOKE_WS_ROOT = _REPO_ROOT / "tests" / "_core_smoke_workspace"
+
+
+@contextmanager
+def repo_relative_mutation_workspace(
+    initial_content: str = "CURRENT_TASK: NONE\n",
+) -> Iterator[Tuple[str, Path]]:
+    """
+    Create CONTROL.md under the repo root for MutationEngine path validation.
+
+    Yields (repo_relative_path, absolute_control_path). Caller must pass only the
+    relative path to propose_mutation / apply — absolute paths are rejected.
+    """
+    run_dir = _CORE_SMOKE_WS_ROOT / uuid.uuid4().hex
+    run_dir.mkdir(parents=True, exist_ok=True)
+    control = run_dir / "CONTROL.md"
+    control.write_text(initial_content, encoding="utf-8")
+    # Match MutationEngine._validate_and_resolve_path normalized_rel_path (OS separators).
+    rel_str = str(control.relative_to(_REPO_ROOT))
+    try:
+        yield rel_str, control
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
 
 
 def reset_guardian_core_test_state() -> None:

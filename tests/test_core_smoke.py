@@ -6,11 +6,13 @@ Verifies no direct external actions and proper gateway usage.
 """
 
 import pytest
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
 from project_guardian.core import GuardianCore
+from tests.guardian_core_test_helpers import repo_relative_mutation_workspace
 from project_guardian.trust import TrustMatrix, TrustDecision, GOVERNANCE_MUTATION
 from project_guardian.memory import MemoryCore
 from project_guardian.review_queue import ReviewQueue
@@ -176,117 +178,136 @@ class TestMutationIntegration:
     
     def test_governance_mutation_without_override_raises_exception(self):
         """Verify governance mutation without override raises MutationDeniedError"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = {
-                "enable_vector_memory": False,
-                "enable_resource_monitoring": False,
-            }
-            
-            core = GuardianCore(config=config)
-            
-            # Create a test file that looks like CONTROL.md
-            test_file = Path(tmpdir) / "CONTROL.md"
-            test_file.write_text("CURRENT_TASK: NONE\n")
-            
-            # Attempt mutation without override
+        config = {
+            "enable_vector_memory": False,
+            "enable_resource_monitoring": False,
+        }
+        core = GuardianCore(config=config)
+
+        with repo_relative_mutation_workspace() as (rel_path, test_file):
             result = core.propose_mutation(
-                str(test_file),
+                rel_path,
                 "CURRENT_TASK: TASK-0001\n",
                 require_consensus=False,
-                allow_governance_mutation=False
+                allow_governance_mutation=False,
             )
-            
-            # Verify result indicates denial
+
             assert "denied" in result.lower() or "blocked" in result.lower(), \
                 "Result should indicate denial"
-            
-            # Verify file was NOT modified
             assert test_file.read_text() == "CURRENT_TASK: NONE\n", \
                 "File should not be modified on denial"
     
     def test_governance_mutation_with_review_enqueues_request(self):
         """Verify governance mutation with review decision enqueues request"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = {
-                "enable_vector_memory": False,
-                "enable_resource_monitoring": False,
-            }
-            
-            core = GuardianCore(config=config)
-            
-            # Mock TrustMatrix to return review decision
-            review_decision = TrustDecision(
-                allowed=False,
-                decision="review",
-                reason_code="BORDERLINE_TRUST_GOVERNANCE_MUTATION",
-                message="Borderline trust",
-                risk_score=0.85
-            )
-            core.trust.validate_trust_for_action = Mock(return_value=review_decision)
-            
-            test_file = Path(tmpdir) / "CONTROL.md"
-            test_file.write_text("CURRENT_TASK: NONE\n")
-            
-            # Attempt mutation with override
+        config = {
+            "enable_vector_memory": False,
+            "enable_resource_monitoring": False,
+        }
+        core = GuardianCore(config=config)
+
+        review_decision = TrustDecision(
+            allowed=False,
+            decision="review",
+            reason_code="BORDERLINE_TRUST_GOVERNANCE_MUTATION",
+            message="Borderline trust",
+            risk_score=0.85,
+        )
+        core.trust.validate_trust_for_action = Mock(return_value=review_decision)
+
+        with repo_relative_mutation_workspace() as (rel_path, test_file):
             result = core.propose_mutation(
-                str(test_file),
+                rel_path,
                 "CURRENT_TASK: TASK-0001\n",
                 require_consensus=False,
-                allow_governance_mutation=True
+                allow_governance_mutation=True,
             )
-            
-            # Verify result indicates review required
+
             assert "review" in result.lower(), "Result should indicate review required"
             assert "request" in result.lower() or "request_id" in result.lower(), \
                 "Result should mention request_id"
-            
-            # Verify request was enqueued
+            assert test_file.read_text() == "CURRENT_TASK: NONE\n", \
+                "File should not be modified on review"
+
             pending = core.mutation.review_queue.list_pending()
             assert len(pending) >= 1, "Review request should be enqueued"
     
     def test_governance_mutation_approval_replay_succeeds(self):
         """Verify approved request_id allows mutation to proceed"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = {
-                "enable_vector_memory": False,
-                "enable_resource_monitoring": False,
-            }
-            
-            core = GuardianCore(config=config)
-            
-            # Create and approve a request
+        config = {
+            "enable_vector_memory": False,
+            "enable_resource_monitoring": False,
+        }
+        core = GuardianCore(config=config)
+
+        with repo_relative_mutation_workspace() as (rel_path, test_file):
+            _, normalized_rel = core.mutation._validate_and_resolve_path(rel_path)
             context = {
                 "component": "MutationEngine",
                 "action": GOVERNANCE_MUTATION,
-                "touched_paths": sorted(["CONTROL.md"]),
+                "touched_paths": sorted([normalized_rel]),
                 "override_flag": True,
                 "caller_identity": "test",
-                "task_id": "test"
+                "task_id": "test",
             }
-            request_id = core.mutation.review_queue.enqueue("MutationEngine", GOVERNANCE_MUTATION, context)
+            request_id = core.mutation.review_queue.enqueue(
+                "MutationEngine", GOVERNANCE_MUTATION, context
+            )
             core.mutation.approval_store.approve(request_id, context=context)
-            
-            test_file = Path(tmpdir) / "CONTROL.md"
-            test_file.write_text("CURRENT_TASK: NONE\n")
-            
-            # Attempt mutation with approved request_id
+
             result = core.propose_mutation(
-                str(test_file),
+                rel_path,
                 "CURRENT_TASK: TASK-0001\n",
                 require_consensus=False,
                 allow_governance_mutation=True,
                 request_id=request_id,
                 caller_identity="test",
-                task_id="test"
+                task_id="test",
             )
-            
-            # Verify result indicates success
-            assert "updated" in result.lower() or "success" in result.lower() or result.startswith("[Guardian Mutation]"), \
-                "Result should indicate success"
-            
-            # Verify file was modified
+
+            assert (
+                "updated" in result.lower()
+                or "success" in result.lower()
+                or result.startswith("[Guardian Mutation]")
+            ), "Result should indicate success"
             assert test_file.read_text() == "CURRENT_TASK: TASK-0001\n", \
                 "File should be modified on success"
+
+
+class TestCoreSmokePathSafetyRegression:
+    """Prove GuardianCore.propose_mutation still blocks unsafe paths."""
+
+    def test_absolute_path_still_blocked(self):
+        config = {
+            "enable_vector_memory": False,
+            "enable_resource_monitoring": False,
+        }
+        core = GuardianCore(config=config)
+        if sys.platform == "win32":
+            bad = r"C:\Windows\system32\drivers\etc\hosts"
+        else:
+            bad = "/etc/passwd"
+
+        result = core.propose_mutation(
+            bad,
+            "x",
+            require_consensus=False,
+            allow_governance_mutation=True,
+        )
+        assert "path_traversal_blocked" in result.lower()
+
+    def test_traversal_path_still_blocked(self):
+        config = {
+            "enable_vector_memory": False,
+            "enable_resource_monitoring": False,
+        }
+        core = GuardianCore(config=config)
+        result = core.propose_mutation(
+            "../outside.txt",
+            "x",
+            require_consensus=False,
+            allow_governance_mutation=False,
+        )
+        assert "path_traversal_blocked" in result.lower()
 
 
 class TestRunOnceMethod:

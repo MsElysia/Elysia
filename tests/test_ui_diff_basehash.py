@@ -14,6 +14,7 @@ from datetime import datetime
 try:
     from fastapi.testclient import TestClient
     from project_guardian.ui.app import app
+    from tests.ui_test_helpers import local_test_client
     FASTAPI_AVAILABLE = True
 except ImportError:
     FASTAPI_AVAILABLE = False
@@ -48,7 +49,7 @@ def temp_project(tmp_path):
 @pytest.fixture
 def client(temp_project):
     """Create FastAPI test client"""
-    return TestClient(app)
+    return local_test_client(app)
 
 
 class TestPayloadCreationBaseHashes:

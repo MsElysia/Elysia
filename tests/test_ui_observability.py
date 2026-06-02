@@ -13,6 +13,7 @@ from unittest.mock import patch, MagicMock
 try:
     from fastapi.testclient import TestClient
     from project_guardian.ui.app import app
+    from tests.ui_test_helpers import local_test_client
     FASTAPI_AVAILABLE = True
 except ImportError:
     FASTAPI_AVAILABLE = False
@@ -44,7 +45,7 @@ def client(temp_project):
         with patch('project_guardian.ui.app.review_queue') as mock_queue:
             mock_queue.list_pending.return_value = []
             with patch('project_guardian.ui.app.approval_store') as mock_store:
-                yield TestClient(app)
+                yield local_test_client(app)
 
 
 class TestHistory:

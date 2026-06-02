@@ -140,8 +140,14 @@ def is_loopback(host: str) -> bool:
     """
     if not host:
         return False
-    # Normalize host (remove port if present)
-    host = host.split(':')[0].strip()
+    host = host.strip()
+    # Bracketed IPv6 with port, e.g. [::1]:8000
+    if host.startswith("["):
+        end = host.find("]")
+        host = host[1:end] if end != -1 else host.lstrip("[")
+    # IPv4 (or hostname) with port, e.g. 127.0.0.1:8000
+    elif host.count(":") == 1:
+        host = host.split(":", 1)[0]
     return host in ('127.0.0.1', '::1', 'localhost')
 
 

@@ -14,6 +14,20 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CORE_SMOKE_WS_ROOT = _REPO_ROOT / "tests" / "_core_smoke_workspace"
 
 
+def minimal_guardian_core_test_config() -> Dict[str, Any]:
+    """Fast, isolated GuardianCore config for router/smoke tests."""
+    return {
+        "enable_vector_memory": False,
+        "enable_resource_monitoring": False,
+        "_test_skip_external_storage": True,
+    }
+
+
+def write_task_contract_file(path: Path, body: str) -> None:
+    """Write task markdown as UTF-8 (avoid Windows cp1252 dash encoding issues)."""
+    path.write_text(body, encoding="utf-8")
+
+
 @contextmanager
 def repo_relative_mutation_workspace(
     initial_content: str = "CURRENT_TASK: NONE\n",

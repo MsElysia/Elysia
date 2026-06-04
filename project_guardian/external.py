@@ -248,7 +248,7 @@ class WebReader:
             if self.approval_store.is_approved(request_id, context=gate_context):
                 # Approved request with matching context - proceed (skip gate check)
                 self.memory.remember(
-                    f"[WebReader] Using approved request {request_id} for {domain}",
+                    f"[WebReader] Using approved request {request_id} for {host}",
                     category="governance",
                     priority=0.7
                 )
@@ -259,7 +259,7 @@ class WebReader:
                 raise TrustDeniedError(
                     component="WebReader",
                     action=NETWORK_ACCESS,
-                    target=domain,
+                    target=host,
                     reason="APPROVAL_NOT_FOUND_OR_CONTEXT_MISMATCH",
                     context=gate_context
                 )

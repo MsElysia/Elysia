@@ -29,9 +29,9 @@ class TestNoSideEffectsNetwork:
         return MemoryCore()
     
     @pytest.fixture
-    def review_queue(self):
-        """Create ReviewQueue"""
-        return ReviewQueue()
+    def review_queue(self, tmp_path):
+        """Create ReviewQueue with isolated queue file."""
+        return ReviewQueue(queue_file=tmp_path / "review_queue.jsonl")
     
     @pytest.fixture
     def approval_store(self):
@@ -110,7 +110,7 @@ class TestNoSideEffectsNetwork:
             assert exc_info.value.request_id is not None
             
             # Verify ReviewQueue has 1 pending request
-            pending = review_queue.get_pending()
+            pending = review_queue.list_pending()
             assert len(pending) == 1
             assert pending[0].request_id == exc_info.value.request_id
             
@@ -187,7 +187,7 @@ class TestNoSideEffectsNetwork:
             assert exc_info.value.request_id is not None
             
             # Verify ReviewQueue has 1 pending request
-            pending = review_queue.get_pending()
+            pending = review_queue.list_pending()
             assert len(pending) == 1
             assert pending[0].request_id == exc_info.value.request_id
             

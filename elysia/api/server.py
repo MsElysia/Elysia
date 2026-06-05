@@ -640,38 +640,25 @@ class RuntimeAPIServer:
         # Implementer endpoints
         @self._app.route("/api/proposals/<proposal_id>/implement", methods=["POST"])
         def api_implement_proposal(proposal_id: str):
-            """Trigger implementation for a specific proposal."""
+            """
+            Passive stub: implementation execution is disabled in the current safety phase.
+
+            Approval records operator consent only. Running ImplementerAgent (injected or
+            default) is intentionally not performed until approval-gated live mode exists.
+            """
             if not self._proposal_system:
                 return jsonify({"error": "Proposal system not available"}), 503
 
-            data = request.get_json(force=True, silent=True) or {}
-            dry_run = data.get("dry_run", False)
-
-            try:
-                if self._implementer is not None:
-                    implementer = self._implementer
-                    if hasattr(implementer, "dry_run"):
-                        implementer.dry_run = bool(dry_run)
-                    result = implementer.run_for_proposal(proposal_id)
-                    return jsonify(result)
-
-                from ..agents.implementer import ImplementerAgent
-                from pathlib import Path
-
-                implementer = ImplementerAgent(
-                    repo_root=Path("."),
-                    proposal_system=self._proposal_system,
-                    event_bus=self._event_bus,
-                    dry_run=dry_run,
-                )
-
-                result = implementer.run_for_proposal(proposal_id)
-                return jsonify(result)
-            except ImportError:
-                return jsonify({"error": "Implementer agent not available"}), 503
-            except Exception as e:
-                logger.exception("Implementation error")
-                return jsonify({"error": str(e)}), 500
+            return jsonify({
+                "status": "blocked",
+                "proposal_id": proposal_id,
+                "executed": False,
+                "blocked": True,
+                "reason": "implementation_execution_disabled",
+                "message": (
+                    "Proposal implementation is not enabled in the current safety phase."
+                ),
+            }), 403
 
 
         @self._app.route("/api/proposals/<proposal_id>/implementation", methods=["GET"])

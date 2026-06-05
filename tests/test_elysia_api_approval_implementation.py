@@ -1,15 +1,12 @@
 """
-Runtime API approval contract tests (passive approval, explicit implement).
+Runtime API approval contract tests (passive approval, blocked implement).
 
-Approval records operator consent only; it does not auto-run the implementer.
-Implementation is a separate POST /api/proposals/<id>/implement call (optional dry_run).
+Approval records operator consent only; it does not run implementation.
+POST /api/proposals/<id>/implement is fail-closed in the current safety phase.
 """
 
 import json
 
-import pytest
-
-from elysia.agents.implementer import ImplementerAgent
 from elysia.api.server import RuntimeAPIServer
 from elysia.core.proposal_system import ProposalSystem
 from elysia.events import EventBus
@@ -32,7 +29,12 @@ class FakeProposalSystem:
         return []
 
     def get_proposal(self, proposal_id):
-        return {"proposal_id": proposal_id, "status": "approved", "history": []}
+        return {
+            "proposal_id": proposal_id,
+            "status": "approved",
+            "implementation_status": "not_started",
+            "history": [],
+        }
 
 
 class FakeImplementer:
@@ -186,7 +188,7 @@ def test_status_transition_does_not_auto_implement():
     assert implementer.calls == []
 
 
-def test_implement_endpoint_runs_dry_run_when_requested():
+def test_implement_endpoint_blocked_does_not_call_injected_implementer():
     server, _proposals, implementer = _server()
     client = server._app.test_client()
 
@@ -195,11 +197,13 @@ def test_implement_endpoint_runs_dry_run_when_requested():
         json={"dry_run": True},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 403
     body = response.get_json()
-    assert body["success"] is True
-    assert body["dry_run"] is True
-    assert implementer.calls == [("prop-preview", True)]
+    assert body["status"] == "blocked"
+    assert body["executed"] is False
+    assert body["blocked"] is True
+    assert body["reason"] == "implementation_execution_disabled"
+    assert implementer.calls == []
 
 
 def test_webscout_research_endpoint_passes_topic_and_domain():
@@ -224,7 +228,7 @@ def test_webscout_research_endpoint_passes_topic_and_domain():
     assert webscout.calls == [("Patchable plan", "elysia_core", {})]
 
 
-def test_approve_then_explicit_implement_changes_file(tmp_path):
+def test_approve_then_implement_does_not_mutate_files(tmp_path):
     event_bus = EventBus()
     proposal_system = ProposalSystem(tmp_path / "proposals", event_bus=event_bus, enable_watcher=False)
     proposal_id = "prop-real-implementation"
@@ -234,7 +238,7 @@ def test_approve_then_explicit_implement_changes_file(tmp_path):
     metadata = {
         "proposal_id": proposal_id,
         "title": "Real implementation proposal",
-        "description": "Modify a target file through explicit implement call.",
+        "description": "Must not mutate via API in safety phase.",
         "status": "proposal",
         "created_by": "test",
         "created_at": "2026-01-01T00:00:00Z",
@@ -251,8 +255,6 @@ def test_approve_then_explicit_implement_changes_file(tmp_path):
     (proposal_path / "design" / "implementation_plan.md").write_text(
         """## Step 1: Modify file src/example.py
 
-Replace the file with the approved implementation.
-
 ```python
 VALUE = 2
 ```
@@ -260,12 +262,7 @@ VALUE = 2
         encoding="utf-8",
     )
 
-    implementer = ImplementerAgent(
-        repo_root=tmp_path,
-        proposal_system=proposal_system,
-        event_bus=event_bus,
-        dry_run=False,
-    )
+    implementer = FakeImplementer()
     server = RuntimeAPIServer(
         status_provider=lambda: {"running": True},
         event_bus=event_bus,
@@ -281,19 +278,18 @@ VALUE = 2
     assert approve.status_code == 200
     assert approve.get_json() == {"status": "approved", "proposal_id": proposal_id}
     assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert implementer.calls == []
 
     implement = client.post(f"/api/proposals/{proposal_id}/implement", json={})
-    assert implement.status_code == 200
-    body = implement.get_json()
-    assert body["success"] is True
-    assert body["steps_completed"] == 1
-    assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert implement.status_code == 403
+    assert implement.get_json()["executed"] is False
+    assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert implementer.calls == []
     proposal = proposal_system.get_proposal(proposal_id)
-    assert proposal["status"] == "implemented"
-    assert proposal["implementation_status"] == "completed"
+    assert proposal["implementation_status"] == "not_started"
 
 
-def test_implement_dry_run_returns_diff_without_mutating(tmp_path):
+def test_implement_dry_run_request_blocked_without_side_effects(tmp_path):
     event_bus = EventBus()
     proposal_system = ProposalSystem(tmp_path / "proposals", event_bus=event_bus, enable_watcher=False)
     proposal_id = "prop-preview-real"
@@ -303,7 +299,7 @@ def test_implement_dry_run_returns_diff_without_mutating(tmp_path):
     metadata = {
         "proposal_id": proposal_id,
         "title": "Preview implementation proposal",
-        "description": "Dry-run implement via API.",
+        "description": "Dry-run implement must remain blocked.",
         "status": "approved",
         "created_by": "test",
         "created_at": "2026-01-01T00:00:00Z",
@@ -317,24 +313,7 @@ def test_implement_dry_run_returns_diff_without_mutating(tmp_path):
     target.parent.mkdir()
     target.write_text("VALUE = 1\n", encoding="utf-8")
 
-    (proposal_path / "design" / "implementation_plan.md").write_text(
-        """## Step 1: Modify file src/example.py
-
-Replace the file with the approved implementation.
-
-```python
-VALUE = 2
-```
-""",
-        encoding="utf-8",
-    )
-
-    implementer = ImplementerAgent(
-        repo_root=tmp_path,
-        proposal_system=proposal_system,
-        event_bus=event_bus,
-        dry_run=False,
-    )
+    implementer = FakeImplementer()
     server = RuntimeAPIServer(
         status_provider=lambda: {"running": True},
         event_bus=event_bus,
@@ -348,13 +327,13 @@ VALUE = 2
         json={"dry_run": True},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 403
     body = response.get_json()
-    assert body["success"] is True
-    assert body["dry_run"] is True
-    assert "-VALUE = 1" in (body.get("diff_summary") or "")
-    assert "+VALUE = 2" in (body.get("diff_summary") or "")
+    assert body["blocked"] is True
+    assert body["executed"] is False
+    assert "diff_summary" not in body
     assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert implementer.calls == []
     proposal = proposal_system.get_proposal(proposal_id)
     assert proposal["status"] == "approved"
     assert proposal["implementation_status"] == "not_started"

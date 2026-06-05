@@ -648,6 +648,13 @@ class RuntimeAPIServer:
             dry_run = data.get("dry_run", False)
 
             try:
+                if self._implementer is not None:
+                    implementer = self._implementer
+                    if hasattr(implementer, "dry_run"):
+                        implementer.dry_run = bool(dry_run)
+                    result = implementer.run_for_proposal(proposal_id)
+                    return jsonify(result)
+
                 from ..agents.implementer import ImplementerAgent
                 from pathlib import Path
 

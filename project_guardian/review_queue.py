@@ -38,7 +38,15 @@ class ReviewRequest:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ReviewRequest':
         """Create from dictionary"""
-        return cls(**data)
+        fields = {
+            "request_id": data.get("request_id"),
+            "component": data.get("component"),
+            "action": data.get("action"),
+            "context": data.get("context", {}),
+            "created_at": data.get("created_at"),
+            "status": data.get("status", "pending"),
+        }
+        return cls(**fields)
 
 
 class ReviewQueue:
@@ -100,13 +108,16 @@ class ReviewQueue:
         """
         List all pending review requests.
         
+        Uses latest-state semantics per request_id (same as get_request): append-only
+        JSONL may contain older pending rows after approve/deny updates.
+        
         Returns:
-            List of ReviewRequest objects with status="pending"
+            List of ReviewRequest objects whose latest status is "pending"
         """
         if not self.queue_file.exists():
             return []
         
-        pending = []
+        latest_by_id: Dict[str, ReviewRequest] = {}
         
         with open(self.queue_file, 'r', encoding='utf-8') as f:
             for line in f:
@@ -115,13 +126,12 @@ class ReviewQueue:
                 try:
                     data = json.loads(line)
                     request = ReviewRequest.from_dict(data)
-                    if request.status == "pending":
-                        pending.append(request)
+                    latest_by_id[request.request_id] = request
                 except (json.JSONDecodeError, ValueError):
                     # Skip malformed lines
                     continue
         
-        return pending
+        return [req for req in latest_by_id.values() if req.status == "pending"]
     
     def get_request(self, request_id: str) -> Optional[ReviewRequest]:
         """

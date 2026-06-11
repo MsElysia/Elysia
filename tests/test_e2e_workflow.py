@@ -16,6 +16,20 @@ from project_guardian.trust import TrustMatrix, TrustDecision, GOVERNANCE_MUTATI
 from project_guardian.memory import MemoryCore
 
 
+def _isolated_core_config() -> dict:
+    """Fast, isolated GuardianCore config for e2e mutation workflow tests."""
+    return {
+        "enable_vector_memory": False,
+        "enable_resource_monitoring": False,
+        "_test_skip_external_storage": True,
+    }
+
+
+def _bind_mutation_repo_root(core: GuardianCore, tmp_path: Path) -> None:
+    """MutationEngine defaults to project root; bind to isolated tmp workspace."""
+    core.mutation.repo_root = tmp_path
+
+
 class TestReviewApproveReplaySuccess:
     """Test 1: Review → approve → replay → success (single file)"""
     
@@ -38,33 +52,28 @@ class TestReviewApproveReplaySuccess:
         task_file = tasks_dir / "TASK-0001.md"
         task_file.write_text("TASK_TYPE: APPLY_MUTATION\nMUTATION_FILE: MUTATIONS/test.json\nALLOW_GOVERNANCE_MUTATION: true\n")
         
-        # Create mutation payload
+        # Create mutation payload (protected path forces governance trust gate)
         payload_file = mutations_dir / "test.json"
-        test_file_path = "test.py"
+        test_file_path = "CONTROL.md"
         payload = {
             "touched_paths": [test_file_path],
             "changes": [
-                {"path": test_file_path, "content": "print('new')\n"}
+                {"path": test_file_path, "content": "CURRENT_TASK: NONE\n"}
             ],
             "summary": "Test mutation"
         }
         payload_file.write_text(json.dumps(payload))
         
-        # Create test file
-        test_file = tmp_path / test_file_path
-        test_file.write_text("print('old')\n")
+        # CONTROL.md already exists with original content from setup above
         
         # Initialize Core
-        config = {
-            "enable_vector_memory": False,
-            "enable_resource_monitoring": False,
-        }
         core = GuardianCore(
-            config=config,
+            config=_isolated_core_config(),
             control_path=control_file,
             tasks_dir=tasks_dir,
             mutations_dir=mutations_dir
         )
+        _bind_mutation_repo_root(core, tmp_path)
         
         # Force TrustMatrix to return review decision initially
         review_decision = TrustDecision(
@@ -88,7 +97,7 @@ class TestReviewApproveReplaySuccess:
         assert len(pending) >= 1, "Review request should be enqueued"
         
         # Verify target file is unchanged
-        assert test_file.read_text() == "print('old')\n", "File should be unchanged after review decision"
+        assert control_file.read_text() == "CURRENT_TASK: TASK-0001\n", "File should be unchanged after review decision"
         
         # Step 2: Approve request_id with matching context
         context = {
@@ -109,17 +118,17 @@ class TestReviewApproveReplaySuccess:
         
         assert result2["status"] == "ok", f"Second run should return ok, got {result2.get('status')}"
         assert result2["outcome"] == "mutation_applied", f"Outcome should be mutation_applied, got {result2.get('outcome')}"
-        assert len(result2["changed_files"]) == 1, "Should have one changed file"
-        assert len(result2["backup_paths"]) == 1, "Should have one backup"
-        assert "summary" in result2, "Result should have summary"
         
-        # Verify file content changed
-        assert test_file.read_text() == "print('new')\n", "File should be modified after approval replay"
+        # run_once surfaces status/outcome only; verify filesystem effects directly
+        assert control_file.read_text() == "CURRENT_TASK: NONE\n", "File should be modified after approval replay"
         
-        # Verify backup exists
-        backup_path = Path(result2["backup_paths"][0])
-        assert backup_path.exists(), "Backup should exist"
-        assert backup_path.read_text() == "print('old')\n", "Backup should contain original content"
+        backup_dir = tmp_path / "guardian_backups"
+        assert backup_dir.is_dir(), "Backup directory should exist"
+        backups = list(backup_dir.iterdir())
+        assert backups, "Should have at least one backup"
+        assert any(
+            p.read_text() == "CURRENT_TASK: TASK-0001\n" for p in backups
+        ), "Backup should contain original content"
 
 
 class TestPreflightPreventsPartialApply:
@@ -165,16 +174,13 @@ class TestPreflightPreventsPartialApply:
         file_b.write_text("CURRENT_TASK: TASK-0001\n")
         
         # Initialize Core
-        config = {
-            "enable_vector_memory": False,
-            "enable_resource_monitoring": False,
-        }
         core = GuardianCore(
-            config=config,
+            config=_isolated_core_config(),
             control_path=control_file,
             tasks_dir=tasks_dir,
             mutations_dir=mutations_dir
         )
+        _bind_mutation_repo_root(core, tmp_path)
         
         # Force TrustMatrix to return review decision for governance mutation
         review_decision = TrustDecision(
@@ -234,16 +240,13 @@ class TestProtectedPathWithoutOverride:
         test_control.write_text("CURRENT_TASK: TASK-0001\n")
         
         # Initialize Core
-        config = {
-            "enable_vector_memory": False,
-            "enable_resource_monitoring": False,
-        }
         core = GuardianCore(
-            config=config,
+            config=_isolated_core_config(),
             control_path=control_file,
             tasks_dir=tasks_dir,
             mutations_dir=mutations_dir
         )
+        _bind_mutation_repo_root(core, tmp_path)
         
         # Run once - should be denied immediately (preflight)
         result = core.run_once()
@@ -307,24 +310,20 @@ class TestPreflightWithMultipleFiles:
         file_b.write_text("print('old_b')\n")
         
         # Initialize Core
-        config = {
-            "enable_vector_memory": False,
-            "enable_resource_monitoring": False,
-        }
         core = GuardianCore(
-            config=config,
+            config=_isolated_core_config(),
             control_path=control_file,
             tasks_dir=tasks_dir,
             mutations_dir=mutations_dir
         )
+        _bind_mutation_repo_root(core, tmp_path)
         
         # Run once - should succeed (both files are safe, no governance override needed)
         result = core.run_once()
         
         assert result["status"] == "ok", f"Status should be ok, got {result.get('status')}"
         assert result["outcome"] == "mutation_applied", f"Outcome should be mutation_applied, got {result.get('outcome')}"
-        assert len(result["changed_files"]) == 2, "Should have two changed files"
         
-        # Verify both files changed
+        # run_once surfaces status/outcome only; verify filesystem effects directly
         assert file_a.read_text() == "print('a')\n", "File A should be modified"
         assert file_b.read_text() == "print('b')\n", "File B should be modified"

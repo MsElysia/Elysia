@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch, MagicMock
 
 from project_guardian.external import WebReader, TrustDeniedError, TrustReviewRequiredError
 from project_guardian.file_writer import FileWriter
+from tests.gateway_test_helpers import make_fetch_response
 from project_guardian.subprocess_runner import SubprocessRunner
 from project_guardian.trust import TrustMatrix, TrustDecision, NETWORK_ACCESS, FILE_WRITE, SUBPROCESS_EXECUTION
 from project_guardian.memory import MemoryCore
@@ -116,23 +117,22 @@ class TestWebReaderApprovalReplay:
             
             reader = WebReader(memory, trust_matrix=trust, review_queue=review_queue, approval_store=approval_store)
             
-            # Create and approve a request
+            # Create and approve a request (context must match WebReader.fetch gate_context)
             context = {
                 "component": "WebReader",
                 "action": NETWORK_ACCESS,
                 "target": "example.com",
+                "scheme": "https",
                 "method": "GET",
+                "allow_internal": False,
                 "caller_identity": "test",
-                "task_id": "test"
+                "task_id": "test",
             }
             request_id = review_queue.enqueue("WebReader", NETWORK_ACCESS, context)
             approval_store.approve(request_id, context=context)
             
             # Mock network call (do not hit real internet)
-            mock_response = Mock()
-            mock_response.status_code = 200
-            mock_response.text = "<html>test content</html>"
-            mock_response.content = b"<html>test content</html>"
+            mock_response = make_fetch_response("test content")
             
             with patch.object(reader.session, 'get', return_value=mock_response):
                 # Call fetch with approved request_id
@@ -211,16 +211,18 @@ class TestFileWriterDenyPath:
         )
         trust.validate_trust_for_action = Mock(return_value=deny_decision)
         
-        writer = FileWriter(memory, trust_matrix=trust, review_queue=None, approval_store=None)
-        
         with tempfile.TemporaryDirectory() as tmpdir:
+            writer = FileWriter(
+                memory, trust_matrix=trust, review_queue=None, approval_store=None,
+                repo_root=Path(tmpdir),
+            )
             test_file = Path(tmpdir) / "test.txt"
             
             # Verify file doesn't exist before
             assert not test_file.exists()
             
             with pytest.raises(TrustDeniedError) as exc_info:
-                writer.write_file(str(test_file), "test content", caller_identity="test", task_id="test")
+                writer.write_file("test.txt", "test content", caller_identity="test", task_id="test")
             
             # Verify exception details
             assert exc_info.value.reason == "INSUFFICIENT_TRUST_FILE_WRITE"
@@ -246,7 +248,10 @@ class TestFileWriterReviewPath:
             review_queue = ReviewQueue(queue_file=queue_file)
             approval_store = ApprovalStore(store_file=store_file)
             
-            writer = FileWriter(memory, trust_matrix=trust, review_queue=review_queue, approval_store=approval_store)
+            writer = FileWriter(
+                memory, trust_matrix=trust, review_queue=review_queue, approval_store=approval_store,
+                repo_root=Path(tmpdir),
+            )
             
             # Mock trust to return review decision
             review_decision = TrustDecision(
@@ -259,7 +264,7 @@ class TestFileWriterReviewPath:
             trust.validate_trust_for_action = Mock(return_value=review_decision)
             
             with pytest.raises(TrustReviewRequiredError) as exc_info:
-                writer.write_file(str(test_file), "test content", caller_identity="test", task_id="test")
+                writer.write_file("test.txt", "test content", caller_identity="test", task_id="test")
             
             # Verify exception has request_id
             assert exc_info.value.request_id is not None
@@ -291,22 +296,28 @@ class TestFileWriterApprovalReplay:
             review_queue = ReviewQueue(queue_file=queue_file)
             approval_store = ApprovalStore(store_file=store_file)
             
-            writer = FileWriter(memory, trust_matrix=trust, review_queue=review_queue, approval_store=approval_store)
+            writer = FileWriter(
+                memory, trust_matrix=trust, review_queue=review_queue, approval_store=approval_store,
+                repo_root=Path(tmpdir),
+            )
             
-            # Create and approve a request
+            # Create and approve a request (context must match FileWriter.write_file gate_context)
+            content = "test content"
             context = {
                 "component": "FileWriter",
                 "action": FILE_WRITE,
                 "target": "test.txt",
                 "mode": "w",
+                "bytes": len(content.encode("utf-8")),
+                "allow_overwrite": False,
                 "caller_identity": "test",
-                "task_id": "test"
+                "task_id": "test",
             }
             request_id = review_queue.enqueue("FileWriter", FILE_WRITE, context)
             approval_store.approve(request_id, context=context)
             
             # Call write_file with approved request_id
-            result = writer.write_file(str(test_file), "test content", mode="w", caller_identity="test", task_id="test", request_id=request_id)
+            result = writer.write_file("test.txt", content, mode="w", caller_identity="test", task_id="test", request_id=request_id)
             
             # Verify file was written
             assert test_file.exists(), "File should be written on approved replay"
@@ -334,27 +345,29 @@ class TestFileWriterModeRestrictions:
         )
         trust.validate_trust_for_action = Mock(return_value=allow_decision)
         
-        writer = FileWriter(memory, trust_matrix=trust, review_queue=None, approval_store=None)
-        
         with tempfile.TemporaryDirectory() as tmpdir:
+            writer = FileWriter(
+                memory, trust_matrix=trust, review_queue=None, approval_store=None,
+                repo_root=Path(tmpdir),
+            )
             # Test "w" mode
             test_file_w = Path(tmpdir) / "test_w.txt"
-            writer.write_file(str(test_file_w), "content", mode="w")
+            writer.write_file("test_w.txt", "content", mode="w")
             assert test_file_w.exists()
             
             # Test "a" mode
             test_file_a = Path(tmpdir) / "test_a.txt"
-            writer.write_file(str(test_file_a), "content", mode="a")
+            writer.write_file("test_a.txt", "content", mode="a")
             assert test_file_a.exists()
             
             # Test "wb" mode (binary)
             test_file_wb = Path(tmpdir) / "test_wb.bin"
-            writer.write_file(str(test_file_wb), "content", mode="wb")
+            writer.write_file("test_wb.bin", "content", mode="wb")
             assert test_file_wb.exists()
             
             # Test "ab" mode (binary append)
             test_file_ab = Path(tmpdir) / "test_ab.bin"
-            writer.write_file(str(test_file_ab), "content", mode="ab")
+            writer.write_file("test_ab.bin", "content", mode="ab")
             assert test_file_ab.exists()
     
     def test_invalid_mode_raises_error(self):
@@ -372,14 +385,16 @@ class TestFileWriterModeRestrictions:
         )
         trust.validate_trust_for_action = Mock(return_value=allow_decision)
         
-        writer = FileWriter(memory, trust_matrix=trust, review_queue=None, approval_store=None)
-        
         with tempfile.TemporaryDirectory() as tmpdir:
+            writer = FileWriter(
+                memory, trust_matrix=trust, review_queue=None, approval_store=None,
+                repo_root=Path(tmpdir),
+            )
             test_file = Path(tmpdir) / "test.txt"
             
             # Invalid mode should raise ValueError
             with pytest.raises(ValueError) as exc_info:
-                writer.write_file(str(test_file), "content", mode="x")  # Invalid mode
+                writer.write_file("test.txt", "content", mode="x")  # Invalid mode
             
             assert "Invalid mode" in str(exc_info.value)
 

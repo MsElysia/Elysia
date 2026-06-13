@@ -1,10 +1,24 @@
 # tests/test_router_telemetry_adapt.py
 import asyncio
 
+import pytest
+
 from project_guardian.orchestration.router.rules import RulesRouter
 from project_guardian.orchestration.telemetry.events import LLMCallEvent
 from project_guardian.orchestration.telemetry.sqlite_store import TelemetrySqliteStore, prompt_hash
 from project_guardian.orchestration.types import TaskRequest
+
+# Telemetry seeds use model="mistral"; RulesRouter coerces ollama refs via ollama_provider_ref().
+_STABLE_OLLAMA_REF = "ollama:mistral"
+
+
+@pytest.fixture(autouse=True)
+def _stable_router_ollama_ref(monkeypatch):
+    """Keep seeded telemetry rows aligned with router-resolved planner model."""
+    monkeypatch.setattr(
+        "project_guardian.ollama_model_config.ollama_provider_ref",
+        lambda **kwargs: _STABLE_OLLAMA_REF,
+    )
 
 
 def _ev(

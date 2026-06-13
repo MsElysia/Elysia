@@ -15,6 +15,12 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 
+def _assert_cleanup_ok(result: dict) -> None:
+    """Current cleanup metrics always include error key; success means error is None."""
+    assert result.get("error") is None, result
+    assert result.get("action") != "error", result
+
+
 def test_cleanup_reduces_memory_count():
     """Test that cleanup reduces memory count when over threshold"""
     import tempfile
@@ -49,7 +55,7 @@ def test_cleanup_reduces_memory_count():
         result = cleanup.consolidate_memories(max_memories=threshold, keep_recent_days=30)
         
         # Verify cleanup worked
-        assert "error" not in result
+        _assert_cleanup_ok(result)
         assert result["final_count"] <= threshold
         assert result["removed"] > 0
         assert len(memory.memory_log) <= threshold
@@ -90,7 +96,7 @@ def test_cleanup_never_increases_count():
         
         # Count should not increase
         assert after_count <= before_count
-        assert "error" not in result
+        _assert_cleanup_ok(result)
         assert result["final_count"] <= before_count
     finally:
         if os.path.exists(temp_file):
@@ -250,7 +256,7 @@ def test_cleanup_with_heartbeat_pulse():
         
         # Even if heartbeat adds a memory, cleanup should still reduce count
         # (The consolidate happens before new memories are added in the next heartbeat cycle)
-        assert "error" not in result
+        _assert_cleanup_ok(result)
         assert result["final_count"] <= 100
         assert result["removed"] > 0
     finally:
@@ -294,7 +300,7 @@ def test_consolidate_preserves_recent_memories():
         result = cleanup.consolidate_memories(max_memories=100, keep_recent_days=30)
         
         # Should keep recent memories (50) and some old high-priority ones
-        assert "error" not in result
+        _assert_cleanup_ok(result)
         assert result["final_count"] <= 100
         # Recent memories should be preserved
         recent_count = sum(1 for m in memory.memory_log if "Recent memory" in m.get("thought", ""))

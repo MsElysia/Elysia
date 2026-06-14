@@ -37,6 +37,20 @@ class ReadinessCheck(str, Enum):
     HARMLESS_LIVE_ACTION_SMOKE_VERIFIED = "HARMLESS_LIVE_ACTION_SMOKE_VERIFIED"
     AUTONOMY_CONFIG_DEFAULT_DISABLED = "AUTONOMY_CONFIG_DEFAULT_DISABLED"
     FULL_RUNTIME_TESTS_CLASSIFIED = "FULL_RUNTIME_TESTS_CLASSIFIED"
+    FULL_RUNTIME_REMAINING_NONCRITICAL_FAILURES_WAIVED_OR_REPAIRED = (
+        "FULL_RUNTIME_REMAINING_NONCRITICAL_FAILURES_WAIVED_OR_REPAIRED"
+    )
+
+
+DEFAULT_RUNTIME_TEST_EVIDENCE: Dict[str, Any] = {
+    "FULL_RUNTIME_CLASSIFIED_POST_REPAIRS": True,
+    "FULL_RUNTIME_FAILURE_COUNT": 3,
+    "FULL_RUNTIME_ERROR_COUNT": 0,
+    "FULL_RUNTIME_REMAINING_FAILURES_NON_SAFETY_CRITICAL": True,
+    "FULL_RUNTIME_PASS_COUNT": 436,
+    "FULL_RUNTIME_SKIP_COUNT": 11,
+    "CLASSIFICATION_DOC": "docs/FULL_RUNTIME_TEST_CLASSIFICATION_POST_REPAIRS.md",
+}
 
 
 DEFAULT_EVIDENCE: Dict[str, bool] = {
@@ -53,7 +67,8 @@ DEFAULT_EVIDENCE: Dict[str, bool] = {
     ReadinessCheck.LIVE_EXECUTOR_IMPLEMENTED.value: False,
     ReadinessCheck.UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED.value: False,
     ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED.value: False,
-    ReadinessCheck.FULL_RUNTIME_TESTS_CLASSIFIED.value: False,
+    ReadinessCheck.FULL_RUNTIME_TESTS_CLASSIFIED.value: True,
+    ReadinessCheck.FULL_RUNTIME_REMAINING_NONCRITICAL_FAILURES_WAIVED_OR_REPAIRED.value: False,
 }
 
 
@@ -178,8 +193,17 @@ _CHECK_CONFIG: Tuple[Tuple[ReadinessCheck, bool, bool, str, str], ...] = (
         ReadinessCheck.FULL_RUNTIME_TESTS_CLASSIFIED,
         True,
         False,
-        "Full runtime tests classified for safe vs live paths",
+        "Full runtime tests classified post-repairs (docs/FULL_RUNTIME_TEST_CLASSIFICATION_POST_REPAIRS.md)",
         "Classify full runtime test suite for safe vs live execution paths",
+    ),
+    (
+        ReadinessCheck.FULL_RUNTIME_REMAINING_NONCRITICAL_FAILURES_WAIVED_OR_REPAIRED,
+        True,
+        False,
+        "Remaining non-safety-critical full-runtime failures waived or repaired",
+        "FULL_RUNTIME_REMAINING_NONCRITICAL_FAILURES_NEED_WAIVER_OR_REPAIR: "
+        "repair or obtain explicit operator waiver for 3 remaining non-safety-critical "
+        "failures (lazy embeddings, router local-fallback drift)",
     ),
 )
 
@@ -264,11 +288,18 @@ def evaluate_live_mode_readiness(
     )
 
 
-def serialize_live_mode_readiness_report(report: LiveModeReadinessReport) -> Dict[str, Any]:
+def serialize_live_mode_readiness_report(
+    report: LiveModeReadinessReport,
+    runtime_test_evidence: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
     """Return a JSON-safe plain dict for a readiness report."""
+    resolved_runtime = dict(DEFAULT_RUNTIME_TEST_EVIDENCE)
+    if runtime_test_evidence:
+        resolved_runtime.update(dict(runtime_test_evidence))
     return {
         "status": report.status.value,
         "ready_for_limited_live_mode": report.ready_for_limited_live_mode,
+        "runtime_test_evidence": resolved_runtime,
         "items": [
             {
                 "check": item.check.value,

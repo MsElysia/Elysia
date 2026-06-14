@@ -1,7 +1,7 @@
 """Passive live-action approval route scaffolding.
 
 Lists approval packets, shows detail, records operator decisions, and returns
-audit trails. Does not execute actions, call a live executor, or run smoke tests.
+audit trails. May call the harmless smoke executor only when triple-gated.
 """
 
 from __future__ import annotations
@@ -28,6 +28,13 @@ from project_guardian.live_action_operator_decision import (
     serialize_live_action_operator_decision_validation,
     validate_live_action_operator_decision,
 )
+from project_guardian.live_action_smoke_packet import (
+    HARMLESS_LIVE_SMOKE_ACTION_ID,
+    HARMLESS_LIVE_SMOKE_RELATIVE_TARGET,
+    compute_harmless_smoke_content_hash,
+)
+
+_EXECUTOR_ENABLED_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
 class ApprovalRouteErrorCode(str, Enum):
@@ -65,7 +72,24 @@ _DECISION_ALIASES: Dict[str, OperatorDecisionKind] = {
 def is_live_action_approval_route_enabled() -> bool:
     """Return True only when explicit env enables passive approval routes."""
     raw = os.environ.get("ELYSIA_LIVE_ACTION_APPROVAL_ROUTE_ENABLED", "").strip().lower()
-    return raw in ("1", "true", "yes", "on")
+    return raw in _EXECUTOR_ENABLED_TRUTHY
+
+
+def is_approval_route_executes_smoke_enabled() -> bool:
+    """Return True only when route may call executor on harmless smoke APPROVE."""
+    raw = os.environ.get("ELYSIA_APPROVAL_ROUTE_EXECUTES_SMOKE", "").strip().lower()
+    return raw in _EXECUTOR_ENABLED_TRUTHY
+
+
+def _execution_gates_open() -> bool:
+    """True only when all three execution gates are explicitly enabled."""
+    if not is_live_action_approval_route_enabled():
+        return False
+    if not is_approval_route_executes_smoke_enabled():
+        return False
+    from project_guardian.live_action_executor import is_live_executor_enabled
+
+    return is_live_executor_enabled()
 
 
 def _utc_now_iso() -> str:
@@ -139,6 +163,8 @@ class StoredApprovalPacket:
     dry_run_trace_id: str = ""
     dry_run_trace_summary: Dict[str, Any] = field(default_factory=dict)
     registered_at: str = field(default_factory=_utc_now_iso)
+    workspace_root: str = ""
+    repo_root: str = ""
 
 
 @dataclass
@@ -156,6 +182,8 @@ class LiveActionApprovalRouteStore:
         expires_at: str = "",
         dry_run_trace_id: str = "",
         dry_run_trace_summary: Optional[Dict[str, Any]] = None,
+        workspace_root: str = "",
+        repo_root: str = "",
     ) -> None:
         """Register a packet for operator review. Does not execute anything."""
         self._packets[packet.packet_id] = StoredApprovalPacket(
@@ -163,6 +191,8 @@ class LiveActionApprovalRouteStore:
             expires_at=expires_at,
             dry_run_trace_id=dry_run_trace_id,
             dry_run_trace_summary=dict(dry_run_trace_summary or {}),
+            workspace_root=workspace_root,
+            repo_root=repo_root,
         )
 
     def get_stored_packet(self, packet_id: str) -> Optional[StoredApprovalPacket]:
@@ -186,6 +216,31 @@ class LiveActionApprovalRouteStore:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
+
+    def append_execution_audit(
+        self,
+        packet_id: str,
+        *,
+        operator_decision_id: str,
+        execution_result: Dict[str, Any],
+    ) -> None:
+        """Append separate execution audit record. Does not mutate decision audit."""
+        if self.audit_path is None:
+            return
+        line = json.dumps(
+            {
+                "record_type": "execution_audit",
+                "packet_id": packet_id,
+                "operator_decision_id": operator_decision_id,
+                "execution_result": execution_result,
+                "recorded_at": _utc_now_iso(),
+            },
+            ensure_ascii=False,
+        )
+        path = Path(self.audit_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
 
     def decisions_for_packet(self, packet_id: str) -> Tuple[LiveActionOperatorDecision, ...]:
         return tuple(self._decisions.get(packet_id, ()))
@@ -260,6 +315,65 @@ def _detail_from_stored(stored: StoredApprovalPacket) -> Dict[str, Any]:
 
 def _parse_decision_kind(raw: str) -> Optional[OperatorDecisionKind]:
     return _DECISION_ALIASES.get(str(raw or "").strip().upper())
+
+
+def _is_harmless_smoke_packet(stored: StoredApprovalPacket) -> bool:
+    packet = stored.packet
+    return (
+        packet.request.action_id == HARMLESS_LIVE_SMOKE_ACTION_ID
+        and packet.mode == "harmless_live_smoke_packet"
+        and bool(stored.workspace_root.strip())
+    )
+
+
+def _maybe_execute_harmless_smoke_after_approve(
+    stored: StoredApprovalPacket,
+    operator_decision: LiveActionOperatorDecision,
+) -> Optional[Dict[str, Any]]:
+    """Call harmless smoke executor when triple-gated and packet is smoke. No auto-rollback."""
+    if not _execution_gates_open():
+        return None
+    if not _is_harmless_smoke_packet(stored):
+        return None
+
+    from project_guardian.live_action_executor import (
+        LiveActionExecutionRequest,
+        execute_live_action,
+        serialize_live_action_execution_result,
+    )
+
+    packet = stored.packet
+    audit_id = getattr(packet.audit_record, "audit_record_id", "") or packet.packet_id
+    request = LiveActionExecutionRequest(
+        approval_packet_id=packet.packet_id,
+        operator_decision_id=operator_decision.decision_id,
+        operator_decision="APPROVE",
+        action_id=HARMLESS_LIVE_SMOKE_ACTION_ID,
+        action_category="harmless_live_smoke",
+        target_path=HARMLESS_LIVE_SMOKE_RELATIVE_TARGET,
+        workspace_root=stored.workspace_root,
+        expected_content_hash=compute_harmless_smoke_content_hash(),
+        rollback_plan_id=HARMLESS_LIVE_SMOKE_ACTION_ID,
+        audit_record_id=audit_id,
+        dry_run_trace_id=stored.dry_run_trace_id,
+        expires_at=stored.expires_at,
+        repo_root=stored.repo_root,
+    )
+    result = execute_live_action(request)
+    return serialize_live_action_execution_result(result)
+
+
+def _execution_response_fields(
+    execution_result: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if execution_result is None:
+        return dict(_no_execution_fields())
+    return {
+        "executor_called": True,
+        "execution_permitted": bool(execution_result.get("execution_permitted")),
+        "executed": bool(execution_result.get("executed")),
+        "execution_result": execution_result,
+    }
 
 
 def list_pending_approval_packets(
@@ -402,16 +516,37 @@ def record_operator_decision_for_packet(
 
     store.append_decision(operator_decision)
 
-    return {
+    response: Dict[str, Any] = {
         "decision_id": operator_decision.decision_id,
+        "decision_recorded": True,
         "packet_id": packet_id,
+        "approval_packet_id": packet_id,
+        "operator_decision_id": operator_decision.decision_id,
         "decision": decision_kind.value,
         "validation": serialize_live_action_operator_decision_validation(validation),
         "audit_update_preview": audit_update,
         "route_source": route_source,
-        "message": "Decision recorded. Execution remains blocked.",
-        **_no_execution_fields(),
-    }, 200
+    }
+
+    execution_result: Optional[Dict[str, Any]] = None
+    if decision_kind is OperatorDecisionKind.APPROVE:
+        execution_result = _maybe_execute_harmless_smoke_after_approve(stored, operator_decision)
+        if execution_result is not None:
+            store.append_execution_audit(
+                packet_id,
+                operator_decision_id=operator_decision.decision_id,
+                execution_result=execution_result,
+            )
+
+    response.update(_execution_response_fields(execution_result))
+    if execution_result is not None and execution_result.get("executed"):
+        response["message"] = "Decision recorded; harmless smoke execution completed."
+    elif execution_result is not None:
+        response["message"] = "Decision recorded; execution attempted but not permitted."
+    else:
+        response["message"] = "Decision recorded. Execution remains blocked."
+
+    return response, 200
 
 
 def get_approval_decision_trail(

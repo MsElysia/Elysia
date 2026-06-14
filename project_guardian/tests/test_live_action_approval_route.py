@@ -288,11 +288,10 @@ class TestAuditTrail:
 
 
 class TestNoExecutionImports:
-    def test_route_module_has_no_executor_calls(self):
+    def test_route_module_has_no_forbidden_execution_calls(self):
         source = ROUTE_MODULE.read_text(encoding="utf-8")
         tree = ast.parse(source)
         forbidden_names = {
-            "execute_live_action",
             "run_for_proposal",
             "ImplementerAgent",
             "apply_mutation",
@@ -301,6 +300,13 @@ class TestNoExecutionImports:
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 assert node.func.id not in forbidden_names
+
+    def test_route_module_has_no_module_level_executor_import(self):
+        source = ROUTE_MODULE.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom):
+                assert node.module != "project_guardian.live_action_executor"
 
     def test_route_module_does_not_import_server_or_core(self):
         source = ROUTE_MODULE.read_text(encoding="utf-8")

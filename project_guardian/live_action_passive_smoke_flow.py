@@ -42,5 +42,7 @@ def register_harmless_smoke_packet_for_approval(
         expires_at=expires_at,
         dry_run_trace_id=dry_run_trace_id,
         dry_run_trace_summary=dict(dry_run_trace_summary or _DEFAULT_DRY_RUN_TRACE_SUMMARY),
+        workspace_root=result.workspace_root,
+        repo_root=str(repo_root.resolve()) if repo_root is not None else "",
     )
     return result

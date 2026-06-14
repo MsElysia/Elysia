@@ -306,9 +306,15 @@ class TestApprovalRouteNotWiredToExecutor:
         assert "project_guardian.core" not in source
         assert "elysia.api.server" not in source
 
-    def test_approval_route_does_not_import_executor(self):
+    def test_approval_route_imports_executor_only_inside_functions(self):
         source = APPROVAL_ROUTE_MODULE.read_text(encoding="utf-8")
-        assert "live_action_executor" not in source
+        tree = ast.parse(source)
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom):
+                assert node.module != "project_guardian.live_action_executor"
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name != "project_guardian.live_action_executor"
 
 
 class TestEnabledHarmlessSmokeExecutor:

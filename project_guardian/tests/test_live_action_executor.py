@@ -234,7 +234,11 @@ class TestExecutorDisabledByDefault:
         assert before.ready_for_limited_live_mode is False
         assert after.ready_for_limited_live_mode is False
         assert after.status.value == "BLOCKED"
-        assert any("HARMLESS_LIVE_ACTION_SMOKE_VERIFIED" in b for b in after.blockers)
+        assert any(
+            "APPROVAL_ROUTE_NOT_WIRED_TO_EXECUTOR" in b
+            or "APPROVAL_ROUTE_DEFAULT_DISABLED" in b
+            for b in after.blockers
+        )
 
     def test_rollback_scaffold_does_not_execute(self, tmp_path, disabled_executor):
         workspace = _smoke_workspace(tmp_path)
@@ -482,4 +486,8 @@ class TestEnabledHarmlessSmokeExecutor:
         assert before.ready_for_limited_live_mode is False
         assert after.ready_for_limited_live_mode is False
         assert after.status.value == "BLOCKED"
-        assert any("HARMLESS_LIVE_ACTION_SMOKE_VERIFIED" in b for b in after.blockers)
+        assert any(
+            "APPROVAL_ROUTE_NOT_WIRED_TO_EXECUTOR" in b
+            or "APPROVAL_ROUTE_DEFAULT_DISABLED" in b
+            for b in after.blockers
+        )

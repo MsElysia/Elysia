@@ -27,12 +27,53 @@ def _item_for(report, check: ReadinessCheck):
 
 
 class TestDefaultReadiness:
-    def test_default_is_not_ready(self) -> None:
+    def test_default_is_blocked_not_ready(self) -> None:
         report = evaluate_live_mode_readiness()
 
         assert report.ready_for_limited_live_mode is False
-        assert report.status in (ReadinessStatus.NOT_READY, ReadinessStatus.BLOCKED)
+        assert report.status is ReadinessStatus.BLOCKED
         assert report.safety_verdict == "NOT_READY_FOR_LIVE_MODE"
+
+    def test_default_verified_executor_smoke_and_rollback(self) -> None:
+        report = evaluate_live_mode_readiness()
+
+        executor_item = _item_for(report, ReadinessCheck.LIVE_EXECUTOR_IMPLEMENTED)
+        smoke_item = _item_for(report, ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED)
+        rollback_item = _item_for(report, ReadinessCheck.HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED)
+
+        assert executor_item.passed is True
+        assert smoke_item.passed is True
+        assert rollback_item.passed is True
+        assert not any("LIVE_EXECUTOR_IMPLEMENTED" in blocker for blocker in report.blockers)
+        assert not any("HARMLESS_LIVE_ACTION_SMOKE_VERIFIED" in blocker for blocker in report.blockers)
+        assert not any("HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED" in blocker for blocker in report.blockers)
+
+    def test_default_approval_route_scaffolded_but_not_execution_wired(self) -> None:
+        report = evaluate_live_mode_readiness()
+        route_item = _item_for(report, ReadinessCheck.UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED)
+        wired_item = _item_for(report, ReadinessCheck.APPROVAL_ROUTE_EXECUTION_WIRED)
+
+        assert route_item.passed is True
+        assert route_item.blocker is False
+        assert wired_item.passed is False
+        assert wired_item.blocker is True
+        assert any("APPROVAL_ROUTE_NOT_WIRED_TO_EXECUTOR" in blocker for blocker in report.blockers)
+
+    def test_default_approval_route_disabled_by_default(self) -> None:
+        report = evaluate_live_mode_readiness()
+        enabled_item = _item_for(report, ReadinessCheck.APPROVAL_ROUTE_OPERATOR_ENABLED)
+
+        assert enabled_item.passed is False
+        assert enabled_item.blocker is True
+        assert any("APPROVAL_ROUTE_DEFAULT_DISABLED" in blocker for blocker in report.blockers)
+
+    def test_default_autonomy_config_remains_disabled(self) -> None:
+        report = evaluate_live_mode_readiness()
+        item = _item_for(report, ReadinessCheck.AUTONOMY_CONFIG_DEFAULT_DISABLED)
+
+        assert item.passed is True
+        assert item.blocker is False
+        assert not any("AUTONOMY_CONFIG_DEFAULT_DISABLED" in blocker for blocker in report.blockers)
 
     def test_default_dirty_core_cleaned_passes(self) -> None:
         report = evaluate_live_mode_readiness()
@@ -50,35 +91,6 @@ class TestDefaultReadiness:
         assert item.blocker is False
         assert not any("DIRTY_SERVER_CLEANED" in blocker for blocker in report.blockers)
 
-    def test_default_live_executor_implemented_but_smoke_not_verified(self) -> None:
-        report = evaluate_live_mode_readiness()
-        item = _item_for(report, ReadinessCheck.LIVE_EXECUTOR_IMPLEMENTED)
-
-        assert item.passed is True
-        assert item.blocker is False
-        assert not any("LIVE_EXECUTOR_IMPLEMENTED" in blocker for blocker in report.blockers)
-        smoke_item = _item_for(report, ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED)
-        assert smoke_item.passed is False
-        assert smoke_item.blocker is True
-
-    def test_default_blockers_include_missing_approval_route(self) -> None:
-        report = evaluate_live_mode_readiness()
-        item = _item_for(report, ReadinessCheck.UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED)
-
-        assert item.passed is False
-        assert item.blocker is True
-        assert any("UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED" in blocker for blocker in report.blockers)
-
-    def test_default_blockers_include_missing_harmless_live_smoke(self) -> None:
-        report = evaluate_live_mode_readiness()
-        item = _item_for(report, ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED)
-
-        assert item.passed is False
-        assert item.blocker is True
-        assert any("HARMLESS_LIVE_ACTION_SMOKE_VERIFIED" in blocker for blocker in report.blockers)
-        assert "HARMLESS_LIVE_ACTION_SMOKE_DESIGN" in item.notes
-
-    def test_default_full_runtime_tests_classified_passes(self) -> None:
         report = evaluate_live_mode_readiness()
         item = _item_for(report, ReadinessCheck.FULL_RUNTIME_TESTS_CLASSIFIED)
 

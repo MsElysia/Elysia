@@ -34,7 +34,10 @@ class ReadinessCheck(str, Enum):
     ROLLBACK_METADATA_IMPLEMENTED = "ROLLBACK_METADATA_IMPLEMENTED"
     LIVE_EXECUTOR_IMPLEMENTED = "LIVE_EXECUTOR_IMPLEMENTED"
     UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED = "UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED"
+    APPROVAL_ROUTE_EXECUTION_WIRED = "APPROVAL_ROUTE_EXECUTION_WIRED"
+    APPROVAL_ROUTE_OPERATOR_ENABLED = "APPROVAL_ROUTE_OPERATOR_ENABLED"
     HARMLESS_LIVE_ACTION_SMOKE_VERIFIED = "HARMLESS_LIVE_ACTION_SMOKE_VERIFIED"
+    HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED = "HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED"
     AUTONOMY_CONFIG_DEFAULT_DISABLED = "AUTONOMY_CONFIG_DEFAULT_DISABLED"
     FULL_RUNTIME_TESTS_CLASSIFIED = "FULL_RUNTIME_TESTS_CLASSIFIED"
     FULL_RUNTIME_REMAINING_NONCRITICAL_FAILURES_WAIVED_OR_REPAIRED = (
@@ -69,8 +72,11 @@ DEFAULT_EVIDENCE: Dict[str, bool] = {
     ReadinessCheck.DIRTY_CORE_CLEANED.value: True,
     ReadinessCheck.DIRTY_SERVER_CLEANED.value: True,
     ReadinessCheck.LIVE_EXECUTOR_IMPLEMENTED.value: True,
-    ReadinessCheck.UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED.value: False,
-    ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED.value: False,
+    ReadinessCheck.UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED.value: True,
+    ReadinessCheck.APPROVAL_ROUTE_EXECUTION_WIRED.value: False,
+    ReadinessCheck.APPROVAL_ROUTE_OPERATOR_ENABLED.value: False,
+    ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED.value: True,
+    ReadinessCheck.HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED.value: True,
     ReadinessCheck.FULL_RUNTIME_TESTS_CLASSIFIED.value: True,
     ReadinessCheck.FULL_RUNTIME_REMAINING_NONCRITICAL_FAILURES_WAIVED_OR_REPAIRED.value: True,
 }
@@ -168,23 +174,44 @@ _CHECK_CONFIG: Tuple[Tuple[ReadinessCheck, bool, bool, str, str], ...] = (
     (
         ReadinessCheck.LIVE_EXECUTOR_IMPLEMENTED,
         True,
-        True,
-        "Harmless smoke executor implemented; disabled by default; smoke verification pending",
+        False,
+        "Harmless smoke executor implemented; disabled by default via ELYSIA_LIVE_EXECUTOR_ENABLED",
         "Implement approval-gated live executor (future milestone)",
     ),
     (
         ReadinessCheck.UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED,
         True,
-        True,
-        "UI/API approval route not implemented",
+        False,
+        "Passive UI/API approval route scaffolding implemented; recording only",
         "Implement operator UI or API approval route (future milestone)",
+    ),
+    (
+        ReadinessCheck.APPROVAL_ROUTE_EXECUTION_WIRED,
+        True,
+        True,
+        "Approval route execution-wired to live executor",
+        "APPROVAL_ROUTE_NOT_WIRED_TO_EXECUTOR: wire approval route to executor on APPROVE (future milestone)",
+    ),
+    (
+        ReadinessCheck.APPROVAL_ROUTE_OPERATOR_ENABLED,
+        True,
+        True,
+        "Approval route enabled for live operator use",
+        "APPROVAL_ROUTE_DEFAULT_DISABLED: enable ELYSIA_LIVE_ACTION_APPROVAL_ROUTE_ENABLED for live use (future milestone)",
     ),
     (
         ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED,
         True,
-        True,
-        "Harmless live-action smoke designed but not implemented/verified (docs/HARMLESS_LIVE_ACTION_SMOKE_DESIGN.md)",
+        False,
+        "Harmless smoke executor verified in isolated tmp workspace (docs/HARMLESS_SMOKE_EXECUTOR_IMPLEMENTATION.md)",
         "Implement and verify harmless live-action smoke per docs/HARMLESS_LIVE_ACTION_SMOKE_DESIGN.md",
+    ),
+    (
+        ReadinessCheck.HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED,
+        True,
+        False,
+        "Harmless smoke rollback verified in isolated tmp workspace (docs/HARMLESS_SMOKE_EXECUTOR_IMPLEMENTATION.md)",
+        "Verify harmless smoke rollback in isolated tmp workspace",
     ),
     (
         ReadinessCheck.AUTONOMY_CONFIG_DEFAULT_DISABLED,

@@ -292,11 +292,12 @@ class TestPassiveSmokeApprovalFlow:
         report = evaluate_live_mode_readiness()
         assert report.ready_for_limited_live_mode is False
         assert report.status.value == "BLOCKED"
-        assert not any(
-            "LIVE_EXECUTOR_IMPLEMENTED" in blocker
+        assert any(
+            "APPROVAL_ROUTE_NOT_WIRED_TO_EXECUTOR" in blocker
+            or "APPROVAL_ROUTE_DEFAULT_DISABLED" in blocker
             for blocker in report.blockers
         )
-        assert any(
+        assert not any(
             "HARMLESS_LIVE_ACTION_SMOKE_VERIFIED" in blocker
             for blocker in report.blockers
         )

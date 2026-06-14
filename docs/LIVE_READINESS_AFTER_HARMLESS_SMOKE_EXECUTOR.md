@@ -6,7 +6,7 @@
 
 **Starting checkpoint:** `ea62f51 feat(autonomy): implement harmless smoke executor`
 
-**Related docs:** [`HARMLESS_SMOKE_EXECUTOR_IMPLEMENTATION.md`](HARMLESS_SMOKE_EXECUTOR_IMPLEMENTATION.md), [`PASSIVE_UI_API_APPROVAL_ROUTE_SCAFFOLDING.md`](PASSIVE_UI_API_APPROVAL_ROUTE_SCAFFOLDING.md), [`PASSIVE_HARMLESS_SMOKE_APPROVAL_FLOW.md`](PASSIVE_HARMLESS_SMOKE_APPROVAL_FLOW.md)
+**Related docs:** [`HARMLESS_SMOKE_EXECUTOR_IMPLEMENTATION.md`](HARMLESS_SMOKE_EXECUTOR_IMPLEMENTATION.md), [`PASSIVE_UI_API_APPROVAL_ROUTE_SCAFFOLDING.md`](PASSIVE_UI_API_APPROVAL_ROUTE_SCAFFOLDING.md), [`PASSIVE_HARMLESS_SMOKE_APPROVAL_FLOW.md`](PASSIVE_HARMLESS_SMOKE_APPROVAL_FLOW.md), [`APPROVAL_ROUTE_EXECUTOR_WIRING_PLAN.md`](APPROVAL_ROUTE_EXECUTOR_WIRING_PLAN.md)
 
 ---
 
@@ -56,6 +56,8 @@ Verified executor/smoke/rollback evidence does **not** grant limited live mode. 
 |-------------|--------|
 | `APPROVAL_ROUTE_NOT_WIRED_TO_EXECUTOR` | `APPROVAL_ROUTE_EXECUTION_WIRED=false` — APPROVE does not call executor |
 | `APPROVAL_ROUTE_DEFAULT_DISABLED` | `APPROVAL_ROUTE_OPERATOR_ENABLED=false` — route env gate off by default |
+
+**Next planned milestone:** [`APPROVAL_ROUTE_EXECUTOR_WIRING_PLAN.md`](APPROVAL_ROUTE_EXECUTOR_WIRING_PLAN.md) (documentation-only at plan time; implementation future).
 
 `AUTONOMY_CONFIG_DEFAULT_DISABLED=true` is a **passing** safety check (autonomy not enabled), not a readiness grant.
 

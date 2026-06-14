@@ -13,6 +13,14 @@ from unittest.mock import Mock, patch
 from project_guardian.core import GuardianCore
 
 
+def _isolated_core_config() -> dict:
+    return {
+        "enable_vector_memory": False,
+        "enable_resource_monitoring": False,
+        "_test_skip_external_storage": True,
+    }
+
+
 class TestUnknownTaskType:
     """Test that unknown task types return structured error"""
     
@@ -104,17 +112,21 @@ class TestRunAcceptance:
         task_file = tasks_dir / "TASK-0001.md"
         task_file.write_text("TASK_TYPE: RUN_ACCEPTANCE\n")
         
-        # Create mock acceptance script
+        mutations_dir = tmp_path / "MUTATIONS"
+        mutations_dir.mkdir()
+        
+        # Create mock acceptance script (resolved via mutations_dir.parent)
         scripts_dir = tmp_path / "scripts"
         scripts_dir.mkdir()
         acceptance_script = scripts_dir / "acceptance.ps1"
         acceptance_script.write_text("# Mock acceptance script\n")
         
-        config = {
-            "enable_vector_memory": False,
-            "enable_resource_monitoring": False,
-        }
-        core = GuardianCore(config=config, control_path=control_file, tasks_dir=tasks_dir)
+        core = GuardianCore(
+            config=_isolated_core_config(),
+            control_path=control_file,
+            tasks_dir=tasks_dir,
+            mutations_dir=mutations_dir,
+        )
         
         # Mock SubprocessRunner.run_command to avoid actually running PowerShell
         with patch.object(core.subprocess_runner, 'run_command') as mock_run_command:
@@ -165,13 +177,16 @@ class TestRunAcceptance:
         task_file = tasks_dir / "TASK-0001.md"
         task_file.write_text("TASK_TYPE: RUN_ACCEPTANCE\n")
         
-        # Don't create scripts directory (script will be missing)
+        mutations_dir = tmp_path / "MUTATIONS"
+        mutations_dir.mkdir()
+        # Don't create scripts directory (script will be missing under tmp_path)
         
-        config = {
-            "enable_vector_memory": False,
-            "enable_resource_monitoring": False,
-        }
-        core = GuardianCore(config=config, control_path=control_file, tasks_dir=tasks_dir)
+        core = GuardianCore(
+            config=_isolated_core_config(),
+            control_path=control_file,
+            tasks_dir=tasks_dir,
+            mutations_dir=mutations_dir,
+        )
         
         result = core.run_once()
         

@@ -4,7 +4,7 @@
 **Date:** 2026-06-14  
 **Status:** Designed — **not implemented, not verified, not run**
 
-**Related docs:** [`PHASE2_LIVE_ACTION_ALLOWLIST_DESIGN.md`](PHASE2_LIVE_ACTION_ALLOWLIST_DESIGN.md), [`PHASE2_PASSIVE_SAFETY_STACK_BASELINE.md`](PHASE2_PASSIVE_SAFETY_STACK_BASELINE.md), [`LIVE_MODE_READINESS_POST_REPAIR_UPDATE.md`](LIVE_MODE_READINESS_POST_REPAIR_UPDATE.md)
+**Related docs:** [`PHASE2_LIVE_ACTION_ALLOWLIST_DESIGN.md`](PHASE2_LIVE_ACTION_ALLOWLIST_DESIGN.md), [`PHASE2_PASSIVE_SAFETY_STACK_BASELINE.md`](PHASE2_PASSIVE_SAFETY_STACK_BASELINE.md), [`LIVE_MODE_READINESS_POST_REPAIR_UPDATE.md`](LIVE_MODE_READINESS_POST_REPAIR_UPDATE.md), [`LIVE_EXECUTOR_INTERFACE_DESIGN.md`](LIVE_EXECUTOR_INTERFACE_DESIGN.md)
 
 **Starting checkpoint:** `623ce00 fix(tests): repair remaining noncritical failures`
 
@@ -221,7 +221,7 @@ When an executor is implemented, it **must**:
 9. Never touch repo root, `test.py`, `CONTROL.md`, or configured memory stores
 10. Set `execution_permitted=false` in all passive/build paths
 
-Executor is **not implemented** in this milestone.
+Executor is **not implemented** in this milestone. See [`LIVE_EXECUTOR_INTERFACE_DESIGN.md`](LIVE_EXECUTOR_INTERFACE_DESIGN.md) for the future executor boundary, inputs, preconditions, and result schema.
 
 ---
 

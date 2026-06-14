@@ -73,6 +73,7 @@ class TestDefaultReadiness:
         assert item.passed is False
         assert item.blocker is True
         assert any("HARMLESS_LIVE_ACTION_SMOKE_VERIFIED" in blocker for blocker in report.blockers)
+        assert "HARMLESS_LIVE_ACTION_SMOKE_DESIGN" in item.notes
 
     def test_default_full_runtime_tests_classified_passes(self) -> None:
         report = evaluate_live_mode_readiness()
@@ -119,6 +120,7 @@ class TestPostRepairRuntimeEvidence:
         assert runtime["FULL_RUNTIME_CLASSIFIED_POST_REPAIRS"] is True
         assert runtime["FULL_RUNTIME_FAILURE_COUNT"] == 0
         assert runtime["FULL_RUNTIME_REMAINING_FAILURES_REPAIRED"] is True
+        assert runtime["HARMLESS_LIVE_ACTION_SMOKE_DESIGNED"] is True
         assert runtime["FULL_RUNTIME_ERROR_COUNT"] == 0
         assert runtime["FULL_RUNTIME_REMAINING_FAILURES_NON_SAFETY_CRITICAL"] is True
         assert runtime["FULL_RUNTIME_PASS_COUNT"] == 439

@@ -52,6 +52,8 @@ DEFAULT_RUNTIME_TEST_EVIDENCE: Dict[str, Any] = {
     "FULL_RUNTIME_SKIP_COUNT": 11,
     "CLASSIFICATION_DOC": "docs/FULL_RUNTIME_TEST_CLASSIFICATION_POST_REPAIRS.md",
     "REPAIR_DOC": "docs/REMAINING_NONCRITICAL_TEST_FAILURES_REPAIR.md",
+    "HARMLESS_LIVE_ACTION_SMOKE_DESIGNED": True,
+    "HARMLESS_LIVE_ACTION_SMOKE_DESIGN_DOC": "docs/HARMLESS_LIVE_ACTION_SMOKE_DESIGN.md",
 }
 
 
@@ -181,8 +183,8 @@ _CHECK_CONFIG: Tuple[Tuple[ReadinessCheck, bool, bool, str, str], ...] = (
         ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED,
         True,
         True,
-        "Harmless live-action smoke not verified",
-        "Run and verify harmless live-action smoke test (future milestone)",
+        "Harmless live-action smoke designed but not implemented/verified (docs/HARMLESS_LIVE_ACTION_SMOKE_DESIGN.md)",
+        "Implement and verify harmless live-action smoke per docs/HARMLESS_LIVE_ACTION_SMOKE_DESIGN.md",
     ),
     (
         ReadinessCheck.AUTONOMY_CONFIG_DEFAULT_DISABLED,

@@ -24,6 +24,13 @@ from project_guardian.safe_stack.operator_chat import (
     OperatorChatResponderResult,
     run_operator_chat_turn,
 )
+from project_guardian.live_action_approval_route import (
+    LiveActionApprovalRouteStore,
+    get_approval_decision_trail,
+    get_approval_packet_detail,
+    list_pending_approval_packets,
+    record_operator_decision_for_packet,
+)
 from project_guardian.conversation_store import (
     CHAT_LIST_MESSAGES_DEFAULT,
     get_default_conversation_store,
@@ -49,6 +56,7 @@ class RuntimeAPIServer:
         guardian: Optional[Any] = None,
         conversation_store: Optional[Any] = None,
         self_improvement_queue: Optional[Any] = None,
+        live_action_approval_store: Optional[LiveActionApprovalRouteStore] = None,
     ):
         self._status_provider = status_provider
         self._event_bus = event_bus
@@ -59,6 +67,9 @@ class RuntimeAPIServer:
         self._guardian = guardian
         self._conversation_store = conversation_store
         self._self_improvement_queue = self_improvement_queue
+        self._live_action_approval_store = (
+            live_action_approval_store or LiveActionApprovalRouteStore()
+        )
         self.host = host
         self.port = port
         self._app = Flask(__name__)
@@ -688,6 +699,45 @@ class RuntimeAPIServer:
             )[:10]
 
             return jsonify(impl_info)
+
+        # Passive live-action approval routes (decision recording only; no execution).
+        @self._app.route("/api/live-action/approval-packets/pending", methods=["GET"])
+        def api_list_pending_live_action_packets():
+            body, code = list_pending_approval_packets(self._live_action_approval_store)
+            return jsonify(body), code
+
+        @self._app.route("/api/live-action/approval-packets/<packet_id>", methods=["GET"])
+        def api_get_live_action_approval_packet(packet_id: str):
+            body, code = get_approval_packet_detail(
+                self._live_action_approval_store,
+                packet_id,
+            )
+            return jsonify(body), code
+
+        @self._app.route(
+            "/api/live-action/approval-packets/<packet_id>/decision",
+            methods=["POST"],
+        )
+        def api_record_live_action_operator_decision(packet_id: str):
+            data = request.get_json(force=True, silent=True) or {}
+            body, code = record_operator_decision_for_packet(
+                self._live_action_approval_store,
+                packet_id,
+                data,
+                route_source="api",
+            )
+            return jsonify(body), code
+
+        @self._app.route(
+            "/api/live-action/approval-packets/<packet_id>/trail",
+            methods=["GET"],
+        )
+        def api_get_live_action_approval_trail(packet_id: str):
+            body, code = get_approval_decision_trail(
+                self._live_action_approval_store,
+                packet_id,
+            )
+            return jsonify(body), code
 
     def start(self) -> None:
         if self._running:

@@ -68,7 +68,7 @@ DEFAULT_EVIDENCE: Dict[str, bool] = {
     ReadinessCheck.AUTONOMY_CONFIG_DEFAULT_DISABLED.value: True,
     ReadinessCheck.DIRTY_CORE_CLEANED.value: True,
     ReadinessCheck.DIRTY_SERVER_CLEANED.value: True,
-    ReadinessCheck.LIVE_EXECUTOR_IMPLEMENTED.value: False,
+    ReadinessCheck.LIVE_EXECUTOR_IMPLEMENTED.value: True,
     ReadinessCheck.UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED.value: False,
     ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED.value: False,
     ReadinessCheck.FULL_RUNTIME_TESTS_CLASSIFIED.value: True,
@@ -169,7 +169,7 @@ _CHECK_CONFIG: Tuple[Tuple[ReadinessCheck, bool, bool, str, str], ...] = (
         ReadinessCheck.LIVE_EXECUTOR_IMPLEMENTED,
         True,
         True,
-        "Live executor not implemented",
+        "Harmless smoke executor implemented; disabled by default; smoke verification pending",
         "Implement approval-gated live executor (future milestone)",
     ),
     (

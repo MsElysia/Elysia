@@ -50,13 +50,16 @@ class TestDefaultReadiness:
         assert item.blocker is False
         assert not any("DIRTY_SERVER_CLEANED" in blocker for blocker in report.blockers)
 
-    def test_default_blockers_include_missing_live_executor(self) -> None:
+    def test_default_live_executor_implemented_but_smoke_not_verified(self) -> None:
         report = evaluate_live_mode_readiness()
         item = _item_for(report, ReadinessCheck.LIVE_EXECUTOR_IMPLEMENTED)
 
-        assert item.passed is False
-        assert item.blocker is True
-        assert any("LIVE_EXECUTOR_IMPLEMENTED" in blocker for blocker in report.blockers)
+        assert item.passed is True
+        assert item.blocker is False
+        assert not any("LIVE_EXECUTOR_IMPLEMENTED" in blocker for blocker in report.blockers)
+        smoke_item = _item_for(report, ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED)
+        assert smoke_item.passed is False
+        assert smoke_item.blocker is True
 
     def test_default_blockers_include_missing_approval_route(self) -> None:
         report = evaluate_live_mode_readiness()

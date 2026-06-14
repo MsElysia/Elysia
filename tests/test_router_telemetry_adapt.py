@@ -132,6 +132,10 @@ def test_healthy_serial_kept(tmp_path, monkeypatch):
 
 def test_invalid_intents_escalate_cloud_serial(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "project_guardian.cloud_api_state.openai_usable_for_routing",
+        lambda: True,
+    )
     db = TelemetrySqliteStore(tmp_path / "t3.db")
 
     async def _seed():

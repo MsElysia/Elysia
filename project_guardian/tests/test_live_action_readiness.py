@@ -83,17 +83,17 @@ class TestDefaultReadiness:
         assert item.status is ReadinessStatus.READY
         assert not any("FULL_RUNTIME_TESTS_CLASSIFIED" in blocker for blocker in report.blockers)
 
-    def test_default_remaining_failures_need_waiver_or_repair(self) -> None:
+    def test_default_remaining_failures_repaired_or_waived(self) -> None:
         report = evaluate_live_mode_readiness()
         item = _item_for(
             report,
             ReadinessCheck.FULL_RUNTIME_REMAINING_NONCRITICAL_FAILURES_WAIVED_OR_REPAIRED,
         )
 
-        assert item.passed is False
+        assert item.passed is True
         assert item.blocker is False
-        assert item.status is ReadinessStatus.NOT_READY
-        assert any(
+        assert item.status is ReadinessStatus.READY
+        assert not any(
             "FULL_RUNTIME_REMAINING_NONCRITICAL_FAILURES_NEED_WAIVER_OR_REPAIR" in action
             for action in report.next_required_actions
         )
@@ -117,10 +117,11 @@ class TestPostRepairRuntimeEvidence:
         runtime = payload["runtime_test_evidence"]
 
         assert runtime["FULL_RUNTIME_CLASSIFIED_POST_REPAIRS"] is True
-        assert runtime["FULL_RUNTIME_FAILURE_COUNT"] == 3
+        assert runtime["FULL_RUNTIME_FAILURE_COUNT"] == 0
+        assert runtime["FULL_RUNTIME_REMAINING_FAILURES_REPAIRED"] is True
         assert runtime["FULL_RUNTIME_ERROR_COUNT"] == 0
         assert runtime["FULL_RUNTIME_REMAINING_FAILURES_NON_SAFETY_CRITICAL"] is True
-        assert runtime["FULL_RUNTIME_PASS_COUNT"] == 436
+        assert runtime["FULL_RUNTIME_PASS_COUNT"] == 439
 
 
 class TestSerialization:
@@ -132,7 +133,7 @@ class TestSerialization:
         decoded = json.loads(encoded)
         assert decoded["ready_for_limited_live_mode"] is False
         assert decoded["safety_verdict"] == "NOT_READY_FOR_LIVE_MODE"
-        assert decoded["runtime_test_evidence"]["FULL_RUNTIME_FAILURE_COUNT"] == 3
+        assert decoded["runtime_test_evidence"]["FULL_RUNTIME_FAILURE_COUNT"] == 0
         assert isinstance(decoded["items"], list)
         assert decoded["items"][0]["check"] in {c.value for c in ReadinessCheck}
 

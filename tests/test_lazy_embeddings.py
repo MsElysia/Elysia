@@ -162,8 +162,11 @@ def test_embeddings_enabled_after_startup():
             memory.enable_embeddings()
             assert memory._embeddings_enabled is True
             
-            # Now remember() should trigger embeddings
-            memory.remember("Test memory", category="test")
+            # Now remember() should trigger embeddings (substantive text passes embed gates)
+            substantive = (
+                "Test memory entry used to verify vector indexing after embeddings are enabled."
+            )
+            memory.remember(substantive, category="test", priority=0.6)
             
             # Verify embedding call path was executed (via add_memory)
             assert mock_vector_search.add_memory.called, "add_memory should be called after embeddings enabled"

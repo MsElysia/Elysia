@@ -6,7 +6,7 @@
 
 **Starting checkpoint:** `7d07b47 feat(autonomy): wire approval route to smoke executor`
 
-**Related docs:** [`APPROVAL_ROUTE_EXECUTOR_WIRING_IMPLEMENTATION.md`](APPROVAL_ROUTE_EXECUTOR_WIRING_IMPLEMENTATION.md), [`LIVE_READINESS_AFTER_HARMLESS_SMOKE_EXECUTOR.md`](LIVE_READINESS_AFTER_HARMLESS_SMOKE_EXECUTOR.md)
+**Related docs:** [`APPROVAL_ROUTE_EXECUTOR_WIRING_IMPLEMENTATION.md`](APPROVAL_ROUTE_EXECUTOR_WIRING_IMPLEMENTATION.md), [`LIVE_READINESS_AFTER_HARMLESS_SMOKE_EXECUTOR.md`](LIVE_READINESS_AFTER_HARMLESS_SMOKE_EXECUTOR.md), [`LIMITED_LIVE_PROFILE.md`](LIMITED_LIVE_PROFILE.md), [`OPERATOR_LIMITED_LIVE_RUNBOOK.md`](OPERATOR_LIMITED_LIVE_RUNBOOK.md)
 
 ---
 
@@ -61,6 +61,8 @@ Verified route wiring is necessary but not sufficient for limited live mode. Rem
 |-------------|--------|
 | `LIMITED_LIVE_PROFILE_NOT_DECLARED` | Operator limited-live profile not declared |
 | `OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING` | Operator runbook for limited-live not published |
+
+**Next docs milestone:** [`LIMITED_LIVE_PROFILE.md`](LIMITED_LIVE_PROFILE.md), [`OPERATOR_LIMITED_LIVE_RUNBOOK.md`](OPERATOR_LIMITED_LIVE_RUNBOOK.md) (declared in separate commit; readiness evidence update is a future milestone).
 | `PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT` | Triple execution gates remain off by default |
 | `AUTONOMY_CONFIG_DISABLED` | `config/autonomy.json` `enabled=false` |
 

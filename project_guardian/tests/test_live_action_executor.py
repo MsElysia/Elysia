@@ -235,8 +235,13 @@ class TestExecutorDisabledByDefault:
         assert after.ready_for_limited_live_mode is False
         assert after.status.value == "BLOCKED"
         assert any(
-            "APPROVAL_ROUTE_NOT_WIRED_TO_EXECUTOR" in b
-            or "APPROVAL_ROUTE_DEFAULT_DISABLED" in b
+            key in b
+            for key in (
+                "LIMITED_LIVE_PROFILE_NOT_DECLARED",
+                "OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING",
+                "PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT",
+                "AUTONOMY_CONFIG_DISABLED",
+            )
             for b in after.blockers
         )
 
@@ -493,7 +498,12 @@ class TestEnabledHarmlessSmokeExecutor:
         assert after.ready_for_limited_live_mode is False
         assert after.status.value == "BLOCKED"
         assert any(
-            "APPROVAL_ROUTE_NOT_WIRED_TO_EXECUTOR" in b
-            or "APPROVAL_ROUTE_DEFAULT_DISABLED" in b
+            key in b
+            for key in (
+                "LIMITED_LIVE_PROFILE_NOT_DECLARED",
+                "OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING",
+                "PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT",
+                "AUTONOMY_CONFIG_DISABLED",
+            )
             for b in after.blockers
         )

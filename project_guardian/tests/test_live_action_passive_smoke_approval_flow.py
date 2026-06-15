@@ -293,8 +293,13 @@ class TestPassiveSmokeApprovalFlow:
         assert report.ready_for_limited_live_mode is False
         assert report.status.value == "BLOCKED"
         assert any(
-            "APPROVAL_ROUTE_NOT_WIRED_TO_EXECUTOR" in blocker
-            or "APPROVAL_ROUTE_DEFAULT_DISABLED" in blocker
+            key in blocker
+            for key in (
+                "LIMITED_LIVE_PROFILE_NOT_DECLARED",
+                "OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING",
+                "PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT",
+                "AUTONOMY_CONFIG_DISABLED",
+            )
             for blocker in report.blockers
         )
         assert not any(

@@ -35,9 +35,18 @@ class ReadinessCheck(str, Enum):
     LIVE_EXECUTOR_IMPLEMENTED = "LIVE_EXECUTOR_IMPLEMENTED"
     UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED = "UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED"
     APPROVAL_ROUTE_EXECUTION_WIRED = "APPROVAL_ROUTE_EXECUTION_WIRED"
-    APPROVAL_ROUTE_OPERATOR_ENABLED = "APPROVAL_ROUTE_OPERATOR_ENABLED"
+    APPROVAL_ROUTE_EXECUTION_TRIPLE_GATED = "APPROVAL_ROUTE_EXECUTION_TRIPLE_GATED"
+    APPROVAL_ROUTE_DEFAULT_DECISION_ONLY = "APPROVAL_ROUTE_DEFAULT_DECISION_ONLY"
+    APPROVAL_ROUTE_NON_APPROVE_NEVER_EXECUTES = "APPROVAL_ROUTE_NON_APPROVE_NEVER_EXECUTES"
+    APPROVAL_ROUTE_EXECUTION_VERIFIED_IN_TMP_WORKSPACE = (
+        "APPROVAL_ROUTE_EXECUTION_VERIFIED_IN_TMP_WORKSPACE"
+    )
     HARMLESS_LIVE_ACTION_SMOKE_VERIFIED = "HARMLESS_LIVE_ACTION_SMOKE_VERIFIED"
     HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED = "HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED"
+    LIMITED_LIVE_PROFILE_NOT_DECLARED = "LIMITED_LIVE_PROFILE_NOT_DECLARED"
+    OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING = "OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING"
+    PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT = "PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT"
+    AUTONOMY_CONFIG_DISABLED = "AUTONOMY_CONFIG_DISABLED"
     AUTONOMY_CONFIG_DEFAULT_DISABLED = "AUTONOMY_CONFIG_DEFAULT_DISABLED"
     FULL_RUNTIME_TESTS_CLASSIFIED = "FULL_RUNTIME_TESTS_CLASSIFIED"
     FULL_RUNTIME_REMAINING_NONCRITICAL_FAILURES_WAIVED_OR_REPAIRED = (
@@ -73,10 +82,17 @@ DEFAULT_EVIDENCE: Dict[str, bool] = {
     ReadinessCheck.DIRTY_SERVER_CLEANED.value: True,
     ReadinessCheck.LIVE_EXECUTOR_IMPLEMENTED.value: True,
     ReadinessCheck.UI_OR_API_APPROVAL_ROUTE_IMPLEMENTED.value: True,
-    ReadinessCheck.APPROVAL_ROUTE_EXECUTION_WIRED.value: False,
-    ReadinessCheck.APPROVAL_ROUTE_OPERATOR_ENABLED.value: False,
+    ReadinessCheck.APPROVAL_ROUTE_EXECUTION_WIRED.value: True,
+    ReadinessCheck.APPROVAL_ROUTE_EXECUTION_TRIPLE_GATED.value: True,
+    ReadinessCheck.APPROVAL_ROUTE_DEFAULT_DECISION_ONLY.value: True,
+    ReadinessCheck.APPROVAL_ROUTE_NON_APPROVE_NEVER_EXECUTES.value: True,
+    ReadinessCheck.APPROVAL_ROUTE_EXECUTION_VERIFIED_IN_TMP_WORKSPACE.value: True,
     ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED.value: True,
     ReadinessCheck.HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED.value: True,
+    ReadinessCheck.LIMITED_LIVE_PROFILE_NOT_DECLARED.value: False,
+    ReadinessCheck.OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING.value: False,
+    ReadinessCheck.PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT.value: False,
+    ReadinessCheck.AUTONOMY_CONFIG_DISABLED.value: False,
     ReadinessCheck.FULL_RUNTIME_TESTS_CLASSIFIED.value: True,
     ReadinessCheck.FULL_RUNTIME_REMAINING_NONCRITICAL_FAILURES_WAIVED_OR_REPAIRED.value: True,
 }
@@ -188,16 +204,65 @@ _CHECK_CONFIG: Tuple[Tuple[ReadinessCheck, bool, bool, str, str], ...] = (
     (
         ReadinessCheck.APPROVAL_ROUTE_EXECUTION_WIRED,
         True,
-        True,
-        "Approval route execution-wired to live executor",
-        "APPROVAL_ROUTE_NOT_WIRED_TO_EXECUTOR: wire approval route to executor on APPROVE (future milestone)",
+        False,
+        "Approval route execution-wired to harmless smoke executor (docs/APPROVAL_ROUTE_EXECUTOR_WIRING_IMPLEMENTATION.md)",
+        "Wire approval route to executor on APPROVE (future milestone)",
     ),
     (
-        ReadinessCheck.APPROVAL_ROUTE_OPERATOR_ENABLED,
+        ReadinessCheck.APPROVAL_ROUTE_EXECUTION_TRIPLE_GATED,
+        True,
+        False,
+        "Route execution requires triple gates: route enabled, executor enabled, ELYSIA_APPROVAL_ROUTE_EXECUTES_SMOKE",
+        "Implement triple-gated route-to-executor wiring",
+    ),
+    (
+        ReadinessCheck.APPROVAL_ROUTE_DEFAULT_DECISION_ONLY,
+        True,
+        False,
+        "Default APPROVE is decision-only when any execution gate is off",
+        "Verify default decision-only APPROVE behavior",
+    ),
+    (
+        ReadinessCheck.APPROVAL_ROUTE_NON_APPROVE_NEVER_EXECUTES,
+        True,
+        False,
+        "DENY/REQUEST_CHANGES/CANCEL/EXPIRE never call executor",
+        "Verify non-APPROVE decisions never execute",
+    ),
+    (
+        ReadinessCheck.APPROVAL_ROUTE_EXECUTION_VERIFIED_IN_TMP_WORKSPACE,
+        True,
+        False,
+        "Route execution verified in pytest isolated tmp smoke workspace only",
+        "Verify route execution in isolated tmp workspace tests",
+    ),
+    (
+        ReadinessCheck.LIMITED_LIVE_PROFILE_NOT_DECLARED,
         True,
         True,
-        "Approval route enabled for live operator use",
-        "APPROVAL_ROUTE_DEFAULT_DISABLED: enable ELYSIA_LIVE_ACTION_APPROVAL_ROUTE_ENABLED for live use (future milestone)",
+        "Limited live operator profile declared",
+        "LIMITED_LIVE_PROFILE_NOT_DECLARED: declare limited-live operator profile before readiness",
+    ),
+    (
+        ReadinessCheck.OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING,
+        True,
+        True,
+        "Operator limited-live runbook available",
+        "OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING: publish operator limited-live runbook",
+    ),
+    (
+        ReadinessCheck.PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT,
+        True,
+        True,
+        "Production/runtime live execution explicitly enabled",
+        "PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT: triple execution gates remain off by default",
+    ),
+    (
+        ReadinessCheck.AUTONOMY_CONFIG_DISABLED,
+        True,
+        True,
+        "Autonomy config enabled for limited live",
+        "AUTONOMY_CONFIG_DISABLED: config/autonomy.json remains enabled=false",
     ),
     (
         ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED,

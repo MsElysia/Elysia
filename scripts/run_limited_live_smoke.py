@@ -69,6 +69,9 @@ def _empty_summary(profile: str = "") -> Dict[str, Any]:
         "autonomy_enabled": False,
         "config_autonomy_enabled": False,
         "readiness_blocked": False,
+        "workspace_parent": "",
+        "workspace_root": "",
+        "workspace_rejected": False,
         "safe": False,
         "errors": [],
     }
@@ -90,11 +93,83 @@ def _smoke_target(workspace: Path) -> Path:
     return workspace / "live_smoke_workspace" / HARMLESS_LIVE_SMOKE_TARGET_FILENAME
 
 
-def _create_workspace(workspace_parent: Optional[Union[str, Path]] = None) -> Path:
+def _get_system_temp_root() -> Path:
+    return Path(tempfile.gettempdir()).resolve()
+
+
+def _is_under_path(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _is_filesystem_root(path: Path) -> bool:
+    resolved = path.resolve()
+    return resolved.parent == resolved
+
+
+def _get_external_storage_dir() -> Optional[Path]:
+    try:
+        from project_guardian.external_storage import get_configured_external_data_dir
+
+        return get_configured_external_data_dir()
+    except Exception:
+        return None
+
+
+def validate_custom_workspace_parent(
+    workspace_parent: Union[str, Path],
+) -> Tuple[Optional[Path], Optional[str]]:
+    """Reject unsafe custom workspace parents before any smoke writes."""
+    raw = str(workspace_parent).strip()
+    path = Path(raw)
+
+    if not path.is_absolute():
+        return None, "unsafe workspace: relative path rejected"
+
+    if _is_filesystem_root(path):
+        return None, "unsafe workspace: filesystem root rejected"
+
+    try:
+        resolved = path.resolve()
+    except OSError as exc:
+        return None, f"unsafe workspace: cannot resolve path ({exc})"
+
+    system_temp = _get_system_temp_root()
+    if not _is_under_path(resolved, system_temp):
+        return None, "unsafe workspace: must be inside system temp directory only"
+
+    try:
+        real = Path(os.path.realpath(resolved))
+    except OSError:
+        real = resolved
+    if not _is_under_path(real, system_temp):
+        return None, "unsafe workspace: symlink escapes system temp directory"
+
+    repo = _REPO_ROOT.resolve()
+    if resolved == repo or _is_under_path(resolved, repo):
+        return None, "unsafe workspace: repo root/project path rejected"
+
+    cwd = Path.cwd().resolve()
+    if resolved == cwd:
+        return None, "unsafe workspace: current working directory rejected"
+
+    home = Path.home().resolve()
+    if resolved == home:
+        return None, "unsafe workspace: user home directory rejected"
+
+    external = _get_external_storage_dir()
+    if external is not None and _is_under_path(resolved, external.resolve()):
+        return None, "unsafe workspace: external storage path rejected"
+
+    return resolved, None
+
+
+def _create_workspace(workspace_parent: Optional[Path] = None) -> Path:
     if workspace_parent is not None:
-        parent = Path(workspace_parent).resolve()
-        parent.mkdir(parents=True, exist_ok=True)
-        workspace = parent / "isolated_smoke_root"
+        workspace = workspace_parent / "isolated_smoke_root"
         workspace.mkdir(parents=True, exist_ok=True)
         return workspace
     temp_root = Path(tempfile.mkdtemp(prefix="elysia_limited_live_smoke_"))
@@ -163,6 +238,17 @@ def run_limited_live_smoke(
         errors.append("triple execution gates are not open after preflight")
         return summary, 2
 
+    validated_parent: Optional[Path] = None
+    if workspace_parent is not None:
+        summary["workspace_parent"] = str(workspace_parent)
+        validated_parent, workspace_error = validate_custom_workspace_parent(
+            workspace_parent
+        )
+        if workspace_error:
+            summary["workspace_rejected"] = True
+            errors.append(workspace_error)
+            return summary, 2
+
     summary["preflight_passed"] = True
     summary["autonomy_enabled"] = False
 
@@ -171,7 +257,8 @@ def run_limited_live_smoke(
             errors.append(f"repo escape path already exists before run: {escape_path}")
             return summary, 1
 
-    workspace = _create_workspace(workspace_parent)
+    workspace = _create_workspace(validated_parent)
+    summary["workspace_root"] = str(workspace.resolve())
     target = _smoke_target(workspace)
     audit_dir = workspace / "_limited_live_smoke_audit"
     audit_dir.mkdir(parents=True, exist_ok=True)
@@ -287,7 +374,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workspace",
         default="",
-        help="Optional parent directory for isolated temp workspace (tests only)",
+        help=(
+            "Optional parent directory inside the OS system temp directory only "
+            "(unsafe paths are rejected before execution)"
+        ),
     )
     parser.add_argument(
         "--json",

@@ -47,7 +47,30 @@ python scripts/run_limited_live_smoke.py \
 | Flag | Purpose |
 |------|---------|
 | `--json` | Print JSON summary to stdout |
-| `--workspace <dir>` | Parent directory for isolated workspace (tests/dev only) |
+| `--workspace <dir>` | Optional parent inside the **OS system temp directory only**; unsafe paths are rejected before execution |
+
+When `--workspace` is omitted, the script creates an isolated workspace under `tempfile.mkdtemp()`.
+
+---
+
+## Workspace safety
+
+Default operator mode uses a fresh system temp directory only.
+
+Custom `--workspace` is allowed **only** when the resolved parent path is inside the OS system temp directory (`tempfile.gettempdir()`). The script rejects unsafe parents **before** packet registration or execution and writes nothing.
+
+Rejected workspace parents include:
+
+- Relative paths
+- Filesystem/drive roots
+- Repo root or any project path under the repo
+- Current working directory
+- User home directory root
+- External storage paths
+- Symlinks that resolve outside system temp
+- Any path outside the system temp directory
+
+Unsafe workspace rejection sets `workspace_rejected=true`, `safe=false`, and a clear error in `errors`.
 
 ---
 
@@ -105,6 +128,9 @@ Rollback deletes the created file and verifies the target no longer exists.
 | `rollback_verified` | Target removed after rollback |
 | `autonomy_enabled` | Always `false` for this command |
 | `config_autonomy_enabled` | Value read from committed config |
+| `workspace_parent` | Custom parent when provided; empty for default temp |
+| `workspace_root` | Resolved isolated smoke workspace used for the run |
+| `workspace_rejected` | `true` when custom workspace failed safety validation |
 | `safe` | `true` only when full cycle passes |
 | `errors` | Failure reasons when `safe=false` |
 
@@ -115,7 +141,8 @@ Exit code `0` only when all checks pass.
 ## Safety statement
 
 - No shell, subprocess, network, browser, API, or mutation paths
-- No writes outside isolated temp workspace
-- No repo-root smoke file creation
+- No writes outside isolated system temp workspace
+- No repo-root, user-home, external-storage, or project-path workspace parents
+- Unsafe custom workspace rejection writes nothing
 - `config/autonomy.json` is read-only; never modified
 - Readiness blockers remain unchanged after successful run

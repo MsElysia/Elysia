@@ -19,10 +19,13 @@ ROOT = Path(__file__).resolve().parents[2]
 READINESS_MODULE = ROOT / "project_guardian" / "live_action_readiness.py"
 
 _REMAINING_BLOCKER_KEYS = (
-    "LIMITED_LIVE_PROFILE_NOT_DECLARED",
-    "OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING",
     "PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT",
     "AUTONOMY_CONFIG_DISABLED",
+)
+
+_STALE_BLOCKER_KEYS = (
+    "LIMITED_LIVE_PROFILE_NOT_DECLARED",
+    "OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING",
 )
 
 
@@ -78,15 +81,34 @@ class TestDefaultReadiness:
         assert smoke_item.passed is True
         assert rollback_item.passed is True
 
+    def test_default_profile_and_runbook_declared(self) -> None:
+        report = evaluate_live_mode_readiness()
+
+        profile_item = _item_for(report, ReadinessCheck.LIMITED_LIVE_PROFILE_DECLARED)
+        runbook_item = _item_for(report, ReadinessCheck.OPERATOR_LIMITED_LIVE_RUNBOOK_PRESENT)
+
+        assert profile_item.passed is True
+        assert runbook_item.passed is True
+        assert profile_item.blocker is False
+        assert runbook_item.blocker is False
+        assert not any(key in b for b in report.blockers for key in _STALE_BLOCKER_KEYS)
+
+    def test_default_prior_route_wiring_evidence_still_true(self) -> None:
+        report = evaluate_live_mode_readiness()
+
+        wired = _item_for(report, ReadinessCheck.APPROVAL_ROUTE_EXECUTION_WIRED)
+        triple = _item_for(report, ReadinessCheck.APPROVAL_ROUTE_EXECUTION_TRIPLE_GATED)
+
+        assert wired.passed is True
+        assert triple.passed is True
+
     def test_default_remaining_limited_live_blockers(self) -> None:
         report = evaluate_live_mode_readiness()
 
         assert _has_remaining_limited_live_blocker(report)
-        assert any("LIMITED_LIVE_PROFILE_NOT_DECLARED" in b for b in report.blockers)
-        assert any("OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING" in b for b in report.blockers)
         assert any("PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT" in b for b in report.blockers)
         assert any("AUTONOMY_CONFIG_DISABLED" in b for b in report.blockers)
-        assert not any("APPROVAL_ROUTE_NOT_WIRED_TO_EXECUTOR" in b for b in report.blockers)
+        assert not any(key in b for b in report.blockers for key in _STALE_BLOCKER_KEYS)
 
     def test_default_autonomy_config_safety_verification_passes(self) -> None:
         report = evaluate_live_mode_readiness()
@@ -154,6 +176,17 @@ class TestPostRepairRuntimeEvidence:
 
 
 class TestSerialization:
+    def test_serializer_includes_limited_live_profile_evidence(self) -> None:
+        report = evaluate_live_mode_readiness()
+        payload = serialize_live_mode_readiness_report(report)
+
+        assert payload["limited_live_profile_evidence"]["LIMITED_LIVE_PROFILE_NAME"] == (
+            "operator_approved_harmless_smoke_v1"
+        )
+        assert payload["limited_live_profile_evidence"]["LIMITED_LIVE_ALLOWED_ACTION"] == (
+            "harmless_smoke_only"
+        )
+
     def test_serializer_is_json_safe(self) -> None:
         report = evaluate_live_mode_readiness()
         payload = serialize_live_mode_readiness_report(report)

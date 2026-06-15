@@ -43,8 +43,8 @@ class ReadinessCheck(str, Enum):
     )
     HARMLESS_LIVE_ACTION_SMOKE_VERIFIED = "HARMLESS_LIVE_ACTION_SMOKE_VERIFIED"
     HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED = "HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED"
-    LIMITED_LIVE_PROFILE_NOT_DECLARED = "LIMITED_LIVE_PROFILE_NOT_DECLARED"
-    OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING = "OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING"
+    LIMITED_LIVE_PROFILE_DECLARED = "LIMITED_LIVE_PROFILE_DECLARED"
+    OPERATOR_LIMITED_LIVE_RUNBOOK_PRESENT = "OPERATOR_LIMITED_LIVE_RUNBOOK_PRESENT"
     PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT = "PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT"
     AUTONOMY_CONFIG_DISABLED = "AUTONOMY_CONFIG_DISABLED"
     AUTONOMY_CONFIG_DEFAULT_DISABLED = "AUTONOMY_CONFIG_DEFAULT_DISABLED"
@@ -68,6 +68,13 @@ DEFAULT_RUNTIME_TEST_EVIDENCE: Dict[str, Any] = {
     "HARMLESS_LIVE_ACTION_SMOKE_DESIGN_DOC": "docs/HARMLESS_LIVE_ACTION_SMOKE_DESIGN.md",
 }
 
+LIMITED_LIVE_PROFILE_EVIDENCE: Dict[str, Any] = {
+    "LIMITED_LIVE_PROFILE_NAME": "operator_approved_harmless_smoke_v1",
+    "LIMITED_LIVE_ALLOWED_ACTION": "harmless_smoke_only",
+    "LIMITED_LIVE_PROFILE_DOC": "docs/LIMITED_LIVE_PROFILE.md",
+    "OPERATOR_LIMITED_LIVE_RUNBOOK_DOC": "docs/OPERATOR_LIMITED_LIVE_RUNBOOK.md",
+}
+
 
 DEFAULT_EVIDENCE: Dict[str, bool] = {
     ReadinessCheck.SAFE_OBSERVER_VERIFIED.value: True,
@@ -89,8 +96,8 @@ DEFAULT_EVIDENCE: Dict[str, bool] = {
     ReadinessCheck.APPROVAL_ROUTE_EXECUTION_VERIFIED_IN_TMP_WORKSPACE.value: True,
     ReadinessCheck.HARMLESS_LIVE_ACTION_SMOKE_VERIFIED.value: True,
     ReadinessCheck.HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED.value: True,
-    ReadinessCheck.LIMITED_LIVE_PROFILE_NOT_DECLARED.value: False,
-    ReadinessCheck.OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING.value: False,
+    ReadinessCheck.LIMITED_LIVE_PROFILE_DECLARED.value: True,
+    ReadinessCheck.OPERATOR_LIMITED_LIVE_RUNBOOK_PRESENT.value: True,
     ReadinessCheck.PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT.value: False,
     ReadinessCheck.AUTONOMY_CONFIG_DISABLED.value: False,
     ReadinessCheck.FULL_RUNTIME_TESTS_CLASSIFIED.value: True,
@@ -237,18 +244,18 @@ _CHECK_CONFIG: Tuple[Tuple[ReadinessCheck, bool, bool, str, str], ...] = (
         "Verify route execution in isolated tmp workspace tests",
     ),
     (
-        ReadinessCheck.LIMITED_LIVE_PROFILE_NOT_DECLARED,
+        ReadinessCheck.LIMITED_LIVE_PROFILE_DECLARED,
         True,
-        True,
-        "Limited live operator profile declared",
-        "LIMITED_LIVE_PROFILE_NOT_DECLARED: declare limited-live operator profile before readiness",
+        False,
+        "Limited live profile declared (docs/LIMITED_LIVE_PROFILE.md; operator_approved_harmless_smoke_v1)",
+        "Declare limited-live operator profile before readiness",
     ),
     (
-        ReadinessCheck.OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING,
+        ReadinessCheck.OPERATOR_LIMITED_LIVE_RUNBOOK_PRESENT,
         True,
-        True,
-        "Operator limited-live runbook available",
-        "OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING: publish operator limited-live runbook",
+        False,
+        "Operator limited-live runbook published (docs/OPERATOR_LIMITED_LIVE_RUNBOOK.md)",
+        "Publish operator limited-live runbook before readiness",
     ),
     (
         ReadinessCheck.PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT,
@@ -390,12 +397,14 @@ def serialize_live_mode_readiness_report(
 ) -> Dict[str, Any]:
     """Return a JSON-safe plain dict for a readiness report."""
     resolved_runtime = dict(DEFAULT_RUNTIME_TEST_EVIDENCE)
+    resolved_runtime.update(LIMITED_LIVE_PROFILE_EVIDENCE)
     if runtime_test_evidence:
         resolved_runtime.update(dict(runtime_test_evidence))
     return {
         "status": report.status.value,
         "ready_for_limited_live_mode": report.ready_for_limited_live_mode,
         "runtime_test_evidence": resolved_runtime,
+        "limited_live_profile_evidence": dict(LIMITED_LIVE_PROFILE_EVIDENCE),
         "items": [
             {
                 "check": item.check.value,

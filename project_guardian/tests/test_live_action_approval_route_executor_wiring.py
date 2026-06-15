@@ -324,10 +324,16 @@ class TestReadinessStillBlocked:
         assert any(
             key in b
             for key in (
-                "LIMITED_LIVE_PROFILE_NOT_DECLARED",
-                "OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING",
                 "PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT",
                 "AUTONOMY_CONFIG_DISABLED",
+            )
+            for b in after.blockers
+        )
+        assert not any(
+            key in b
+            for key in (
+                "LIMITED_LIVE_PROFILE_NOT_DECLARED",
+                "OPERATOR_LIMITED_LIVE_RUNBOOK_MISSING",
             )
             for b in after.blockers
         )

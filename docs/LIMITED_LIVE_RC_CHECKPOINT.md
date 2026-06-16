@@ -5,7 +5,7 @@
 **Date:** 2026-05-30  
 **Status:** Clean limited-live release candidate checkpoint — **readiness remains BLOCKED**
 
-**Related docs:** [`FULL_RUNTIME_TEST_REFRESH_LIMITED_LIVE_RC.md`](FULL_RUNTIME_TEST_REFRESH_LIMITED_LIVE_RC.md), [`LIMITED_LIVE_RELEASE_CANDIDATE_BASELINE.md`](LIMITED_LIVE_RELEASE_CANDIDATE_BASELINE.md), [`LIMITED_LIVE_SMOKE_COMMAND.md`](LIMITED_LIVE_SMOKE_COMMAND.md), [`LIMITED_LIVE_PROFILE.md`](LIMITED_LIVE_PROFILE.md)
+**Related docs:** [`FULL_RUNTIME_TEST_REFRESH_LIMITED_LIVE_RC.md`](FULL_RUNTIME_TEST_REFRESH_LIMITED_LIVE_RC.md), [`LIMITED_LIVE_RELEASE_CANDIDATE_BASELINE.md`](LIMITED_LIVE_RELEASE_CANDIDATE_BASELINE.md), [`LIMITED_LIVE_ACTIVATION_PROFILE_PLAN.md`](LIMITED_LIVE_ACTIVATION_PROFILE_PLAN.md), [`LIMITED_LIVE_SMOKE_COMMAND.md`](LIMITED_LIVE_SMOKE_COMMAND.md), [`LIMITED_LIVE_PROFILE.md`](LIMITED_LIVE_PROFILE.md)
 
 ---
 
@@ -122,9 +122,9 @@ This checkpoint does **not** include:
 
 ## 10. Recommended next milestone
 
-Choose one (still **without** enabling autonomy by default):
+Completed since this checkpoint:
 
-1. **Define a future activation-profile plan** — document additional operator gates for any future limited-live expansion; remain disabled by default
-2. **Create a Git tag after Codex verifies this checkpoint** — e.g. `limited_live_rc_1` pointing at `e70e45c`
+- **Git tag `limited_live_rc_1`** — local annotated tag at `236f0b5` (not pushed)
+- **Activation profile plan** — [`LIMITED_LIVE_ACTIVATION_PROFILE_PLAN.md`](LIMITED_LIVE_ACTIVATION_PROFILE_PLAN.md) defines `limited_live_harmless_smoke_activation_v1` (plan only, not implemented)
 
-Neither milestone should enable production live execution or modify `config/autonomy.json` without explicit operator opt-in.
+Next: Codex verification of the activation plan, then decide whether to implement an activation wrapper or preserve the RC baseline.

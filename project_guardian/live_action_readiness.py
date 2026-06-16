@@ -45,6 +45,11 @@ class ReadinessCheck(str, Enum):
     HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED = "HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED"
     LIMITED_LIVE_PROFILE_DECLARED = "LIMITED_LIVE_PROFILE_DECLARED"
     OPERATOR_LIMITED_LIVE_RUNBOOK_PRESENT = "OPERATOR_LIMITED_LIVE_RUNBOOK_PRESENT"
+    LIMITED_LIVE_SMOKE_COMMAND_PRESENT = "LIMITED_LIVE_SMOKE_COMMAND_PRESENT"
+    LIMITED_LIVE_SMOKE_COMMAND_VERIFIED = "LIMITED_LIVE_SMOKE_COMMAND_VERIFIED"
+    LIMITED_LIVE_SMOKE_WORKSPACE_TEMP_ONLY = "LIMITED_LIVE_SMOKE_WORKSPACE_TEMP_ONLY"
+    LIMITED_LIVE_SMOKE_UNSAFE_WORKSPACES_REJECTED = "LIMITED_LIVE_SMOKE_UNSAFE_WORKSPACES_REJECTED"
+    LIMITED_LIVE_SMOKE_ROLLBACK_VERIFIED = "LIMITED_LIVE_SMOKE_ROLLBACK_VERIFIED"
     PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT = "PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT"
     AUTONOMY_CONFIG_DISABLED = "AUTONOMY_CONFIG_DISABLED"
     AUTONOMY_CONFIG_DEFAULT_DISABLED = "AUTONOMY_CONFIG_DEFAULT_DISABLED"
@@ -75,6 +80,15 @@ LIMITED_LIVE_PROFILE_EVIDENCE: Dict[str, Any] = {
     "OPERATOR_LIMITED_LIVE_RUNBOOK_DOC": "docs/OPERATOR_LIMITED_LIVE_RUNBOOK.md",
 }
 
+LIMITED_LIVE_SMOKE_COMMAND_EVIDENCE: Dict[str, Any] = {
+    "LIMITED_LIVE_SMOKE_COMMAND_SCRIPT": "scripts/run_limited_live_smoke.py",
+    "LIMITED_LIVE_SMOKE_COMMAND_DOC": "docs/LIMITED_LIVE_SMOKE_COMMAND.md",
+    "LIMITED_LIVE_SMOKE_COMMAND_TEST": "tests/test_limited_live_smoke_script.py",
+    "LIMITED_LIVE_SMOKE_WORKSPACE_POLICY": "system_temp_only",
+    "LIMITED_LIVE_SMOKE_UNSAFE_WORKSPACE_REJECTION": True,
+    "LIMITED_LIVE_SMOKE_ROLLBACK_VERIFIED_BY_COMMAND": True,
+}
+
 
 DEFAULT_EVIDENCE: Dict[str, bool] = {
     ReadinessCheck.SAFE_OBSERVER_VERIFIED.value: True,
@@ -98,6 +112,11 @@ DEFAULT_EVIDENCE: Dict[str, bool] = {
     ReadinessCheck.HARMLESS_LIVE_ACTION_ROLLBACK_VERIFIED.value: True,
     ReadinessCheck.LIMITED_LIVE_PROFILE_DECLARED.value: True,
     ReadinessCheck.OPERATOR_LIMITED_LIVE_RUNBOOK_PRESENT.value: True,
+    ReadinessCheck.LIMITED_LIVE_SMOKE_COMMAND_PRESENT.value: True,
+    ReadinessCheck.LIMITED_LIVE_SMOKE_COMMAND_VERIFIED.value: True,
+    ReadinessCheck.LIMITED_LIVE_SMOKE_WORKSPACE_TEMP_ONLY.value: True,
+    ReadinessCheck.LIMITED_LIVE_SMOKE_UNSAFE_WORKSPACES_REJECTED.value: True,
+    ReadinessCheck.LIMITED_LIVE_SMOKE_ROLLBACK_VERIFIED.value: True,
     ReadinessCheck.PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT.value: False,
     ReadinessCheck.AUTONOMY_CONFIG_DISABLED.value: False,
     ReadinessCheck.FULL_RUNTIME_TESTS_CLASSIFIED.value: True,
@@ -258,6 +277,41 @@ _CHECK_CONFIG: Tuple[Tuple[ReadinessCheck, bool, bool, str, str], ...] = (
         "Publish operator limited-live runbook before readiness",
     ),
     (
+        ReadinessCheck.LIMITED_LIVE_SMOKE_COMMAND_PRESENT,
+        True,
+        False,
+        "Limited-live smoke command present (scripts/run_limited_live_smoke.py)",
+        "Implement operator limited-live smoke command",
+    ),
+    (
+        ReadinessCheck.LIMITED_LIVE_SMOKE_COMMAND_VERIFIED,
+        True,
+        False,
+        "Limited-live smoke command verified (tests/test_limited_live_smoke_script.py)",
+        "Verify limited-live smoke command end-to-end",
+    ),
+    (
+        ReadinessCheck.LIMITED_LIVE_SMOKE_WORKSPACE_TEMP_ONLY,
+        True,
+        False,
+        "Limited-live smoke workspace constrained to system temp only (docs/LIMITED_LIVE_SMOKE_COMMAND.md)",
+        "Constrain limited-live smoke workspace to system temp only",
+    ),
+    (
+        ReadinessCheck.LIMITED_LIVE_SMOKE_UNSAFE_WORKSPACES_REJECTED,
+        True,
+        False,
+        "Unsafe limited-live smoke workspace parents rejected before execution",
+        "Reject unsafe limited-live smoke workspace parents before execution",
+    ),
+    (
+        ReadinessCheck.LIMITED_LIVE_SMOKE_ROLLBACK_VERIFIED,
+        True,
+        False,
+        "Limited-live smoke command rollback verified in isolated temp workspace",
+        "Verify limited-live smoke command rollback in isolated temp workspace",
+    ),
+    (
         ReadinessCheck.PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT,
         True,
         True,
@@ -405,6 +459,7 @@ def serialize_live_mode_readiness_report(
         "ready_for_limited_live_mode": report.ready_for_limited_live_mode,
         "runtime_test_evidence": resolved_runtime,
         "limited_live_profile_evidence": dict(LIMITED_LIVE_PROFILE_EVIDENCE),
+        "limited_live_smoke_command_evidence": dict(LIMITED_LIVE_SMOKE_COMMAND_EVIDENCE),
         "items": [
             {
                 "check": item.check.value,

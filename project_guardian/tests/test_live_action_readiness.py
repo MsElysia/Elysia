@@ -93,6 +93,25 @@ class TestDefaultReadiness:
         assert runbook_item.blocker is False
         assert not any(key in b for b in report.blockers for key in _STALE_BLOCKER_KEYS)
 
+    def test_default_limited_live_smoke_command_evidence(self) -> None:
+        report = evaluate_live_mode_readiness()
+
+        present = _item_for(report, ReadinessCheck.LIMITED_LIVE_SMOKE_COMMAND_PRESENT)
+        verified = _item_for(report, ReadinessCheck.LIMITED_LIVE_SMOKE_COMMAND_VERIFIED)
+        temp_only = _item_for(report, ReadinessCheck.LIMITED_LIVE_SMOKE_WORKSPACE_TEMP_ONLY)
+        unsafe_rejected = _item_for(
+            report, ReadinessCheck.LIMITED_LIVE_SMOKE_UNSAFE_WORKSPACES_REJECTED
+        )
+        rollback = _item_for(report, ReadinessCheck.LIMITED_LIVE_SMOKE_ROLLBACK_VERIFIED)
+
+        assert present.passed is True
+        assert verified.passed is True
+        assert temp_only.passed is True
+        assert unsafe_rejected.passed is True
+        assert rollback.passed is True
+        for item in (present, verified, temp_only, unsafe_rejected, rollback):
+            assert item.blocker is False
+
     def test_default_prior_route_wiring_evidence_still_true(self) -> None:
         report = evaluate_live_mode_readiness()
 
@@ -186,6 +205,16 @@ class TestSerialization:
         assert payload["limited_live_profile_evidence"]["LIMITED_LIVE_ALLOWED_ACTION"] == (
             "harmless_smoke_only"
         )
+
+    def test_serializer_includes_limited_live_smoke_command_evidence(self) -> None:
+        report = evaluate_live_mode_readiness()
+        payload = serialize_live_mode_readiness_report(report)
+        smoke = payload["limited_live_smoke_command_evidence"]
+
+        assert smoke["LIMITED_LIVE_SMOKE_COMMAND_SCRIPT"] == "scripts/run_limited_live_smoke.py"
+        assert smoke["LIMITED_LIVE_SMOKE_WORKSPACE_POLICY"] == "system_temp_only"
+        assert smoke["LIMITED_LIVE_SMOKE_UNSAFE_WORKSPACE_REJECTION"] is True
+        assert smoke["LIMITED_LIVE_SMOKE_ROLLBACK_VERIFIED_BY_COMMAND"] is True
 
     def test_serializer_is_json_safe(self) -> None:
         report = evaluate_live_mode_readiness()

@@ -50,6 +50,19 @@ class ReadinessCheck(str, Enum):
     LIMITED_LIVE_SMOKE_WORKSPACE_TEMP_ONLY = "LIMITED_LIVE_SMOKE_WORKSPACE_TEMP_ONLY"
     LIMITED_LIVE_SMOKE_UNSAFE_WORKSPACES_REJECTED = "LIMITED_LIVE_SMOKE_UNSAFE_WORKSPACES_REJECTED"
     LIMITED_LIVE_SMOKE_ROLLBACK_VERIFIED = "LIMITED_LIVE_SMOKE_ROLLBACK_VERIFIED"
+    LIMITED_LIVE_ACTIVATION_WRAPPER_PRESENT = "LIMITED_LIVE_ACTIVATION_WRAPPER_PRESENT"
+    LIMITED_LIVE_ACTIVATION_WRAPPER_VERIFIED = "LIMITED_LIVE_ACTIVATION_WRAPPER_VERIFIED"
+    LIMITED_LIVE_ACTIVATION_OPERATOR_CONFIRMATION_REQUIRED = (
+        "LIMITED_LIVE_ACTIVATION_OPERATOR_CONFIRMATION_REQUIRED"
+    )
+    LIMITED_LIVE_ACTIVATION_PROFILE_REQUIRED = "LIMITED_LIVE_ACTIVATION_PROFILE_REQUIRED"
+    LIMITED_LIVE_ACTIVATION_RC_TAG_VALIDATION_PRESENT = (
+        "LIMITED_LIVE_ACTIVATION_RC_TAG_VALIDATION_PRESENT"
+    )
+    LIMITED_LIVE_ACTIVATION_CONFIG_DISABLED_VALIDATION_PRESENT = (
+        "LIMITED_LIVE_ACTIVATION_CONFIG_DISABLED_VALIDATION_PRESENT"
+    )
+    LIMITED_LIVE_ACTIVATION_ROLLBACK_VERIFIED = "LIMITED_LIVE_ACTIVATION_ROLLBACK_VERIFIED"
     PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT = "PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT"
     AUTONOMY_CONFIG_DISABLED = "AUTONOMY_CONFIG_DISABLED"
     AUTONOMY_CONFIG_DEFAULT_DISABLED = "AUTONOMY_CONFIG_DEFAULT_DISABLED"
@@ -89,6 +102,17 @@ LIMITED_LIVE_SMOKE_COMMAND_EVIDENCE: Dict[str, Any] = {
     "LIMITED_LIVE_SMOKE_ROLLBACK_VERIFIED_BY_COMMAND": True,
 }
 
+LIMITED_LIVE_ACTIVATION_WRAPPER_EVIDENCE: Dict[str, Any] = {
+    "LIMITED_LIVE_ACTIVATION_WRAPPER_SCRIPT": "scripts/run_limited_live_activation.py",
+    "LIMITED_LIVE_ACTIVATION_WRAPPER_DOC": "docs/LIMITED_LIVE_ACTIVATION_WRAPPER.md",
+    "LIMITED_LIVE_ACTIVATION_WRAPPER_TEST": "tests/test_limited_live_activation_wrapper.py",
+    "LIMITED_LIVE_ACTIVATION_PROFILE_NAME": "limited_live_harmless_smoke_activation_v1",
+    "LIMITED_LIVE_ACTIVATION_RC_TAG": "limited_live_rc_1",
+    "LIMITED_LIVE_ACTIVATION_RC_TAG_TARGET": "236f0b5",
+    "LIMITED_LIVE_ACTIVATION_OPERATOR_CONFIRMATION_FLAG": "--confirm-limited-live-activation",
+    "LIMITED_LIVE_ACTIVATION_ROLLBACK_VERIFIED_BY_WRAPPER": True,
+}
+
 
 DEFAULT_EVIDENCE: Dict[str, bool] = {
     ReadinessCheck.SAFE_OBSERVER_VERIFIED.value: True,
@@ -117,6 +141,13 @@ DEFAULT_EVIDENCE: Dict[str, bool] = {
     ReadinessCheck.LIMITED_LIVE_SMOKE_WORKSPACE_TEMP_ONLY.value: True,
     ReadinessCheck.LIMITED_LIVE_SMOKE_UNSAFE_WORKSPACES_REJECTED.value: True,
     ReadinessCheck.LIMITED_LIVE_SMOKE_ROLLBACK_VERIFIED.value: True,
+    ReadinessCheck.LIMITED_LIVE_ACTIVATION_WRAPPER_PRESENT.value: True,
+    ReadinessCheck.LIMITED_LIVE_ACTIVATION_WRAPPER_VERIFIED.value: True,
+    ReadinessCheck.LIMITED_LIVE_ACTIVATION_OPERATOR_CONFIRMATION_REQUIRED.value: True,
+    ReadinessCheck.LIMITED_LIVE_ACTIVATION_PROFILE_REQUIRED.value: True,
+    ReadinessCheck.LIMITED_LIVE_ACTIVATION_RC_TAG_VALIDATION_PRESENT.value: True,
+    ReadinessCheck.LIMITED_LIVE_ACTIVATION_CONFIG_DISABLED_VALIDATION_PRESENT.value: True,
+    ReadinessCheck.LIMITED_LIVE_ACTIVATION_ROLLBACK_VERIFIED.value: True,
     ReadinessCheck.PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT.value: False,
     ReadinessCheck.AUTONOMY_CONFIG_DISABLED.value: False,
     ReadinessCheck.FULL_RUNTIME_TESTS_CLASSIFIED.value: True,
@@ -312,6 +343,55 @@ _CHECK_CONFIG: Tuple[Tuple[ReadinessCheck, bool, bool, str, str], ...] = (
         "Verify limited-live smoke command rollback in isolated temp workspace",
     ),
     (
+        ReadinessCheck.LIMITED_LIVE_ACTIVATION_WRAPPER_PRESENT,
+        True,
+        False,
+        "Limited-live activation wrapper present (scripts/run_limited_live_activation.py)",
+        "Implement operator limited-live activation wrapper",
+    ),
+    (
+        ReadinessCheck.LIMITED_LIVE_ACTIVATION_WRAPPER_VERIFIED,
+        True,
+        False,
+        "Limited-live activation wrapper verified (tests/test_limited_live_activation_wrapper.py)",
+        "Verify limited-live activation wrapper end-to-end",
+    ),
+    (
+        ReadinessCheck.LIMITED_LIVE_ACTIVATION_OPERATOR_CONFIRMATION_REQUIRED,
+        True,
+        False,
+        "Activation wrapper requires --confirm-limited-live-activation",
+        "Require explicit operator confirmation for activation wrapper",
+    ),
+    (
+        ReadinessCheck.LIMITED_LIVE_ACTIVATION_PROFILE_REQUIRED,
+        True,
+        False,
+        "Activation wrapper requires limited_live_harmless_smoke_activation_v1 profile",
+        "Require activation profile binding for activation wrapper",
+    ),
+    (
+        ReadinessCheck.LIMITED_LIVE_ACTIVATION_RC_TAG_VALIDATION_PRESENT,
+        True,
+        False,
+        "Activation wrapper validates RC tag limited_live_rc_1 -> 236f0b5",
+        "Validate RC tag before activation wrapper smoke invocation",
+    ),
+    (
+        ReadinessCheck.LIMITED_LIVE_ACTIVATION_CONFIG_DISABLED_VALIDATION_PRESENT,
+        True,
+        False,
+        "Activation wrapper validates config/autonomy.json enabled=false",
+        "Validate config/autonomy.json remains disabled before activation wrapper",
+    ),
+    (
+        ReadinessCheck.LIMITED_LIVE_ACTIVATION_ROLLBACK_VERIFIED,
+        True,
+        False,
+        "Activation wrapper rollback verified via smoke command delegation",
+        "Verify activation wrapper rollback in isolated temp workspace",
+    ),
+    (
         ReadinessCheck.PRODUCTION_LIVE_EXECUTION_DISABLED_BY_DEFAULT,
         True,
         True,
@@ -460,6 +540,9 @@ def serialize_live_mode_readiness_report(
         "runtime_test_evidence": resolved_runtime,
         "limited_live_profile_evidence": dict(LIMITED_LIVE_PROFILE_EVIDENCE),
         "limited_live_smoke_command_evidence": dict(LIMITED_LIVE_SMOKE_COMMAND_EVIDENCE),
+        "limited_live_activation_wrapper_evidence": dict(
+            LIMITED_LIVE_ACTIVATION_WRAPPER_EVIDENCE
+        ),
         "items": [
             {
                 "check": item.check.value,

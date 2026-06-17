@@ -112,6 +112,37 @@ class TestDefaultReadiness:
         for item in (present, verified, temp_only, unsafe_rejected, rollback):
             assert item.blocker is False
 
+    def test_default_limited_live_activation_wrapper_evidence(self) -> None:
+        report = evaluate_live_mode_readiness()
+
+        present = _item_for(report, ReadinessCheck.LIMITED_LIVE_ACTIVATION_WRAPPER_PRESENT)
+        verified = _item_for(report, ReadinessCheck.LIMITED_LIVE_ACTIVATION_WRAPPER_VERIFIED)
+        confirmation = _item_for(
+            report, ReadinessCheck.LIMITED_LIVE_ACTIVATION_OPERATOR_CONFIRMATION_REQUIRED
+        )
+        profile = _item_for(report, ReadinessCheck.LIMITED_LIVE_ACTIVATION_PROFILE_REQUIRED)
+        rc_tag = _item_for(
+            report, ReadinessCheck.LIMITED_LIVE_ACTIVATION_RC_TAG_VALIDATION_PRESENT
+        )
+        config_disabled = _item_for(
+            report, ReadinessCheck.LIMITED_LIVE_ACTIVATION_CONFIG_DISABLED_VALIDATION_PRESENT
+        )
+        rollback = _item_for(report, ReadinessCheck.LIMITED_LIVE_ACTIVATION_ROLLBACK_VERIFIED)
+
+        assert present.passed is True
+        assert verified.passed is True
+        assert confirmation.passed is True
+        assert profile.passed is True
+        assert rc_tag.passed is True
+        assert config_disabled.passed is True
+        assert rollback.passed is True
+        for item in (present, verified, confirmation, profile, rc_tag, config_disabled, rollback):
+            assert item.blocker is False
+
+        assert report.ready_for_limited_live_mode is False
+        assert report.status is ReadinessStatus.BLOCKED
+        assert _has_remaining_limited_live_blocker(report)
+
     def test_default_prior_route_wiring_evidence_still_true(self) -> None:
         report = evaluate_live_mode_readiness()
 
@@ -215,6 +246,24 @@ class TestSerialization:
         assert smoke["LIMITED_LIVE_SMOKE_WORKSPACE_POLICY"] == "system_temp_only"
         assert smoke["LIMITED_LIVE_SMOKE_UNSAFE_WORKSPACE_REJECTION"] is True
         assert smoke["LIMITED_LIVE_SMOKE_ROLLBACK_VERIFIED_BY_COMMAND"] is True
+
+    def test_serializer_includes_limited_live_activation_wrapper_evidence(self) -> None:
+        report = evaluate_live_mode_readiness()
+        payload = serialize_live_mode_readiness_report(report)
+        wrapper = payload["limited_live_activation_wrapper_evidence"]
+
+        assert wrapper["LIMITED_LIVE_ACTIVATION_WRAPPER_SCRIPT"] == (
+            "scripts/run_limited_live_activation.py"
+        )
+        assert wrapper["LIMITED_LIVE_ACTIVATION_PROFILE_NAME"] == (
+            "limited_live_harmless_smoke_activation_v1"
+        )
+        assert wrapper["LIMITED_LIVE_ACTIVATION_RC_TAG"] == "limited_live_rc_1"
+        assert wrapper["LIMITED_LIVE_ACTIVATION_RC_TAG_TARGET"] == "236f0b5"
+        assert wrapper["LIMITED_LIVE_ACTIVATION_OPERATOR_CONFIRMATION_FLAG"] == (
+            "--confirm-limited-live-activation"
+        )
+        assert wrapper["LIMITED_LIVE_ACTIVATION_ROLLBACK_VERIFIED_BY_WRAPPER"] is True
 
     def test_serializer_is_json_safe(self) -> None:
         report = evaluate_live_mode_readiness()

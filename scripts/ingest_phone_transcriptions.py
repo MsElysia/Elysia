@@ -4,10 +4,13 @@ Import phone voice-to-text / transcription files into normalized local storage.
 
 Operator-run only. Does not modify source files. Dry-run is the default; pass
 ``--apply`` to write normalized text, metadata sidecars, and a manifest JSONL.
+Pass ``--stage-memory-candidates`` with ``--apply`` to append review-queue records
+without writing to live memory.
 
 Examples:
   python scripts/ingest_phone_transcriptions.py --source-dir ~/Downloads/voice-notes
   python scripts/ingest_phone_transcriptions.py --source-dir ./inbox --dest-dir ./data/phone_transcriptions --apply
+  python scripts/ingest_phone_transcriptions.py --source-dir ./inbox --apply --stage-memory-candidates
 """
 
 from __future__ import annotations
@@ -39,6 +42,13 @@ def _print_human_summary(report_dict: dict) -> None:
             **report_dict
         )
     )
+    if report_dict.get("stage_memory_candidates"):
+        print(
+            "  candidates_staged={candidates_staged} candidates_duplicate={candidates_duplicate}".format(
+                **report_dict
+            )
+        )
+        print(f"  review_queue: {report_dict.get('review_queue_path')}")
     for item in report_dict.get("results", []):
         print(
             "  - {status}: {name} ({ext}, {size} bytes)".format(
@@ -82,7 +92,25 @@ def main() -> int:
         default=DEFAULT_MAX_FILE_MB,
         help=f"Skip files larger than this many megabytes (default: {DEFAULT_MAX_FILE_MB}).",
     )
+    parser.add_argument(
+        "--stage-memory-candidates",
+        action="store_true",
+        help="Append review-queue memory candidates (requires --apply; does not write live memory).",
+    )
     args = parser.parse_args()
+
+    if args.stage_memory_candidates and not args.apply:
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        "--stage-memory-candidates requires --apply. "
+                        "Dry-run does not write memory candidate files."
+                    )
+                }
+            )
+        )
+        return 1
 
     source = args.source_dir.expanduser().resolve()
     if not source.is_dir():
@@ -102,6 +130,7 @@ def main() -> int:
             apply=args.apply,
             recursive=args.recursive,
             max_file_mb=args.max_file_mb,
+            stage_memory_candidates=args.stage_memory_candidates,
         )
     except ValueError as exc:
         print(json.dumps({"error": str(exc)}))

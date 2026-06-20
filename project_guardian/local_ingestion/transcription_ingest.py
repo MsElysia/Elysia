@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+from .memory_candidates import read_known_candidate_ids, review_queue_path, stage_memory_candidate
+
 ALLOWED_EXTENSIONS = frozenset({".txt", ".md", ".vtt", ".srt"})
 MANIFEST_FILENAME = "ingest_manifest.jsonl"
 DEFAULT_MAX_FILE_MB = 5.0
@@ -41,6 +43,7 @@ class FileIngestResult:
     output_text_path: Optional[str] = None
     output_metadata_path: Optional[str] = None
     status: str = "pending"
+    memory_candidate_status: Optional[str] = None
 
     def to_manifest_record(self) -> Dict[str, Any]:
         return asdict(self)
@@ -53,25 +56,34 @@ class IngestReport:
     apply: bool
     recursive: bool
     max_file_mb: float
+    stage_memory_candidates: bool = False
     scanned: int = 0
     ingested: int = 0
     duplicates: int = 0
     skipped: int = 0
+    candidates_staged: int = 0
+    candidates_duplicate: int = 0
     results: List[FileIngestResult] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "source_dir": self.source_dir,
             "dest_dir": self.dest_dir,
             "apply": self.apply,
             "recursive": self.recursive,
             "max_file_mb": self.max_file_mb,
+            "stage_memory_candidates": self.stage_memory_candidates,
             "scanned": self.scanned,
             "ingested": self.ingested,
             "duplicates": self.duplicates,
             "skipped": self.skipped,
+            "candidates_staged": self.candidates_staged,
+            "candidates_duplicate": self.candidates_duplicate,
             "results": [r.to_manifest_record() for r in self.results],
         }
+        if self.stage_memory_candidates:
+            payload["review_queue_path"] = str(review_queue_path(Path(self.dest_dir)))
+        return payload
 
 
 def _utc_now_iso() -> str:
@@ -220,6 +232,7 @@ def ingest_transcriptions(
     apply: bool = False,
     recursive: bool = False,
     max_file_mb: float = DEFAULT_MAX_FILE_MB,
+    stage_memory_candidates: bool = False,
 ) -> IngestReport:
     source = source_dir.expanduser().resolve()
     dest = dest_dir.expanduser().resolve()
@@ -236,10 +249,14 @@ def ingest_transcriptions(
         apply=apply,
         recursive=recursive,
         max_file_mb=max_file_mb,
+        stage_memory_candidates=stage_memory_candidates,
     )
 
     text_dir = dest / _TEXT_SUBDIR
     meta_dir = dest / _META_SUBDIR
+    known_candidate_ids: Optional[Set[str]] = None
+    if apply and stage_memory_candidates:
+        known_candidate_ids = read_known_candidate_ids(review_queue_path(dest))
 
     for path in _iter_candidate_files(source, recursive=recursive):
         report.scanned += 1
@@ -384,6 +401,24 @@ def ingest_transcriptions(
                 handle.write(json.dumps(metadata, ensure_ascii=False) + "\n")
             known_hashes.add(digest)
             report.ingested += 1
+            if stage_memory_candidates:
+                staged_at = _utc_now_iso()
+                candidate_status, _wrote = stage_memory_candidate(
+                    dest,
+                    source_text_path=text_out,
+                    source_metadata_path=meta_out,
+                    source_sha256=digest,
+                    original_filename=path.name,
+                    imported_at=imported_at,
+                    staged_at=staged_at,
+                    normalized_text=normalized,
+                    known_candidate_ids=known_candidate_ids,
+                )
+                result.memory_candidate_status = candidate_status
+                if candidate_status == "staged":
+                    report.candidates_staged += 1
+                else:
+                    report.candidates_duplicate += 1
         else:
             report.ingested += 1
 

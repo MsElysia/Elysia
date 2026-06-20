@@ -91,16 +91,48 @@ Each memory-candidate record includes:
 - `safety_notes` (`operator_review_required`)
 - `live_memory_written` (`false`)
 
-## Memory review queue (not live memory)
+## Memory candidate review (not live memory)
 
-The review queue is a local JSONL file for the operator to inspect later.
-Approving or writing into Elysia memory is **out of scope** for this step and
-must be implemented as a separate explicit operator action in a future change.
+After staging candidates, review them with the operator CLI. This records
+approval/rejection/edit decisions locally only. **Nothing is written to live
+memory, vector DB, or core memory.**
+
+List pending candidates:
+
+```powershell
+python scripts/review_memory_candidates.py --dest-dir <path> list
+python scripts/review_memory_candidates.py --dest-dir <path> list --all
+```
+
+Approve, reject, or edit:
+
+```powershell
+python scripts/review_memory_candidates.py --dest-dir <path> approve <candidate_id> --notes "useful memory"
+python scripts/review_memory_candidates.py --dest-dir <path> reject <candidate_id> --notes "not useful"
+python scripts/review_memory_candidates.py --dest-dir <path> edit <candidate_id> --replacement-text-file <path> --notes "cleaned up"
+```
+
+You may pass `--queue-path` instead of `--dest-dir` when pointing directly at
+`memory_candidates/review_queue.jsonl`.
+
+Review artifacts:
+
+```text
+<dest-dir>/memory_candidates/
+  review_decisions.jsonl
+  approved_candidates.jsonl
+  rejected_candidates.jsonl
+  edited/<candidate_id>.txt
+```
+
+The original `review_queue.jsonl` and imported source text/metadata remain
+append-only and unchanged by review actions.
 
 ## Tests
 
 ```powershell
 python -m pytest project_guardian/tests/test_transcription_ingest.py -q
+python -m pytest project_guardian/tests/test_memory_candidate_review.py -q
 ```
 
 ## Out of scope (this MVP)

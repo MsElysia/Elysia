@@ -152,12 +152,37 @@ text is never modified.
 Export records include `operator_approved=true`, `live_memory_written=false`,
 and `safety_notes` containing `approved_export_only_not_live_memory`.
 
+## Approved local memory store (not runtime memory)
+
+Write approved export records into a searchable local JSONL store. This does
+**not** write live runtime memory, vector DB, embeddings, or call any model.
+
+```powershell
+python scripts/write_approved_memory_store.py --dest-dir <path>
+python scripts/write_approved_memory_store.py --dest-dir <path> --apply
+```
+
+Default store path:
+
+```text
+<dest-dir>/memory_store/approved_memory_store.jsonl
+```
+
+Dry-run is the default. `--apply` deterministically rewrites the store from the
+current approved export file. Invalid export rows are skipped. The approved
+export file and upstream review artifacts are not modified.
+
+Store records include `operator_approved=true`, `live_runtime_memory_written=false`,
+`live_vector_written=false`, `reversible=true`, and `safety_notes` containing
+`local_store_only_not_runtime_memory`.
+
 ## Tests
 
 ```powershell
 python -m pytest project_guardian/tests/test_transcription_ingest.py -q
 python -m pytest project_guardian/tests/test_memory_candidate_review.py -q
 python -m pytest project_guardian/tests/test_approved_memory_export.py -q
+python -m pytest project_guardian/tests/test_approved_memory_store.py -q
 ```
 
 ## Out of scope (this MVP)

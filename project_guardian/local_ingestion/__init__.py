@@ -7,6 +7,13 @@ from .approved_memory_export import (
     default_export_path,
     export_approved_memory_candidates,
 )
+from .approved_memory_store import (
+    APPROVED_MEMORY_STORE_FILENAME,
+    ApprovedMemoryStoreError,
+    StoreWriteReport,
+    default_memory_store_path,
+    write_approved_memory_store,
+)
 from .memory_candidate_review import (
     APPROVED_CANDIDATES_FILENAME,
     REJECTED_CANDIDATES_FILENAME,
@@ -39,10 +46,13 @@ __all__ = [
     "ALLOWED_EXTENSIONS",
     "APPROVED_CANDIDATES_FILENAME",
     "APPROVED_MEMORY_EXPORT_FILENAME",
+    "APPROVED_MEMORY_STORE_FILENAME",
     "ApprovedMemoryExportError",
+    "ApprovedMemoryStoreError",
     "DEFAULT_MAX_FILE_MB",
     "DecisionReport",
     "ExportReport",
+    "StoreWriteReport",
     "IngestReport",
     "ListReport",
     "MEMORY_CANDIDATES_SUBDIR",
@@ -54,8 +64,10 @@ __all__ = [
     "approve_candidate",
     "default_dest_dir",
     "default_export_path",
+    "default_memory_store_path",
     "edit_candidate",
     "export_approved_memory_candidates",
+    "write_approved_memory_store",
     "ingest_transcriptions",
     "list_candidates",
     "reject_candidate",

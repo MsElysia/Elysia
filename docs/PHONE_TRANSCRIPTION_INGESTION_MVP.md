@@ -234,6 +234,24 @@ Default session output:
 
 Preview-only: no import, no memory writes, no model calls.
 
+## Import session apply (confirm from preview)
+
+Apply a reviewed preview session to stage transcription memory candidates from
+`supported_now` files only. Dry-run is default; `--apply` performs ingestion.
+
+```powershell
+python scripts/apply_memory_import_session.py --session-json <path>/import_session_preview.json
+python scripts/apply_memory_import_session.py --session-json <path>/import_session_preview.json --apply
+```
+
+Apply reports:
+
+```text
+<dest-dir>/import_sessions/<session_id>/
+  import_session_apply_report.json
+  import_session_apply_report.md
+```
+
 ## Tests
 
 ```powershell
@@ -244,6 +262,7 @@ python -m pytest project_guardian/tests/test_approved_memory_store.py -q
 python -m pytest project_guardian/tests/test_approved_memory_search.py -q
 python -m pytest project_guardian/tests/test_approved_memory_context.py -q
 python -m pytest project_guardian/tests/test_import_session_preview.py -q
+python -m pytest project_guardian/tests/test_import_session_apply.py -q
 ```
 
 ## Out of scope (this MVP)

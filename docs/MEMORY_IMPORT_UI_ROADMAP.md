@@ -66,6 +66,28 @@ Each JSON preview includes:
 - `live_memory_written: false`
 - `import_applied: false`
 
+## Import session apply (confirm from preview)
+
+After reviewing a session preview, operators can stage transcription memory
+candidates from `supported_now` files only.
+
+```powershell
+python scripts/apply_memory_import_session.py --session-json <path>/import_session_preview.json
+python scripts/apply_memory_import_session.py --session-json <path>/import_session_preview.json --apply
+```
+
+Dry-run is the default. `--apply` writes normalized text, metadata, manifest
+entries, and `memory_candidates/review_queue.jsonl` using the existing
+transcription ingestion pipeline.
+
+Apply reports:
+
+```text
+<dest-dir>/import_sessions/<session_id>/
+  import_session_apply_report.json
+  import_session_apply_report.md
+```
+
 ## Future UI direction (not built yet)
 
 A future drag-and-drop screen should:
@@ -74,15 +96,13 @@ A future drag-and-drop screen should:
 2. Call the preview layer to classify inputs
 3. Show `supported_now`, `supported_later`, `unsupported`, and `skipped` counts
 4. Display next-step guidance from the preview
-5. Offer a separate operator-confirmed action such as **Create candidates from this session**
-
-The preview layer intentionally does **not** connect to ingestion apply yet. That
-keeps import review explicit and safe.
+5. Offer **Create memory candidates from this preview** which calls the apply layer
 
 ## Tests
 
 ```powershell
 python -m pytest project_guardian/tests/test_import_session_preview.py -q
+python -m pytest project_guardian/tests/test_import_session_apply.py -q
 ```
 
 ## Related docs

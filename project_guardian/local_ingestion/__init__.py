@@ -1,5 +1,12 @@
 """Operator-run local file ingestion (no autonomy, no background watchers)."""
 
+from .import_session_apply import (
+    APPLY_REPORT_JSON,
+    APPLY_REPORT_MD,
+    ImportSessionApplyError,
+    ImportSessionApplyReport,
+    apply_memory_import_session,
+)
 from .import_session_preview import (
     IMPORT_SESSIONS_SUBDIR,
     PREVIEW_JSON,
@@ -69,11 +76,14 @@ from .transcription_ingest import (
     DEFAULT_MAX_FILE_MB,
     IngestReport,
     default_dest_dir,
+    ingest_transcription_files,
     ingest_transcriptions,
 )
 
 __all__ = [
     "ALLOWED_EXTENSIONS",
+    "APPLY_REPORT_JSON",
+    "APPLY_REPORT_MD",
     "APPROVED_CANDIDATES_FILENAME",
     "APPROVED_MEMORY_EXPORT_FILENAME",
     "APPROVED_MEMORY_STORE_FILENAME",
@@ -92,6 +102,8 @@ __all__ = [
     "SearchReport",
     "StatsReport",
     "IngestReport",
+    "ImportSessionApplyError",
+    "ImportSessionApplyReport",
     "ImportSessionPreviewError",
     "ImportSessionPreviewReport",
     "IMPORT_SESSIONS_SUBDIR",
@@ -104,6 +116,7 @@ __all__ = [
     "PREVIEW_MD",
     "REVIEW_QUEUE_FILENAME",
     "ReviewPaths",
+    "apply_memory_import_session",
     "approve_candidate",
     "build_approved_memory_context",
     "default_context_output_dir",
@@ -121,6 +134,7 @@ __all__ = [
     "search_memory_store",
     "show_memory_record",
     "stage_memory_candidate",
+    "ingest_transcription_files",
     "ingest_transcriptions",
     "list_candidates",
     "preview_memory_import_session",

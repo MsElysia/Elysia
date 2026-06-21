@@ -225,6 +225,234 @@ def _skip_result(
     )
 
 
+def _process_transcription_file(
+    path: Path,
+    report: IngestReport,
+    *,
+    dest: Path,
+    apply: bool,
+    max_bytes: int,
+    manifest_path: Path,
+    known_hashes: Set[str],
+    text_dir: Path,
+    meta_dir: Path,
+    stage_memory_candidates: bool,
+    known_candidate_ids: Optional[Set[str]],
+) -> None:
+    report.scanned += 1
+    ext = path.suffix.lower()
+
+    if path.is_symlink():
+        report.skipped += 1
+        report.results.append(_skip_result(path, status="skipped_symlink"))
+        return
+
+    if ext not in ALLOWED_EXTENSIONS:
+        report.skipped += 1
+        report.results.append(
+            _skip_result(path, status="skipped_unsupported", extension=ext)
+        )
+        return
+
+    try:
+        size_bytes = path.stat().st_size
+    except OSError:
+        report.skipped += 1
+        report.results.append(_skip_result(path, status="skipped_unreadable", extension=ext))
+        return
+
+    if size_bytes > max_bytes:
+        report.skipped += 1
+        report.results.append(
+            _skip_result(
+                path,
+                status="skipped_oversized",
+                extension=ext,
+                size_bytes=size_bytes,
+            )
+        )
+        return
+
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        report.skipped += 1
+        report.results.append(
+            _skip_result(
+                path,
+                status="skipped_unreadable",
+                extension=ext,
+                size_bytes=size_bytes,
+            )
+        )
+        return
+
+    decoded = _decode_text(raw)
+    if decoded is None:
+        report.skipped += 1
+        report.results.append(
+            _skip_result(
+                path,
+                status="skipped_binary",
+                extension=ext,
+                size_bytes=size_bytes,
+            )
+        )
+        return
+
+    normalized = normalize_transcription_text(decoded, ext)
+    if not normalized:
+        report.skipped += 1
+        report.results.append(
+            _skip_result(
+                path,
+                status="skipped_empty",
+                extension=ext,
+                size_bytes=size_bytes,
+            )
+        )
+        return
+
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    imported_at = _utc_now_iso()
+    base = _output_basename(digest, path.name)
+    text_out = text_dir / f"{base}.txt"
+    meta_out = meta_dir / f"{base}.meta.json"
+
+    if digest in known_hashes:
+        report.duplicates += 1
+        report.results.append(
+            FileIngestResult(
+                original_filename=path.name,
+                original_path=str(path.resolve()),
+                imported_at=imported_at,
+                source_size_bytes=size_bytes,
+                detected_extension=ext,
+                sha256=digest,
+                output_text_path=str(text_out),
+                output_metadata_path=str(meta_out),
+                status="duplicate",
+            )
+        )
+        return
+
+    if text_out.exists() or meta_out.exists():
+        report.duplicates += 1
+        report.results.append(
+            FileIngestResult(
+                original_filename=path.name,
+                original_path=str(path.resolve()),
+                imported_at=imported_at,
+                source_size_bytes=size_bytes,
+                detected_extension=ext,
+                sha256=digest,
+                output_text_path=str(text_out),
+                output_metadata_path=str(meta_out),
+                status="duplicate",
+            )
+        )
+        known_hashes.add(digest)
+        return
+
+    result = FileIngestResult(
+        original_filename=path.name,
+        original_path=str(path.resolve()),
+        imported_at=imported_at,
+        source_size_bytes=size_bytes,
+        detected_extension=ext,
+        sha256=digest,
+        output_text_path=str(text_out),
+        output_metadata_path=str(meta_out),
+        status="dry_run" if not apply else "ingested",
+    )
+
+    if apply:
+        text_dir.mkdir(parents=True, exist_ok=True)
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        text_out.write_text(normalized + "\n", encoding="utf-8", newline="\n")
+        metadata = result.to_manifest_record()
+        meta_out.write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        dest.mkdir(parents=True, exist_ok=True)
+        with manifest_path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(metadata, ensure_ascii=False) + "\n")
+        known_hashes.add(digest)
+        report.ingested += 1
+        if stage_memory_candidates:
+            staged_at = _utc_now_iso()
+            candidate_status, _wrote = stage_memory_candidate(
+                dest,
+                source_text_path=text_out,
+                source_metadata_path=meta_out,
+                source_sha256=digest,
+                original_filename=path.name,
+                imported_at=imported_at,
+                staged_at=staged_at,
+                normalized_text=normalized,
+                known_candidate_ids=known_candidate_ids,
+            )
+            result.memory_candidate_status = candidate_status
+            if candidate_status == "staged":
+                report.candidates_staged += 1
+            else:
+                report.candidates_duplicate += 1
+    else:
+        report.ingested += 1
+
+    report.results.append(result)
+
+
+def ingest_transcription_files(
+    file_paths: Iterable[Path],
+    dest_dir: Path,
+    *,
+    apply: bool = False,
+    max_file_mb: float = DEFAULT_MAX_FILE_MB,
+    stage_memory_candidates: bool = False,
+) -> IngestReport:
+    """Ingest explicit transcription file paths (no directory scan)."""
+    dest = dest_dir.expanduser().resolve()
+    resolved_paths = [Path(p).expanduser().resolve() for p in file_paths]
+    max_bytes = int(max_file_mb * 1024 * 1024)
+    manifest_path = dest / MANIFEST_FILENAME
+    known_hashes = _read_known_hashes(manifest_path)
+
+    report = IngestReport(
+        source_dir=",".join(str(p) for p in resolved_paths),
+        dest_dir=str(dest),
+        apply=apply,
+        recursive=False,
+        max_file_mb=max_file_mb,
+        stage_memory_candidates=stage_memory_candidates,
+    )
+
+    text_dir = dest / _TEXT_SUBDIR
+    meta_dir = dest / _META_SUBDIR
+    known_candidate_ids: Optional[Set[str]] = None
+    if apply and stage_memory_candidates:
+        known_candidate_ids = read_known_candidate_ids(review_queue_path(dest))
+
+    for path in resolved_paths:
+        _process_transcription_file(
+            path,
+            report,
+            dest=dest,
+            apply=apply,
+            max_bytes=max_bytes,
+            manifest_path=manifest_path,
+            known_hashes=known_hashes,
+            text_dir=text_dir,
+            meta_dir=meta_dir,
+            stage_memory_candidates=stage_memory_candidates,
+            known_candidate_ids=known_candidate_ids,
+        )
+
+    return report
+
+
 def ingest_transcriptions(
     source_dir: Path,
     dest_dir: Path,
@@ -259,169 +487,18 @@ def ingest_transcriptions(
         known_candidate_ids = read_known_candidate_ids(review_queue_path(dest))
 
     for path in _iter_candidate_files(source, recursive=recursive):
-        report.scanned += 1
-        ext = path.suffix.lower()
-
-        if path.is_symlink():
-            report.skipped += 1
-            report.results.append(_skip_result(path, status="skipped_symlink"))
-            continue
-
-        if ext not in ALLOWED_EXTENSIONS:
-            report.skipped += 1
-            report.results.append(
-                _skip_result(path, status="skipped_unsupported", extension=ext)
-            )
-            continue
-
-        try:
-            size_bytes = path.stat().st_size
-        except OSError:
-            report.skipped += 1
-            report.results.append(_skip_result(path, status="skipped_unreadable", extension=ext))
-            continue
-
-        if size_bytes > max_bytes:
-            report.skipped += 1
-            report.results.append(
-                _skip_result(
-                    path,
-                    status="skipped_oversized",
-                    extension=ext,
-                    size_bytes=size_bytes,
-                )
-            )
-            continue
-
-        try:
-            raw = path.read_bytes()
-        except OSError:
-            report.skipped += 1
-            report.results.append(
-                _skip_result(
-                    path,
-                    status="skipped_unreadable",
-                    extension=ext,
-                    size_bytes=size_bytes,
-                )
-            )
-            continue
-
-        decoded = _decode_text(raw)
-        if decoded is None:
-            report.skipped += 1
-            report.results.append(
-                _skip_result(
-                    path,
-                    status="skipped_binary",
-                    extension=ext,
-                    size_bytes=size_bytes,
-                )
-            )
-            continue
-
-        normalized = normalize_transcription_text(decoded, ext)
-        if not normalized:
-            report.skipped += 1
-            report.results.append(
-                _skip_result(
-                    path,
-                    status="skipped_empty",
-                    extension=ext,
-                    size_bytes=size_bytes,
-                )
-            )
-            continue
-
-        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-        imported_at = _utc_now_iso()
-        base = _output_basename(digest, path.name)
-        text_out = text_dir / f"{base}.txt"
-        meta_out = meta_dir / f"{base}.meta.json"
-
-        if digest in known_hashes:
-            report.duplicates += 1
-            report.results.append(
-                FileIngestResult(
-                    original_filename=path.name,
-                    original_path=str(path.resolve()),
-                    imported_at=imported_at,
-                    source_size_bytes=size_bytes,
-                    detected_extension=ext,
-                    sha256=digest,
-                    output_text_path=str(text_out),
-                    output_metadata_path=str(meta_out),
-                    status="duplicate",
-                )
-            )
-            continue
-
-        if text_out.exists() or meta_out.exists():
-            report.duplicates += 1
-            report.results.append(
-                FileIngestResult(
-                    original_filename=path.name,
-                    original_path=str(path.resolve()),
-                    imported_at=imported_at,
-                    source_size_bytes=size_bytes,
-                    detected_extension=ext,
-                    sha256=digest,
-                    output_text_path=str(text_out),
-                    output_metadata_path=str(meta_out),
-                    status="duplicate",
-                )
-            )
-            known_hashes.add(digest)
-            continue
-
-        result = FileIngestResult(
-            original_filename=path.name,
-            original_path=str(path.resolve()),
-            imported_at=imported_at,
-            source_size_bytes=size_bytes,
-            detected_extension=ext,
-            sha256=digest,
-            output_text_path=str(text_out),
-            output_metadata_path=str(meta_out),
-            status="dry_run" if not apply else "ingested",
+        _process_transcription_file(
+            path,
+            report,
+            dest=dest,
+            apply=apply,
+            max_bytes=max_bytes,
+            manifest_path=manifest_path,
+            known_hashes=known_hashes,
+            text_dir=text_dir,
+            meta_dir=meta_dir,
+            stage_memory_candidates=stage_memory_candidates,
+            known_candidate_ids=known_candidate_ids,
         )
-
-        if apply:
-            text_dir.mkdir(parents=True, exist_ok=True)
-            meta_dir.mkdir(parents=True, exist_ok=True)
-            text_out.write_text(normalized + "\n", encoding="utf-8", newline="\n")
-            metadata = result.to_manifest_record()
-            meta_out.write_text(
-                json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-                newline="\n",
-            )
-            dest.mkdir(parents=True, exist_ok=True)
-            with manifest_path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(json.dumps(metadata, ensure_ascii=False) + "\n")
-            known_hashes.add(digest)
-            report.ingested += 1
-            if stage_memory_candidates:
-                staged_at = _utc_now_iso()
-                candidate_status, _wrote = stage_memory_candidate(
-                    dest,
-                    source_text_path=text_out,
-                    source_metadata_path=meta_out,
-                    source_sha256=digest,
-                    original_filename=path.name,
-                    imported_at=imported_at,
-                    staged_at=staged_at,
-                    normalized_text=normalized,
-                    known_candidate_ids=known_candidate_ids,
-                )
-                result.memory_candidate_status = candidate_status
-                if candidate_status == "staged":
-                    report.candidates_staged += 1
-                else:
-                    report.candidates_duplicate += 1
-        else:
-            report.ingested += 1
-
-        report.results.append(result)
 
     return report

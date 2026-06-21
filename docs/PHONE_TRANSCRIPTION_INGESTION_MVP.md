@@ -176,6 +176,21 @@ Store records include `operator_approved=true`, `live_runtime_memory_written=fal
 `live_vector_written=false`, `reversible=true`, and `safety_notes` containing
 `local_store_only_not_runtime_memory`.
 
+## Approved memory search (read-only)
+
+Search, list, show, and summarize the local approved memory store. This is
+read-only and does not call live memory, vector DB, embeddings, or any model.
+
+```powershell
+python scripts/search_approved_memory_store.py --dest-dir <path> search "drywall quote"
+python scripts/search_approved_memory_store.py --dest-dir <path> show <memory_id>
+python scripts/search_approved_memory_store.py --dest-dir <path> list --limit 10
+python scripts/search_approved_memory_store.py --dest-dir <path> stats
+```
+
+Search is case-insensitive, supports multiple terms, and ranks records with more
+matches higher. The memory store and upstream files are never modified.
+
 ## Tests
 
 ```powershell
@@ -183,6 +198,7 @@ python -m pytest project_guardian/tests/test_transcription_ingest.py -q
 python -m pytest project_guardian/tests/test_memory_candidate_review.py -q
 python -m pytest project_guardian/tests/test_approved_memory_export.py -q
 python -m pytest project_guardian/tests/test_approved_memory_store.py -q
+python -m pytest project_guardian/tests/test_approved_memory_search.py -q
 ```
 
 ## Out of scope (this MVP)

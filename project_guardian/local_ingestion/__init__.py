@@ -1,5 +1,13 @@
 """Operator-run local file ingestion (no autonomy, no background watchers)."""
 
+from .approved_memory_context import (
+    CONTEXT_BUNDLE_JSON,
+    CONTEXT_BUNDLE_MD,
+    ApprovedMemoryContextError,
+    ContextBundleReport,
+    build_approved_memory_context,
+    default_context_output_dir,
+)
 from .approved_memory_search import (
     ApprovedMemorySearchError,
     ListReport as MemoryListReport,
@@ -61,6 +69,10 @@ __all__ = [
     "APPROVED_MEMORY_EXPORT_FILENAME",
     "APPROVED_MEMORY_STORE_FILENAME",
     "ApprovedMemoryExportError",
+    "CONTEXT_BUNDLE_JSON",
+    "CONTEXT_BUNDLE_MD",
+    "ContextBundleReport",
+    "ApprovedMemoryContextError",
     "ApprovedMemorySearchError",
     "ApprovedMemoryStoreError",
     "DEFAULT_MAX_FILE_MB",
@@ -79,6 +91,8 @@ __all__ = [
     "REVIEW_QUEUE_FILENAME",
     "ReviewPaths",
     "approve_candidate",
+    "build_approved_memory_context",
+    "default_context_output_dir",
     "default_dest_dir",
     "default_export_path",
     "default_memory_store_path",

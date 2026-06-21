@@ -191,6 +191,28 @@ python scripts/search_approved_memory_store.py --dest-dir <path> stats
 Search is case-insensitive, supports multiple terms, and ranks records with more
 matches higher. The memory store and upstream files are never modified.
 
+## Approved memory context bundles (no model calls)
+
+Package search results into Markdown and JSON context bundles for future local
+model use. No model, embeddings, or live memory systems are called.
+
+```powershell
+python scripts/build_approved_memory_context.py --dest-dir <path> --query "drywall quote"
+python scripts/build_approved_memory_context.py --dest-dir <path> --query "drywall quote" --limit 5 --max-chars 6000
+python scripts/build_approved_memory_context.py --dest-dir <path> --query "drywall quote" --include-full-text
+```
+
+Default output directory:
+
+```text
+<dest-dir>/memory_context/
+  context_bundle.md
+  context_bundle.json
+```
+
+Bundles include safety metadata (`model_called: false`, `embeddings_used: false`,
+`live_memory_written: false`) and a suggested prompt block for local model use.
+
 ## Tests
 
 ```powershell
@@ -199,6 +221,7 @@ python -m pytest project_guardian/tests/test_memory_candidate_review.py -q
 python -m pytest project_guardian/tests/test_approved_memory_export.py -q
 python -m pytest project_guardian/tests/test_approved_memory_store.py -q
 python -m pytest project_guardian/tests/test_approved_memory_search.py -q
+python -m pytest project_guardian/tests/test_approved_memory_context.py -q
 ```
 
 ## Out of scope (this MVP)

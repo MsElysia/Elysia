@@ -1,5 +1,12 @@
 """Operator-run local file ingestion (no autonomy, no background watchers)."""
 
+from .approved_memory_export import (
+    APPROVED_MEMORY_EXPORT_FILENAME,
+    ApprovedMemoryExportError,
+    ExportReport,
+    default_export_path,
+    export_approved_memory_candidates,
+)
 from .memory_candidate_review import (
     APPROVED_CANDIDATES_FILENAME,
     REJECTED_CANDIDATES_FILENAME,
@@ -31,8 +38,11 @@ from .transcription_ingest import (
 __all__ = [
     "ALLOWED_EXTENSIONS",
     "APPROVED_CANDIDATES_FILENAME",
+    "APPROVED_MEMORY_EXPORT_FILENAME",
+    "ApprovedMemoryExportError",
     "DEFAULT_MAX_FILE_MB",
     "DecisionReport",
+    "ExportReport",
     "IngestReport",
     "ListReport",
     "MEMORY_CANDIDATES_SUBDIR",
@@ -43,7 +53,9 @@ __all__ = [
     "ReviewPaths",
     "approve_candidate",
     "default_dest_dir",
+    "default_export_path",
     "edit_candidate",
+    "export_approved_memory_candidates",
     "ingest_transcriptions",
     "list_candidates",
     "reject_candidate",

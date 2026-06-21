@@ -128,11 +128,36 @@ Review artifacts:
 The original `review_queue.jsonl` and imported source text/metadata remain
 append-only and unchanged by review actions.
 
+## Approved memory export (not live memory)
+
+Export only candidates whose latest review decision is `approved` into a
+deterministic JSONL package for future memory-writing code. Re-running export
+rewrites the export file from current approved state (no duplicate records).
+
+```powershell
+python scripts/export_approved_memory_candidates.py --dest-dir <path>
+python scripts/export_approved_memory_candidates.py --dest-dir <path> --output <path>
+```
+
+Default export path:
+
+```text
+<dest-dir>/memory_candidates/approved_memory_export.jsonl
+```
+
+Edited-then-approved candidates export the edited text when a prior edit
+decision left an `edited/<candidate_id>.txt` artifact. Original imported source
+text is never modified.
+
+Export records include `operator_approved=true`, `live_memory_written=false`,
+and `safety_notes` containing `approved_export_only_not_live_memory`.
+
 ## Tests
 
 ```powershell
 python -m pytest project_guardian/tests/test_transcription_ingest.py -q
 python -m pytest project_guardian/tests/test_memory_candidate_review.py -q
+python -m pytest project_guardian/tests/test_approved_memory_export.py -q
 ```
 
 ## Out of scope (this MVP)

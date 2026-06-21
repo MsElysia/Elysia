@@ -158,6 +158,25 @@ def load_latest_decisions(decisions_path: Path) -> Dict[str, Dict[str, Any]]:
     return latest
 
 
+def load_all_decisions(decisions_path: Path) -> List[Dict[str, Any]]:
+    if not decisions_path.is_file():
+        raise MemoryCandidateReviewError(f"Review decisions not found: {decisions_path}")
+    return _read_jsonl(decisions_path, label=str(decisions_path))
+
+
+def find_latest_edited_text_path(
+    candidate_id: str,
+    all_decisions: List[Dict[str, Any]],
+) -> Optional[str]:
+    for record in reversed(all_decisions):
+        if str(record.get("candidate_id") or "") != candidate_id:
+            continue
+        edited = str(record.get("edited_text_path") or "").strip()
+        if edited:
+            return edited
+    return None
+
+
 def effective_status(
     candidate: Dict[str, Any],
     latest_decisions: Dict[str, Dict[str, Any]],

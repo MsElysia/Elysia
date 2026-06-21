@@ -213,6 +213,27 @@ Default output directory:
 Bundles include safety metadata (`model_called: false`, `embeddings_used: false`,
 `live_memory_written: false`) and a suggested prompt block for local model use.
 
+## Import session preview (UI backend foundation)
+
+Preview explicit file/folder paths before any import happens. This is the backend
+foundation for a future drag-and-drop memory import screen. See
+[MEMORY_IMPORT_UI_ROADMAP.md](MEMORY_IMPORT_UI_ROADMAP.md).
+
+```powershell
+python scripts/preview_memory_import_session.py --dest-dir <path> --input <file-or-folder>
+python scripts/preview_memory_import_session.py --dest-dir <path> --input <folder> --recursive
+```
+
+Default session output:
+
+```text
+<dest-dir>/import_sessions/<session_id>/
+  import_session_preview.json
+  import_session_preview.md
+```
+
+Preview-only: no import, no memory writes, no model calls.
+
 ## Tests
 
 ```powershell
@@ -222,6 +243,7 @@ python -m pytest project_guardian/tests/test_approved_memory_export.py -q
 python -m pytest project_guardian/tests/test_approved_memory_store.py -q
 python -m pytest project_guardian/tests/test_approved_memory_search.py -q
 python -m pytest project_guardian/tests/test_approved_memory_context.py -q
+python -m pytest project_guardian/tests/test_import_session_preview.py -q
 ```
 
 ## Out of scope (this MVP)

@@ -1,5 +1,14 @@
 """Operator-run local file ingestion (no autonomy, no background watchers)."""
 
+from .import_session_preview import (
+    IMPORT_SESSIONS_SUBDIR,
+    PREVIEW_JSON,
+    PREVIEW_MD,
+    ImportSessionPreviewError,
+    ImportSessionPreviewReport,
+    default_session_parent_dir,
+    preview_memory_import_session,
+)
 from .approved_memory_context import (
     CONTEXT_BUNDLE_JSON,
     CONTEXT_BUNDLE_MD,
@@ -83,11 +92,16 @@ __all__ = [
     "SearchReport",
     "StatsReport",
     "IngestReport",
+    "ImportSessionPreviewError",
+    "ImportSessionPreviewReport",
+    "IMPORT_SESSIONS_SUBDIR",
     "ListReport",
     "MEMORY_CANDIDATES_SUBDIR",
     "MemoryCandidateReviewError",
     "REJECTED_CANDIDATES_FILENAME",
     "REVIEW_DECISIONS_FILENAME",
+    "PREVIEW_JSON",
+    "PREVIEW_MD",
     "REVIEW_QUEUE_FILENAME",
     "ReviewPaths",
     "approve_candidate",
@@ -96,6 +110,7 @@ __all__ = [
     "default_dest_dir",
     "default_export_path",
     "default_memory_store_path",
+    "default_session_parent_dir",
     "edit_candidate",
     "export_approved_memory_candidates",
     "StoreWriteReport",
@@ -108,6 +123,7 @@ __all__ = [
     "stage_memory_candidate",
     "ingest_transcriptions",
     "list_candidates",
+    "preview_memory_import_session",
     "reject_candidate",
     "resolve_review_paths",
     "review_queue_path",

@@ -88,6 +88,16 @@ Apply reports:
   import_session_apply_report.md
 ```
 
+## ChatGPT export import (local file only)
+
+Preview and apply local ChatGPT `conversations.json` exports. No account access,
+API calls, or network use. See [CHATGPT_EXPORT_IMPORT_MVP.md](CHATGPT_EXPORT_IMPORT_MVP.md).
+
+```powershell
+python scripts/preview_chatgpt_export.py --export-json <path>/conversations.json --dest-dir <path>
+python scripts/apply_chatgpt_export.py --preview-json <path>/chatgpt_export_preview.json --apply
+```
+
 ## Future UI direction (not built yet)
 
 A future drag-and-drop screen should:
@@ -103,6 +113,7 @@ A future drag-and-drop screen should:
 ```powershell
 python -m pytest project_guardian/tests/test_import_session_preview.py -q
 python -m pytest project_guardian/tests/test_import_session_apply.py -q
+python -m pytest project_guardian/tests/test_chatgpt_export_ingest.py -q
 python -m pytest project_guardian/tests/test_local_memory_pipeline_smoke.py -q
 python scripts/run_local_memory_pipeline_smoke.py
 python scripts/run_local_memory_pipeline_smoke.py --json
@@ -111,3 +122,4 @@ python scripts/run_local_memory_pipeline_smoke.py --json
 ## Related docs
 
 - [PHONE_TRANSCRIPTION_INGESTION_MVP.md](PHONE_TRANSCRIPTION_INGESTION_MVP.md) — current local ingestion pipeline
+- [CHATGPT_EXPORT_IMPORT_MVP.md](CHATGPT_EXPORT_IMPORT_MVP.md) — ChatGPT export preview/apply

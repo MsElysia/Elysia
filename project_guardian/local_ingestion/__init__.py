@@ -1,5 +1,16 @@
 """Operator-run local file ingestion (no autonomy, no background watchers)."""
 
+from .chatgpt_export_ingest import (
+    APPLY_REPORT_JSON as CHATGPT_APPLY_REPORT_JSON,
+    APPLY_REPORT_MD as CHATGPT_APPLY_REPORT_MD,
+    PREVIEW_JSON as CHATGPT_PREVIEW_JSON,
+    PREVIEW_MD as CHATGPT_PREVIEW_MD,
+    ChatGPTExportApplyReport,
+    ChatGPTExportIngestError,
+    ChatGPTExportPreviewReport,
+    apply_chatgpt_export,
+    preview_chatgpt_export,
+)
 from .local_memory_pipeline_smoke import (
     LocalMemoryPipelineSmokeError,
     SmokeSummary,
@@ -100,6 +111,11 @@ __all__ = [
     "ApprovedMemoryContextError",
     "ApprovedMemorySearchError",
     "ApprovedMemoryStoreError",
+    "ChatGPTExportApplyReport",
+    "ChatGPTExportIngestError",
+    "ChatGPTExportPreviewReport",
+    "CHATGPT_APPLY_REPORT_JSON",
+    "CHATGPT_PREVIEW_JSON",
     "DEFAULT_MAX_FILE_MB",
     "DecisionReport",
     "ExportReport",
@@ -124,6 +140,7 @@ __all__ = [
     "PREVIEW_MD",
     "REVIEW_QUEUE_FILENAME",
     "ReviewPaths",
+    "apply_chatgpt_export",
     "apply_memory_import_session",
     "approve_candidate",
     "build_approved_memory_context",
@@ -146,6 +163,7 @@ __all__ = [
     "ingest_transcriptions",
     "format_operator_summary",
     "list_candidates",
+    "preview_chatgpt_export",
     "preview_memory_import_session",
     "run_local_memory_pipeline_smoke",
     "reject_candidate",

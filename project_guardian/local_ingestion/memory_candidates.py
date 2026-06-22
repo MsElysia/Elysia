@@ -11,7 +11,9 @@ MEMORY_CANDIDATES_SUBDIR = "memory_candidates"
 REVIEW_QUEUE_FILENAME = "review_queue.jsonl"
 TEXT_PREVIEW_MAX = 280
 SOURCE_TYPE_PHONE_TRANSCRIPTION = "phone_transcription"
+SOURCE_TYPE_CHATGPT_EXPORT = "chatgpt_export"
 DEFAULT_SUGGESTED_MEMORY_TYPE = "personal_note"
+SUGGESTED_MEMORY_TYPE_CONVERSATION = "conversation_history"
 DEFAULT_SAFETY_NOTES = "operator_review_required"
 
 
@@ -63,10 +65,12 @@ def build_memory_candidate(
     imported_at: str,
     staged_at: str,
     normalized_text: str,
+    source_type: str = SOURCE_TYPE_PHONE_TRANSCRIPTION,
+    suggested_memory_type: str = DEFAULT_SUGGESTED_MEMORY_TYPE,
 ) -> Dict[str, Any]:
     return {
         "candidate_id": candidate_id,
-        "source_type": SOURCE_TYPE_PHONE_TRANSCRIPTION,
+        "source_type": source_type,
         "source_text_path": source_text_path,
         "source_metadata_path": source_metadata_path,
         "source_sha256": source_sha256,
@@ -74,7 +78,7 @@ def build_memory_candidate(
         "imported_at": imported_at,
         "staged_at": staged_at,
         "review_status": "pending",
-        "suggested_memory_type": DEFAULT_SUGGESTED_MEMORY_TYPE,
+        "suggested_memory_type": suggested_memory_type,
         "text_preview": text_preview(normalized_text),
         "text_length": len(normalized_text),
         "safety_notes": DEFAULT_SAFETY_NOTES,
@@ -93,6 +97,8 @@ def stage_memory_candidate(
     staged_at: str,
     normalized_text: str,
     known_candidate_ids: Optional[Set[str]] = None,
+    source_type: str = SOURCE_TYPE_PHONE_TRANSCRIPTION,
+    suggested_memory_type: str = DEFAULT_SUGGESTED_MEMORY_TYPE,
 ) -> Tuple[str, bool]:
     """
     Append one memory candidate to the review queue.
@@ -114,6 +120,8 @@ def stage_memory_candidate(
         imported_at=imported_at,
         staged_at=staged_at,
         normalized_text=normalized_text,
+        source_type=source_type,
+        suggested_memory_type=suggested_memory_type,
     )
     queue_path.parent.mkdir(parents=True, exist_ok=True)
     with queue_path.open("a", encoding="utf-8", newline="\n") as handle:

@@ -244,3 +244,86 @@ def test_apply_report_written(tmp_path):
 
     assert Path(report.json_path).name == APPLY_REPORT_JSON
     assert Path(report.markdown_path).is_file()
+
+
+def test_preview_rejects_export_symlink_before_resolve_monkeypatch(tmp_path, monkeypatch):
+    """Windows may lack admin symlink creation; stub is_symlink to assert pre-resolve guard."""
+    dest = tmp_path / "dest"
+    export = tmp_path / "conversations.json"
+    _write_export(export)
+    resolve_called: list[str] = []
+    original_resolve = Path.resolve
+
+    def tracking_resolve(self, *args, **kwargs):
+        resolve_called.append(str(self))
+        return original_resolve(self, *args, **kwargs)
+
+    def fake_is_symlink(self):
+        if self == export:
+            return True
+        return original_is_symlink(self)
+
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+    monkeypatch.setattr(Path, "resolve", tracking_resolve)
+
+    with pytest.raises(ChatGPTExportIngestError, match="Symlinks are not followed"):
+        preview_chatgpt_export(export_json=export, dest_dir=dest)
+
+    assert resolve_called == []
+
+
+def test_apply_rejects_preview_symlink_before_resolve_monkeypatch(tmp_path, monkeypatch):
+    dest = tmp_path / "dest"
+    export = tmp_path / "conversations.json"
+    _write_export(export)
+    preview = preview_chatgpt_export(export_json=export, dest_dir=dest)
+    preview_path = Path(preview.json_path)
+    resolve_called: list[str] = []
+    original_resolve = Path.resolve
+    original_is_symlink = Path.is_symlink
+
+    def tracking_resolve(self, *args, **kwargs):
+        resolve_called.append(str(self))
+        return original_resolve(self, *args, **kwargs)
+
+    def fake_is_symlink(self):
+        if self == preview_path:
+            return True
+        return original_is_symlink(self)
+
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+    monkeypatch.setattr(Path, "resolve", tracking_resolve)
+
+    with pytest.raises(ChatGPTExportIngestError, match="Symlinks are not followed"):
+        apply_chatgpt_export(preview_json=preview_path, apply=False)
+
+    assert resolve_called == []
+
+
+def test_apply_rejects_stored_export_symlink_before_read_monkeypatch(tmp_path, monkeypatch):
+    dest = tmp_path / "dest"
+    export = tmp_path / "conversations.json"
+    _write_export(export)
+    preview = preview_chatgpt_export(export_json=export, dest_dir=dest)
+    preview_path = Path(preview.json_path)
+    preview_data = json.loads(preview_path.read_text(encoding="utf-8"))
+    stored_export = Path(preview_data["export_path"])
+    original_is_symlink = Path.is_symlink
+    original_resolve = Path.resolve
+
+    def tracking_resolve(self, *args, **kwargs):
+        if self == stored_export:
+            raise AssertionError("resolve must not run on symlink export path")
+        return original_resolve(self, *args, **kwargs)
+
+    def fake_is_symlink(self):
+        if self == stored_export:
+            return True
+        return original_is_symlink(self)
+
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+    monkeypatch.setattr(Path, "resolve", tracking_resolve)
+
+    with pytest.raises(ChatGPTExportIngestError, match="Symlinks are not followed"):
+        apply_chatgpt_export(preview_json=preview_path, apply=False)

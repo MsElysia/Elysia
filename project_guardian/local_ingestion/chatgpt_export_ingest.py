@@ -99,6 +99,18 @@ def _new_session_id() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
+def _reject_symlink(path: Path, *, label: str) -> None:
+    raw = Path(path)
+    if raw.is_symlink():
+        raise ChatGPTExportIngestError(f"Symlinks are not followed for {label}.")
+
+
+def _safe_resolve(path: Path, *, label: str) -> Path:
+    raw = Path(path)
+    _reject_symlink(raw, label=label)
+    return raw.resolve()
+
+
 def _conversation_id(conv: Dict[str, Any], index: int) -> str:
     cid = conv.get("conversation_id") or conv.get("id") or ""
     cid = str(cid).strip()
@@ -147,8 +159,7 @@ def conversation_to_text(
 
 def _load_export_json(export_path: Path) -> Any:
     path = Path(export_path)
-    if path.is_symlink():
-        raise ChatGPTExportIngestError("Symlinks are not followed for export JSON.")
+    _reject_symlink(path, label="export JSON")
     if not path.is_file():
         raise ChatGPTExportIngestError(f"Export JSON not found: {path}")
     try:
@@ -268,8 +279,8 @@ def preview_chatgpt_export(
     max_conversation_chars: int = DEFAULT_MAX_CONVERSATION_CHARS,
     session_dir: Optional[Path] = None,
 ) -> ChatGPTExportPreviewReport:
-    export_path = Path(export_json).resolve()
-    dest = Path(dest_dir).resolve()
+    export_path = _safe_resolve(export_json, label="export JSON")
+    dest = _safe_resolve(dest_dir, label="destination directory")
     data = _load_export_json(export_path)
     conversations = _parse_conversations(data)
     if limit is not None:
@@ -354,6 +365,7 @@ def preview_chatgpt_export(
 
 def _load_preview_json(preview_json: Path) -> Dict[str, Any]:
     path = Path(preview_json)
+    _reject_symlink(path, label="preview JSON")
     if not path.is_file():
         raise ChatGPTExportIngestError(f"Preview JSON not found: {path}")
     try:
@@ -369,12 +381,12 @@ def _load_preview_json(preview_json: Path) -> Dict[str, Any]:
 
 
 def _validate_export_unchanged(export_path: Path, expected_size: int) -> None:
-    if export_path.is_symlink():
-        raise ChatGPTExportIngestError("Export path is a symlink; apply aborted.")
-    if not export_path.is_file():
-        raise ChatGPTExportIngestError(f"Export file no longer exists: {export_path}")
+    path = Path(export_path)
+    _reject_symlink(path, label="export JSON")
+    if not path.is_file():
+        raise ChatGPTExportIngestError(f"Export file no longer exists: {path}")
     try:
-        current_size = int(export_path.stat().st_size)
+        current_size = int(path.stat().st_size)
     except OSError as exc:
         raise ChatGPTExportIngestError(f"Export file could not be inspected: {export_path}") from exc
     if current_size != int(expected_size):
@@ -418,12 +430,14 @@ def apply_chatgpt_export(
     apply: bool = False,
     max_conversation_chars: Optional[int] = None,
 ) -> ChatGPTExportApplyReport:
-    preview_path = Path(preview_json).resolve()
+    preview_path = _safe_resolve(preview_json, label="preview JSON")
     preview = _load_preview_json(preview_path)
     session_dir = preview_path.parent
     session_id = str(preview["session_id"])
     dest_dir = Path(str(preview["dest_dir"]))
     export_path = Path(str(preview["export_path"]))
+    _reject_symlink(export_path, label="export JSON")
+    export_path = export_path.resolve()
     max_chars = int(
         max_conversation_chars
         if max_conversation_chars is not None

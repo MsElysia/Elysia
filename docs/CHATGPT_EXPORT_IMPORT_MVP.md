@@ -73,6 +73,8 @@ Each staged candidate includes:
 
 ```powershell
 python -m pytest project_guardian/tests/test_chatgpt_export_ingest.py -q
+python scripts/run_local_memory_pipeline_smoke.py --json --source-type chatgpt_export
+python -m pytest project_guardian/tests/test_local_memory_pipeline_smoke.py -q
 ```
 
 ## Related

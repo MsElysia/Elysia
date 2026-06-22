@@ -23,6 +23,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from project_guardian.local_ingestion.local_memory_pipeline_smoke import (  # noqa: E402
+    DEFAULT_SOURCE_TYPE,
+    VALID_SOURCE_TYPES,
     LocalMemoryPipelineSmokeError,
     format_operator_summary,
     run_local_memory_pipeline_smoke,
@@ -49,12 +51,19 @@ def main() -> int:
         action="store_true",
         help="Print JSON summary instead of operator text",
     )
+    parser.add_argument(
+        "--source-type",
+        choices=sorted(VALID_SOURCE_TYPES),
+        default=DEFAULT_SOURCE_TYPE,
+        help=f"Pipeline source to smoke-test (default: {DEFAULT_SOURCE_TYPE})",
+    )
     args = parser.parse_args()
 
     try:
         summary = run_local_memory_pipeline_smoke(
             base_dir=args.base_dir,
             keep_temp=args.keep_temp,
+            source_type=args.source_type,
         )
     except LocalMemoryPipelineSmokeError as exc:
         payload = {"verdict": "FAIL", "error": str(exc)}

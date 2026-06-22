@@ -91,7 +91,13 @@ python scripts/build_approved_memory_context.py --dest-dir <path> --query "drywa
 ```powershell
 python scripts/run_local_memory_pipeline_smoke.py
 python scripts/run_local_memory_pipeline_smoke.py --json
+python scripts/run_local_memory_pipeline_smoke.py --json --source-type transcription
+python scripts/run_local_memory_pipeline_smoke.py --json --source-type chatgpt_export
 ```
+
+The smoke command supports `--source-type transcription` (default) and
+`--source-type chatgpt_export` for full local preview → apply → review → export →
+store → search → context coverage on temporary sample data only.
 
 ---
 

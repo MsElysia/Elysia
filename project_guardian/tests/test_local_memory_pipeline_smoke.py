@@ -13,7 +13,15 @@ from project_guardian.local_ingestion.approved_memory_export import APPROVED_MEM
 from project_guardian.local_ingestion.approved_memory_store import APPROVED_MEMORY_STORE_FILENAME
 from project_guardian.local_ingestion.import_session_apply import APPLY_REPORT_JSON, APPLY_REPORT_MD
 from project_guardian.local_ingestion.import_session_preview import PREVIEW_JSON, PREVIEW_MD
+from project_guardian.local_ingestion.chatgpt_export_ingest import (
+    APPLY_REPORT_JSON as CHATGPT_APPLY_REPORT_JSON,
+    PREVIEW_JSON as CHATGPT_PREVIEW_JSON,
+    PREVIEW_MD as CHATGPT_PREVIEW_MD,
+)
 from project_guardian.local_ingestion.local_memory_pipeline_smoke import (
+    SOURCE_TYPE_CHATGPT,
+    SOURCE_TYPE_TRANSCRIPTION,
+    LocalMemoryPipelineSmokeError,
     run_local_memory_pipeline_smoke,
 )
 from project_guardian.local_ingestion.memory_candidate_review import REVIEW_DECISIONS_FILENAME
@@ -77,8 +85,13 @@ def test_json_output_includes_required_fields(tmp_path):
     for key in (
         "verdict",
         "temp_root",
+        "source_type",
         "preview_created",
         "apply_report_created",
+        "chatgpt_preview_created",
+        "chatgpt_apply_report_created",
+        "extracted_text_created",
+        "candidate_source_type",
         "candidates_created",
         "approvals_created",
         "approved_export_created",
@@ -114,3 +127,116 @@ def test_smoke_only_touches_base_dir(tmp_path):
     work = tmp_path / "isolated"
     run_local_memory_pipeline_smoke(base_dir=work, keep_temp=True)
     assert outside.read_text(encoding="utf-8") == before
+
+
+def test_transcription_smoke_still_passes(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_TRANSCRIPTION,
+    )
+    assert summary.verdict == "PASS"
+    assert summary.source_type == SOURCE_TYPE_TRANSCRIPTION
+
+
+def test_chatgpt_export_smoke_passes(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_CHATGPT,
+    )
+    assert summary.verdict == "PASS"
+    assert summary.source_type == SOURCE_TYPE_CHATGPT
+
+
+def test_chatgpt_smoke_creates_chatgpt_source_candidates(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_CHATGPT,
+    )
+    assert summary.candidate_source_type == "chatgpt_export"
+    queue = tmp_path / "dest" / "memory_candidates" / REVIEW_QUEUE_FILENAME
+    record = json.loads(queue.read_text(encoding="utf-8").strip())
+    assert record["source_type"] == "chatgpt_export"
+    assert record["review_status"] == "pending"
+    assert record["live_memory_written"] is False
+
+
+def test_chatgpt_smoke_search_finds_conversation_phrase(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_CHATGPT,
+    )
+    assert summary.search_result_count >= 1
+
+
+def test_chatgpt_smoke_context_bundle_safety_flags(tmp_path):
+    run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_CHATGPT,
+    )
+    bundle = json.loads(
+        (tmp_path / "dest" / "memory_context" / CONTEXT_BUNDLE_JSON).read_text(encoding="utf-8")
+    )
+    assert bundle["model_called"] is False
+    assert bundle["embeddings_used"] is False
+    assert bundle["live_memory_written"] is False
+
+
+def test_chatgpt_smoke_preserves_source_export_hash(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_CHATGPT,
+    )
+    assert summary.verdict == "PASS"
+    export_path = tmp_path / "source" / "conversations.json"
+    assert export_path.is_file()
+    payload = json.loads(export_path.read_text(encoding="utf-8"))
+    assert payload[0]["title"] == "Drywall quote chat"
+
+
+def test_chatgpt_smoke_creates_extracted_text_and_metadata(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_CHATGPT,
+    )
+    assert summary.extracted_text_created
+    assert summary.chatgpt_preview_created
+    assert summary.chatgpt_apply_report_created
+    session_dirs = list((tmp_path / "dest" / "chatgpt_import_sessions").iterdir())
+    assert session_dirs
+    session = session_dirs[0]
+    assert (session / CHATGPT_PREVIEW_JSON).is_file()
+    assert (session / CHATGPT_PREVIEW_MD).is_file()
+    assert (session / CHATGPT_APPLY_REPORT_JSON).is_file()
+
+
+def test_unknown_source_type_rejected(tmp_path):
+    with pytest.raises(LocalMemoryPipelineSmokeError, match="Unknown source type"):
+        run_local_memory_pipeline_smoke(
+            base_dir=tmp_path,
+            keep_temp=True,
+            source_type="email_export",
+        )
+
+
+def test_json_output_includes_source_type(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_CHATGPT,
+    )
+    payload = summary.to_dict()
+    assert payload["source_type"] == SOURCE_TYPE_CHATGPT
+    for key in (
+        "chatgpt_preview_created",
+        "chatgpt_apply_report_created",
+        "extracted_text_created",
+        "candidate_source_type",
+    ):
+        assert key in payload

@@ -1,5 +1,15 @@
 """Operator-run local file ingestion (no autonomy, no background watchers)."""
 
+from .email_export_ingest import (
+    APPLY_REPORT_JSON as EMAIL_APPLY_REPORT_JSON,
+    PREVIEW_JSON as EMAIL_PREVIEW_JSON,
+    PREVIEW_MD as EMAIL_PREVIEW_MD,
+    EmailExportApplyReport,
+    EmailExportIngestError,
+    EmailExportPreviewReport,
+    apply_email_export,
+    preview_email_export,
+)
 from .chatgpt_export_ingest import (
     APPLY_REPORT_JSON as CHATGPT_APPLY_REPORT_JSON,
     APPLY_REPORT_MD as CHATGPT_APPLY_REPORT_MD,
@@ -114,6 +124,11 @@ __all__ = [
     "ChatGPTExportApplyReport",
     "ChatGPTExportIngestError",
     "ChatGPTExportPreviewReport",
+    "EmailExportApplyReport",
+    "EmailExportIngestError",
+    "EmailExportPreviewReport",
+    "EMAIL_PREVIEW_JSON",
+    "EMAIL_PREVIEW_MD",
     "CHATGPT_APPLY_REPORT_JSON",
     "CHATGPT_PREVIEW_JSON",
     "DEFAULT_MAX_FILE_MB",
@@ -141,6 +156,7 @@ __all__ = [
     "REVIEW_QUEUE_FILENAME",
     "ReviewPaths",
     "apply_chatgpt_export",
+    "apply_email_export",
     "apply_memory_import_session",
     "approve_candidate",
     "build_approved_memory_context",
@@ -164,6 +180,7 @@ __all__ = [
     "format_operator_summary",
     "list_candidates",
     "preview_chatgpt_export",
+    "preview_email_export",
     "preview_memory_import_session",
     "run_local_memory_pipeline_smoke",
     "reject_candidate",

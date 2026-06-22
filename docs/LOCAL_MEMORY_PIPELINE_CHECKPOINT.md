@@ -75,7 +75,13 @@ local memory store → search → context bundle.
 2. **ChatGPT export apply** — stage pending candidates with `source_type=chatgpt_export` (dry-run default; `--apply` required)
 3. **Symlink guard** — export and preview paths rejected before `resolve()`
 
-### Shared pipeline steps (both lanes)
+### Source lane 3 — local email export files (`.eml`)
+
+1. **Email export preview** — classify explicit `.eml` paths; `.mbox` as `supported_later` only
+2. **Email export apply** — stage pending candidates with `source_type=email_export` (dry-run default; `--apply` required)
+3. **Attachment-safe extraction** — plain/HTML body only; attachments ignored; no network
+
+### Shared pipeline steps (all lanes)
 
 4. **Memory candidate staging** — `memory_candidates/review_queue.jsonl`
 5. **Candidate review** — operator approve/reject/edit with audit trail
@@ -89,6 +95,7 @@ Related docs:
 
 - [PHONE_TRANSCRIPTION_INGESTION_MVP.md](PHONE_TRANSCRIPTION_INGESTION_MVP.md)
 - [CHATGPT_EXPORT_IMPORT_MVP.md](CHATGPT_EXPORT_IMPORT_MVP.md)
+- [EMAIL_EXPORT_IMPORT_MVP.md](EMAIL_EXPORT_IMPORT_MVP.md)
 - [MEMORY_IMPORT_UI_ROADMAP.md](MEMORY_IMPORT_UI_ROADMAP.md)
 
 ---
@@ -114,7 +121,15 @@ python scripts/apply_chatgpt_export.py --preview-json <path>/chatgpt_export_prev
 python scripts/apply_chatgpt_export.py --preview-json <path>/chatgpt_export_preview.json --apply
 ```
 
-### Review and approved memory pipeline (both lanes)
+### Email export (email lane)
+
+```powershell
+python scripts/preview_email_export.py --dest-dir <path> --input <file-or-folder>
+python scripts/preview_email_export.py --dest-dir <path> --input <folder> --recursive
+python scripts/apply_email_export.py --preview-json <path>/email_export_preview.json --apply
+```
+
+### Review and approved memory pipeline (all lanes)
 
 ```powershell
 python scripts/review_memory_candidates.py --dest-dir <path> list
@@ -164,6 +179,7 @@ Verified at checkpoint creation:
 | Transcription smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type transcription` → `verdict: PASS` |
 | ChatGPT export smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type chatgpt_export` → `verdict: PASS` |
 | ChatGPT export regression | `python -m pytest project_guardian/tests/test_chatgpt_export_ingest.py -q` → all passed |
+| Email export regression | `python -m pytest project_guardian/tests/test_email_export_ingest.py -q` → all passed |
 | Safe-stack smoke | `python scripts/run_safe_stack_smoke_tests.py` → pytest PASSED |
 | Dry-run report | `python scripts/run_elysia_dry_run_report.py --mode real-planning` → `SAFE`, `any_executed: False` |
 
@@ -209,7 +225,7 @@ Earlier transcription ingestion MVP commits precede this chain.
 
 Safe follow-on work from this checkpoint:
 
-- **Email export import** — `.eml` / `.mbox` through staged preview classification
+- **Email export import** — `.eml` preview/apply implemented; `.mbox` remains `supported_later`
 - **UI drag-and-drop memory import** — wire preview/apply session layers to a control panel screen
 - **Local model prompt/context handoff** — feed approved context bundles to Ollama/Mistral with explicit operator invocation
 - **Later approved runtime memory/vector integration** — only after explicit operator approval and separate safety review

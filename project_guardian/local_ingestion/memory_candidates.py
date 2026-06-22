@@ -12,8 +12,10 @@ REVIEW_QUEUE_FILENAME = "review_queue.jsonl"
 TEXT_PREVIEW_MAX = 280
 SOURCE_TYPE_PHONE_TRANSCRIPTION = "phone_transcription"
 SOURCE_TYPE_CHATGPT_EXPORT = "chatgpt_export"
+SOURCE_TYPE_EMAIL_EXPORT = "email_export"
 DEFAULT_SUGGESTED_MEMORY_TYPE = "personal_note"
 SUGGESTED_MEMORY_TYPE_CONVERSATION = "conversation_history"
+SUGGESTED_MEMORY_TYPE_EMAIL = "email_history"
 DEFAULT_SAFETY_NOTES = "operator_review_required"
 
 

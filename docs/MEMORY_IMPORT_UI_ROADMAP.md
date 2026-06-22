@@ -98,6 +98,18 @@ python scripts/preview_chatgpt_export.py --export-json <path>/conversations.json
 python scripts/apply_chatgpt_export.py --preview-json <path>/chatgpt_export_preview.json --apply
 ```
 
+## Email export import (local `.eml` only)
+
+Preview and apply local `.eml` email exports. No Gmail, Outlook, IMAP, SMTP, or
+account access. `.mbox` is classified as `supported_later` only.
+See [EMAIL_EXPORT_IMPORT_MVP.md](EMAIL_EXPORT_IMPORT_MVP.md).
+
+```powershell
+python scripts/preview_email_export.py --dest-dir <path> --input <file-or-folder>
+python scripts/preview_email_export.py --dest-dir <path> --input <folder> --recursive
+python scripts/apply_email_export.py --preview-json <path>/email_export_preview.json --apply
+```
+
 ## Future UI direction (not built yet)
 
 A future drag-and-drop screen should:
@@ -114,6 +126,7 @@ A future drag-and-drop screen should:
 python -m pytest project_guardian/tests/test_import_session_preview.py -q
 python -m pytest project_guardian/tests/test_import_session_apply.py -q
 python -m pytest project_guardian/tests/test_chatgpt_export_ingest.py -q
+python -m pytest project_guardian/tests/test_email_export_ingest.py -q
 python -m pytest project_guardian/tests/test_local_memory_pipeline_smoke.py -q
 python scripts/run_local_memory_pipeline_smoke.py
 python scripts/run_local_memory_pipeline_smoke.py --json
@@ -123,3 +136,4 @@ python scripts/run_local_memory_pipeline_smoke.py --json
 
 - [PHONE_TRANSCRIPTION_INGESTION_MVP.md](PHONE_TRANSCRIPTION_INGESTION_MVP.md) — current local ingestion pipeline
 - [CHATGPT_EXPORT_IMPORT_MVP.md](CHATGPT_EXPORT_IMPORT_MVP.md) — ChatGPT export preview/apply
+- [EMAIL_EXPORT_IMPORT_MVP.md](EMAIL_EXPORT_IMPORT_MVP.md) — email `.eml` export preview/apply

@@ -103,6 +103,9 @@ A future drag-and-drop screen should:
 ```powershell
 python -m pytest project_guardian/tests/test_import_session_preview.py -q
 python -m pytest project_guardian/tests/test_import_session_apply.py -q
+python -m pytest project_guardian/tests/test_local_memory_pipeline_smoke.py -q
+python scripts/run_local_memory_pipeline_smoke.py
+python scripts/run_local_memory_pipeline_smoke.py --json
 ```
 
 ## Related docs

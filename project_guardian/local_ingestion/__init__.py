@@ -1,5 +1,11 @@
 """Operator-run local file ingestion (no autonomy, no background watchers)."""
 
+from .local_memory_pipeline_smoke import (
+    LocalMemoryPipelineSmokeError,
+    SmokeSummary,
+    format_operator_summary,
+    run_local_memory_pipeline_smoke,
+)
 from .import_session_apply import (
     APPLY_REPORT_JSON,
     APPLY_REPORT_MD,
@@ -107,7 +113,9 @@ __all__ = [
     "ImportSessionPreviewError",
     "ImportSessionPreviewReport",
     "IMPORT_SESSIONS_SUBDIR",
+    "LocalMemoryPipelineSmokeError",
     "ListReport",
+    "SmokeSummary",
     "MEMORY_CANDIDATES_SUBDIR",
     "MemoryCandidateReviewError",
     "REJECTED_CANDIDATES_FILENAME",
@@ -136,8 +144,10 @@ __all__ = [
     "stage_memory_candidate",
     "ingest_transcription_files",
     "ingest_transcriptions",
+    "format_operator_summary",
     "list_candidates",
     "preview_memory_import_session",
+    "run_local_memory_pipeline_smoke",
     "reject_candidate",
     "resolve_review_paths",
     "review_queue_path",

@@ -170,15 +170,32 @@ def _iter_files_in_directory(directory: Path, *, recursive: bool) -> Iterable[Pa
             yield entry
 
 
+def _skipped_symlink_entry(path: Path) -> FileEntry:
+    raw = Path(path)
+    return FileEntry(
+        path=str(raw),
+        name=raw.name,
+        extension=raw.suffix.lower(),
+        size_bytes=0,
+        category=_CATEGORY_SKIPPED,
+        reason="Symlinks are not followed during preview.",
+        import_action_available=False,
+    )
+
+
 def _classify_file(path: Path, *, max_bytes: int) -> FileEntry:
-    name = path.name
-    extension = path.suffix.lower()
+    raw = Path(path)
+    if raw.is_symlink():
+        return _skipped_symlink_entry(raw)
+
+    name = raw.name
+    extension = raw.suffix.lower()
     try:
-        stat = path.stat()
+        stat = raw.stat()
         size_bytes = int(stat.st_size)
     except OSError:
         return FileEntry(
-            path=str(path),
+            path=str(raw),
             name=name,
             extension=extension,
             size_bytes=0,
@@ -187,20 +204,9 @@ def _classify_file(path: Path, *, max_bytes: int) -> FileEntry:
             import_action_available=False,
         )
 
-    if path.is_symlink():
-        return FileEntry(
-            path=str(path),
-            name=name,
-            extension=extension,
-            size_bytes=size_bytes,
-            category=_CATEGORY_SKIPPED,
-            reason="Symlinks are not followed during preview.",
-            import_action_available=False,
-        )
-
     if size_bytes > max_bytes:
         return FileEntry(
-            path=str(path),
+            path=str(raw),
             name=name,
             extension=extension,
             size_bytes=size_bytes,
@@ -212,7 +218,7 @@ def _classify_file(path: Path, *, max_bytes: int) -> FileEntry:
     known = _classify_extension(extension)
     if known is not None:
         return FileEntry(
-            path=str(path),
+            path=str(raw),
             name=name,
             extension=extension,
             size_bytes=size_bytes,
@@ -222,7 +228,7 @@ def _classify_file(path: Path, *, max_bytes: int) -> FileEntry:
         )
 
     return FileEntry(
-        path=str(path),
+        path=str(raw),
         name=name,
         extension=extension,
         size_bytes=size_bytes,
@@ -234,32 +240,27 @@ def _classify_file(path: Path, *, max_bytes: int) -> FileEntry:
 
 def _scan_input_path(path: Path, *, recursive: bool, max_bytes: int) -> List[FileEntry]:
     entries: List[FileEntry] = []
-    if path.is_symlink():
-        entries.append(
-            FileEntry(
-                path=str(path),
-                name=path.name,
-                extension=path.suffix.lower(),
-                size_bytes=0,
-                category=_CATEGORY_SKIPPED,
-                reason="Symlinks are not followed during preview.",
-                import_action_available=False,
-            )
-        )
+    raw = Path(path)
+    if raw.is_symlink():
+        entries.append(_skipped_symlink_entry(raw))
         return entries
 
-    if path.is_file():
-        entries.append(_classify_file(path, max_bytes=max_bytes))
+    if raw.is_file():
+        entries.append(_classify_file(raw, max_bytes=max_bytes))
         return entries
 
-    if path.is_dir():
-        for child in _iter_files_in_directory(path, recursive=recursive):
-            if child.is_dir():
+    if raw.is_dir():
+        for child in _iter_files_in_directory(raw, recursive=recursive):
+            child_path = Path(child)
+            if child_path.is_symlink():
+                entries.append(_skipped_symlink_entry(child_path))
+                continue
+            if child_path.is_dir():
                 if not recursive:
                     entries.append(
                         FileEntry(
-                            path=str(child),
-                            name=child.name,
+                            path=str(child_path),
+                            name=child_path.name,
                             extension="",
                             size_bytes=0,
                             category=_CATEGORY_SKIPPED,
@@ -268,14 +269,14 @@ def _scan_input_path(path: Path, *, recursive: bool, max_bytes: int) -> List[Fil
                         )
                     )
                 continue
-            entries.append(_classify_file(child, max_bytes=max_bytes))
+            entries.append(_classify_file(child_path, max_bytes=max_bytes))
         return entries
 
     entries.append(
         FileEntry(
-            path=str(path),
-            name=path.name,
-            extension=path.suffix.lower(),
+            path=str(raw),
+            name=raw.name,
+            extension=raw.suffix.lower(),
             size_bytes=0,
             category=_CATEGORY_SKIPPED,
             reason="Path is not a readable file or directory.",
@@ -400,19 +401,20 @@ def _format_date(message: Any) -> str:
 
 def extract_eml_content(path: Path) -> Tuple[str, Dict[str, Any]]:
     """Parse a local `.eml` file into readable text and metadata (no network)."""
-    _reject_symlink(path, label="email file")
-    if not path.is_file():
-        raise EmailExportIngestError(f"Email file not found: {path}")
+    raw = Path(path)
+    _reject_symlink(raw, label="email file")
+    if not raw.is_file():
+        raise EmailExportIngestError(f"Email file not found: {raw}")
 
     try:
-        raw = path.read_bytes()
+        file_bytes = raw.read_bytes()
     except OSError as exc:
-        raise EmailExportIngestError(f"Email file unreadable: {path}") from exc
+        raise EmailExportIngestError(f"Email file unreadable: {raw}") from exc
 
     try:
-        message = BytesParser(policy=policy.default).parsebytes(raw)
+        message = BytesParser(policy=policy.default).parsebytes(file_bytes)
     except Exception as exc:
-        raise EmailExportIngestError(f"Malformed email file: {path}") from exc
+        raise EmailExportIngestError(f"Malformed email file: {raw}") from exc
 
     body_text, _html_raw, attachments_ignored, html_body_used, warnings = _extract_bodies(message)
     from_addr = _format_header_value(message.get("From"))
@@ -441,7 +443,7 @@ def extract_eml_content(path: Path) -> Tuple[str, Dict[str, Any]]:
         "date": date_str,
         "subject": subject,
         "message_id": message_id,
-        "original_filename": path.name,
+        "original_filename": raw.name,
         "attachments_ignored": attachments_ignored,
         "html_body_used": html_body_used,
         "extraction_warnings": warnings,
@@ -556,13 +558,14 @@ def _load_preview_json(preview_json: Path) -> Dict[str, Any]:
 
 
 def _validate_file_unchanged(path: Path, expected_size: int) -> None:
-    _reject_symlink(path, label="email file")
-    if not path.is_file():
-        raise EmailExportIngestError(f"Source file no longer exists: {path}")
+    raw = Path(path)
+    _reject_symlink(raw, label="email file")
+    if not raw.is_file():
+        raise EmailExportIngestError(f"Source file no longer exists: {raw}")
     try:
-        current_size = int(path.stat().st_size)
+        current_size = int(raw.stat().st_size)
     except OSError as exc:
-        raise EmailExportIngestError(f"Source file could not be inspected: {path}") from exc
+        raise EmailExportIngestError(f"Source file could not be inspected: {raw}") from exc
     if current_size != int(expected_size):
         raise EmailExportIngestError(
             f"Source file size changed (preview {expected_size}, current {current_size})."

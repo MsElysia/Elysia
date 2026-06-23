@@ -307,3 +307,85 @@ def test_no_network_model_vector_calls(tmp_path):
     assert bundle["model_called"] is False
     assert bundle["embeddings_used"] is False
     assert bundle["live_memory_written"] is False
+
+
+def test_directory_child_symlink_skipped_before_stat_monkeypatch(tmp_path, monkeypatch):
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    good = folder / "mail.eml"
+    evil = folder / "evil.eml"
+    _write_plain_eml(good)
+    _write_plain_eml(evil)
+    stat_called_on_symlink: list[str] = []
+    original_stat = Path.stat
+    original_is_symlink = Path.is_symlink
+
+    def fake_is_symlink(self):
+        if self == evil:
+            return True
+        return original_is_symlink(self)
+
+    def tracking_stat(self, *args, **kwargs):
+        if self == evil:
+            stat_called_on_symlink.append(str(self))
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+    monkeypatch.setattr(Path, "stat", tracking_stat)
+
+    report = preview_email_export(dest_dir=tmp_path / "dest", input_paths=[folder])
+    entries = {entry["name"]: entry for entry in report.preview["file_entries"]}
+    assert entries["evil.eml"]["category"] == "skipped"
+    assert "Symlinks" in entries["evil.eml"]["reason"]
+    assert stat_called_on_symlink == []
+    assert entries["mail.eml"]["category"] == "supported_now"
+
+
+def test_recursive_symlink_directory_not_entered_monkeypatch(tmp_path, monkeypatch):
+    folder = tmp_path / "folder"
+    nested = folder / "nested"
+    nested.mkdir(parents=True)
+    _write_plain_eml(nested / "mail.eml")
+    original_is_symlink = Path.is_symlink
+
+    def fake_is_symlink(self):
+        if self == nested:
+            return True
+        return original_is_symlink(self)
+
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+
+    report = preview_email_export(
+        dest_dir=tmp_path / "dest",
+        input_paths=[folder],
+        recursive=True,
+    )
+    assert report.preview["supported_now_count"] == 0
+    assert report.preview["files_seen"] == 0
+
+
+def test_apply_skips_listed_file_that_became_symlink_monkeypatch(tmp_path, monkeypatch):
+    eml = tmp_path / "mail.eml"
+    _write_plain_eml(eml)
+    preview = preview_email_export(dest_dir=tmp_path / "dest", input_paths=[eml])
+    stat_called: list[str] = []
+    original_stat = Path.stat
+    original_is_symlink = Path.is_symlink
+
+    def fake_is_symlink(self):
+        if self == eml:
+            return True
+        return original_is_symlink(self)
+
+    def tracking_stat(self, *args, **kwargs):
+        if self == eml:
+            stat_called.append(str(self))
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+    monkeypatch.setattr(Path, "stat", tracking_stat)
+
+    report = apply_email_export(preview_json=Path(preview.json_path), apply=True)
+    assert report.report["staged_count"] == 0
+    assert any("Symlinks are not followed" in item["reason"] for item in report.report["files"])
+    assert stat_called == []

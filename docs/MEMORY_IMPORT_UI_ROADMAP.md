@@ -17,6 +17,22 @@ The local memory pipeline already supports operator-run steps:
 The **import session preview** step is the next backend layer for UI work. It
 simulates what a drag-and-drop screen needs without building the UI yet.
 
+## Unified memory import (backend foundation)
+
+One command routes preview/apply to the existing safe importers. This is the backend
+foundation for a future drag-and-drop Memory screen. See
+[UNIFIED_MEMORY_IMPORT_MVP.md](UNIFIED_MEMORY_IMPORT_MVP.md).
+
+```powershell
+python scripts/memory_import.py preview --dest-dir <path> --input <file-or-folder>
+python scripts/memory_import.py preview --dest-dir <path> --source-type email_export --input <path>
+python scripts/memory_import.py apply --session-json <path>/import_session_preview.json
+python scripts/memory_import.py apply --session-json <path>/email_export_preview.json --apply
+```
+
+Auto-detect works for single-type inputs (transcription text, ChatGPT export JSON, `.eml`).
+Mixed folders fail safely unless `--source-type` is provided.
+
 ## Import session preview (backend foundation)
 
 Operators (or a future UI) provide **explicit** file or folder paths. Elysia
@@ -123,6 +139,7 @@ A future drag-and-drop screen should:
 ## Tests
 
 ```powershell
+python -m pytest project_guardian/tests/test_unified_memory_import.py -q
 python -m pytest project_guardian/tests/test_import_session_preview.py -q
 python -m pytest project_guardian/tests/test_import_session_apply.py -q
 python -m pytest project_guardian/tests/test_chatgpt_export_ingest.py -q
@@ -134,6 +151,7 @@ python scripts/run_local_memory_pipeline_smoke.py --json
 
 ## Related docs
 
+- [UNIFIED_MEMORY_IMPORT_MVP.md](UNIFIED_MEMORY_IMPORT_MVP.md) — unified preview/apply CLI
 - [PHONE_TRANSCRIPTION_INGESTION_MVP.md](PHONE_TRANSCRIPTION_INGESTION_MVP.md) — current local ingestion pipeline
 - [CHATGPT_EXPORT_IMPORT_MVP.md](CHATGPT_EXPORT_IMPORT_MVP.md) — ChatGPT export preview/apply
 - [EMAIL_EXPORT_IMPORT_MVP.md](EMAIL_EXPORT_IMPORT_MVP.md) — email `.eml` export preview/apply

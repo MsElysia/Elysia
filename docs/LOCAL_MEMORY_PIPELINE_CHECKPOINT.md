@@ -118,6 +118,7 @@ local memory store → search → context bundle.
 
 Related docs:
 
+- [UNIFIED_MEMORY_IMPORT_MVP.md](UNIFIED_MEMORY_IMPORT_MVP.md)
 - [PHONE_TRANSCRIPTION_INGESTION_MVP.md](PHONE_TRANSCRIPTION_INGESTION_MVP.md)
 - [CHATGPT_EXPORT_IMPORT_MVP.md](CHATGPT_EXPORT_IMPORT_MVP.md)
 - [EMAIL_EXPORT_IMPORT_MVP.md](EMAIL_EXPORT_IMPORT_MVP.md)
@@ -168,6 +169,8 @@ python scripts/build_approved_memory_context.py --dest-dir <path> --query "drywa
 ### End-to-end smoke (recommended verification)
 
 ```powershell
+python scripts/memory_import.py preview --dest-dir <path> --input <file-or-folder>
+python scripts/memory_import.py apply --session-json <path>/import_session_preview.json --apply
 python scripts/run_local_memory_pipeline_smoke.py --json --source-type transcription
 python scripts/run_local_memory_pipeline_smoke.py --json --source-type chatgpt_export
 python scripts/run_local_memory_pipeline_smoke.py --json --source-type email_export

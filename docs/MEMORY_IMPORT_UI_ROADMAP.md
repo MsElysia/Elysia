@@ -21,7 +21,8 @@ simulates what a drag-and-drop screen needs without building the UI yet.
 
 One command routes preview/apply to the existing safe importers. This is the backend
 foundation for a future drag-and-drop Memory screen. See
-[UNIFIED_MEMORY_IMPORT_MVP.md](UNIFIED_MEMORY_IMPORT_MVP.md).
+[UNIFIED_MEMORY_IMPORT_MVP.md](UNIFIED_MEMORY_IMPORT_MVP.md) and
+[MEMORY_SCREEN_UI_FOUNDATION.md](MEMORY_SCREEN_UI_FOUNDATION.md).
 
 ```powershell
 python scripts/memory_import.py preview --dest-dir <path> --input <file-or-folder>
@@ -32,6 +33,8 @@ python scripts/memory_import.py apply --session-json <path>/email_export_preview
 
 Auto-detect works for single-type inputs (transcription text, ChatGPT export JSON, `.eml`).
 Mixed folders fail safely unless `--source-type` is provided.
+
+Static UI prototype (no server wiring): `project_guardian/ui/static/memory_import_screen.html`
 
 ## Import session preview (backend foundation)
 

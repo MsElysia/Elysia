@@ -1,0 +1,179 @@
+{
+  "schema_version": "1.0.0",
+  "title": "Elysia Memory Screen UI Contract",
+  "description": "UI-facing contract for local memory import. No server routes required in this milestone. Backend is invoked via unified CLI or future safe subprocess bridge.",
+  "integration_mode": "cli_subprocess_or_future_safe_bridge",
+  "server_routes_required": false,
+  "live_account_access": false,
+  "supported_source_types": [
+    "transcription",
+    "chatgpt_export",
+    "email_export"
+  ],
+  "user_facing_safety_text": [
+    "No memory is saved until you confirm.",
+    "Imported items become pending memories for review.",
+    "Approved memories can be searched later.",
+    "Elysia does not connect to your email or ChatGPT account for this import.",
+    "Only local files you choose are used."
+  ],
+  "screen_sections": [
+    "import_memory",
+    "preview_results",
+    "confirm_import",
+    "review_pending",
+    "search_approved"
+  ],
+  "preview_request": {
+    "action": "preview",
+    "fields": {
+      "dest_dir": {
+        "type": "string",
+        "required": true,
+        "description": "Local workspace directory for import session artifacts"
+      },
+      "source_type": {
+        "type": "string",
+        "required": false,
+        "enum": ["transcription", "chatgpt_export", "email_export"],
+        "description": "Optional explicit source type; auto-detect when omitted"
+      },
+      "inputs": {
+        "type": "array",
+        "items": { "type": "string" },
+        "required": true,
+        "description": "Explicit local file or folder paths chosen by the operator"
+      },
+      "recursive": {
+        "type": "boolean",
+        "required": false,
+        "default": false,
+        "description": "Scan subfolders when an input is a directory"
+      }
+    },
+    "expected_backend_command": "python scripts/memory_import.py preview --dest-dir <path> --input <file-or-folder>",
+    "expected_backend_command_with_source_type": "python scripts/memory_import.py preview --dest-dir <path> --source-type <type> --input <path>",
+    "notes": [
+      "UI must pass explicit paths only; no background folder watchers.",
+      "Mixed source folders fail safely unless source_type is explicit."
+    ]
+  },
+  "preview_response": {
+    "fields": {
+      "source_type": { "type": "string", "required": true },
+      "session_json": { "type": "string", "required": true },
+      "session_markdown": { "type": "string", "required": true },
+      "files_seen": { "type": "integer", "required": true },
+      "supported_now_count": { "type": "integer", "required": false },
+      "supported_later_count": { "type": "integer", "required": false },
+      "skipped_count": { "type": "integer", "required": false },
+      "model_called": { "type": "boolean", "required": true, "const": false },
+      "embeddings_used": { "type": "boolean", "required": true, "const": false },
+      "live_memory_written": { "type": "boolean", "required": true, "const": false },
+      "autonomy_enabled": { "type": "boolean", "required": true, "const": false }
+    },
+    "mapping_from_unified_cli": {
+      "source_type": "summary.source_type",
+      "session_json": "summary.session_json",
+      "session_markdown": "summary.session_markdown",
+      "files_seen": "summary.items_seen",
+      "supported_now_count": "derived from preview detail when transcription or email lane",
+      "supported_later_count": "derived from preview detail when transcription or email lane",
+      "skipped_count": "derived from preview detail when transcription or email lane"
+    }
+  },
+  "apply_request": {
+    "action": "apply",
+    "fields": {
+      "session_json": {
+        "type": "string",
+        "required": true,
+        "description": "Path to preview session JSON from preview step"
+      },
+      "apply": {
+        "type": "boolean",
+        "required": true,
+        "description": "false for dry-run preview of apply; true to stage pending candidates"
+      }
+    },
+    "expected_backend_command_dry_run": "python scripts/memory_import.py apply --session-json <path>",
+    "expected_backend_command_apply": "python scripts/memory_import.py apply --session-json <path> --apply",
+    "notes": [
+      "UI Confirm Import button should call apply with apply=true.",
+      "Dry-run must not write review queue candidates."
+    ]
+  },
+  "apply_response": {
+    "fields": {
+      "source_type": { "type": "string", "required": true },
+      "dry_run": { "type": "boolean", "required": true },
+      "candidates_staged": { "type": "integer", "required": true },
+      "apply_report_json": { "type": "string", "required": true },
+      "apply_report_markdown": { "type": "string", "required": false },
+      "model_called": { "type": "boolean", "required": true, "const": false },
+      "embeddings_used": { "type": "boolean", "required": true, "const": false },
+      "live_memory_written": { "type": "boolean", "required": true, "const": false },
+      "autonomy_enabled": { "type": "boolean", "required": true, "const": false }
+    },
+    "mapping_from_unified_cli": {
+      "source_type": "summary.source_type",
+      "dry_run": "summary.dry_run",
+      "candidates_staged": "summary.candidates_staged",
+      "apply_report_json": "summary.apply_report_path"
+    }
+  },
+  "review_future": {
+    "status": "not_wired_in_this_milestone",
+    "description": "Pending memory candidate review after apply",
+    "expected_cli": [
+      "python scripts/review_memory_candidates.py --dest-dir <path> list",
+      "python scripts/review_memory_candidates.py --dest-dir <path> approve <candidate_id>",
+      "python scripts/review_memory_candidates.py --dest-dir <path> reject <candidate_id>"
+    ],
+    "candidate_fields": [
+      "candidate_id",
+      "source_type",
+      "review_status",
+      "live_memory_written"
+    ]
+  },
+  "search_approved_future": {
+    "status": "not_wired_in_this_milestone",
+    "description": "Search approved local memory store after review and export pipeline",
+    "expected_cli": [
+      "python scripts/search_approved_memory_store.py --dest-dir <path> search --query <text>"
+    ]
+  },
+  "context_bundle_future": {
+    "status": "not_wired_in_this_milestone",
+    "description": "Build approved memory context bundle for local model handoff",
+    "expected_cli": [
+      "python scripts/build_approved_memory_context.py --dest-dir <path> --query <text>"
+    ],
+    "safety_flags": {
+      "model_called": false,
+      "embeddings_used": false,
+      "live_memory_written": false
+    }
+  },
+  "safety_guarantees": {
+    "autonomy_disabled": true,
+    "no_live_execution": true,
+    "no_model_api_embedding_calls": true,
+    "no_live_runtime_memory_writes": true,
+    "no_vector_db_writes": true,
+    "no_server_api_routes_in_this_milestone": true,
+    "no_watchers_or_background_monitors": true,
+    "local_files_only": true,
+    "no_live_account_access": true,
+    "attachments_ignored_on_email_import": true,
+    "ambiguous_mixed_folders_fail_safely": true
+  },
+  "prototype_path": "project_guardian/ui/static/memory_import_screen.html",
+  "related_docs": [
+    "docs/MEMORY_SCREEN_UI_FOUNDATION.md",
+    "docs/UNIFIED_MEMORY_IMPORT_MVP.md",
+    "docs/MEMORY_IMPORT_UI_ROADMAP.md",
+    "docs/LOCAL_MEMORY_PIPELINE_CHECKPOINT.md"
+  ]
+}

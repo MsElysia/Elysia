@@ -18,8 +18,14 @@ from project_guardian.local_ingestion.chatgpt_export_ingest import (
     PREVIEW_JSON as CHATGPT_PREVIEW_JSON,
     PREVIEW_MD as CHATGPT_PREVIEW_MD,
 )
+from project_guardian.local_ingestion.email_export_ingest import (
+    APPLY_REPORT_JSON as EMAIL_APPLY_REPORT_JSON,
+    PREVIEW_JSON as EMAIL_PREVIEW_JSON,
+    PREVIEW_MD as EMAIL_PREVIEW_MD,
+)
 from project_guardian.local_ingestion.local_memory_pipeline_smoke import (
     SOURCE_TYPE_CHATGPT,
+    SOURCE_TYPE_EMAIL,
     SOURCE_TYPE_TRANSCRIPTION,
     LocalMemoryPipelineSmokeError,
     run_local_memory_pipeline_smoke,
@@ -90,6 +96,8 @@ def test_json_output_includes_required_fields(tmp_path):
         "apply_report_created",
         "chatgpt_preview_created",
         "chatgpt_apply_report_created",
+        "email_preview_created",
+        "email_apply_report_created",
         "extracted_text_created",
         "candidate_source_type",
         "candidates_created",
@@ -221,8 +229,101 @@ def test_unknown_source_type_rejected(tmp_path):
         run_local_memory_pipeline_smoke(
             base_dir=tmp_path,
             keep_temp=True,
-            source_type="email_export",
+            source_type="mbox_archive",
         )
+
+
+def test_email_export_smoke_passes(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_EMAIL,
+    )
+    assert summary.verdict == "PASS"
+    assert summary.source_type == SOURCE_TYPE_EMAIL
+
+
+def test_email_smoke_creates_email_source_candidates(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_EMAIL,
+    )
+    assert summary.candidate_source_type == "email_export"
+    queue = tmp_path / "dest" / "memory_candidates" / REVIEW_QUEUE_FILENAME
+    record = json.loads(queue.read_text(encoding="utf-8").strip())
+    assert record["source_type"] == "email_export"
+    assert record["review_status"] == "pending"
+    assert record["live_memory_written"] is False
+
+
+def test_email_smoke_search_finds_email_phrase(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_EMAIL,
+    )
+    assert summary.search_result_count >= 1
+
+
+def test_email_smoke_context_bundle_safety_flags(tmp_path):
+    run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_EMAIL,
+    )
+    bundle = json.loads(
+        (tmp_path / "dest" / "memory_context" / CONTEXT_BUNDLE_JSON).read_text(encoding="utf-8")
+    )
+    assert bundle["model_called"] is False
+    assert bundle["embeddings_used"] is False
+    assert bundle["live_memory_written"] is False
+
+
+def test_email_smoke_preserves_source_email_unchanged(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_EMAIL,
+    )
+    assert summary.verdict == "PASS"
+    eml_path = tmp_path / "source" / "drywall_quote.eml"
+    assert eml_path.is_file()
+    assert "drywall quote" in eml_path.read_text(encoding="utf-8").lower()
+
+
+def test_email_smoke_creates_extracted_text_and_metadata(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_EMAIL,
+    )
+    assert summary.extracted_text_created
+    assert summary.email_preview_created
+    assert summary.email_apply_report_created
+    session_dirs = list((tmp_path / "dest" / "email_import_sessions").iterdir())
+    assert session_dirs
+    session = session_dirs[0]
+    assert (session / EMAIL_PREVIEW_JSON).is_file()
+    assert (session / EMAIL_PREVIEW_MD).is_file()
+    assert (session / EMAIL_APPLY_REPORT_JSON).is_file()
+
+
+def test_json_output_includes_email_fields(tmp_path):
+    summary = run_local_memory_pipeline_smoke(
+        base_dir=tmp_path,
+        keep_temp=True,
+        source_type=SOURCE_TYPE_EMAIL,
+    )
+    payload = summary.to_dict()
+    assert payload["source_type"] == SOURCE_TYPE_EMAIL
+    for key in (
+        "email_preview_created",
+        "email_apply_report_created",
+        "extracted_text_created",
+        "candidate_source_type",
+    ):
+        assert key in payload
 
 
 def test_json_output_includes_source_type(tmp_path):
@@ -236,6 +337,8 @@ def test_json_output_includes_source_type(tmp_path):
     for key in (
         "chatgpt_preview_created",
         "chatgpt_apply_report_created",
+        "email_preview_created",
+        "email_apply_report_created",
         "extracted_text_created",
         "candidate_source_type",
     ):

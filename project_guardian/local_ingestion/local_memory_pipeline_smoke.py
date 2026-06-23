@@ -31,6 +31,10 @@ from .chatgpt_export_ingest import (
     apply_chatgpt_export,
     preview_chatgpt_export,
 )
+from .email_export_ingest import (
+    apply_email_export,
+    preview_email_export,
+)
 from .import_session_apply import APPLY_REPORT_JSON, APPLY_REPORT_MD, apply_memory_import_session
 from .import_session_preview import PREVIEW_JSON, PREVIEW_MD, preview_memory_import_session
 from .memory_candidate_review import (
@@ -42,12 +46,14 @@ from .memory_candidate_review import (
 from .memory_candidates import (
     REVIEW_QUEUE_FILENAME,
     SOURCE_TYPE_CHATGPT_EXPORT,
+    SOURCE_TYPE_EMAIL_EXPORT,
     SOURCE_TYPE_PHONE_TRANSCRIPTION,
 )
 
 SOURCE_TYPE_TRANSCRIPTION = "transcription"
 SOURCE_TYPE_CHATGPT = "chatgpt_export"
-VALID_SOURCE_TYPES = frozenset({SOURCE_TYPE_TRANSCRIPTION, SOURCE_TYPE_CHATGPT})
+SOURCE_TYPE_EMAIL = "email_export"
+VALID_SOURCE_TYPES = frozenset({SOURCE_TYPE_TRANSCRIPTION, SOURCE_TYPE_CHATGPT, SOURCE_TYPE_EMAIL})
 DEFAULT_SOURCE_TYPE = SOURCE_TYPE_TRANSCRIPTION
 
 SAMPLE_FILES = (
@@ -56,6 +62,7 @@ SAMPLE_FILES = (
 )
 SEARCH_QUERY = "drywall quote"
 CHATGPT_EXPORT_FILENAME = "conversations.json"
+EMAIL_EML_FILENAME = "drywall_quote.eml"
 
 
 class LocalMemoryPipelineSmokeError(Exception):
@@ -71,6 +78,8 @@ class SmokeSummary:
     apply_report_created: bool
     chatgpt_preview_created: bool
     chatgpt_apply_report_created: bool
+    email_preview_created: bool
+    email_apply_report_created: bool
     extracted_text_created: bool
     candidate_source_type: str
     candidates_created: int
@@ -168,6 +177,21 @@ def _sample_chatgpt_export() -> list[dict]:
 def _write_chatgpt_export(export_path: Path) -> None:
     export_path.parent.mkdir(parents=True, exist_ok=True)
     export_path.write_text(json.dumps(_sample_chatgpt_export()), encoding="utf-8")
+
+
+def _write_sample_eml(eml_path: Path) -> None:
+    eml_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "From: sender@example.com",
+        "To: user@example.com",
+        "Subject: Drywall quote follow-up",
+        "Date: Mon, 1 Jan 2026 12:00:00 +0000",
+        "Message-ID: <smoke-email@example.com>",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "Please send the drywall quote for the kitchen remodel.",
+    ]
+    eml_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def _pick_drywall_candidate(candidates: List[Dict[str, Any]]) -> Optional[str]:
@@ -418,6 +442,73 @@ def _run_chatgpt_export_smoke(
             errors.append(f"Missing artifact: {label} ({path})")
 
 
+def _run_email_export_smoke(
+    *,
+    source_dir: Path,
+    dest_dir: Path,
+    summary: SmokeSummary,
+    errors: List[str],
+) -> None:
+    eml_path = source_dir / EMAIL_EML_FILENAME
+    _write_sample_eml(eml_path)
+    eml_hash_before = _file_sha256(eml_path)
+    summary.candidate_source_type = SOURCE_TYPE_EMAIL_EXPORT
+
+    preview = preview_email_export(dest_dir=dest_dir, input_paths=[eml_path])
+    preview_json = Path(preview.json_path)
+    preview_md = Path(preview.markdown_path)
+    session_dir = Path(preview.session_dir)
+    summary.email_preview_created = preview_json.is_file() and preview_md.is_file()
+    if not summary.email_preview_created:
+        errors.append("Email preview JSON/Markdown were not created.")
+
+    apply_report = apply_email_export(preview_json=preview_json, apply=True)
+    apply_json = Path(apply_report.json_path)
+    apply_md = Path(apply_report.markdown_path)
+    summary.email_apply_report_created = apply_json.is_file() and apply_md.is_file()
+    summary.candidates_created = int(apply_report.report.get("staged_count") or 0)
+    if not summary.email_apply_report_created:
+        errors.append("Email apply report JSON/Markdown were not created.")
+    if summary.candidates_created < 1:
+        errors.append("Expected at least one staged email memory candidate.")
+
+    extracted_dir = session_dir / EXTRACTED_TEXT_SUBDIR
+    metadata_dir = session_dir / METADATA_SUBDIR
+    summary.extracted_text_created = any(extracted_dir.glob("*.txt"))
+    metadata_created = any(metadata_dir.glob("*.json"))
+    if not summary.extracted_text_created:
+        errors.append("Email extracted text files were not created.")
+    if not metadata_created:
+        errors.append("Email metadata files were not created.")
+
+    queue_path = dest_dir / "memory_candidates" / REVIEW_QUEUE_FILENAME
+    _verify_candidate_records(
+        queue_path,
+        expected_source_type=SOURCE_TYPE_EMAIL_EXPORT,
+        errors=errors,
+    )
+
+    _finalize_review_export_search_context(
+        dest_dir=dest_dir,
+        search_query=SEARCH_QUERY,
+        summary=summary,
+        errors=errors,
+    )
+
+    eml_hash_after = _file_sha256(eml_path)
+    if eml_hash_after != eml_hash_before:
+        errors.append("Source email export file changed during smoke run.")
+
+    for path, label in (
+        (preview_json, "Email preview JSON"),
+        (preview_md, "Email preview Markdown"),
+        (apply_json, "Email apply JSON"),
+        (apply_md, "Email apply Markdown"),
+    ):
+        if not path.is_file():
+            errors.append(f"Missing artifact: {label} ({path})")
+
+
 def _empty_summary(temp_root: Path, source_type: str) -> SmokeSummary:
     return SmokeSummary(
         verdict="FAIL",
@@ -427,6 +518,8 @@ def _empty_summary(temp_root: Path, source_type: str) -> SmokeSummary:
         apply_report_created=False,
         chatgpt_preview_created=False,
         chatgpt_apply_report_created=False,
+        email_preview_created=False,
+        email_apply_report_created=False,
         extracted_text_created=False,
         candidate_source_type="",
         candidates_created=0,
@@ -469,6 +562,7 @@ def run_local_memory_pipeline_smoke(
     runners: Dict[str, Callable[..., None]] = {
         SOURCE_TYPE_TRANSCRIPTION: _run_transcription_smoke,
         SOURCE_TYPE_CHATGPT: _run_chatgpt_export_smoke,
+        SOURCE_TYPE_EMAIL: _run_email_export_smoke,
     }
 
     try:
@@ -497,6 +591,8 @@ def format_operator_summary(summary: SmokeSummary) -> str:
         f"Apply report created: {summary.apply_report_created}",
         f"ChatGPT preview created: {summary.chatgpt_preview_created}",
         f"ChatGPT apply report created: {summary.chatgpt_apply_report_created}",
+        f"Email preview created: {summary.email_preview_created}",
+        f"Email apply report created: {summary.email_apply_report_created}",
         f"Extracted text created: {summary.extracted_text_created}",
         f"Candidate source type: {summary.candidate_source_type}",
         f"Candidates created: {summary.candidates_created}",

@@ -107,6 +107,8 @@ Metadata includes `from`, `to`, `cc`, `date`, `subject`, `message_id`,
 
 ```powershell
 python -m pytest project_guardian/tests/test_email_export_ingest.py -q
+python scripts/run_local_memory_pipeline_smoke.py --json --source-type email_export
+python -m pytest project_guardian/tests/test_local_memory_pipeline_smoke.py -q
 ```
 
 ---

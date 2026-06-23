@@ -145,9 +145,11 @@ python scripts/build_approved_memory_context.py --dest-dir <path> --query "drywa
 ```powershell
 python scripts/run_local_memory_pipeline_smoke.py --json --source-type transcription
 python scripts/run_local_memory_pipeline_smoke.py --json --source-type chatgpt_export
+python scripts/run_local_memory_pipeline_smoke.py --json --source-type email_export
 ```
 
-Both smoke modes use temporary folders only. Default `--source-type` is `transcription`.
+Transcription, ChatGPT export, and email export smoke modes use temporary folders only.
+Default `--source-type` is `transcription`.
 
 ---
 
@@ -178,6 +180,7 @@ Verified at checkpoint creation:
 | ----- | ----------------- |
 | Transcription smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type transcription` → `verdict: PASS` |
 | ChatGPT export smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type chatgpt_export` → `verdict: PASS` |
+| Email export smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type email_export` → `verdict: PASS` |
 | ChatGPT export regression | `python -m pytest project_guardian/tests/test_chatgpt_export_ingest.py -q` → all passed |
 | Email export regression | `python -m pytest project_guardian/tests/test_email_export_ingest.py -q` → all passed |
 | Safe-stack smoke | `python scripts/run_safe_stack_smoke_tests.py` → pytest PASSED |

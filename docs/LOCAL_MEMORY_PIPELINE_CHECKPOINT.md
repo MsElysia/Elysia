@@ -1,7 +1,7 @@
 # Local memory pipeline checkpoint
 
 **Date:** 2026-05-30  
-**Status:** Known-good milestone — transcription and ChatGPT export lanes complete end-to-end  
+**Status:** Known-good milestone — transcription, ChatGPT export, and email export lanes complete end-to-end  
 **Scope:** Operator-run local ingestion only. No UI wiring, no live runtime memory, no models.
 
 ---
@@ -11,10 +11,10 @@
 | Field | Value |
 | ----- | ----- |
 | Branch | `codex/limited-live-activation-wrapper` |
-| HEAD (at checkpoint) | `0a55e52` — `test(local): cover chatgpt export memory pipeline` |
+| HEAD (at checkpoint) | `8958d19` — `test(local): cover email export memory pipeline` |
 
 After the checkpoint document commit, the annotated restore tag
-`local_memory_pipeline_chatgpt_clean_1` points at the checkpoint commit on this branch.
+`local_memory_pipeline_email_clean_1` points at the checkpoint commit on this branch.
 
 ---
 
@@ -35,11 +35,13 @@ git fetch origin tag local_memory_pipeline_clean_1
 git checkout local_memory_pipeline_clean_1
 ```
 
-### Current milestone (transcription + ChatGPT export smoke)
+### Previous milestone (transcription + ChatGPT export smoke)
 
 ```text
 local_memory_pipeline_chatgpt_clean_1
 ```
+
+Points at `50ddfd9` — `docs(local): checkpoint chatgpt memory pipeline`.
 
 Restore:
 
@@ -54,13 +56,32 @@ Inspect:
 git show local_memory_pipeline_chatgpt_clean_1
 ```
 
+### Current milestone (transcription + ChatGPT + email export smoke)
+
+```text
+local_memory_pipeline_email_clean_1
+```
+
+Restore:
+
+```powershell
+git fetch origin tag local_memory_pipeline_email_clean_1
+git checkout local_memory_pipeline_email_clean_1
+```
+
+Inspect:
+
+```powershell
+git show local_memory_pipeline_email_clean_1
+```
+
 ---
 
 ## What works now
 
-Two source lanes flow through the same approved local memory pipeline:
+Three source lanes flow through the same approved local memory pipeline:
 
-**Shared downstream path:** pending candidates → review approval → approved export →
+**Shared downstream path:** preview/apply → pending candidates → review approval → approved export →
 local memory store → search → context bundle.
 
 ### Source lane 1 — phone / transcription files
@@ -80,16 +101,20 @@ local memory store → search → context bundle.
 1. **Email export preview** — classify explicit `.eml` paths; `.mbox` as `supported_later` only
 2. **Email export apply** — stage pending candidates with `source_type=email_export` (dry-run default; `--apply` required)
 3. **Attachment-safe extraction** — plain/HTML body only; attachments ignored; no network
+4. **Symlink guard** — email paths rejected before `stat()`/`resolve()`
 
 ### Shared pipeline steps (all lanes)
 
-4. **Memory candidate staging** — `memory_candidates/review_queue.jsonl`
-5. **Candidate review** — operator approve/reject/edit with audit trail
-6. **Approved export** — `memory_candidates/approved_memory_export.jsonl`
-7. **Approved local memory store** — `memory_store/approved_memory_store.jsonl`
-8. **Approved memory search** — read-only case-insensitive search over the local store
-9. **Approved memory context bundle** — Markdown + JSON context packages for future local model use
-10. **Full pipeline smoke** — end-to-end verification on temporary sample data with `--source-type transcription` or `--source-type chatgpt_export`
+5. **Memory candidate staging** — `memory_candidates/review_queue.jsonl`
+6. **Candidate review** — operator approve/reject/edit with audit trail
+7. **Approved export** — `memory_candidates/approved_memory_export.jsonl`
+8. **Approved local memory store** — `memory_store/approved_memory_store.jsonl`
+9. **Approved memory search** — read-only case-insensitive search over the local store
+10. **Approved memory context bundle** — Markdown + JSON context packages for future local model use
+11. **Full pipeline smoke** — end-to-end verification on temporary sample data with:
+    - `--source-type transcription`
+    - `--source-type chatgpt_export`
+    - `--source-type email_export`
 
 Related docs:
 
@@ -159,11 +184,14 @@ Default `--source-type` is `transcription`.
 | --------- | ------ |
 | Autonomy disabled (`config/autonomy.json` → `enabled: false`) | Yes |
 | No live execution | Yes |
-| No model / embedding / internet / account API calls in pipeline steps | Yes |
+| No model / API / embedding / internet calls in pipeline steps | Yes |
 | No live runtime memory or vector DB writes | Yes |
 | No server/API route wiring for local ingestion | Yes |
 | No watchers or background folder monitors | Yes |
-| Local exported files only (explicit paths; no live ChatGPT account access) | Yes |
+| Local exported files only (explicit paths; no live account access) | Yes |
+| No live ChatGPT account access | Yes |
+| No live email account access (no Gmail/Outlook/IMAP/SMTP) | Yes |
+| Attachments ignored on email import | Yes |
 | User/source files preserved (read-only ingestion inputs; export hash verified on apply) | Yes |
 | Dry-run / explicit `--apply` gates where relevant | Yes |
 
@@ -181,8 +209,8 @@ Verified at checkpoint creation:
 | Transcription smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type transcription` → `verdict: PASS` |
 | ChatGPT export smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type chatgpt_export` → `verdict: PASS` |
 | Email export smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type email_export` → `verdict: PASS` |
-| ChatGPT export regression | `python -m pytest project_guardian/tests/test_chatgpt_export_ingest.py -q` → all passed |
 | Email export regression | `python -m pytest project_guardian/tests/test_email_export_ingest.py -q` → all passed |
+| ChatGPT export regression | `python -m pytest project_guardian/tests/test_chatgpt_export_ingest.py -q` → all passed |
 | Safe-stack smoke | `python scripts/run_safe_stack_smoke_tests.py` → pytest PASSED |
 | Dry-run report | `python scripts/run_elysia_dry_run_report.py --mode real-planning` → `SAFE`, `any_executed: False` |
 
@@ -190,6 +218,7 @@ Representative regression commands:
 
 ```powershell
 python -m pytest project_guardian/tests/test_local_memory_pipeline_smoke.py -q
+python -m pytest project_guardian/tests/test_email_export_ingest.py -q
 python -m pytest project_guardian/tests/test_chatgpt_export_ingest.py -q
 python -m pytest project_guardian/tests/test_import_session_preview.py -q
 python -m pytest project_guardian/tests/test_import_session_apply.py -q
@@ -203,10 +232,14 @@ python -m pytest project_guardian/tests/test_transcription_ingest.py -q
 
 ---
 
-## Milestone commit chain (local memory + ChatGPT slice)
+## Milestone commit chain (local memory + ChatGPT + email slice)
 
 | Commit | Message |
 | ------ | ------- |
+| `8958d19` | `test(local): cover email export memory pipeline` |
+| `69f9c8e` | `fix(local): skip email symlinks before stat` |
+| `b9311f4` | `feat(local): import email export candidates` |
+| `50ddfd9` | `docs(local): checkpoint chatgpt memory pipeline` ← `local_memory_pipeline_chatgpt_clean_1` |
 | `0a55e52` | `test(local): cover chatgpt export memory pipeline` |
 | `2174efb` | `fix(local): reject chatgpt export symlinks before resolve` |
 | `e5c98a7` | `feat(local): import chatgpt export candidates` |
@@ -215,10 +248,6 @@ python -m pytest project_guardian/tests/test_transcription_ingest.py -q
 | `e6ee36a` | `feat(local): apply memory import sessions` |
 | `148e370` | `feat(local): preview memory import sessions` |
 | `42cbd72` | `feat(local): build approved memory context bundles` |
-| `38e7724` | `feat(local): search approved memory store` |
-| `f657295` | `feat(local): write approved local memory store` |
-| `80ec78a` | `feat(local): export approved memory candidates` |
-| `71af5da` | `feat(local): add memory candidate review cli` |
 
 Earlier transcription ingestion MVP commits precede this chain.
 
@@ -228,9 +257,10 @@ Earlier transcription ingestion MVP commits precede this chain.
 
 Safe follow-on work from this checkpoint:
 
-- **Email export import** — `.eml` preview/apply implemented; `.mbox` remains `supported_later`
 - **UI drag-and-drop memory import** — wire preview/apply session layers to a control panel screen
 - **Local model prompt/context handoff** — feed approved context bundles to Ollama/Mistral with explicit operator invocation
+- **`.mbox` support later** — extend email lane beyond single `.eml` files
+- **Document/PDF import later** — additional source lanes using the same downstream pipeline
 - **Later approved runtime memory/vector integration** — only after explicit operator approval and separate safety review
 
 ---
@@ -241,6 +271,7 @@ The following remain out of scope for this milestone:
 
 - No live ChatGPT account access
 - No live email account access
+- No `.mbox` import yet
 - No local model call from pipeline steps
 - No embeddings
 - No live runtime memory / vector DB writes
@@ -252,6 +283,6 @@ The following remain out of scope for this milestone:
 
 ## Operator note
 
-This checkpoint protects real progress. Before adding email import, UI wiring, or local
-model calls, confirm both smoke modes and regressions still pass from tag
-`local_memory_pipeline_chatgpt_clean_1` or branch tip.
+This checkpoint protects real progress. Before adding UI wiring, local model calls, or additional
+import types, confirm all three smoke modes and regressions still pass from tag
+`local_memory_pipeline_email_clean_1` or branch tip.

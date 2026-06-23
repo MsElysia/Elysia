@@ -1,0 +1,297 @@
+{
+  "schema_version": "1.0.0",
+  "title": "Elysia Memory Review/Search UI Contract",
+  "description": "UI-facing contract for pending candidate review, approved memory browse/search, and context bundle generation. No server routes required in this milestone. Backend is invoked via existing review/search CLIs or future safe subprocess bridge.",
+  "integration_mode": "cli_subprocess_or_future_safe_bridge",
+  "server_routes_required": false,
+  "live_account_access": false,
+  "supported_source_types": [
+    "transcription",
+    "chatgpt_export",
+    "email_export"
+  ],
+  "user_facing_safety_text": [
+    "Pending memories are not active memory yet.",
+    "Only approved memories are used for search/context.",
+    "Review actions are operator controlled.",
+    "No model is called during review.",
+    "No live account access is used.",
+    "No memory is written to live runtime memory or vector DB."
+  ],
+  "screen_sections": [
+    "pending_memories",
+    "review_actions",
+    "approved_memory",
+    "search_approved_memory",
+    "context_bundle"
+  ],
+  "data_sources": {
+    "review_queue_path": {
+      "description": "Staged pending candidates from import apply",
+      "default_pattern": "<dest-dir>/memory_candidates/review_queue.jsonl"
+    },
+    "review_decisions_path": {
+      "description": "Operator approve/reject/edit audit trail",
+      "default_pattern": "<dest-dir>/memory_candidates/review_decisions.jsonl"
+    },
+    "approved_memory_export_path": {
+      "description": "Approved candidate export after review",
+      "default_pattern": "<dest-dir>/memory_candidates/approved_memory_export.jsonl"
+    },
+    "approved_memory_store_path": {
+      "description": "Operator-approved local memory store for search",
+      "default_pattern": "<dest-dir>/memory_store/approved_memory_store.jsonl"
+    },
+    "context_bundle_path": {
+      "description": "Generated context bundle artifacts for local model handoff",
+      "default_pattern": "<dest-dir>/memory_context/"
+    }
+  },
+  "pending_candidates_list_request": {
+    "action": "list_pending_candidates",
+    "fields": {
+      "dest_dir": {
+        "type": "string",
+        "required": true,
+        "description": "Local workspace directory containing memory_candidates/"
+      },
+      "filters": {
+        "type": "object",
+        "required": false,
+        "properties": {
+          "source_type": {
+            "type": "string",
+            "enum": ["transcription", "chatgpt_export", "email_export"]
+          },
+          "review_status": {
+            "type": "string",
+            "default": "pending",
+            "description": "Default pending only; use all for any effective status"
+          },
+          "text_query": {
+            "type": "string",
+            "description": "Optional client-side filter on candidate preview text"
+          }
+        }
+      }
+    },
+    "read_only": true,
+    "expected_backend_command": "python scripts/review_memory_candidates.py --dest-dir <path> list",
+    "expected_backend_command_all": "python scripts/review_memory_candidates.py --dest-dir <path> list --all",
+    "notes": [
+      "UI must not call models or write live memory.",
+      "List is read-only against review_queue.jsonl."
+    ]
+  },
+  "pending_candidates_list_response": {
+    "fields": {
+      "candidates": {
+        "type": "array",
+        "items": {
+          "candidate_id": { "type": "string" },
+          "source_type": { "type": "string" },
+          "suggested_memory_type": { "type": "string" },
+          "text_preview": { "type": "string" },
+          "source_file_label": { "type": "string" },
+          "staged_at": { "type": "string" },
+          "review_status": { "type": "string" }
+        }
+      },
+      "counts": {
+        "type": "object",
+        "properties": {
+          "total": { "type": "integer" },
+          "pending": { "type": "integer" },
+          "by_source_type": { "type": "object" }
+        }
+      },
+      "model_called": { "type": "boolean", "required": true, "const": false },
+      "embeddings_used": { "type": "boolean", "required": true, "const": false },
+      "live_memory_written": { "type": "boolean", "required": true, "const": false },
+      "autonomy_enabled": { "type": "boolean", "required": true, "const": false }
+    },
+    "mapping_from_review_cli": {
+      "candidates": "report.candidates",
+      "counts.total": "report.count",
+      "counts.pending": "derived from candidates where review_status=pending"
+    }
+  },
+  "review_decision_request": {
+    "actions": ["approve_candidate", "reject_candidate", "edit_candidate"],
+    "fields": {
+      "dest_dir": {
+        "type": "string",
+        "required": true
+      },
+      "candidate_id": {
+        "type": "string",
+        "required": true
+      },
+      "operator_note": {
+        "type": "string",
+        "required": false,
+        "description": "Optional operator notes passed as --notes"
+      },
+      "edited_text": {
+        "type": "string",
+        "required": false,
+        "description": "Required for edit_candidate; passed as --replacement-text or file"
+      }
+    },
+    "requires_operator_confirm": true,
+    "expected_backend_commands": {
+      "approve_candidate": "python scripts/review_memory_candidates.py --dest-dir <path> approve <candidate_id> --notes \"<operator_note>\"",
+      "reject_candidate": "python scripts/review_memory_candidates.py --dest-dir <path> reject <candidate_id> --notes \"<operator_note>\"",
+      "edit_candidate": "python scripts/review_memory_candidates.py --dest-dir <path> edit <candidate_id> --replacement-text \"<edited_text>\" --notes \"<operator_note>\""
+    },
+    "notes": [
+      "UI must show confirmation before writing review_decisions.jsonl.",
+      "Decisions do not write live runtime memory or vector DB."
+    ]
+  },
+  "review_decision_response": {
+    "fields": {
+      "decision_written": { "type": "boolean", "required": true },
+      "decision_path": { "type": "string", "required": true },
+      "candidate_id": { "type": "string", "required": true },
+      "new_status": {
+        "type": "string",
+        "enum": ["approved", "rejected", "edited"]
+      },
+      "live_memory_written": { "type": "boolean", "required": true, "const": false },
+      "model_called": { "type": "boolean", "required": true, "const": false },
+      "embeddings_used": { "type": "boolean", "required": true, "const": false },
+      "autonomy_enabled": { "type": "boolean", "required": true, "const": false }
+    },
+    "mapping_from_review_cli": {
+      "decision_written": "true when CLI succeeds",
+      "decision_path": "<dest-dir>/memory_candidates/review_decisions.jsonl",
+      "candidate_id": "report.decision.candidate_id",
+      "new_status": "report.decision.action or effective status"
+    }
+  },
+  "approved_memory_search_request": {
+    "action": "search_approved_memory",
+    "fields": {
+      "dest_dir": {
+        "type": "string",
+        "required": true
+      },
+      "query": {
+        "type": "string",
+        "required": true
+      },
+      "limit": {
+        "type": "integer",
+        "required": false,
+        "default": 10
+      },
+      "source_type": {
+        "type": "string",
+        "required": false,
+        "enum": ["transcription", "chatgpt_export", "email_export"],
+        "description": "Optional client-side filter on search results"
+      }
+    },
+    "read_only": true,
+    "expected_backend_command": "python scripts/search_approved_memory_store.py --dest-dir <path> search \"<query>\" --limit <n>",
+    "notes": [
+      "Search is read-only against approved_memory_store.jsonl.",
+      "No embeddings or model calls."
+    ]
+  },
+  "approved_memory_search_response": {
+    "fields": {
+      "results": {
+        "type": "array",
+        "items": {
+          "memory_id": { "type": "string" },
+          "source_type": { "type": "string" },
+          "text_preview": { "type": "string" },
+          "approved_at": { "type": "string" }
+        }
+      },
+      "result_count": { "type": "integer", "required": true },
+      "live_memory_written": { "type": "boolean", "required": true, "const": false },
+      "model_called": { "type": "boolean", "required": true, "const": false },
+      "embeddings_used": { "type": "boolean", "required": true, "const": false },
+      "autonomy_enabled": { "type": "boolean", "required": true, "const": false }
+    },
+    "mapping_from_search_cli": {
+      "results": "report.results",
+      "result_count": "report.count"
+    }
+  },
+  "context_bundle_request": {
+    "action": "build_context_bundle",
+    "fields": {
+      "dest_dir": {
+        "type": "string",
+        "required": true
+      },
+      "query": {
+        "type": "string",
+        "required": true
+      },
+      "limit": {
+        "type": "integer",
+        "required": false,
+        "default": 5
+      },
+      "max_chars": {
+        "type": "integer",
+        "required": false,
+        "default": 8000
+      }
+    },
+    "requires_operator_confirm": true,
+    "expected_backend_command": "python scripts/build_approved_memory_context.py --dest-dir <path> --query \"<query>\" --limit <n> --max-chars <n>",
+    "notes": [
+      "Builds local Markdown + JSON files under memory_context/.",
+      "Does not call a model; operator may use bundle later."
+    ]
+  },
+  "context_bundle_response": {
+    "fields": {
+      "context_bundle_markdown": { "type": "string", "required": true },
+      "context_bundle_json": { "type": "string", "required": true },
+      "result_count": { "type": "integer", "required": true },
+      "live_memory_written": { "type": "boolean", "required": true, "const": false },
+      "model_called": { "type": "boolean", "required": true, "const": false },
+      "embeddings_used": { "type": "boolean", "required": true, "const": false },
+      "autonomy_enabled": { "type": "boolean", "required": true, "const": false }
+    },
+    "mapping_from_context_cli": {
+      "context_bundle_markdown": "report.markdown_path",
+      "context_bundle_json": "report.json_path",
+      "result_count": "report.result_count"
+    }
+  },
+  "downstream_export_commands": {
+    "description": "Run after approvals before search/context; not invoked directly by review UI in all flows",
+    "export_approved": "python scripts/export_approved_memory_candidates.py --dest-dir <path>",
+    "write_store": "python scripts/write_approved_memory_store.py --dest-dir <path> --apply"
+  },
+  "safety_guarantees": {
+    "autonomy_disabled": true,
+    "no_live_execution": true,
+    "no_model_api_embedding_calls": true,
+    "no_live_runtime_memory_writes": true,
+    "no_vector_db_writes": true,
+    "no_server_api_routes_in_this_milestone": true,
+    "no_watchers_or_background_monitors": true,
+    "local_files_only": true,
+    "no_live_account_access": true,
+    "review_requires_operator_confirm": true,
+    "search_is_read_only": true,
+    "context_bundle_requires_operator_confirm": true
+  },
+  "prototype_path": "project_guardian/ui/static/memory_review_search.html",
+  "related_docs": [
+    "docs/MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md",
+    "docs/MEMORY_SCREEN_UI_CONTRACT.json",
+    "docs/MEMORY_SCREEN_UI_FOUNDATION.md",
+    "docs/MEMORY_IMPORT_UI_ROADMAP.md",
+    "docs/LOCAL_MEMORY_PIPELINE_CHECKPOINT.md"
+  ]
+}

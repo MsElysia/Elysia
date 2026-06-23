@@ -1,8 +1,8 @@
 # Local memory pipeline checkpoint
 
 **Date:** 2026-05-30  
-**Status:** Known-good milestone — Memory screen UI foundation + unified import + three source lanes end-to-end  
-**Scope:** Operator-run local ingestion and UI contract only. No dashboard wiring, no live runtime memory, no models.
+**Status:** Known-good milestone — Memory review/search UI foundation + import UI + unified import + three source lanes  
+**Scope:** Operator-run local ingestion and UI contracts only. No dashboard wiring, no live runtime memory, no models.
 
 ---
 
@@ -11,10 +11,10 @@
 | Field | Value |
 | ----- | ----- |
 | Branch | `codex/limited-live-activation-wrapper` |
-| HEAD (at checkpoint) | `4a32167` — `docs(ui): add memory screen import foundation` |
+| HEAD (at checkpoint) | `df24d40` — `docs(ui): checkpoint memory screen foundation` |
 
-After the checkpoint document commit, the annotated restore tag
-`memory_screen_ui_foundation_clean_1` points at the checkpoint commit on this branch.
+After the Memory review/search UI foundation commit, branch tip includes the new review/search contract and static prototype.
+Prior restore tag `memory_screen_ui_foundation_clean_1` points at `df24d40`.
 
 ---
 
@@ -92,6 +92,8 @@ git show unified_memory_import_clean_1
 memory_screen_ui_foundation_clean_1
 ```
 
+Points at `df24d40` — `docs(ui): checkpoint memory screen foundation`.
+
 Restore:
 
 ```powershell
@@ -105,20 +107,37 @@ Inspect:
 git show memory_screen_ui_foundation_clean_1
 ```
 
+### Latest work (Memory review/search UI foundation — branch tip)
+
+UI contract and static prototype for pending candidate review, approved memory search, and context bundle placeholders.
+No server routes wired yet. See [MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md](MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md).
+
 ---
 
 ## What works now
 
-### Memory screen UI foundation (user-facing structure)
+### Memory review/search UI foundation (user-facing structure)
 
-UI contract and static prototype for a future dashboard Memory screen. No server routes wired yet.
+UI contract and static prototype for review, search, and context bundle placeholders. No server routes wired yet.
+See [MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md](MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md) and
+[MEMORY_REVIEW_SEARCH_UI_CONTRACT.json](MEMORY_REVIEW_SEARCH_UI_CONTRACT.json).
+
+1. **Pending candidates section** — list/filter by source type; candidate cards with preview and status
+2. **Review actions** — approve/reject/edit with operator confirmation (contract only)
+3. **Approved memory section** — browse approved items with source filter
+4. **Search approved memory** — read-only search contract and prototype UI
+5. **Context bundle section** — future placeholder; local file output explained
+
+### Memory screen UI foundation (import — prior milestone)
+
+UI contract and static prototype for a future dashboard Memory import screen. No server routes wired yet.
 See [MEMORY_SCREEN_UI_FOUNDATION.md](MEMORY_SCREEN_UI_FOUNDATION.md) and
 [MEMORY_SCREEN_UI_CONTRACT.json](MEMORY_SCREEN_UI_CONTRACT.json).
 
-1. **Memory screen UI contract** — preview/apply request/response shapes, three source types, safety flags
-2. **Static Memory import prototype** — `project_guardian/ui/static/memory_import_screen.html` (mock data only; no backend calls)
-3. **Plain-language user safety copy** — confirm-before-save, pending review, local files only, no live accounts
-4. **Preview / apply UI structure** — Add files → Preview → Confirm import → Review pending (future) → Search approved (future)
+6. **Memory import UI contract** — preview/apply request/response shapes, three source types, safety flags
+7. **Static Memory import prototype** — `project_guardian/ui/static/memory_import_screen.html` (mock data only)
+8. **Plain-language user safety copy** — confirm-before-save, pending review, local files only, no live accounts
+9. **Preview / apply UI structure** — Add files → Preview → Confirm import
 
 ### Unified memory import (backend entry point)
 
@@ -154,10 +173,16 @@ local memory store → search → context bundle.
 
 | File | Purpose |
 | ---- | ------- |
-| `docs/MEMORY_SCREEN_UI_CONTRACT.json` | UI-facing preview/apply contract |
-| `docs/MEMORY_SCREEN_UI_FOUNDATION.md` | Memory screen layout and backend mapping |
-| `project_guardian/ui/static/memory_import_screen.html` | Static prototype (no server wiring) |
+| `docs/MEMORY_REVIEW_SEARCH_UI_CONTRACT.json` | Review/search/context UI contract |
+| `docs/MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md` | Review/search screen layout and CLI mapping |
+| `project_guardian/ui/static/memory_review_search.html` | Static review/search prototype (no server wiring) |
+| `docs/MEMORY_SCREEN_UI_CONTRACT.json` | Import preview/apply UI contract |
+| `docs/MEMORY_SCREEN_UI_FOUNDATION.md` | Import screen layout and backend mapping |
+| `project_guardian/ui/static/memory_import_screen.html` | Static import prototype (no server wiring) |
 | `scripts/memory_import.py` | Unified preview/apply CLI |
+| `scripts/review_memory_candidates.py` | Pending candidate review CLI |
+| `scripts/search_approved_memory_store.py` | Approved memory search CLI |
+| `scripts/build_approved_memory_context.py` | Context bundle CLI |
 
 Related docs:
 
@@ -186,10 +211,11 @@ python scripts/run_local_memory_pipeline_smoke.py --json --source-type chatgpt_e
 python scripts/run_local_memory_pipeline_smoke.py --json --source-type email_export
 ```
 
-### Static prototype (local browser only)
+### Static prototypes (local browser only)
 
 ```powershell
 start project_guardian/ui/static/memory_import_screen.html
+start project_guardian/ui/static/memory_review_search.html
 ```
 
 ### Review and approved memory pipeline (CLI; not wired to UI yet)
@@ -234,7 +260,8 @@ Verified at checkpoint creation:
 
 | Check | Expected result |
 | ----- | ----------------- |
-| UI contract tests | `python -m pytest project_guardian/tests/test_memory_screen_ui_contract.py -q` → all passed |
+| Review/search UI contract tests | `python -m pytest project_guardian/tests/test_memory_review_search_ui_contract.py -q` → all passed |
+| UI contract tests (import) | `python -m pytest project_guardian/tests/test_memory_screen_ui_contract.py -q` → all passed |
 | Unified import tests | `python -m pytest project_guardian/tests/test_unified_memory_import.py -q` → all passed |
 | Transcription smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type transcription` → `verdict: PASS` |
 | ChatGPT export smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type chatgpt_export` → `verdict: PASS` |
@@ -245,6 +272,7 @@ Verified at checkpoint creation:
 Representative regression commands:
 
 ```powershell
+python -m pytest project_guardian/tests/test_memory_review_search_ui_contract.py -q
 python -m pytest project_guardian/tests/test_memory_screen_ui_contract.py -q
 python -m pytest project_guardian/tests/test_unified_memory_import.py -q
 python -m pytest project_guardian/tests/test_local_memory_pipeline_smoke.py -q
@@ -254,10 +282,12 @@ python -m pytest project_guardian/tests/test_chatgpt_export_ingest.py -q
 
 ---
 
-## Milestone commit chain (Memory screen UI + unified import slice)
+## Milestone commit chain (Memory review/search UI + import UI slice)
 
 | Commit | Message |
 | ------ | ------- |
+| (branch tip) | `docs(ui): add memory review search foundation` |
+| `df24d40` | `docs(ui): checkpoint memory screen foundation` ← `memory_screen_ui_foundation_clean_1` |
 | `4a32167` | `docs(ui): add memory screen import foundation` |
 | `44612d0` | `docs(local): checkpoint unified memory import` ← `unified_memory_import_clean_1` |
 | `9084281` | `feat(local): add unified memory import command` |
@@ -276,9 +306,10 @@ Earlier transcription ingestion MVP commits precede this chain.
 
 Safe follow-on work from this checkpoint:
 
-- **Dashboard Memory screen wiring** — connect UI to safe subprocess bridge for `memory_import.py`
-- **Review pending memories UI** — list/approve/reject from `review_memory_candidates.py`
-- **Approved memory search UI** — search approved local store from control panel
+- **Dashboard Memory screen wiring** — connect import UI to safe subprocess bridge for `memory_import.py`
+- **Dashboard review/search wiring** — connect review/search UI to review and search CLIs
+- **Review pending memories UI (live)** — wire list/approve/reject from `review_memory_candidates.py`
+- **Approved memory search UI (live)** — wire read-only search from control panel
 - **Local model prompt/context handoff** — feed approved context bundles with explicit operator invocation
 - **`.mbox` support later** — extend email lane beyond single `.eml` files
 - **Document/PDF import later** — additional source lanes using the same downstream pipeline
@@ -289,8 +320,8 @@ Safe follow-on work from this checkpoint:
 
 The following remain out of scope for this milestone:
 
-- No live dashboard route yet
-- No server/API routes for import or approved memory operations
+- No live dashboard route yet (import or review/search)
+- No server/API routes for import, review, or approved memory operations
 - No live ChatGPT account access
 - No live email account access
 - No `.mbox` import yet
@@ -305,5 +336,5 @@ The following remain out of scope for this milestone:
 ## Operator note
 
 This checkpoint protects real progress. Before wiring dashboard routes or adding more UI behavior,
-confirm UI contract tests, unified import tests, all three smoke modes, and safe-stack still pass from tag
+confirm review/search UI contract tests, import UI contract tests, unified import tests, all three smoke modes, and safe-stack still pass from tag
 `memory_screen_ui_foundation_clean_1` or branch tip.

@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Elysia — Review &amp; Search Memory (UI foundation)</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --primary: #6366f1;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 24px;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; }
+    h1 { font-size: 1.75rem; margin-bottom: 8px; }
+    .subtitle { color: var(--muted); margin-bottom: 24px; }
+    .banner {
+      background: #172554;
+      border: 1px solid #1e40af;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 20px;
+      font-size: 0.92rem;
+    }
+    .banner li { margin-left: 18px; margin-top: 4px; }
+    section {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    section h2 { font-size: 1.15rem; margin-bottom: 12px; color: #c4b5fd; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; }
+    .badge {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 0.85rem;
+    }
+    label { display: block; font-size: 0.9rem; color: var(--muted); margin-bottom: 6px; }
+    input, select, textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      margin-bottom: 12px;
+    }
+    textarea { min-height: 72px; resize: vertical; }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    button {
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+    button.secondary { background: #475569; }
+    button.success { background: var(--success); }
+    button.danger { background: var(--danger); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .candidate-card, .approved-card, .result-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .candidate-card h3, .approved-card h3, .result-card h3 {
+      font-size: 0.95rem;
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .chip {
+      display: inline-block;
+      background: #312e81;
+      border-radius: 999px;
+      padding: 2px 10px;
+      font-size: 0.75rem;
+      color: #c4b5fd;
+    }
+    .chip.pending { background: #78350f; color: #fde68a; }
+    .chip.approved { background: #064e3b; color: #6ee7b7; }
+    .meta { font-size: 0.82rem; color: var(--muted); margin-top: 8px; }
+    .preview-text {
+      font-size: 0.9rem;
+      margin-top: 8px;
+      color: #e2e8f0;
+      white-space: pre-wrap;
+    }
+    .flag { color: var(--success); font-size: 0.85rem; margin-top: 10px; }
+    .note { font-size: 0.82rem; color: var(--warning); margin-top: 10px; }
+    .future { border-style: dashed; opacity: 0.95; }
+    .filter-select { width: auto; min-width: 180px; margin-bottom: 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Review &amp; Search Memory</h1>
+    <p class="subtitle">UI foundation prototype — not connected to server or CLI yet.</p>
+
+    <div class="banner" role="note">
+      <strong>Safety</strong>
+      <ul>
+        <li>Pending memories are not active memory yet.</li>
+        <li>Only approved memories are used for search/context.</li>
+        <li>Review actions are operator controlled.</li>
+        <li>No model is called during review.</li>
+        <li>No live account access is used.</li>
+        <li>No memory is written to live runtime memory or vector DB.</li>
+      </ul>
+    </div>
+
+    <section id="pending-section">
+      <h2>1. Pending Memories</h2>
+      <div class="toolbar">
+        <span class="badge" id="pending-count">3 pending candidates</span>
+        <label for="pending-filter" style="margin:0;">Source type</label>
+        <select id="pending-filter" class="filter-select">
+          <option value="">All sources</option>
+          <option value="transcription">transcription</option>
+          <option value="chatgpt_export">chatgpt_export</option>
+          <option value="email_export">email_export</option>
+        </select>
+      </div>
+      <div id="pending-list"></div>
+      <p class="note">CLI: python scripts/review_memory_candidates.py --dest-dir &lt;path&gt; list</p>
+    </section>
+
+    <section id="review-actions-section">
+      <h2>2. Review actions</h2>
+      <p style="color:var(--muted);font-size:0.9rem;margin-bottom:12px;">Select a candidate above, then choose an action. Confirmation required before any write.</p>
+      <label for="selected-candidate">Selected candidate</label>
+      <input type="text" id="selected-candidate" value="cand-transcription-001" readonly>
+      <label for="operator-note">Operator note (optional)</label>
+      <input type="text" id="operator-note" placeholder="e.g. useful for drywall quotes">
+      <label for="edit-text">Edited text (for Edit before approval)</label>
+      <textarea id="edit-text" placeholder="Replacement text when editing before approval"></textarea>
+      <div class="row">
+        <button type="button" class="success" id="approve-btn">Approve</button>
+        <button type="button" class="danger" id="reject-btn">Reject</button>
+        <button type="button" class="secondary" id="edit-btn">Edit before approval</button>
+        <button type="button" class="secondary" id="metadata-btn">View source metadata</button>
+      </div>
+      <div class="preview-box" id="decision-result" style="margin-top:14px;background:var(--bg);border-radius:8px;padding:14px;font-size:0.9rem;">
+        <em style="color:var(--muted);">Review decisions write to review_decisions.jsonl only — not live memory.</em>
+      </div>
+      <div class="flag" id="review-flags">model_called: false | embeddings_used: false | live_memory_written: false | autonomy_enabled: false</div>
+    </section>
+
+    <section id="approved-section">
+      <h2>3. Approved Memory</h2>
+      <div class="toolbar">
+        <span class="badge" id="approved-count">2 approved memories</span>
+        <label for="approved-filter" style="margin:0;">Source type</label>
+        <select id="approved-filter" class="filter-select">
+          <option value="">All sources</option>
+          <option value="transcription">transcription</option>
+          <option value="chatgpt_export">chatgpt_export</option>
+          <option value="email_export">email_export</option>
+        </select>
+      </div>
+      <div id="approved-list"></div>
+      <p class="note">After approval: export_approved_memory_candidates.py then write_approved_memory_store.py --apply</p>
+    </section>
+
+    <section id="search-section">
+      <h2>4. Search Approved Memory</h2>
+      <label for="search-query">Search query (read-only search)</label>
+      <input type="text" id="search-query" placeholder="e.g. drywall quote" value="drywall quote">
+      <div class="row">
+        <button type="button" id="search-btn">Search approved memory</button>
+        <span class="badge" id="search-count">0 results</span>
+      </div>
+      <div id="search-results" style="margin-top:14px;"></div>
+      <p class="note">CLI: python scripts/search_approved_memory_store.py --dest-dir &lt;path&gt; search "drywall quote"</p>
+      <div class="flag">Search is read-only. No model is called during review.</div>
+    </section>
+
+    <section id="context-section" class="future">
+      <h2>5. Context Bundle</h2>
+      <p style="color:var(--muted);font-size:0.9rem;margin-bottom:12px;">
+        Context bundles are local files generated from approved memory under
+        <code style="color:#c4b5fd;">&lt;dest-dir&gt;/memory_context/</code>.
+        They can be handed to a local model later — this step does not call any model.
+      </p>
+      <label for="bundle-query">Bundle query</label>
+      <input type="text" id="bundle-query" placeholder="e.g. drywall quote" value="drywall quote">
+      <div class="row">
+        <button type="button" id="bundle-btn" disabled>Build context bundle (future)</button>
+      </div>
+      <div id="bundle-preview" style="margin-top:14px;color:var(--muted);font-size:0.85rem;">
+        Placeholder: operator confirmation required before writing bundle files.
+        CLI: python scripts/build_approved_memory_context.py --dest-dir &lt;path&gt; --query "drywall quote"
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      var MOCK_PENDING = [
+        {
+          candidate_id: "cand-transcription-001",
+          source_type: "transcription",
+          suggested_memory_type: "note",
+          text_preview: "Customer asked for a drywall repair quote for the kitchen ceiling.",
+          source_file_label: "import_sessions/sess-001/extracted/kitchen_call.txt",
+          staged_at: "2026-05-28T14:22:00Z",
+          review_status: "pending",
+          metadata: { original_filename: "kitchen_call.txt", char_count: 312 }
+        },
+        {
+          candidate_id: "cand-chatgpt-002",
+          source_type: "chatgpt_export",
+          suggested_memory_type: "conversation_summary",
+          text_preview: "Discussion about framing options for a garage conversion project.",
+          source_file_label: "chatgpt_export/conversations.json#conv-abc",
+          staged_at: "2026-05-29T09:10:00Z",
+          review_status: "pending",
+          metadata: { conversation_id: "conv-abc", title: "Garage conversion" }
+        },
+        {
+          candidate_id: "cand-email-003",
+          source_type: "email_export",
+          suggested_memory_type: "email_thread",
+          text_preview: "Re: Invoice follow-up — please confirm payment date for job #4421.",
+          source_file_label: "email_exports/invoice_followup.eml",
+          staged_at: "2026-05-30T11:05:00Z",
+          review_status: "pending",
+          metadata: { subject: "Re: Invoice follow-up", from: "client@example.com" }
+        }
+      ];
+
+      var MOCK_APPROVED = [
+        {
+          memory_id: "mem-001",
+          source_type: "transcription",
+          text_preview: "Approved: drywall repair quote details for kitchen ceiling.",
+          approved_at: "2026-05-28T15:00:00Z"
+        },
+        {
+          memory_id: "mem-002",
+          source_type: "email_export",
+          text_preview: "Approved: payment confirmation thread for job #4421.",
+          approved_at: "2026-05-30T12:00:00Z"
+        }
+      ];
+
+      var MOCK_SEARCH = [
+        {
+          memory_id: "mem-001",
+          source_type: "transcription",
+          text_preview: "drywall repair quote for kitchen ceiling — labor and materials estimate.",
+          approved_at: "2026-05-28T15:00:00Z"
+        }
+      ];
+
+      var selectedId = "cand-transcription-001";
+
+      function renderPending(filter) {
+        var list = document.getElementById("pending-list");
+        var items = MOCK_PENDING.filter(function (c) {
+          return !filter || c.source_type === filter;
+        });
+        document.getElementById("pending-count").textContent = items.length + " pending candidates";
+        list.innerHTML = items.map(function (c) {
+          return (
+            "<div class=\"candidate-card\" data-id=\"" + c.candidate_id + "\">" +
+            "<h3><span>" + c.candidate_id + "</span><span class=\"chip pending\">" + c.review_status + "</span></h3>" +
+            "<span class=\"chip\">" + c.source_type + "</span> " +
+            "<span class=\"chip\">" + c.suggested_memory_type + "</span>" +
+            "<div class=\"preview-text\">" + c.text_preview + "</div>" +
+            "<div class=\"meta\">Source: " + c.source_file_label + " · Staged: " + c.staged_at + "</div>" +
+            "</div>"
+          );
+        }).join("");
+        list.querySelectorAll(".candidate-card").forEach(function (card) {
+          card.addEventListener("click", function () {
+            selectedId = card.getAttribute("data-id");
+            document.getElementById("selected-candidate").value = selectedId;
+          });
+        });
+      }
+
+      function renderApproved(filter) {
+        var list = document.getElementById("approved-list");
+        var items = MOCK_APPROVED.filter(function (m) {
+          return !filter || m.source_type === filter;
+        });
+        document.getElementById("approved-count").textContent = items.length + " approved memories";
+        list.innerHTML = items.map(function (m) {
+          return (
+            "<div class=\"approved-card\">" +
+            "<h3><span>" + m.memory_id + "</span><span class=\"chip approved\">approved</span></h3>" +
+            "<span class=\"chip\">" + m.source_type + "</span>" +
+            "<div class=\"preview-text\">" + m.text_preview + "</div>" +
+            "<div class=\"meta\">Approved: " + m.approved_at + "</div>" +
+            "</div>"
+          );
+        }).join("");
+      }
+
+      document.getElementById("pending-filter").addEventListener("change", function (e) {
+        renderPending(e.target.value || null);
+      });
+      document.getElementById("approved-filter").addEventListener("change", function (e) {
+        renderApproved(e.target.value || null);
+      });
+
+      function showDecision(action, status) {
+        document.getElementById("decision-result").innerHTML =
+          "<div><strong>Action:</strong> " + action + " (prototype — not written)</div>" +
+          "<div><strong>Candidate:</strong> " + selectedId + "</div>" +
+          "<div><strong>New status:</strong> " + status + "</div>" +
+          "<div><strong>Decision path:</strong> data/phone_transcriptions/memory_candidates/review_decisions.jsonl</div>" +
+          "<p style=\"margin-top:10px;color:var(--muted);\">Review actions are operator controlled. No memory is written to live runtime memory or vector DB.</p>" +
+          "<p style=\"font-size:0.85rem;color:var(--muted);\">CLI: python scripts/review_memory_candidates.py --dest-dir &lt;path&gt; " + action + " " + selectedId + "</p>";
+      }
+
+      document.getElementById("approve-btn").addEventListener("click", function () {
+        if (window.confirm("Approve candidate " + selectedId + "? This will write a local audit decision only.")) {
+          showDecision("approve", "approved");
+        }
+      });
+      document.getElementById("reject-btn").addEventListener("click", function () {
+        if (window.confirm("Reject candidate " + selectedId + "?")) {
+          showDecision("reject", "rejected");
+        }
+      });
+      document.getElementById("edit-btn").addEventListener("click", function () {
+        if (window.confirm("Save edited text for " + selectedId + " before approval?")) {
+          showDecision("edit", "edited");
+        }
+      });
+      document.getElementById("metadata-btn").addEventListener("click", function () {
+        var c = MOCK_PENDING.find(function (x) { return x.candidate_id === selectedId; });
+        if (c) {
+          alert("Source metadata (read-only):\n" + JSON.stringify(c.metadata, null, 2));
+        }
+      });
+
+      document.getElementById("search-btn").addEventListener("click", function () {
+        var results = document.getElementById("search-results");
+        document.getElementById("search-count").textContent = MOCK_SEARCH.length + " results";
+        results.innerHTML = MOCK_SEARCH.map(function (r) {
+          return (
+            "<div class=\"result-card\">" +
+            "<h3><span>" + r.memory_id + "</span><span class=\"chip\">" + r.source_type + "</span></h3>" +
+            "<div class=\"preview-text\">" + r.text_preview + "</div>" +
+            "<div class=\"meta\">Approved: " + r.approved_at + "</div>" +
+            "</div>"
+          );
+        }).join("") +
+          "<div class=\"flag\" style=\"margin-top:10px;\">model_called: false | embeddings_used: false | live_memory_written: false | autonomy_enabled: false</div>";
+      });
+
+      renderPending(null);
+      renderApproved(null);
+    })();
+  </script>
+</body>
+</html>

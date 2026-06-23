@@ -34,7 +34,13 @@ python scripts/memory_import.py apply --session-json <path>/email_export_preview
 Auto-detect works for single-type inputs (transcription text, ChatGPT export JSON, `.eml`).
 Mixed folders fail safely unless `--source-type` is provided.
 
-Static UI prototype (no server wiring): `project_guardian/ui/static/memory_import_screen.html`
+Static UI prototypes (no server wiring):
+
+- Import: `project_guardian/ui/static/memory_import_screen.html`
+- Review/search: `project_guardian/ui/static/memory_review_search.html`
+
+See [MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md](MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md) and
+[MEMORY_REVIEW_SEARCH_UI_CONTRACT.json](MEMORY_REVIEW_SEARCH_UI_CONTRACT.json).
 
 ## Import session preview (backend foundation)
 
@@ -129,6 +135,24 @@ python scripts/preview_email_export.py --dest-dir <path> --input <folder> --recu
 python scripts/apply_email_export.py --preview-json <path>/email_export_preview.json --apply
 ```
 
+## Memory review/search UI foundation
+
+Static prototype and contract for pending candidate review, approved memory browse/search,
+and context bundle placeholders. No server wiring yet.
+
+```powershell
+start project_guardian/ui/static/memory_review_search.html
+```
+
+Backend CLIs (operator-run today):
+
+```powershell
+python scripts/review_memory_candidates.py --dest-dir <path> list
+python scripts/review_memory_candidates.py --dest-dir <path> approve <candidate_id>
+python scripts/search_approved_memory_store.py --dest-dir <path> search "drywall quote"
+python scripts/build_approved_memory_context.py --dest-dir <path> --query "drywall quote"
+```
+
 ## Future UI direction (not built yet)
 
 A future drag-and-drop screen should:
@@ -139,9 +163,18 @@ A future drag-and-drop screen should:
 4. Display next-step guidance from the preview
 5. Offer **Create memory candidates from this preview** which calls the apply layer
 
+A future review/search screen should:
+
+1. List pending candidates with source-type filters
+2. Approve / reject / edit with operator confirmation
+3. Search approved local memory (read-only)
+4. Build context bundles on explicit operator request
+
 ## Tests
 
 ```powershell
+python -m pytest project_guardian/tests/test_memory_review_search_ui_contract.py -q
+python -m pytest project_guardian/tests/test_memory_screen_ui_contract.py -q
 python -m pytest project_guardian/tests/test_unified_memory_import.py -q
 python -m pytest project_guardian/tests/test_import_session_preview.py -q
 python -m pytest project_guardian/tests/test_import_session_apply.py -q
@@ -154,6 +187,8 @@ python scripts/run_local_memory_pipeline_smoke.py --json
 
 ## Related docs
 
+- [MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md](MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md) — review/search UI contract
+- [MEMORY_SCREEN_UI_FOUNDATION.md](MEMORY_SCREEN_UI_FOUNDATION.md) — import UI contract
 - [UNIFIED_MEMORY_IMPORT_MVP.md](UNIFIED_MEMORY_IMPORT_MVP.md) — unified preview/apply CLI
 - [PHONE_TRANSCRIPTION_INGESTION_MVP.md](PHONE_TRANSCRIPTION_INGESTION_MVP.md) — current local ingestion pipeline
 - [CHATGPT_EXPORT_IMPORT_MVP.md](CHATGPT_EXPORT_IMPORT_MVP.md) — ChatGPT export preview/apply

@@ -36,10 +36,13 @@ Mixed folders fail safely unless `--source-type` is provided.
 
 Static UI prototypes (no server wiring):
 
+- Hub: `project_guardian/ui/static/memory_hub.html`
 - Import: `project_guardian/ui/static/memory_import_screen.html`
 - Review/search: `project_guardian/ui/static/memory_review_search.html`
 
-See [MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md](MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md) and
+See [MEMORY_HUB_UI_FOUNDATION.md](MEMORY_HUB_UI_FOUNDATION.md) and
+[MEMORY_HUB_UI_CONTRACT.json](MEMORY_HUB_UI_CONTRACT.json),
+[MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md](MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md) and
 [MEMORY_REVIEW_SEARCH_UI_CONTRACT.json](MEMORY_REVIEW_SEARCH_UI_CONTRACT.json).
 
 ## Import session preview (backend foundation)
@@ -135,6 +138,14 @@ python scripts/preview_email_export.py --dest-dir <path> --input <folder> --recu
 python scripts/apply_email_export.py --preview-json <path>/email_export_preview.json --apply
 ```
 
+## Memory Hub UI foundation
+
+One static entry page linking Import and Review/search prototypes. No backend calls, no external network.
+
+```powershell
+start project_guardian/ui/static/memory_hub.html
+```
+
 ## Memory review/search UI foundation
 
 Static prototype and contract for pending candidate review, approved memory browse/search,
@@ -173,6 +184,7 @@ A future review/search screen should:
 ## Tests
 
 ```powershell
+python -m pytest project_guardian/tests/test_memory_hub_ui_contract.py -q
 python -m pytest project_guardian/tests/test_memory_review_search_ui_contract.py -q
 python -m pytest project_guardian/tests/test_memory_screen_ui_contract.py -q
 python -m pytest project_guardian/tests/test_unified_memory_import.py -q
@@ -187,6 +199,7 @@ python scripts/run_local_memory_pipeline_smoke.py --json
 
 ## Related docs
 
+- [MEMORY_HUB_UI_FOUNDATION.md](MEMORY_HUB_UI_FOUNDATION.md) — Memory Hub static shell
 - [MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md](MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md) — review/search UI contract
 - [MEMORY_SCREEN_UI_FOUNDATION.md](MEMORY_SCREEN_UI_FOUNDATION.md) — import UI contract
 - [UNIFIED_MEMORY_IMPORT_MVP.md](UNIFIED_MEMORY_IMPORT_MVP.md) — unified preview/apply CLI

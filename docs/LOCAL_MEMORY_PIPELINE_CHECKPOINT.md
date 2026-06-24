@@ -11,10 +11,10 @@
 | Field | Value |
 | ----- | ----- |
 | Branch | `codex/limited-live-activation-wrapper` |
-| HEAD (at checkpoint) | `b7dbb11` — `docs(ui): add memory review search foundation` |
+| HEAD (at checkpoint) | `956b3ab` — `docs(ui): checkpoint memory review search foundation` |
 
-After the checkpoint document commit, the annotated restore tag
-`memory_review_search_ui_foundation_clean_1` points at the checkpoint commit on this branch.
+Branch tip may include Memory Hub static shell after `memory_review_search_ui_foundation_clean_1`.
+Restore tag `memory_review_search_ui_foundation_clean_1` points at `956b3ab`.
 
 ---
 
@@ -130,7 +130,18 @@ git show memory_review_search_ui_foundation_clean_1
 
 ## What works now
 
-The Memory UI now covers both sides of the user experience: **import** and **review/search**.
+The Memory UI now covers **import**, **review/search**, and a **Memory Hub** entry page (static only).
+
+### Memory Hub UI foundation (entry page)
+
+Static hub linking import and review/search prototypes. No server routes, no backend calls.
+See [MEMORY_HUB_UI_FOUNDATION.md](MEMORY_HUB_UI_FOUNDATION.md) and
+[MEMORY_HUB_UI_CONTRACT.json](MEMORY_HUB_UI_CONTRACT.json).
+
+1. **Memory Hub static page** — `project_guardian/ui/static/memory_hub.html`
+2. **Four hub sections** — Import, Review Pending, Search Approved, Context Bundle placeholder
+3. **Links to existing prototypes** — import and review/search screens
+4. **Mock status only** — no JavaScript backend or network calls
 
 ### Memory review/search UI foundation (user-facing structure)
 
@@ -192,6 +203,9 @@ local memory store → search → context bundle.
 
 | File | Purpose |
 | ---- | ------- |
+| `docs/MEMORY_HUB_UI_CONTRACT.json` | Memory Hub static shell contract |
+| `docs/MEMORY_HUB_UI_FOUNDATION.md` | Hub layout and navigation |
+| `project_guardian/ui/static/memory_hub.html` | Memory Hub entry page (no server wiring) |
 | `docs/MEMORY_REVIEW_SEARCH_UI_CONTRACT.json` | Review/search/context UI contract |
 | `docs/MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md` | Review/search screen layout and CLI mapping |
 | `project_guardian/ui/static/memory_review_search.html` | Static review/search prototype (no server wiring) |
@@ -241,6 +255,7 @@ python scripts/run_local_memory_pipeline_smoke.py --json --source-type email_exp
 ### Static prototypes (local browser only)
 
 ```powershell
+start project_guardian/ui/static/memory_hub.html
 start project_guardian/ui/static/memory_import_screen.html
 start project_guardian/ui/static/memory_review_search.html
 ```
@@ -279,6 +294,7 @@ Verified at checkpoint creation:
 | Check | Expected result |
 | ----- | ----------------- |
 | Review/search UI contract tests | `python -m pytest project_guardian/tests/test_memory_review_search_ui_contract.py -q` → all passed |
+| Memory Hub UI contract tests | `python -m pytest project_guardian/tests/test_memory_hub_ui_contract.py -q` → all passed |
 | Memory screen UI contract tests | `python -m pytest project_guardian/tests/test_memory_screen_ui_contract.py -q` → all passed |
 | Unified import tests | `python -m pytest project_guardian/tests/test_unified_memory_import.py -q` → all passed |
 | Local memory smoke tests | `python -m pytest project_guardian/tests/test_local_memory_pipeline_smoke.py -q` → all passed |
@@ -291,6 +307,7 @@ Verified at checkpoint creation:
 Representative regression commands:
 
 ```powershell
+python -m pytest project_guardian/tests/test_memory_hub_ui_contract.py -q
 python -m pytest project_guardian/tests/test_memory_review_search_ui_contract.py -q
 python -m pytest project_guardian/tests/test_memory_screen_ui_contract.py -q
 python -m pytest project_guardian/tests/test_unified_memory_import.py -q
@@ -321,7 +338,8 @@ Earlier transcription ingestion MVP commits precede this chain.
 
 Safe follow-on work from this checkpoint:
 
-- **Safe dashboard route for static Memory screens** — serve import and review/search prototypes without live backend
+- **Memory Hub dashboard link** — serve static hub as entry navigation
+- **Safe dashboard route for static Memory screens** — local-only file serving
 - **Live but local-only UI wiring later** — safe subprocess bridge to existing CLIs
 - **Review pending memories UI wiring** — list/approve/reject/edit from `review_memory_candidates.py`
 - **Approved memory search UI wiring** — read-only search from control panel

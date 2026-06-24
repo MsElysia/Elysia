@@ -36,6 +36,7 @@ Mixed folders fail safely unless `--source-type` is provided.
 
 Static UI prototypes (no server wiring):
 
+- Entry: `project_guardian/ui/static/index.html` → links to Memory Hub
 - Hub: `project_guardian/ui/static/memory_hub.html`
 - Import: `project_guardian/ui/static/memory_import_screen.html`
 - Review/search: `project_guardian/ui/static/memory_review_search.html`
@@ -143,6 +144,7 @@ python scripts/apply_email_export.py --preview-json <path>/email_export_preview.
 One static entry page linking Import and Review/search prototypes. No backend calls, no external network.
 
 ```powershell
+start project_guardian/ui/static/index.html
 start project_guardian/ui/static/memory_hub.html
 ```
 
@@ -184,6 +186,7 @@ A future review/search screen should:
 ## Tests
 
 ```powershell
+python -m pytest project_guardian/tests/test_memory_hub_navigation.py -q
 python -m pytest project_guardian/tests/test_memory_hub_ui_contract.py -q
 python -m pytest project_guardian/tests/test_memory_review_search_ui_contract.py -q
 python -m pytest project_guardian/tests/test_memory_screen_ui_contract.py -q

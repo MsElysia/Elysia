@@ -8,6 +8,12 @@
   "backend_calls_allowed": false,
   "external_network_allowed": false,
   "prototype_path": "project_guardian/ui/static/memory_hub.html",
+  "navigation_entry": {
+    "path": "project_guardian/ui/static/index.html",
+    "links_to": "memory_hub.html",
+    "server_routes_required": false,
+    "backend_calls_allowed": false
+  },
   "source_types": [
     "transcription",
     "chatgpt_export",

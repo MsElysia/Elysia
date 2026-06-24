@@ -19,6 +19,7 @@ This milestone links existing static prototypes. It does **not** connect to `ely
 
 | Asset | Path |
 | ----- | ---- |
+| Static UI entry (navigation) | `project_guardian/ui/static/index.html` |
 | Memory Hub (this page) | `project_guardian/ui/static/memory_hub.html` |
 | UI contract | `docs/MEMORY_HUB_UI_CONTRACT.json` |
 | Import prototype | `project_guardian/ui/static/memory_import_screen.html` |
@@ -27,8 +28,11 @@ This milestone links existing static prototypes. It does **not** connect to `ely
 Open locally:
 
 ```powershell
+start project_guardian/ui/static/index.html
 start project_guardian/ui/static/memory_hub.html
 ```
+
+The static entry page (`index.html`) shows a **Memory** card linking to the Memory Hub. No server route or backend call is required — open the HTML file directly in a browser.
 
 ---
 

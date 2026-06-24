@@ -1,8 +1,8 @@
 # Local memory pipeline checkpoint
 
 **Date:** 2026-05-30  
-**Status:** Known-good milestone — Memory review/search UI foundation + import UI + unified import + three source lanes  
-**Scope:** Operator-run local ingestion and UI contracts only. No dashboard wiring, no live runtime memory, no models.
+**Status:** Known-good milestone — Memory Hub UI foundation + import/review/search UI + unified import + three source lanes  
+**Scope:** Operator-run local ingestion and static UI contracts only. No dashboard wiring, no live runtime memory, no models.
 
 ---
 
@@ -11,10 +11,10 @@
 | Field | Value |
 | ----- | ----- |
 | Branch | `codex/limited-live-activation-wrapper` |
-| HEAD (at checkpoint) | `956b3ab` — `docs(ui): checkpoint memory review search foundation` |
+| HEAD (at checkpoint) | `2604aac` — `docs(ui): add memory hub foundation` |
 
-Branch tip may include Memory Hub static shell after `memory_review_search_ui_foundation_clean_1`.
-Restore tag `memory_review_search_ui_foundation_clean_1` points at `956b3ab`.
+After the checkpoint document commit, the annotated restore tag
+`memory_hub_ui_foundation_clean_1` points at the checkpoint commit on this branch.
 
 ---
 
@@ -107,11 +107,13 @@ Inspect:
 git show memory_screen_ui_foundation_clean_1
 ```
 
-### Current milestone (Memory review/search UI foundation)
+### Previous milestone (Memory review/search UI foundation)
 
 ```text
 memory_review_search_ui_foundation_clean_1
 ```
+
+Points at `956b3ab` — `docs(ui): checkpoint memory review search foundation`.
 
 Restore:
 
@@ -126,64 +128,74 @@ Inspect:
 git show memory_review_search_ui_foundation_clean_1
 ```
 
+### Current milestone (Memory Hub UI foundation)
+
+```text
+memory_hub_ui_foundation_clean_1
+```
+
+Restore:
+
+```powershell
+git fetch origin tag memory_hub_ui_foundation_clean_1
+git checkout memory_hub_ui_foundation_clean_1
+```
+
+Inspect:
+
+```powershell
+git show memory_hub_ui_foundation_clean_1
+```
+
 ---
 
 ## What works now
 
-The Memory UI now covers **import**, **review/search**, and a **Memory Hub** entry page (static only).
+Elysia has a static **Memory Hub** that ties together import, review/search, supported source types, safe user flow, and UI contracts.
 
-### Memory Hub UI foundation (entry page)
+### Memory Hub UI foundation (entry page — current milestone)
 
-Static hub linking import and review/search prototypes. No server routes, no backend calls.
+Static hub linking import and review/search prototypes. No server routes, no backend calls, no external network.
 See [MEMORY_HUB_UI_FOUNDATION.md](MEMORY_HUB_UI_FOUNDATION.md) and
 [MEMORY_HUB_UI_CONTRACT.json](MEMORY_HUB_UI_CONTRACT.json).
 
-1. **Memory Hub static page** — `project_guardian/ui/static/memory_hub.html`
-2. **Four hub sections** — Import, Review Pending, Search Approved, Context Bundle placeholder
-3. **Links to existing prototypes** — import and review/search screens
-4. **Mock status only** — no JavaScript backend or network calls
+1. **Memory Hub static prototype** — `project_guardian/ui/static/memory_hub.html`
+2. **Memory Hub UI contract** — `prototype_only: true`, `backend_calls_allowed: false`
+3. **Four hub sections** — Import Memory, Review Pending, Search Approved, Build Context Bundle
+4. **Links to child prototypes** — import and review/search screens
+5. **Supported sources callout** — transcription, ChatGPT export, email `.eml`
+6. **Safe user-facing flow** — preview → confirm → review → search → context bundle later
+7. **Mock status only** — no JavaScript, fetch, XHR, WebSocket, or API calls
 
-### Memory review/search UI foundation (user-facing structure)
+### Memory import UI foundation
 
-UI contract and static prototype for review, search, and context bundle placeholders. No server routes wired yet.
-See [MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md](MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md) and
-[MEMORY_REVIEW_SEARCH_UI_CONTRACT.json](MEMORY_REVIEW_SEARCH_UI_CONTRACT.json).
-
-1. **Memory review/search UI contract** — pending list, approve/reject/edit, search, context bundle shapes
-2. **Static Memory review/search prototype** — `project_guardian/ui/static/memory_review_search.html` (mock data only)
-3. **Pending candidate review design** — list/filter by source type; candidate cards with preview and status
-4. **Approve/reject/edit design** — operator confirmation required (contract only)
-5. **Approved memory search design** — read-only search contract and prototype UI
-6. **Context bundle placeholder design** — future local file output explained; operator confirm required
-
-### Memory import UI foundation (prior milestone)
-
-UI contract and static prototype for a future dashboard Memory import screen. No server routes wired yet.
 See [MEMORY_SCREEN_UI_FOUNDATION.md](MEMORY_SCREEN_UI_FOUNDATION.md) and
 [MEMORY_SCREEN_UI_CONTRACT.json](MEMORY_SCREEN_UI_CONTRACT.json).
 
-7. **Memory import UI contract** — preview/apply request/response shapes, three source types, safety flags
-8. **Static Memory import prototype** — `project_guardian/ui/static/memory_import_screen.html` (mock data only)
-9. **Plain-language user safety copy** — confirm-before-save, pending review, local files only, no live accounts
-10. **Preview / apply UI structure** — Add files → Preview → Confirm import
+8. **Memory import UI contract** — preview/apply shapes, three source types, safety flags
+9. **Static Memory import prototype** — `project_guardian/ui/static/memory_import_screen.html`
+
+### Memory review/search UI foundation
+
+See [MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md](MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md) and
+[MEMORY_REVIEW_SEARCH_UI_CONTRACT.json](MEMORY_REVIEW_SEARCH_UI_CONTRACT.json).
+
+10. **Memory review/search UI contract** — pending list, approve/reject/edit, search, context bundle
+11. **Static Memory review/search prototype** — `project_guardian/ui/static/memory_review_search.html`
+12. **Approve/reject/edit design** — operator confirmation required (contract only)
+13. **Approved memory search design** — read-only search
+14. **Context bundle placeholder design** — local file output explained
 
 ### Unified memory import (backend entry point)
 
-One command routes preview/apply to the existing safe importers. See
-[UNIFIED_MEMORY_IMPORT_MVP.md](UNIFIED_MEMORY_IMPORT_MVP.md).
+See [UNIFIED_MEMORY_IMPORT_MVP.md](UNIFIED_MEMORY_IMPORT_MVP.md).
 
-11. **Unified memory import command** — `python scripts/memory_import.py preview|apply`
-12. **Unified preview** — dry-run classification and session JSON/Markdown
-13. **Unified apply** — dry-run default; `--apply` stages pending candidates only
-14. **Preview/apply dry-run gates** — explicit `--apply` required to stage candidates
-15. **Source auto-detection** — transcription text, ChatGPT export JSON, `.eml`
-16. **Explicit source type routing** — `--source-type transcription|chatgpt_export|email_export`
-17. **Ambiguous mixed folders fail safely** — require explicit `--source-type`
+15. **Unified memory import command** — `python scripts/memory_import.py preview|apply`
+16. **Preview/apply dry-run gates** — explicit `--apply` required to stage candidates
+17. **Source auto-detection and explicit routing** — transcription, ChatGPT export, `.eml`
+18. **Ambiguous mixed folders fail safely** — require explicit `--source-type`
 
 ### Three source lanes + shared pipeline
-
-**Shared downstream path:** preview/apply → pending candidates → review approval → approved export →
-local memory store → search → context bundle.
 
 | Lane | Inputs | Backend |
 | ---- | ------ | ------- |
@@ -191,13 +203,8 @@ local memory store → search → context bundle.
 | ChatGPT export | `conversations.json` or export-shaped JSON | ChatGPT export preview/apply |
 | Email export | `.eml` (`.mbox` = `supported_later`) | email export preview/apply |
 
-18. **Pending candidate staging** — `review_status=pending`, `live_memory_written=false`
-19. **Candidate review (CLI)** — approve/reject/edit with audit trail
-20. **Approved export** — `memory_candidates/approved_memory_export.jsonl`
-21. **Approved local memory store** — `memory_store/approved_memory_store.jsonl`
-22. **Approved memory search (CLI)** — read-only case-insensitive search
-23. **Approved memory context bundle (CLI)** — Markdown + JSON for future local model handoff
-24. **Full pipeline smoke** — `--source-type transcription|chatgpt_export|email_export`
+19. **Pending candidate staging** — `review_status=pending`, `live_memory_written=false`
+20. **Full pipeline smoke** — `--source-type transcription|chatgpt_export|email_export`
 
 ### Important files
 
@@ -205,43 +212,33 @@ local memory store → search → context bundle.
 | ---- | ------- |
 | `docs/MEMORY_HUB_UI_CONTRACT.json` | Memory Hub static shell contract |
 | `docs/MEMORY_HUB_UI_FOUNDATION.md` | Hub layout and navigation |
-| `project_guardian/ui/static/memory_hub.html` | Memory Hub entry page (no server wiring) |
-| `docs/MEMORY_REVIEW_SEARCH_UI_CONTRACT.json` | Review/search/context UI contract |
-| `docs/MEMORY_REVIEW_SEARCH_UI_FOUNDATION.md` | Review/search screen layout and CLI mapping |
-| `project_guardian/ui/static/memory_review_search.html` | Static review/search prototype (no server wiring) |
+| `project_guardian/ui/static/memory_hub.html` | Memory Hub entry page |
 | `docs/MEMORY_SCREEN_UI_CONTRACT.json` | Import preview/apply UI contract |
-| `docs/MEMORY_SCREEN_UI_FOUNDATION.md` | Import screen layout and backend mapping |
-| `project_guardian/ui/static/memory_import_screen.html` | Static import prototype (no server wiring) |
+| `docs/MEMORY_REVIEW_SEARCH_UI_CONTRACT.json` | Review/search/context UI contract |
+| `project_guardian/ui/static/memory_import_screen.html` | Static import prototype |
+| `project_guardian/ui/static/memory_review_search.html` | Static review/search prototype |
 | `scripts/memory_import.py` | Unified preview/apply CLI |
 
 Related docs:
 
-- [UNIFIED_MEMORY_IMPORT_MVP.md](UNIFIED_MEMORY_IMPORT_MVP.md)
 - [MEMORY_IMPORT_UI_ROADMAP.md](MEMORY_IMPORT_UI_ROADMAP.md)
-- [PHONE_TRANSCRIPTION_INGESTION_MVP.md](PHONE_TRANSCRIPTION_INGESTION_MVP.md)
-- [CHATGPT_EXPORT_IMPORT_MVP.md](CHATGPT_EXPORT_IMPORT_MVP.md)
-- [EMAIL_EXPORT_IMPORT_MVP.md](EMAIL_EXPORT_IMPORT_MVP.md)
+- [UNIFIED_MEMORY_IMPORT_MVP.md](UNIFIED_MEMORY_IMPORT_MVP.md)
 
 ---
 
 ## Important commands
+
+### Memory Hub (static prototype)
+
+```powershell
+start project_guardian/ui/static/memory_hub.html
+```
 
 ### Unified memory import
 
 ```powershell
 python scripts/memory_import.py preview --dest-dir <path> --input <file-or-folder>
 python scripts/memory_import.py apply --session-json <path> --apply
-```
-
-### Review, search, and context (CLI; not wired to UI yet)
-
-```powershell
-python scripts/review_memory_candidates.py --dest-dir <path> list
-python scripts/review_memory_candidates.py --dest-dir <path> approve <candidate_id>
-python scripts/review_memory_candidates.py --dest-dir <path> reject <candidate_id>
-python scripts/review_memory_candidates.py --dest-dir <path> edit <candidate_id> --replacement-text "..."
-python scripts/search_approved_memory_store.py --dest-dir <path> search "drywall quote"
-python scripts/build_approved_memory_context.py --dest-dir <path> --query "drywall quote"
 ```
 
 ### End-to-end smoke
@@ -252,7 +249,7 @@ python scripts/run_local_memory_pipeline_smoke.py --json --source-type chatgpt_e
 python scripts/run_local_memory_pipeline_smoke.py --json --source-type email_export
 ```
 
-### Static prototypes (local browser only)
+### All static prototypes (local browser only)
 
 ```powershell
 start project_guardian/ui/static/memory_hub.html
@@ -276,8 +273,9 @@ start project_guardian/ui/static/memory_review_search.html
 | No live ChatGPT account access | Yes |
 | No live email account access (no Gmail/Outlook/IMAP/SMTP) | Yes |
 | Attachments ignored on email import | Yes |
-| Ambiguous mixed folders fail safely unless `--source-type` is explicit | Yes |
-| Static prototypes only — no backend calls from HTML pages | Yes |
+| No fetch / XHR / WebSocket / API calls in static prototypes | Yes |
+| No external network assets in static prototypes | Yes |
+| Static prototypes only — no backend calls from browser | Yes |
 | Dry-run / explicit `--apply` gates where relevant | Yes |
 | Review actions require operator confirmation (UI contract) | Yes |
 | Search is read-only (UI contract and CLI) | Yes |
@@ -293,11 +291,10 @@ Verified at checkpoint creation:
 
 | Check | Expected result |
 | ----- | ----------------- |
-| Review/search UI contract tests | `python -m pytest project_guardian/tests/test_memory_review_search_ui_contract.py -q` → all passed |
 | Memory Hub UI contract tests | `python -m pytest project_guardian/tests/test_memory_hub_ui_contract.py -q` → all passed |
+| Review/search UI contract tests | `python -m pytest project_guardian/tests/test_memory_review_search_ui_contract.py -q` → all passed |
 | Memory screen UI contract tests | `python -m pytest project_guardian/tests/test_memory_screen_ui_contract.py -q` → all passed |
 | Unified import tests | `python -m pytest project_guardian/tests/test_unified_memory_import.py -q` → all passed |
-| Local memory smoke tests | `python -m pytest project_guardian/tests/test_local_memory_pipeline_smoke.py -q` → all passed |
 | Transcription smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type transcription` → `verdict: PASS` |
 | ChatGPT export smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type chatgpt_export` → `verdict: PASS` |
 | Email export smoke | `python scripts/run_local_memory_pipeline_smoke.py --json --source-type email_export` → `verdict: PASS` |
@@ -311,22 +308,22 @@ python -m pytest project_guardian/tests/test_memory_hub_ui_contract.py -q
 python -m pytest project_guardian/tests/test_memory_review_search_ui_contract.py -q
 python -m pytest project_guardian/tests/test_memory_screen_ui_contract.py -q
 python -m pytest project_guardian/tests/test_unified_memory_import.py -q
-python -m pytest project_guardian/tests/test_local_memory_pipeline_smoke.py -q
 ```
 
 ---
 
-## Milestone commit chain (Memory review/search UI + import UI slice)
+## Milestone commit chain (Memory Hub + UI slice)
 
 | Commit | Message |
 | ------ | ------- |
+| `2604aac` | `docs(ui): add memory hub foundation` |
+| `956b3ab` | `docs(ui): checkpoint memory review search foundation` ← `memory_review_search_ui_foundation_clean_1` |
 | `b7dbb11` | `docs(ui): add memory review search foundation` |
 | `df24d40` | `docs(ui): checkpoint memory screen foundation` ← `memory_screen_ui_foundation_clean_1` |
 | `4a32167` | `docs(ui): add memory screen import foundation` |
 | `44612d0` | `docs(local): checkpoint unified memory import` ← `unified_memory_import_clean_1` |
 | `9084281` | `feat(local): add unified memory import command` |
 | `c4ddcfe` | `docs(local): checkpoint email memory pipeline` ← `local_memory_pipeline_email_clean_1` |
-| `8958d19` | `test(local): cover email export memory pipeline` |
 | `50ddfd9` | `docs(local): checkpoint chatgpt memory pipeline` ← `local_memory_pipeline_chatgpt_clean_1` |
 | `3ea3d5d` | `docs(local): checkpoint memory pipeline milestone` ← `local_memory_pipeline_clean_1` |
 
@@ -338,14 +335,13 @@ Earlier transcription ingestion MVP commits precede this chain.
 
 Safe follow-on work from this checkpoint:
 
-- **Memory Hub dashboard link** — serve static hub as entry navigation
-- **Safe dashboard route for static Memory screens** — local-only file serving
-- **Live but local-only UI wiring later** — safe subprocess bridge to existing CLIs
-- **Review pending memories UI wiring** — list/approve/reject/edit from `review_memory_candidates.py`
-- **Approved memory search UI wiring** — read-only search from control panel
-- **Local model prompt/context handoff** — feed approved context bundles with explicit operator invocation
+- **Safe dashboard navigation link to static Memory Hub** — entry point without live backend
+- **Local-only route later** — serve hub and linked prototypes from dashboard
+- **Review/search wiring later** — safe subprocess bridge to existing CLIs
+- **Context bundle wiring later** — explicit operator invocation
+- **Local model prompt/context handoff later** — feed approved context bundles
 - **`.mbox` support later** — extend email lane beyond single `.eml` files
-- **Document/PDF import later** — additional source lanes using the same downstream pipeline
+- **Document/PDF import later** — additional source lanes
 
 ---
 
@@ -353,8 +349,9 @@ Safe follow-on work from this checkpoint:
 
 The following remain out of scope for this milestone:
 
-- No live dashboard route yet (import or review/search)
+- No live dashboard route yet
 - No server/API routes for import, review, or approved memory operations
+- No backend calls from browser (static prototypes only)
 - No live ChatGPT account access
 - No live email account access
 - No `.mbox` import yet
@@ -369,6 +366,6 @@ The following remain out of scope for this milestone:
 ## Operator note
 
 This checkpoint protects real progress. Before wiring dashboard routes or adding live UI behavior,
-confirm review/search UI contract tests, import UI contract tests, unified import tests, local memory smoke tests,
+confirm Memory Hub tests, review/search UI contract tests, import UI contract tests, unified import tests,
 all three smoke CLI modes, and safe-stack still pass from tag
-`memory_review_search_ui_foundation_clean_1` or branch tip.
+`memory_hub_ui_foundation_clean_1` or branch tip.

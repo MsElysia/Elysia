@@ -13,6 +13,7 @@ STATIC_DIR = REPO_ROOT / "project_guardian" / "ui" / "static"
 STATIC_MEMORY_PAGES = (
     "index.html",
     "memory_first_run_setup.html",
+    "memory_safety.html",
     "memory_hub.html",
     "memory_import_screen.html",
     "memory_review_search.html",

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Elysia Memory First-Run Setup</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --border: #334155;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --primary: #6366f1;
+      --ok: #10b981;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 24px;
+    }
+    .wrap { max-width: 840px; margin: 0 auto; }
+    h1 { font-size: 1.8rem; margin-bottom: 8px; }
+    h2 { font-size: 1.08rem; margin-bottom: 10px; color: #c4b5fd; }
+    p { color: var(--muted); margin-bottom: 12px; }
+    a { color: #c4b5fd; }
+    .subtitle { margin-bottom: 22px; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+    .steps { margin-left: 20px; color: var(--muted); }
+    .steps li { margin-bottom: 8px; }
+    .links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    .button {
+      display: inline-block;
+      background: var(--primary);
+      color: white;
+      text-decoration: none;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 0.92rem;
+    }
+    .button.secondary { background: #475569; }
+    .safe {
+      color: var(--ok);
+      font-size: 0.88rem;
+      margin-top: 10px;
+    }
+    .note { color: var(--warn); font-size: 0.84rem; }
+    code {
+      background: #111827;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px 5px;
+      color: #e2e8f0;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Memory first-run setup</h1>
+    <p class="subtitle">Prepare local files, preview them, and keep every memory pending until you confirm and review it.</p>
+
+    <section class="panel">
+      <h2>Before you import</h2>
+      <ol class="steps">
+        <li>Create a local working folder for memory exports.</li>
+        <li>Copy only files you already exported or wrote yourself into that folder.</li>
+        <li>Use transcription/text files, a local ChatGPT export JSON, or local email <code>.eml</code> files.</li>
+        <li>Keep originals outside the working folder if you want a separate backup.</li>
+      </ol>
+      <p class="safe">Local files only. No account connection required.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Safe order of operations</h2>
+      <ol class="steps">
+        <li>Open the Memory Hub.</li>
+        <li>Open Import Memory and preview the intended local files.</li>
+        <li>Confirm import only after reviewing the preview output.</li>
+        <li>Review pending candidates before approving anything.</li>
+        <li>Search only approved memories.</li>
+        <li>Build a context bundle only when you explicitly need a local handoff file.</li>
+      </ol>
+    </section>
+
+    <section class="panel">
+      <h2>What this page does not do</h2>
+      <p>This static guide does not upload files, call models, create embeddings, connect to accounts, start watchers, or write live runtime memory.</p>
+      <p class="note">No browser network call, external asset, or server route is used by this page.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Continue</h2>
+      <div class="links">
+        <a class="button" href="memory_hub.html">Open Memory Hub</a>
+        <a class="button secondary" href="memory_import_screen.html">Open Import Memory</a>
+        <a class="button secondary" href="index.html">Back to Static UI</a>
+      </div>
+    </section>
+  </div>
+</body>
+</html>

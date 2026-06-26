@@ -4,6 +4,17 @@
 **Status:** Known-good milestone — Memory Hub navigation + Hub/import/review UI + unified import + three source lanes  
 **Scope:** Operator-run local ingestion and static UI contracts only. No live dashboard routes, no live runtime memory, no models.
 
+### Route design milestone (after `memory_diagnostics_demo_clean_1`)
+
+Local-only dashboard route **design and risk review** added (no route wired):
+
+- `docs/MEMORY_DASHBOARD_ROUTE_DESIGN.md`
+- `docs/MEMORY_DASHBOARD_ROUTE_RISK_REVIEW.md`
+- `docs/MEMORY_DASHBOARD_ROUTE_ACCEPTANCE_TESTS.md`
+- `project_guardian/tests/test_memory_dashboard_route_design_docs.py`
+
+Restore tag for diagnostics/demo sprint: `memory_diagnostics_demo_clean_1` (`93ec530`).
+
 ---
 
 ## Branch and commit

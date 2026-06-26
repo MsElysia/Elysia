@@ -166,6 +166,24 @@ python scripts/search_approved_memory_store.py --dest-dir <path> search "drywall
 python scripts/build_approved_memory_context.py --dest-dir <path> --query "drywall quote"
 ```
 
+## Local-only dashboard route (design only — not wired)
+
+Route design and risk review for serving static Memory pages from the local dashboard later:
+
+- [MEMORY_DASHBOARD_ROUTE_DESIGN.md](MEMORY_DASHBOARD_ROUTE_DESIGN.md)
+- [MEMORY_DASHBOARD_ROUTE_RISK_REVIEW.md](MEMORY_DASHBOARD_ROUTE_RISK_REVIEW.md)
+- [MEMORY_DASHBOARD_ROUTE_ACCEPTANCE_TESTS.md](MEMORY_DASHBOARD_ROUTE_ACCEPTANCE_TESTS.md)
+
+**No server route is implemented in the design milestone.** Static pages remain open via:
+
+```powershell
+start project_guardian/ui/static/index.html
+```
+
+Future allowlisted route (when approved) may serve only the seven Memory HTML files under
+`project_guardian/ui/static/` — no import, review, search, diagnostics, or demo execution
+from the browser.
+
 ## Future UI direction (not built yet)
 
 A future drag-and-drop screen should:
@@ -186,6 +204,7 @@ A future review/search screen should:
 ## Tests
 
 ```powershell
+python -m pytest project_guardian/tests/test_memory_dashboard_route_design_docs.py -q
 python -m pytest project_guardian/tests/test_memory_hub_navigation.py -q
 python -m pytest project_guardian/tests/test_memory_hub_ui_contract.py -q
 python -m pytest project_guardian/tests/test_memory_review_search_ui_contract.py -q

@@ -180,3 +180,89 @@ Start Campaign 3: produce the route readiness GO / NO-GO review without implemen
 ### Human approval needed
 
 No human approval is needed before Campaign 3, because it is still review-only and does not implement a route. Human approval is required before any route implementation campaign.
+
+## Campaign 3 - Memory dashboard route readiness review
+
+### Campaign summary
+
+- Campaign name: Memory dashboard route readiness review
+- Starting clean tag: `memory_dashboard_route_tests_clean_1`
+- Starting HEAD: `021ae28 docs(memory): update route test harness handoff`
+- Starting branch: `codex/limited-live-activation-wrapper`
+- Ending code HEAD before this handoff document: `3a174d6 docs(ui): add memory dashboard route readiness review`
+- Ending campaign HEAD after this handoff document: see `git log -1`
+- Campaign tag: `memory_route_readiness_clean_1`
+- GO / NO-GO decision: `GO_WITH_HUMAN_APPROVAL`
+- Cycles attempted: 2
+- Cycles completed: 2
+- Commits made before tag: 2
+
+### Commits
+
+| Commit | Purpose |
+| ------ | ------- |
+| `3a174d6 docs(ui): add memory dashboard route readiness review` | Added the GO / NO-GO readiness review, implementation gates, and readiness-doc tests. |
+| handoff commit | Added this Campaign 3 handoff entry. |
+
+### Files changed
+
+- `docs/CODEX_LONG_TERM_HANDOFF.md`
+- `docs/MEMORY_DASHBOARD_ROUTE_IMPLEMENTATION_GATES.md`
+- `docs/MEMORY_DASHBOARD_ROUTE_READINESS_REVIEW.md`
+- `project_guardian/tests/test_memory_dashboard_route_readiness_docs.py`
+
+### Completed work
+
+- Inspected `project_guardian/ui/templates/`, `project_guardian/ui/static/`, `project_guardian/ui/app.py`, `project_guardian/ui_control_panel.py`, `Elysia_Control_Panel_Standalone.html`, `elysia/api/server.py`, the route contract module/tests, and Campaign 1/2 route docs.
+- Documented the current static Memory pages and direct-open fallback.
+- Documented dashboard/UI discovery and recommended `project_guardian/ui/app.py` as the narrow future route file if explicitly approved.
+- Documented why `elysia/api/server.py`, `project_guardian/core.py`, `project_guardian/ui_control_panel.py`, and `Elysia_Control_Panel_Standalone.html` should not be touched for the first route implementation.
+- Issued readiness decision `GO_WITH_HUMAN_APPROVAL`.
+- Added implementation gates requiring design, risk review, contract, contract tests, readiness review, human approval, allowlisted serving, traversal rejection, encoded traversal rejection, no backend command execution, no writes, safe-stack smoke, and dry-run SAFE.
+- Added readiness-doc tests that prevent the review/gates docs from becoming accidental implementation instructions.
+
+### Skipped work
+
+- No Memory dashboard route was implemented.
+- No Flask/FastAPI route wiring was added.
+- No browser JavaScript calls were added.
+- No backend command execution was added.
+- No optional roadmap/checkpoint docs were updated because the required readiness/gates docs and handoff are sufficient for Campaign 3.
+- No model, embedding, account, API, network, live runtime memory, or vector DB integration was added.
+- No `.mbox`, PDF, DOCX, OCR, image, phone sync, live ChatGPT, or live email import was implemented.
+
+### Tests run
+
+| Check | Result |
+| ----- | ------ |
+| Focused readiness, contract, and design docs tests | `112 passed, 3 warnings in 0.94s` |
+| Full Memory/readiness pytest baseline | `256 passed, 3 warnings in 37.47s` |
+| Memory health smoke | `verdict=PASS; doctor_verdict=HAS_CONTEXT_BUNDLE; candidates_created=3; approvals_created=3; search_result_count=3; context_bundle_created=true; safety flags false` |
+| Transcription smoke | `verdict=PASS; candidates_created=2; approvals_created=1; search_result_count=1; context_bundle_created=true; safety flags false` |
+| ChatGPT smoke | `verdict=PASS; candidates_created=1; approvals_created=1; search_result_count=1; context_bundle_created=true; safety flags false` |
+| Email smoke | `verdict=PASS; candidates_created=1; approvals_created=1; search_result_count=1; context_bundle_created=true; safety flags false` |
+| Safe-stack smoke | `454 passed, 3 warnings in 14.55s; pytest PASSED` |
+| Dry-run report | `SAFE; requested=3 completed=3; all_dry_run=True; any_executed=False; execution_call_count=0` |
+
+### Safety notes
+
+- `config/autonomy.json` remained `enabled=false`.
+- Elysia autonomy was not enabled.
+- Live execution was not enabled or run.
+- No tools/capabilities/mutation/proposal implementation/WebScout/browser activity was run.
+- No server/API route was added.
+- No Flask/FastAPI route wiring was added.
+- No watcher, daemon, scheduler, background monitor, or automatic loop was added.
+- No account/API/network/model/embedding access was added or used.
+- No live runtime memory or vector DB writes were added.
+- `project_guardian/core.py` was not staged or committed.
+- `elysia/api/server.py` was not staged or committed.
+- `config/autonomy.json` was not modified.
+
+### Recommended next Cursor task
+
+Request explicit human approval before any route implementation. If approval is not granted, continue with Campaign 4 command polish or other safer non-route work.
+
+### Human approval needed
+
+Yes. Route implementation must not begin without explicit human approval naming the exact route file and purpose.

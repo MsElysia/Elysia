@@ -17,6 +17,7 @@ STATIC_MEMORY_PAGES = (
     "memory_hub.html",
     "memory_import_screen.html",
     "memory_review_search.html",
+    "memory_diagnostics.html",
 )
 
 EXTERNAL_ASSET_PATTERN = re.compile(

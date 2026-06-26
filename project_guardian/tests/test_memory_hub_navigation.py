@@ -14,6 +14,7 @@ HUB_PATH = STATIC_DIR / "memory_hub.html"
 FIRST_RUN_PATH = STATIC_DIR / "memory_first_run_setup.html"
 IMPORT_PATH = STATIC_DIR / "memory_import_screen.html"
 REVIEW_PATH = STATIC_DIR / "memory_review_search.html"
+DIAGNOSTICS_PATH = STATIC_DIR / "memory_diagnostics.html"
 CORE_PATH = REPO_ROOT / "project_guardian" / "core.py"
 SERVER_PATH = REPO_ROOT / "elysia" / "api" / "server.py"
 
@@ -77,9 +78,18 @@ def test_memory_hub_links_to_review_search_prototype(hub_html):
     assert "memory_review_search.html" in hub_html
 
 
+def test_memory_hub_links_to_diagnostics_page(hub_html):
+    assert "memory_diagnostics.html" in hub_html
+
+
 def test_navigation_includes_direct_prototype_links(nav_html):
     assert "memory_import_screen.html" in nav_html
     assert "memory_review_search.html" in nav_html
+    assert "memory_diagnostics.html" in nav_html
+
+
+def test_diagnostics_page_exists():
+    assert DIAGNOSTICS_PATH.is_file()
 
 
 @pytest.mark.parametrize("phrase", REQUIRED_MEMORY_LANGUAGE)

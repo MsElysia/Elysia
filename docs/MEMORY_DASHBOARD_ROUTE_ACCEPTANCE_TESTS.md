@@ -6,6 +6,26 @@ All tests below must pass before a Memory dashboard static route is accepted for
 
 ---
 
+## 0. Contract harness
+
+Before any route implementation, the pure contract tests must pass:
+
+```powershell
+python -m pytest project_guardian/tests/test_memory_dashboard_route_contract.py -q
+```
+
+The contract module is:
+
+```text
+project_guardian/local_ingestion/memory_dashboard_route_contract.py
+```
+
+Future route tests must treat this module as the source of truth for allowed filenames,
+forbidden path examples, path resolution, and false safety flags. See
+[MEMORY_DASHBOARD_ROUTE_TEST_HARNESS.md](MEMORY_DASHBOARD_ROUTE_TEST_HARNESS.md).
+
+---
+
 ## 1. Allowlist and serving
 
 | # | Test | Expected |
@@ -88,6 +108,13 @@ Future route-specific pytest module (to be added at implementation time):
 
 ```text
 project_guardian/tests/test_memory_dashboard_static_route.py
+```
+
+Pre-implementation contract harness:
+
+```powershell
+python -m pytest project_guardian/tests/test_memory_dashboard_route_contract.py -q
+python -m pytest project_guardian/tests/test_memory_dashboard_route_design_docs.py -q
 ```
 
 ---

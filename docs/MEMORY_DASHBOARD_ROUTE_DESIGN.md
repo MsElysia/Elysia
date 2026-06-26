@@ -8,6 +8,12 @@ This document plans how Elysia could later expose the existing static Memory Hub
 inside the local dashboard **without** wiring import, review, search, diagnostics, or demo
 execution from the browser.
 
+Campaign 2 adds a pure route contract and test harness without implementing the route:
+
+- `project_guardian/local_ingestion/memory_dashboard_route_contract.py`
+- `project_guardian/tests/test_memory_dashboard_route_contract.py`
+- [MEMORY_DASHBOARD_ROUTE_TEST_HARNESS.md](MEMORY_DASHBOARD_ROUTE_TEST_HARNESS.md)
+
 ---
 
 ## Discovery summary (current UI/dashboard structure)
@@ -172,9 +178,11 @@ The future route must **not**:
 Before any route wiring:
 
 1. Complete risk review and acceptance test plan (companion docs)
-2. Obtain explicit approval to touch route code
-3. Implement allowlisted route with focused tests
-4. Re-run static safety tests, safe-stack smoke, and dry-run report with autonomy disabled
+2. Keep the pure contract tests green:
+   `python -m pytest project_guardian/tests/test_memory_dashboard_route_contract.py -q`
+3. Obtain explicit approval to touch route code
+4. Implement allowlisted route with focused tests
+5. Re-run static safety tests, safe-stack smoke, and dry-run report with autonomy disabled
 
 **Do not modify `elysia/api/server.py` or `project_guardian/core.py` as part of the first
 Memory static route milestone unless explicitly approved.**

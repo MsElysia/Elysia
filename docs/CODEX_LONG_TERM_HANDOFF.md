@@ -329,3 +329,37 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `elysia/api/server.py` was untouched.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
+
+## Campaign 6 - Memory Hub onboarding links (Codex)
+
+### Campaign summary
+
+- Campaign name: Memory Hub onboarding links
+- Starting clean tag: `memory_dashboard_link_clean_1`
+- Starting HEAD: `a29683b docs(ui): link memory hub from control panel`
+- Target page: `project_guardian/ui/static/memory_hub.html`
+- Link type: static local prototype navigation only
+
+### Completed work
+
+- Added a `Memory onboarding` section to the Memory Hub.
+- Linked only to allowlisted `/memory/...` pages:
+  - `/memory/memory_first_run_setup.html`
+  - `/memory/memory_safety.html`
+  - `/memory/memory_diagnostics.html`
+  - `/memory/memory_import_screen.html`
+  - `/memory/memory_review_search.html`
+- Added `project_guardian/tests/test_memory_hub_onboarding_links.py`.
+- Narrowly updated static page safety coverage to allow only contract-allowlisted `/memory/...` links.
+
+### Safety notes
+
+- No route implementation changed.
+- No new route was added.
+- No backend calls were added.
+- No fetch, XHR, or WebSocket usage was added.
+- No account, model, API, network, or embedding access was added.
+- No live runtime memory or vector DB writes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.

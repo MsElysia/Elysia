@@ -301,3 +301,31 @@ Yes. Route implementation must not begin without explicit human approval naming 
 
 Add operator-facing documentation or a control-panel link to `/memory` that clearly labels the page
 as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
+
+## Campaign 5 - Memory Hub dashboard link (Codex)
+
+### Campaign summary
+
+- Campaign name: Memory Hub dashboard link
+- Starting clean tag: `memory_static_route_clean_1`
+- Starting HEAD: `d9e569f docs(ui): update memory route implementation handoff`
+- Target dashboard file: `project_guardian/ui/templates/dashboard.html`
+- Route linked: `/memory`
+- Link type: static local prototype navigation only
+
+### Completed work
+
+- Added a visible `Memory Hub` link to the dashboard Quick Actions card.
+- Labeled the link as a static local memory prototype for import, review, search, diagnostics, and safety guides.
+- Added `project_guardian/tests/test_memory_dashboard_control_panel_link.py`.
+
+### Safety notes
+
+- The link does not execute memory actions.
+- No backend calls were added.
+- No fetch, XHR, or WebSocket usage was added.
+- No account, model, API, network, or embedding access was added.
+- No live runtime memory or vector DB writes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.

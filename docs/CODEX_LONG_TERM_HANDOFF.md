@@ -266,3 +266,38 @@ Request explicit human approval before any route implementation. If approval is 
 ### Human approval needed
 
 Yes. Route implementation must not begin without explicit human approval naming the exact route file and purpose.
+
+## Campaign 4 - Static Memory dashboard route (human-approved, Cursor)
+
+### Campaign summary
+
+- Campaign name: Static Memory dashboard route (human-approved)
+- Starting clean tag: `memory_route_readiness_clean_1`
+- Starting HEAD: `e6de704 docs(memory): update route readiness handoff`
+- Implementer: Cursor (operator-approved)
+- Approved route file: `project_guardian/ui/app.py`
+- Campaign tag: `memory_static_route_clean_1`
+- Route type: static-only allowlisted HTML serving
+
+### Completed work
+
+- Added `/memory`, `/memory/`, and `/memory/{page}` GET routes in `project_guardian/ui/app.py`.
+- Routes use `memory_dashboard_route_contract.resolve_static_memory_page`.
+- Added `project_guardian/tests/test_memory_dashboard_static_route.py`.
+- Updated readiness review, implementation gates, and this handoff.
+
+### Safety notes
+
+- Human approval was required and granted before implementation.
+- Route is static-only; no memory pipeline actions from browser or route handler.
+- No diagnostics/demo command execution from route.
+- No account/API/network/model/embedding access added.
+- No live runtime memory or vector DB writes added.
+- `elysia/api/server.py` not modified.
+- `project_guardian/core.py` not modified.
+- `config/autonomy.json` not modified; remains `enabled=false`.
+
+### Recommended next Cursor task
+
+Add operator-facing documentation or a control-panel link to `/memory` that clearly labels the page
+as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.

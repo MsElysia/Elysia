@@ -181,3 +181,30 @@ python scripts/run_elysia_dry_run_report.py --mode real-planning
 
 - Prior clean tag: `memory_dashboard_route_tests_clean_1`
 - New Campaign 3 tag after this review: `memory_route_readiness_clean_1`
+
+---
+
+## Approved static route implementation (human-approved)
+
+Human approval was granted for a narrow static-only route in `project_guardian/ui/app.py`.
+
+Implementation status:
+
+- Route is **static-only** and serves allowlisted Memory HTML from `project_guardian/ui/static/`.
+- `/memory` and `/memory/` serve `memory_hub.html`.
+- `/memory/<page>` serves only contract-allowlisted filenames.
+- Route uses `project_guardian/local_ingestion/memory_dashboard_route_contract.py`.
+- Route does **not** execute import, review, search, diagnostics, or demo workspace commands.
+- Route does **not** add account/API/model/embedding access.
+- Route does **not** write live runtime memory or vector DB.
+- `elysia/api/server.py` was **not** touched.
+- `project_guardian/core.py` was **not** touched.
+- `config/autonomy.json` remains `enabled=false`.
+
+Focused route tests:
+
+```powershell
+python -m pytest project_guardian/tests/test_memory_dashboard_static_route.py -q
+```
+
+Historical Campaign 3 note: Campaign 3 did not add a route. No server/API route was added in Campaign 3.

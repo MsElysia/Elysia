@@ -107,3 +107,23 @@ Stop immediately if:
 
 If any gate fails, continue with safer non-route work such as docs, static UI references, operator
 checklists, fixture galleries, or release-candidate notes.
+
+---
+
+## Implementation record (human-approved static route)
+
+After explicit human approval, a narrow static Memory route was implemented in
+`project_guardian/ui/app.py` only.
+
+Properties:
+
+- static-only HTML serving via the route contract allowlist
+- no backend import/review/search/diagnostics/demo execution from the route
+- no account/API/model/embedding access added by the route
+- no live runtime memory or vector DB writes
+- `elysia/api/server.py` not modified
+- `project_guardian/core.py` not modified
+- checkpoint tag: `memory_static_route_clean_1`
+
+This section records completed implementation. The gates above remain the safety checklist for
+any future route changes.

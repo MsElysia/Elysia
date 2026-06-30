@@ -478,3 +478,31 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `elysia/api/server.py` was untouched.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
+
+## Campaign 11 - Memory static accessibility identity polish (Codex)
+
+### Campaign summary
+
+- Campaign name: Memory static accessibility and identity polish
+- Starting clean tag: `memory_static_page_identity_clean_1`
+- Starting HEAD: `c3b8c7c docs(ui): add memory static page identity`
+- Target pages: Memory static HTML pages served through `/memory/...`
+
+### Completed work
+
+- Confirmed all Memory static pages use `lang="en"`.
+- Added one page-specific meta description to each Memory static page.
+- Marked the active breadcrumb/current page item with `aria-current="page"`.
+- Added `project_guardian/tests/test_memory_static_accessibility_identity.py`.
+
+### Safety notes
+
+- Route implementation did not change.
+- No new route was added.
+- No backend calls were added.
+- No fetch, XHR, or WebSocket usage was added.
+- No account, model, API, network, or embedding access was added.
+- No live runtime memory or vector DB writes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.

@@ -48,3 +48,19 @@ python scripts/run_memory_import_review_handoff_smoke.py --json --base-dir .\tmp
 
 The JSON report includes per-source artifact paths under the supplied base
 directory.
+
+## Review Decision Branches
+
+Approve/reject/edit branch coverage is available through:
+
+```powershell
+python scripts/run_memory_review_decision_branches_smoke.py --json
+```
+
+That smoke uses local fixtures and temporary workspaces only. It proves one
+candidate can be approved, one can be rejected, and one can be edited before
+approval. Rejected candidates are excluded from approved output and search, and
+edited candidates preserve the edited text in approved output.
+
+The branch smoke does not use live accounts, models, embeddings, runtime memory,
+vector DB writes, UI actions, browser calls, POST forms, or routes.

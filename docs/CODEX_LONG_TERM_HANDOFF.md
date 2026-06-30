@@ -599,3 +599,37 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_import_review_handoff_smoke.py --json` and inspect the JSON report.
+
+## Campaign 15 - Memory review decision branch smoke (Codex)
+
+### Campaign summary
+
+- Campaign name: Dry-run Memory review decision branch coverage
+- Starting clean tag: `memory_import_review_handoff_clean_1`
+- Starting HEAD: `1e3311a feat(local): add memory import review handoff smoke`
+- Target command: `scripts/run_memory_review_decision_branches_smoke.py --json`
+
+### Completed work
+
+- Added a dry-run/local decision branch smoke command that composes existing local import, review, export, store, and search helpers.
+- Covered approve, reject, and edit-then-approve decisions with local transcription fixtures.
+- Verified rejected candidates are excluded from approved output and search.
+- Verified edited candidate text is preserved in approved output.
+- Added `project_guardian/tests/test_memory_review_decision_branches.py`.
+- Added `docs/MEMORY_REVIEW_DECISION_BRANCHES.md`.
+- Updated `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No live runtime memory or vector DB writes were added.
+- No UI actions, browser calls, POST forms, or routes were added.
+- Route implementation did not change.
+- No backend command execution from UI was added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_decision_branches_smoke.py --json` and inspect the JSON report.

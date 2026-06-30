@@ -395,3 +395,31 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `elysia/api/server.py` was untouched.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
+
+## Campaign 8 - Memory static route link normalization (Codex)
+
+### Campaign summary
+
+- Campaign name: Memory static route link normalization
+- Starting clean tag: `memory_static_backlinks_clean_1`
+- Starting HEAD: `d792562 docs(ui): add memory static page backlinks`
+- Target pages: Memory static HTML pages under `project_guardian/ui/static/`
+
+### Completed work
+
+- Normalized remaining Memory static cross-links to `/memory/...` route paths.
+- Updated the static index, first-run setup, safety, and diagnostics pages where relative sibling links remained.
+- Added `project_guardian/tests/test_memory_static_route_links.py`.
+- Updated navigation coverage to expect routed Memory static links.
+
+### Safety notes
+
+- No route implementation changed.
+- No new route was added.
+- No backend calls were added.
+- No fetch, XHR, or WebSocket usage was added.
+- No account, model, API, network, or embedding access was added.
+- No live runtime memory or vector DB writes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.

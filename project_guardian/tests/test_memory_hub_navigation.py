@@ -57,12 +57,12 @@ def test_navigation_entry_exists():
 
 def test_navigation_links_to_memory_hub(nav_html):
     assert "memory_hub.html" in nav_html
-    assert 'href="memory_hub.html"' in nav_html
+    assert 'href="/memory/memory_hub.html"' in nav_html
 
 
 def test_navigation_links_to_first_run_setup(nav_html):
     assert "memory_first_run_setup.html" in nav_html
-    assert 'href="memory_first_run_setup.html"' in nav_html
+    assert 'href="/memory/memory_first_run_setup.html"' in nav_html
 
 
 def test_first_run_setup_links_back_to_memory_hub(first_run_html):
@@ -135,7 +135,7 @@ def test_first_run_setup_safety_language(first_run_html):
 
 def test_no_server_route_in_navigation_entry(nav_html):
     assert "/api/" not in nav_html
-    assert 'href="/' not in nav_html
+    assert 'href="/memory/' in nav_html
 
 
 def test_core_py_untouched():

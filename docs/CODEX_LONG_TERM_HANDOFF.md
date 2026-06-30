@@ -423,3 +423,31 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `elysia/api/server.py` was untouched.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
+
+## Campaign 9 - Memory route navigation graph coverage (Codex)
+
+### Campaign summary
+
+- Campaign name: Memory route navigation graph coverage
+- Starting clean tag: `memory_static_route_links_clean_1`
+- Starting HEAD: `e4c9b65 docs(ui): normalize memory static route links`
+- Target behavior: verify static Memory pages through `/memory/...` routes
+
+### Completed work
+
+- Added `project_guardian/tests/test_memory_route_navigation_graph.py`.
+- Covered routed serving of all allowlisted Memory pages.
+- Verified routed Memory page links stay within the route contract allowlist and resolve through the local `/memory/...` route.
+
+### Safety notes
+
+- No route implementation changed.
+- No new route was added.
+- No static page behavior was changed.
+- No backend calls were added.
+- No fetch, XHR, or WebSocket usage was added.
+- No account, model, API, network, or embedding access was added.
+- No live runtime memory or vector DB writes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.

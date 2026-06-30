@@ -67,7 +67,7 @@ def test_navigation_links_to_first_run_setup(nav_html):
 
 def test_first_run_setup_links_back_to_memory_hub(first_run_html):
     assert "memory_hub.html" in first_run_html
-    assert 'href="memory_hub.html"' in first_run_html
+    assert 'href="/memory/memory_hub.html"' in first_run_html
 
 
 def test_memory_hub_links_to_import_prototype(hub_html):

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Elysia — Review &amp; Search Memory (UI foundation)</title>
+  <title>Elysia Memory - Review and Search</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -27,6 +27,19 @@
     .wrap { max-width: 960px; margin: 0 auto; }
     h1 { font-size: 1.75rem; margin-bottom: 8px; }
     .subtitle { color: var(--muted); margin-bottom: 24px; }
+    .identity {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+    .identity span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
     .banner {
       background: #172554;
       border: 1px solid #1e40af;
@@ -117,8 +130,12 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>Review &amp; Search Memory</h1>
+    <h1>Review and Search Memory</h1>
     <p class="subtitle">UI foundation prototype — not connected to server or CLI yet.</p>
+    <div class="identity" aria-label="Page identity">
+      <span>Memory Hub / Review and Search</span>
+      <span>Local route: /memory/memory_review_search.html</span>
+    </div>
 
     <div class="banner" role="note">
       <strong>Safety</strong>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Elysia — Static UI</title>
+  <title>Elysia Memory Static UI</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -24,6 +24,19 @@
     .wrap { max-width: 720px; margin: 0 auto; }
     h1 { font-size: 1.75rem; margin-bottom: 8px; }
     .subtitle { color: var(--muted); margin-bottom: 24px; font-size: 0.95rem; }
+    .identity {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+    .identity span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
     .card {
       background: var(--card);
       border: 1px solid var(--border);
@@ -52,8 +65,12 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>Elysia Static UI</h1>
-    <p class="subtitle">Local prototype pages — no server routes, no backend calls.</p>
+    <h1>Elysia Memory Static UI</h1>
+    <p class="subtitle">Local prototype pages served through allowlisted /memory routes — no backend calls.</p>
+    <div class="identity" aria-label="Page identity">
+      <span>Memory Hub / Static UI</span>
+      <span>Local route: /memory/index.html</span>
+    </div>
 
     <article class="card" id="memory-nav-card">
       <h2>Memory</h2>

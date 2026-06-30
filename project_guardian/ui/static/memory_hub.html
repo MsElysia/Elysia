@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Elysia Memory</title>
+  <title>Elysia Memory Hub</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -26,6 +26,19 @@
     .wrap { max-width: 960px; margin: 0 auto; }
     h1 { font-size: 1.85rem; margin-bottom: 8px; }
     .subtitle { color: var(--muted); margin-bottom: 24px; }
+    .identity {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+    .identity span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
     .intro {
       background: #172554;
       border: 1px solid #1e40af;
@@ -129,8 +142,12 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>Elysia Memory</h1>
-    <p class="subtitle">Memory Hub — static prototype only. Links to import and review/search screens.</p>
+    <h1>Memory Hub</h1>
+    <p class="subtitle">Elysia Memory Hub — static prototype only. Links to import and review/search screens.</p>
+    <div class="identity" aria-label="Page identity">
+      <span>Memory Hub</span>
+      <span>Local route: /memory/memory_hub.html</span>
+    </div>
 
     <div class="intro" role="note">
       <ul>

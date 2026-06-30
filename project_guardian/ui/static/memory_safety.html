@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Elysia Memory Safety</title>
+  <title>Elysia Memory - Safety</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -28,6 +28,19 @@
     h2 { font-size: 1.08rem; margin-bottom: 10px; color: #c4b5fd; }
     p { color: var(--muted); margin-bottom: 12px; }
     .subtitle { margin-bottom: 22px; }
+    .identity {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+    .identity span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
     .panel {
       background: var(--panel);
       border: 1px solid var(--border);
@@ -56,6 +69,10 @@
   <div class="wrap">
     <h1>Memory Safety</h1>
     <p class="subtitle">What the static Memory workflow does and does not do.</p>
+    <div class="identity" aria-label="Page identity">
+      <span>Memory Hub / Safety</span>
+      <span>Local route: /memory/memory_safety.html</span>
+    </div>
 
     <section class="panel">
       <h2>Safe defaults</h2>

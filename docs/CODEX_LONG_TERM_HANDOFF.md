@@ -451,3 +451,30 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `elysia/api/server.py` was untouched.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
+
+## Campaign 10 - Memory static page identity (Codex)
+
+### Campaign summary
+
+- Campaign name: Memory static page title, breadcrumb, and route-label consistency
+- Starting clean tag: `memory_route_navigation_graph_clean_1`
+- Starting HEAD: `1e7a4e4 test(ui): cover memory route navigation graph`
+- Target pages: Memory static HTML pages served through `/memory/...`
+
+### Completed work
+
+- Added consistent Memory page titles, top-level headings, breadcrumb text, and visible local route labels.
+- Route labels use allowlisted `/memory/...` targets and identify the local static route for each page.
+- Added `project_guardian/tests/test_memory_static_page_identity.py`.
+
+### Safety notes
+
+- Route implementation did not change.
+- No new route was added.
+- No backend calls were added.
+- No fetch, XHR, or WebSocket usage was added.
+- No account, model, API, network, or embedding access was added.
+- No live runtime memory or vector DB writes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.

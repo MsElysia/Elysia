@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Elysia — Import Memory (UI foundation)</title>
+  <title>Elysia Memory - Import Memory</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -26,6 +26,19 @@
     .wrap { max-width: 960px; margin: 0 auto; }
     h1 { font-size: 1.75rem; margin-bottom: 8px; }
     .subtitle { color: var(--muted); margin-bottom: 24px; }
+    .identity {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+    .identity span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
     .banner {
       background: #172554;
       border: 1px solid #1e40af;
@@ -101,6 +114,10 @@
   <div class="wrap">
     <h1>Import Memory</h1>
     <p class="subtitle">UI foundation prototype — not connected to server or CLI yet.</p>
+    <div class="identity" aria-label="Page identity">
+      <span>Memory Hub / Import Memory</span>
+      <span>Local route: /memory/memory_import_screen.html</span>
+    </div>
 
     <div class="banner" role="note">
       <strong>Safety</strong>
@@ -147,7 +164,7 @@
       <div class="row" style="margin-top:12px;">
         <button type="button" id="preview-btn">Preview import</button>
       </div>
-      <p class="note" id="import-note">Preview will call: python scripts/memory_import.py preview ...</p>
+      <p class="note" id="import-note">Future CLI reference: python scripts/memory_import.py preview ...</p>
     </section>
 
     <section id="preview-section">
@@ -267,7 +284,7 @@
           "<div class=\"metric\"><span>Candidates staged</span><span>2</span></div>" +
           "<div class=\"metric\"><span>Status</span><span>pending review</span></div>" +
           "<p style=\"margin-top:10px;\">Imported items become pending memories for review.</p>" +
-          "<p style=\"color:var(--muted);font-size:0.85rem;\">CLI: python scripts/memory_import.py apply --session-json ... --apply</p>";
+          "<p style=\"color:var(--muted);font-size:0.85rem;\">Future CLI reference: python scripts/memory_import.py apply --session-json ... --apply</p>";
       });
     })();
   </script>

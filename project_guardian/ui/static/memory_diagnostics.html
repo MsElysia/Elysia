@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Elysia Memory Diagnostics</title>
+  <title>Elysia Memory - Diagnostics</title>
   <style>
     :root {
       --bg: #111827;
@@ -25,6 +25,19 @@
     .wrap { max-width: 960px; margin: 0 auto; }
     h1 { font-size: 1.85rem; margin-bottom: 8px; }
     .subtitle { color: var(--muted); margin-bottom: 24px; }
+    .identity {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+    .identity span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -72,6 +85,10 @@
   <div class="wrap">
     <h1>Memory Diagnostics</h1>
     <p class="subtitle">Static operator reference for local-only memory doctor, demo workspace, and health smoke commands.</p>
+    <div class="identity" aria-label="Page identity">
+      <span>Memory Hub / Diagnostics</span>
+      <span>Local route: /memory/memory_diagnostics.html</span>
+    </div>
 
     <div class="grid">
       <article class="card">

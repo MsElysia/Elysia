@@ -7,6 +7,7 @@
   <title>Elysia Memory Hub</title>
   <style>
     :root {
+      color-scheme: dark;
       --bg: #0f172a;
       --card: #1e293b;
       --border: #334155;
@@ -159,6 +160,64 @@
     }
     .flag { color: var(--success); font-size: 0.85rem; margin-top: 12px; }
     .note { font-size: 0.82rem; color: var(--warning); margin-top: 10px; }
+
+    @media (max-width: 720px) {
+      body { padding: 16px; }
+      .wrap { max-width: 100%; }
+      h1 { font-size: 1.55rem; }
+      .identity { align-items: flex-start; }
+      .identity > span,
+      .identity nav > span { border-radius: 8px; }
+      .grid,
+      .onboarding-links { grid-template-columns: 1fr; }
+      .card,
+      section,
+      .page-navigation,
+      .intro { padding: 16px; }
+      .sources { flex-direction: column; }
+    }
+
+    @media print {
+      .skip-link,
+      .page-navigation { display: none; }
+      body { background: #ffffff; color: #000000; padding: 0; }
+      .wrap { max-width: 100%; }
+      .card,
+      section,
+      .intro,
+      .safety-panel,
+      .chip {
+        background: #ffffff;
+        border-color: #000000;
+        color: #000000;
+      }
+      h1,
+      h2,
+      p,
+      li,
+      span,
+      a,
+      strong,
+      .subtitle,
+      .note,
+      .flag,
+      .mock-status { color: #000000; }
+      a::after { content: " (" attr(href) ")"; font-size: 0.85em; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto;
+        transition-duration: 0.01ms;
+        animation-duration: 0.01ms;
+      }
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root { color-scheme: dark; }
+    }
   </style>
 </head>
 <body>

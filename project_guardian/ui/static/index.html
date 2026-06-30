@@ -7,6 +7,7 @@
   <title>Elysia Memory Static UI</title>
   <style>
     :root {
+      color-scheme: dark;
       --bg: #0f172a;
       --card: #1e293b;
       --border: #334155;
@@ -80,6 +81,52 @@
     }
     .note { font-size: 0.82rem; color: #f59e0b; margin-top: 16px; }
     .links { margin-top: 10px; }
+
+    @media (max-width: 720px) {
+      body { padding: 16px; }
+      .wrap { max-width: 100%; }
+      h1 { font-size: 1.5rem; }
+      .identity { align-items: flex-start; }
+      .identity > span,
+      .identity nav > span { border-radius: 8px; }
+      .links { display: flex; flex-direction: column; gap: 10px; }
+      .card { padding: 16px; }
+      .card a { width: 100%; text-align: center; }
+      .card a.secondary { margin-left: 0; }
+    }
+
+    @media print {
+      .skip-link { display: none; }
+      body { background: #ffffff; color: #000000; padding: 0; }
+      .wrap { max-width: 100%; }
+      .card {
+        background: #ffffff;
+        border-color: #000000;
+        color: #000000;
+      }
+      h1,
+      h2,
+      p,
+      span,
+      a,
+      .subtitle,
+      .note { color: #000000; }
+      a::after { content: " (" attr(href) ")"; font-size: 0.85em; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto;
+        transition-duration: 0.01ms;
+        animation-duration: 0.01ms;
+      }
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root { color-scheme: dark; }
+    }
   </style>
 </head>
 <body>

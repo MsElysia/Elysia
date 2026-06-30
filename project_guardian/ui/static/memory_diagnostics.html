@@ -7,6 +7,7 @@
   <title>Elysia Memory - Diagnostics</title>
   <style>
     :root {
+      color-scheme: dark;
       --bg: #111827;
       --panel: #1f2937;
       --border: #374151;
@@ -100,6 +101,58 @@
     .flag { color: var(--accent); margin-top: 10px; font-size: 0.86rem; }
     .note { color: var(--warn); margin-top: 14px; font-size: 0.84rem; }
     a { color: #67e8f9; }
+
+    @media (max-width: 720px) {
+      body { padding: 16px; }
+      .wrap { max-width: 100%; }
+      h1 { font-size: 1.55rem; }
+      .identity { align-items: flex-start; }
+      .identity > span,
+      .identity nav > span { border-radius: 8px; }
+      .grid { grid-template-columns: 1fr; }
+      .card,
+      section,
+      .page-navigation { padding: 16px; }
+    }
+
+    @media print {
+      .skip-link,
+      .page-navigation { display: none; }
+      body { background: #ffffff; color: #000000; padding: 0; }
+      .wrap { max-width: 100%; }
+      .card,
+      section,
+      code {
+        background: #ffffff;
+        border-color: #000000;
+        color: #000000;
+      }
+      h1,
+      h2,
+      p,
+      li,
+      span,
+      a,
+      code,
+      .subtitle,
+      .flag,
+      .note { color: #000000; }
+      a::after { content: " (" attr(href) ")"; font-size: 0.85em; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto;
+        transition-duration: 0.01ms;
+        animation-duration: 0.01ms;
+      }
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root { color-scheme: dark; }
+    }
   </style>
 </head>
 <body>

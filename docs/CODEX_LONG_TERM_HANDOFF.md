@@ -330,6 +330,37 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 
+## Campaign 13 - Memory static responsive and print polish (Codex)
+
+### Campaign summary
+
+- Campaign name: Memory static responsive, print, and user-preference CSS polish
+- Starting clean tag: `memory_static_landmarks_skiplinks_clean_1`
+- Starting HEAD: `f47cba5 docs(ui): add memory static landmarks and skip links`
+- Target pages: Memory static HTML pages served through `/memory/...`
+
+### Completed work
+
+- Added narrow-screen responsive CSS to the Memory static pages.
+- Added print-friendly CSS that removes skip/page navigation controls and keeps page content readable on white backgrounds.
+- Added reduced-motion media-query handling for current and future static page transitions.
+- Added safe color-scheme declarations that keep the existing dark palette readable.
+- Added `project_guardian/tests/test_memory_static_responsive_print.py`.
+
+### Safety notes
+
+- Skip links, main landmarks, breadcrumb navigation, route labels, and normalized `/memory/...` links were preserved.
+- Route implementation did not change.
+- No new route was added.
+- No backend calls were added.
+- No fetch, XHR, or WebSocket usage was added.
+- No account, model, API, network, or embedding access was added.
+- No live runtime memory or vector DB writes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Recommended next campaign: return to a functional Memory workflow improvement rather than more visual polish unless a clear static UI issue is found.
+
 ## Campaign 6 - Memory Hub onboarding links (Codex)
 
 ### Campaign summary

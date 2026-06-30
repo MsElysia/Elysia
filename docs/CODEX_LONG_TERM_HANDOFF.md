@@ -567,3 +567,35 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `elysia/api/server.py` was untouched.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
+
+## Campaign 14 - Memory import review handoff smoke (Codex)
+
+### Campaign summary
+
+- Campaign name: Dry-run Memory import-to-review handoff coverage
+- Starting clean tag: `memory_static_responsive_print_clean_1`
+- Starting HEAD: `704bd43 docs(ui): polish memory static responsive print styles`
+- Target command: `scripts/run_memory_import_review_handoff_smoke.py --json`
+
+### Completed work
+
+- Added a dry-run/local handoff smoke command that composes the existing local memory pipeline helpers.
+- Covered transcription, ChatGPT export, and email export fixture source types.
+- Verified import candidates, review queue artifacts, approved export/store readiness, search readiness, and context bundle artifacts in temp workspaces.
+- Added `project_guardian/tests/test_memory_import_review_handoff.py`.
+- Added `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No live runtime memory or vector DB writes were added.
+- No UI actions, browser calls, POST forms, or routes were added.
+- Route implementation did not change.
+- No backend command execution from UI was added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_import_review_handoff_smoke.py --json` and inspect the JSON report.

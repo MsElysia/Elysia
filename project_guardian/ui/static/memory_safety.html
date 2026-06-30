@@ -37,10 +37,28 @@
       color: var(--muted);
       font-size: 0.84rem;
     }
-    .identity span {
+    .identity > span,
+    .identity nav > span {
       border: 1px solid var(--border);
       border-radius: 999px;
       padding: 4px 10px;
+    }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: 8px;
+      z-index: 1000;
+      padding: 8px 12px;
+      background: #ffffff;
+      color: #0f172a;
+      border: 2px solid currentColor;
+      border-radius: 8px;
+    }
+    .skip-link:focus { left: 8px; }
+    a:focus,
+    button:focus {
+      outline: 2px solid currentColor;
+      outline-offset: 2px;
     }
     .panel {
       background: var(--panel);
@@ -67,11 +85,14 @@
   </style>
 </head>
 <body>
-  <div class="wrap">
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <main class="wrap" id="main-content">
     <h1>Memory Safety</h1>
     <p class="subtitle">What the static Memory workflow does and does not do.</p>
     <div class="identity" aria-label="Page identity">
-      <span>Memory Hub / <span aria-current="page">Safety</span></span>
+      <nav aria-label="Memory breadcrumb">
+        <span>Memory Hub / <span aria-current="page">Safety</span></span>
+      </nav>
       <span>Local route: /memory/memory_safety.html</span>
     </div>
 
@@ -107,7 +128,7 @@
       <p class="note">The static pages are for orientation and prototype navigation only.</p>
     </section>
 
-    <section class="panel">
+    <nav class="panel" aria-label="Memory page navigation">
       <h2>Continue safely</h2>
       <p class="note">Return to the static local Memory Hub.</p>
       <div class="links">
@@ -115,7 +136,7 @@
         <a class="button secondary" href="/memory/memory_first_run_setup.html">First-Run Setup</a>
         <a class="button secondary" href="/memory/index.html">Back to Static UI</a>
       </div>
-    </section>
-  </div>
+    </nav>
+  </main>
 </body>
 </html>

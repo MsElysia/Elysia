@@ -79,7 +79,7 @@ def test_allowlisted_memory_routes_serve_html(client, route):
 def test_memory_route_pages_only_link_to_allowlisted_memory_routes(client, route):
     html = _get_html(client, route)
     for href in _links_from_html(html):
-        if href == "#":
+        if href == "#" or href.startswith("#"):
             continue
         parsed = urlparse(href)
         assert not parsed.scheme, f"{route} links to external route: {href}"

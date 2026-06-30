@@ -506,3 +506,33 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `elysia/api/server.py` was untouched.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
+
+## Campaign 12 - Memory static landmarks and skip links (Codex)
+
+### Campaign summary
+
+- Campaign name: Memory static landmark and skip-link accessibility polish
+- Starting clean tag: `memory_static_accessibility_identity_clean_1`
+- Starting HEAD: `ec59fbc docs(ui): polish memory static accessibility identity`
+- Target pages: Memory static HTML pages served through `/memory/...`
+
+### Completed work
+
+- Added visible-on-focus `Skip to main content` links to Memory static pages.
+- Added one `<main id="main-content">` landmark per Memory static page.
+- Wrapped breadcrumb identity in `nav aria-label="Memory breadcrumb"`.
+- Labeled page navigation groups with `aria-label="Memory page navigation"` where appropriate.
+- Added page-local visible focus styles for links and buttons.
+- Added `project_guardian/tests/test_memory_static_landmarks_skiplinks.py`.
+
+### Safety notes
+
+- Route implementation did not change.
+- No new route was added.
+- No backend calls were added.
+- No fetch, XHR, or WebSocket usage was added.
+- No account, model, API, network, or embedding access was added.
+- No live runtime memory or vector DB writes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.

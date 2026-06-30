@@ -35,10 +35,28 @@
       color: var(--muted);
       font-size: 0.84rem;
     }
-    .identity span {
+    .identity > span,
+    .identity nav > span {
       border: 1px solid var(--border);
       border-radius: 999px;
       padding: 4px 10px;
+    }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: 8px;
+      z-index: 1000;
+      padding: 8px 12px;
+      background: #ffffff;
+      color: #0f172a;
+      border: 2px solid currentColor;
+      border-radius: 8px;
+    }
+    .skip-link:focus { left: 8px; }
+    a:focus,
+    button:focus {
+      outline: 2px solid currentColor;
+      outline-offset: 2px;
     }
     .intro {
       background: #172554;
@@ -87,14 +105,16 @@
       font-size: 0.8rem;
       color: var(--warning);
     }
-    section {
+    section,
+    .page-navigation {
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 20px;
       margin-bottom: 20px;
     }
-    section h2 { font-size: 1.15rem; margin-bottom: 12px; color: #c4b5fd; }
+    section h2,
+    .page-navigation h2 { font-size: 1.15rem; margin-bottom: 12px; color: #c4b5fd; }
     .sources { display: flex; flex-wrap: wrap; gap: 8px; }
     .chip {
       background: var(--bg);
@@ -142,11 +162,14 @@
   </style>
 </head>
 <body>
-  <div class="wrap">
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <main class="wrap" id="main-content">
     <h1>Memory Hub</h1>
     <p class="subtitle">Elysia Memory Hub — static prototype only. Links to import and review/search screens.</p>
     <div class="identity" aria-label="Page identity">
-      <span aria-current="page">Memory Hub</span>
+      <nav aria-label="Memory breadcrumb">
+        <span aria-current="page">Memory Hub</span>
+      </nav>
       <span>Local route: /memory/memory_hub.html</span>
     </div>
 
@@ -159,7 +182,7 @@
       </ul>
     </div>
 
-    <section id="memory-onboarding">
+    <nav id="memory-onboarding" class="page-navigation" aria-label="Memory page navigation">
       <h2>Memory onboarding</h2>
       <p class="note">Static local prototype navigation only. These allowlisted /memory links do not run backend actions.</p>
       <div class="onboarding-links">
@@ -184,7 +207,7 @@
           <span>Review pending candidates and search approved local memory.</span>
         </a>
       </div>
-    </section>
+    </nav>
 
     <div class="grid">
       <article class="card">
@@ -260,6 +283,6 @@
       </ol>
       <p class="note">This hub does not call backend scripts. Open linked prototypes for each step.</p>
     </section>
-  </div>
+  </main>
 </body>
 </html>

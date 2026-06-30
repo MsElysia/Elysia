@@ -68,7 +68,7 @@ def _hub_html() -> str:
 def _onboarding_block() -> str:
     html = _hub_html()
     match = re.search(
-        r'<section id="memory-onboarding"[^>]*>.*?</section>',
+        r'<(?P<tag>section|nav)\s+id="memory-onboarding"[^>]*>.*?</(?P=tag)>',
         html,
         re.IGNORECASE | re.DOTALL,
     )

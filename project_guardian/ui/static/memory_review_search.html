@@ -36,10 +36,28 @@
       color: var(--muted);
       font-size: 0.84rem;
     }
-    .identity span {
+    .identity > span,
+    .identity nav > span {
       border: 1px solid var(--border);
       border-radius: 999px;
       padding: 4px 10px;
+    }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: 8px;
+      z-index: 1000;
+      padding: 8px 12px;
+      background: #ffffff;
+      color: #0f172a;
+      border: 2px solid currentColor;
+      border-radius: 8px;
+    }
+    .skip-link:focus { left: 8px; }
+    a:focus,
+    button:focus {
+      outline: 2px solid currentColor;
+      outline-offset: 2px;
     }
     .banner {
       background: #172554;
@@ -50,14 +68,16 @@
       font-size: 0.92rem;
     }
     .banner li { margin-left: 18px; margin-top: 4px; }
-    section {
+    section,
+    .page-navigation {
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 20px;
       margin-bottom: 20px;
     }
-    section h2 { font-size: 1.15rem; margin-bottom: 12px; color: #c4b5fd; }
+    section h2,
+    .page-navigation h2 { font-size: 1.15rem; margin-bottom: 12px; color: #c4b5fd; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; }
     .badge {
       background: var(--bg);
@@ -130,11 +150,14 @@
   </style>
 </head>
 <body>
-  <div class="wrap">
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <main class="wrap" id="main-content">
     <h1>Review and Search Memory</h1>
     <p class="subtitle">UI foundation prototype — not connected to server or CLI yet.</p>
     <div class="identity" aria-label="Page identity">
-      <span>Memory Hub / <span aria-current="page">Review and Search</span></span>
+      <nav aria-label="Memory breadcrumb">
+        <span>Memory Hub / <span aria-current="page">Review and Search</span></span>
+      </nav>
       <span>Local route: /memory/memory_review_search.html</span>
     </div>
 
@@ -150,11 +173,11 @@
       </ul>
     </div>
 
-    <section id="memory-hub-backlink">
+    <nav id="memory-hub-backlink" class="page-navigation" aria-label="Memory page navigation">
       <h2>Navigation</h2>
       <p class="note">Return to the static local Memory Hub.</p>
       <p><a href="/memory/memory_hub.html">Back to Memory Hub</a></p>
-    </section>
+    </nav>
 
     <section id="pending-section">
       <h2>1. Pending Memories</h2>
@@ -239,7 +262,7 @@
         CLI: python scripts/build_approved_memory_context.py --dest-dir &lt;path&gt; --query "drywall quote"
       </div>
     </section>
-  </div>
+  </main>
 
   <script>
     (function () {

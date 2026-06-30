@@ -34,10 +34,28 @@
       color: var(--muted);
       font-size: 0.84rem;
     }
-    .identity span {
+    .identity > span,
+    .identity nav > span {
       border: 1px solid var(--border);
       border-radius: 999px;
       padding: 4px 10px;
+    }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: 8px;
+      z-index: 1000;
+      padding: 8px 12px;
+      background: #ffffff;
+      color: #111827;
+      border: 2px solid currentColor;
+      border-radius: 8px;
+    }
+    .skip-link:focus { left: 8px; }
+    a:focus,
+    button:focus {
+      outline: 2px solid currentColor;
+      outline-offset: 2px;
     }
     .grid {
       display: grid;
@@ -46,14 +64,16 @@
       margin-bottom: 24px;
     }
     .card,
-    section {
+    section,
+    .page-navigation {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 18px;
     }
     .card h2,
-    section h2 {
+    section h2,
+    .page-navigation h2 {
       color: #99f6e4;
       font-size: 1.05rem;
       margin-bottom: 10px;
@@ -83,11 +103,14 @@
   </style>
 </head>
 <body>
-  <div class="wrap">
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <main class="wrap" id="main-content">
     <h1>Memory Diagnostics</h1>
     <p class="subtitle">Static operator reference for local-only memory doctor, demo workspace, and health smoke commands.</p>
     <div class="identity" aria-label="Page identity">
-      <span>Memory Hub / <span aria-current="page">Diagnostics</span></span>
+      <nav aria-label="Memory breadcrumb">
+        <span>Memory Hub / <span aria-current="page">Diagnostics</span></span>
+      </nav>
       <span>Local route: /memory/memory_diagnostics.html</span>
     </div>
 
@@ -124,11 +147,11 @@
       <p class="note">This page is static reference content only. It does not call backend scripts.</p>
     </section>
 
-    <section>
+    <nav class="page-navigation" aria-label="Memory page navigation">
       <h2>Navigation</h2>
       <p class="note">Return to the static local Memory Hub.</p>
       <p><a href="/memory/memory_hub.html">Back to Memory Hub</a> | <a href="/memory/memory_safety.html">Open Memory Safety</a></p>
-    </section>
-  </div>
+    </nav>
+  </main>
 </body>
 </html>

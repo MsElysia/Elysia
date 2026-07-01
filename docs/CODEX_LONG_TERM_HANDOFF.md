@@ -633,3 +633,42 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_decision_branches_smoke.py --json` and inspect the JSON report.
+
+## Campaign 16 - Memory review decision idempotency smoke (Cursor)
+
+### Campaign summary
+
+- Campaign name: Dry-run Memory review decision idempotency coverage
+- Implemented by Cursor because Codex hit usage limits.
+- Starting clean tag: `memory_review_decision_branches_clean_1`
+- Starting HEAD: `3e9773e feat(local): add memory review decision branch smoke`
+- Target command: `scripts/run_memory_review_decision_idempotency_smoke.py --json`
+
+### Completed work
+
+- Added a dry-run/local idempotency smoke command that composes existing local import, review, export, store, and search helpers.
+- Applies the same approve/reject/edit decisions twice and re-runs export/store/search after each pass.
+- Verified approved, rejected, and edited counts stay stable across repeated runs.
+- Verified approved and rejected identifiers stay stable across repeated runs.
+- Verified repeated export/store steps do not create duplicate approved records or duplicate local memory store records.
+- Verified rejected candidates stay excluded from approved output and search.
+- Verified edited candidate text stays preserved across repeated runs.
+- No local ingestion/review helper repair was required; export and store already overwrite their output files and resolve the latest decision per candidate.
+- Added `project_guardian/tests/test_memory_review_decision_idempotency.py`.
+- Added `docs/MEMORY_REVIEW_DECISION_IDEMPOTENCY.md`.
+- Updated `docs/MEMORY_REVIEW_DECISION_BRANCHES.md` and `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No live runtime memory or vector DB writes were added.
+- No UI actions, browser calls, POST forms, or routes were added.
+- Route implementation did not change.
+- No backend command execution from UI was added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_decision_idempotency_smoke.py --json` and inspect the JSON report.

@@ -51,3 +51,21 @@ python scripts/run_memory_review_decision_branches_smoke.py --json --base-dir .\
 ```
 
 The JSON report includes artifact paths under the supplied base directory.
+
+## Review Decision Idempotency
+
+Repeated-decision safety is covered separately by:
+
+```powershell
+python scripts/run_memory_review_decision_idempotency_smoke.py --json
+```
+
+That smoke applies the same approve/reject/edit decisions twice and re-runs
+export/store/search each time. It proves repeated decisions keep stable counts,
+approved/rejected identifiers stay stable, repeated export/store steps do not
+duplicate approved or local memory store records, rejected candidates stay
+excluded from approved output and search, and edited text stays preserved. It
+uses local fixtures and temporary workspaces only and does not use live
+accounts, models, embeddings, live runtime memory/vector DB, UI actions, browser
+calls, POST forms, or routes. See
+[`MEMORY_REVIEW_DECISION_IDEMPOTENCY.md`](MEMORY_REVIEW_DECISION_IDEMPOTENCY.md).

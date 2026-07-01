@@ -64,3 +64,21 @@ edited candidates preserve the edited text in approved output.
 
 The branch smoke does not use live accounts, models, embeddings, runtime memory,
 vector DB writes, UI actions, browser calls, POST forms, or routes.
+
+## Review Decision Idempotency
+
+Repeated-decision safety is available through:
+
+```powershell
+python scripts/run_memory_review_decision_idempotency_smoke.py --json
+```
+
+That smoke applies the same approve/reject/edit decisions twice and re-runs the
+export/store/search steps each time. It proves repeated decisions keep stable
+counts and identifiers, repeated export/store steps do not duplicate approved or
+local memory store records, rejected candidates stay excluded from approved
+output and search, and edited text stays preserved. It uses local fixtures and
+temporary workspaces only and does not use live accounts, models, embeddings,
+live runtime memory, vector DB writes, UI actions, browser calls, POST forms, or
+routes. See
+[`MEMORY_REVIEW_DECISION_IDEMPOTENCY.md`](MEMORY_REVIEW_DECISION_IDEMPOTENCY.md).

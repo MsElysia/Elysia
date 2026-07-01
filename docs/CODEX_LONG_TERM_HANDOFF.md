@@ -672,3 +672,42 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_decision_idempotency_smoke.py --json` and inspect the JSON report.
+
+## Campaign 17 - Memory review decision audit trail smoke (Cursor)
+
+### Campaign summary
+
+- Campaign name: Dry-run Memory review decision audit trail coverage
+- Implemented by Cursor because Codex hit usage limits.
+- Starting clean tag: `memory_review_decision_idempotency_clean_1`
+- Starting HEAD: `7de7688 feat(local): add memory review decision idempotency smoke`
+- Target command: `scripts/run_memory_review_decision_audit_trail_smoke.py --json`
+
+### Completed work
+
+- Added a dry-run/local audit trail smoke command that composes existing local import, review, export, store, and search helpers.
+- Applies approve/reject/edit decisions twice, then audits the append-only `review_decisions.jsonl` log.
+- Verified every decision entry is valid JSON and carries the required audit fields (`decision_id`, `candidate_id`, `previous_status`, `new_status`, `decided_at`, `operator_required`, `live_memory_written`, `source_queue_path`).
+- Verified approve, reject, and edit transitions are all represented in the log.
+- Verified timestamps are present and chronological (non-decreasing).
+- Verified repeated decisions do not corrupt latest-decision resolution (latest approved/rejected/edited counts stay 1/1/1).
+- Verified rejected candidates stay excluded from approved output and search, and edited text stays preserved.
+- No local ingestion/review helper repair was required; the review helpers already record deterministic decision ids, previous/new status, timestamps, and operator-required/dry-run-safe metadata.
+- Added `project_guardian/tests/test_memory_review_decision_audit_trail.py`.
+- Added `docs/MEMORY_REVIEW_DECISION_AUDIT_TRAIL.md`.
+- Updated `docs/MEMORY_REVIEW_DECISION_IDEMPOTENCY.md`, `docs/MEMORY_REVIEW_DECISION_BRANCHES.md`, and `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No live runtime memory or vector DB writes were added.
+- No UI actions, browser calls, POST forms, or routes were added.
+- Route implementation did not change.
+- No backend command execution from UI was added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_decision_audit_trail_smoke.py --json` and inspect the JSON report.

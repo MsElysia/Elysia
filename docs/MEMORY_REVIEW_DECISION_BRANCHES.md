@@ -69,3 +69,21 @@ uses local fixtures and temporary workspaces only and does not use live
 accounts, models, embeddings, live runtime memory/vector DB, UI actions, browser
 calls, POST forms, or routes. See
 [`MEMORY_REVIEW_DECISION_IDEMPOTENCY.md`](MEMORY_REVIEW_DECISION_IDEMPOTENCY.md).
+
+## Review Decision Audit Trail
+
+Audit-log trustworthiness is covered separately by:
+
+```powershell
+python scripts/run_memory_review_decision_audit_trail_smoke.py --json
+```
+
+That smoke applies approve/reject/edit decisions twice and audits the append-only
+`review_decisions.jsonl` log: every entry is valid JSON with the required audit
+fields, records candidate identity and previous/new status, represents all three
+transitions, keeps chronological timestamps, and still resolves to the correct
+latest decision per candidate. Rejected candidates stay excluded and edited text
+stays preserved. It uses local fixtures and temporary workspaces only and does
+not use live accounts, models, embeddings, live runtime memory/vector DB, UI
+actions, browser calls, POST forms, or routes. See
+[`MEMORY_REVIEW_DECISION_AUDIT_TRAIL.md`](MEMORY_REVIEW_DECISION_AUDIT_TRAIL.md).

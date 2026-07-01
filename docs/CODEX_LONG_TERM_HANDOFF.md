@@ -711,3 +711,43 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_decision_audit_trail_smoke.py --json` and inspect the JSON report.
+
+## Campaign 18 - Memory review decision tamper evidence smoke (Cursor)
+
+### Campaign summary
+
+- Campaign name: Dry-run Memory review decision tamper-evidence coverage
+- Implemented by Cursor because Codex hit usage limits.
+- Starting clean tag: `memory_review_decision_audit_trail_clean_1`
+- Starting HEAD: `508c842 feat(local): add memory review decision audit smoke`
+- Target command: `scripts/run_memory_review_decision_tamper_evidence_smoke.py --json`
+
+### Completed work
+
+- Added a dry-run/local tamper-evidence smoke that builds a valid append-only `review_decisions.jsonl` from local fixtures, then writes tampered copies inside a temp workspace and runs a self-contained, local-only audit checker (`audit_decision_log`) against each.
+- The audit checker was added as a small, local-only helper inside the new smoke script; no existing local ingestion/review/server/core file was modified (the previous audit-trail smoke kept its validation inline, so a minimal standalone checker was the smallest safe addition).
+- Proved the clean audit log returns `verdict=PASS`.
+- Proved a malformed JSON line fails with a specific error containing `malformed_json`.
+- Proved a missing required field fails with a specific error containing `missing_required_field`.
+- Proved a non-chronological timestamp fails with a specific error containing `non_chronological`.
+- Proved an unknown candidate id fails with a specific error containing `unknown_candidate` (optional case, implemented).
+- Proved an unsupported status transition fails with a specific error containing `unsupported_transition` (optional case, implemented).
+- Proved every tampered variant returns `verdict=FAIL` and the clean log still passes afterward.
+- Added `project_guardian/tests/test_memory_review_decision_tamper_evidence.py`.
+- Added `docs/MEMORY_REVIEW_DECISION_TAMPER_EVIDENCE.md`.
+- Updated `docs/MEMORY_REVIEW_DECISION_AUDIT_TRAIL.md`, `docs/MEMORY_REVIEW_DECISION_IDEMPOTENCY.md`, `docs/MEMORY_REVIEW_DECISION_BRANCHES.md`, and `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; tampered logs are written only inside the temp workspace.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No live runtime memory or vector DB writes were added.
+- No UI actions, browser calls, POST forms, or routes were added.
+- Route implementation did not change.
+- No backend command execution from UI was added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_decision_tamper_evidence_smoke.py --json` and inspect the JSON report.

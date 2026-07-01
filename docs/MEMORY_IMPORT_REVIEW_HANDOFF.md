@@ -100,3 +100,20 @@ stays preserved. It uses local fixtures and temporary workspaces only and does
 not use live accounts, models, embeddings, live runtime memory, vector DB writes,
 UI actions, browser calls, POST forms, or routes. See
 [`MEMORY_REVIEW_DECISION_AUDIT_TRAIL.md`](MEMORY_REVIEW_DECISION_AUDIT_TRAIL.md).
+
+## Review Decision Tamper Evidence
+
+Audit-log tamper detection is available through:
+
+```powershell
+python scripts/run_memory_review_decision_tamper_evidence_smoke.py --json
+```
+
+That smoke proves a local-only audit checker detects corrupted
+`review_decisions.jsonl` logs (malformed JSON, missing required fields,
+non-chronological timestamps, unknown candidates, unsupported transitions),
+returning `verdict=FAIL` with specific error messages while a clean log still
+passes. It uses local fixtures and temporary workspaces only and does not use
+live accounts, models, embeddings, live runtime memory, vector DB writes, UI
+actions, browser calls, POST forms, or routes. See
+[`MEMORY_REVIEW_DECISION_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_DECISION_TAMPER_EVIDENCE.md).

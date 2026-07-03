@@ -117,3 +117,20 @@ passes. It uses local fixtures and temporary workspaces only and does not use
 live accounts, models, embeddings, live runtime memory, vector DB writes, UI
 actions, browser calls, POST forms, or routes. See
 [`MEMORY_REVIEW_DECISION_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_DECISION_TAMPER_EVIDENCE.md).
+
+## Review Decision Tamper Recovery
+
+Safe recovery/quarantine after a corrupted log is detected is available through:
+
+```powershell
+python scripts/run_memory_review_decision_tamper_recovery_smoke.py --json
+```
+
+That smoke builds a clean log and a known-good copy, corrupts the working log,
+detects the corruption, quarantines the corrupt log (preserved, not repaired)
+with a manifest, and re-resolves the latest decisions from the known-good copy
+only. It proves the corrupt log is never trusted, rejected candidates stay
+excluded, and edited text stays preserved. It uses local fixtures and temporary
+workspaces only and does not use live accounts, models, embeddings, live runtime
+memory, vector DB writes, UI actions, browser calls, POST forms, or routes. See
+[`MEMORY_REVIEW_DECISION_TAMPER_RECOVERY.md`](MEMORY_REVIEW_DECISION_TAMPER_RECOVERY.md).

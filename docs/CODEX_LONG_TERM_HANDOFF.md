@@ -751,3 +751,43 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_decision_tamper_evidence_smoke.py --json` and inspect the JSON report.
+
+## Campaign 19 - Memory review decision tamper recovery smoke (Cursor)
+
+### Campaign summary
+
+- Campaign name: Dry-run Memory review decision tamper recovery and quarantine coverage
+- Implemented by Cursor because Codex hit usage limits.
+- Starting clean tag: `memory_review_decision_tamper_evidence_clean_1`
+- Starting HEAD: `f4b44ad feat(local): add memory review decision tamper smoke`
+- Target command: `scripts/run_memory_review_decision_tamper_recovery_smoke.py --json`
+
+### Completed work
+
+- Added a dry-run/local recovery-and-quarantine smoke that builds a valid append-only `review_decisions.jsonl` from local fixtures, saves a known-good copy, corrupts the working log (malformed JSON line plus a missing required field), and proves safe recovery.
+- Reuses the local-only `audit_decision_log` checker from the tamper-evidence smoke by import; no existing local ingestion/review/server/core file was modified.
+- Proved the clean audit log returns `verdict=PASS` and resolves to the expected approve/reject/edit latest decisions.
+- Proved the corrupted working log returns `verdict=FAIL` and the specific error types are captured (`malformed_json`, `missing_required_field`).
+- Proved corruption is detected before recovery runs.
+- Proved the corrupt log is copied into a temp-only `quarantine/` directory, preserved exactly (not overwritten or silently repaired), with a `quarantine_manifest.json` recording original/quarantine/known-good paths, detected error types, timestamp, `dry_run=true`, `local_only=true`, `silently_repaired=false`, `live_memory_written=false`, and `operator_required=true`.
+- Proved the corrupt log is never trusted for latest-decision resolution (loading latest decisions from it raises `MemoryCandidateReviewError`).
+- Proved recovery re-resolves latest decisions from the known-good copy only, matching the pre-corruption state.
+- Proved the rejected candidate stays excluded from the approved export and edited text stays preserved after recovery.
+- Added `project_guardian/tests/test_memory_review_decision_tamper_recovery.py`.
+- Added `docs/MEMORY_REVIEW_DECISION_TAMPER_RECOVERY.md`.
+- Updated `docs/MEMORY_REVIEW_DECISION_TAMPER_EVIDENCE.md`, `docs/MEMORY_REVIEW_DECISION_AUDIT_TRAIL.md`, `docs/MEMORY_REVIEW_DECISION_IDEMPOTENCY.md`, `docs/MEMORY_REVIEW_DECISION_BRANCHES.md`, and `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; corrupt logs, quarantine copies, and manifests are written only inside the temp workspace.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No live runtime memory or vector DB writes were added.
+- No UI actions, browser calls, POST forms, or routes were added.
+- Route implementation did not change.
+- No backend command execution from UI was added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_decision_tamper_recovery_smoke.py --json` and inspect the JSON report.

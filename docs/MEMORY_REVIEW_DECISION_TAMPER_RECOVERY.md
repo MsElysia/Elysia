@@ -74,3 +74,22 @@ python scripts/run_memory_review_decision_tamper_recovery_smoke.py --json --base
 The JSON report includes artifact paths under the supplied base directory so an
 operator can inspect the known-good log, the restored log, the quarantined
 corrupt log, the quarantine manifest, and the approved export.
+
+## Review Recovery Audit Trail
+
+Recovery action audit-trail coverage is covered separately by:
+
+```powershell
+python scripts/run_memory_review_recovery_audit_trail_smoke.py --json
+```
+
+That smoke appends every quarantine/recovery step to `recovery_audit.jsonl`,
+verifies the recovery audit log is valid JSONL with required fields and
+chronological events (`corruption_detected`, `quarantine_created`,
+`corrupt_log_preserved`, `manifest_written`, `known_good_resolution_used`,
+`recovery_completed`), and proves recovery still uses known-good data only with
+rejected candidates excluded and edited text preserved. It uses local fixtures
+and temporary workspaces only and does not use live accounts, models,
+embeddings, live runtime memory/vector DB, UI actions, browser calls, POST
+forms, or routes. See
+[`MEMORY_REVIEW_RECOVERY_AUDIT_TRAIL.md`](MEMORY_REVIEW_RECOVERY_AUDIT_TRAIL.md).

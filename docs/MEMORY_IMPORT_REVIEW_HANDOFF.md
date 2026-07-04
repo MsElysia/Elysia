@@ -134,3 +134,20 @@ excluded, and edited text stays preserved. It uses local fixtures and temporary
 workspaces only and does not use live accounts, models, embeddings, live runtime
 memory, vector DB writes, UI actions, browser calls, POST forms, or routes. See
 [`MEMORY_REVIEW_DECISION_TAMPER_RECOVERY.md`](MEMORY_REVIEW_DECISION_TAMPER_RECOVERY.md).
+
+## Review Recovery Audit Trail
+
+Recovery action audit-trail coverage is available through:
+
+```powershell
+python scripts/run_memory_review_recovery_audit_trail_smoke.py --json
+```
+
+That smoke appends every quarantine/recovery step to `recovery_audit.jsonl`,
+verifies the recovery audit log is valid JSONL with required fields and
+chronological events, and proves recovery still uses known-good data only with
+rejected candidates excluded and edited text preserved. It uses local fixtures
+and temporary workspaces only and does not use live accounts, models,
+embeddings, live runtime memory, vector DB writes, UI actions, browser calls,
+POST forms, or routes. See
+[`MEMORY_REVIEW_RECOVERY_AUDIT_TRAIL.md`](MEMORY_REVIEW_RECOVERY_AUDIT_TRAIL.md).

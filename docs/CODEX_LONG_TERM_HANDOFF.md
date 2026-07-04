@@ -791,3 +791,41 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_decision_tamper_recovery_smoke.py --json` and inspect the JSON report.
+
+## Campaign 20 - Memory review recovery audit trail smoke (Cursor)
+
+### Campaign summary
+
+- Campaign name: Dry-run Memory review recovery audit-trail coverage
+- Implemented by Cursor because Codex hit usage limits.
+- Starting clean tag: `memory_review_decision_tamper_recovery_clean_1`
+- Starting HEAD: `e0c6229 feat(local): add memory review decision tamper recovery smoke`
+- Target command: `scripts/run_memory_review_recovery_audit_trail_smoke.py --json`
+
+### Completed work
+
+- Added a dry-run/local recovery audit-trail smoke that builds a valid review decision log, corrupts it, quarantines it, recovers from known-good clean data, and appends every recovery step to `recovery_audit.jsonl`.
+- Reuses the local-only `audit_decision_log` checker from the tamper-evidence smoke by import; no existing local ingestion/review/server/core file was modified.
+- Proved every quarantine/recovery action is written to the recovery audit log with required fields and chronological timestamps.
+- Proved expected recovery events are present: `corruption_detected`, `quarantine_created`, `corrupt_log_preserved`, `manifest_written`, `known_good_resolution_used`, `recovery_completed`.
+- Proved recovery audit entries carry `operator_required=true`, `dry_run=true`, `local_only=true`, `silently_repaired=false`, and `live_memory_written=false`.
+- Proved corruption is detected before quarantine; the corrupt log is preserved byte-for-byte and is never trusted for latest-decision resolution.
+- Proved recovery re-resolves latest decisions from the known-good copy only; rejected candidates stay excluded and edited text stays preserved.
+- Added `project_guardian/tests/test_memory_review_recovery_audit_trail.py`.
+- Added `docs/MEMORY_REVIEW_RECOVERY_AUDIT_TRAIL.md`.
+- Updated `docs/MEMORY_REVIEW_DECISION_TAMPER_RECOVERY.md`, `docs/MEMORY_REVIEW_DECISION_TAMPER_EVIDENCE.md`, `docs/MEMORY_REVIEW_DECISION_AUDIT_TRAIL.md`, `docs/MEMORY_REVIEW_DECISION_IDEMPOTENCY.md`, `docs/MEMORY_REVIEW_DECISION_BRANCHES.md`, and `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; recovery audit logs, quarantine copies, and manifests are written only inside the temp workspace.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No live runtime memory or vector DB writes were added.
+- No UI actions, browser calls, POST forms, or routes were added.
+- Route implementation did not change.
+- No backend command execution from UI was added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_recovery_audit_trail_smoke.py --json` and inspect the JSON report.

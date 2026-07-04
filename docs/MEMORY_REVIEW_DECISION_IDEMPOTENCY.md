@@ -132,3 +132,20 @@ and temporary workspaces only and does not use live accounts, models,
 embeddings, live runtime memory/vector DB, UI actions, browser calls, POST
 forms, or routes. See
 [`MEMORY_REVIEW_RECOVERY_AUDIT_TRAIL.md`](MEMORY_REVIEW_RECOVERY_AUDIT_TRAIL.md).
+
+## Recovery Audit Tamper Evidence
+
+Recovery audit log tamper detection is covered separately by:
+
+```powershell
+python scripts/run_memory_review_recovery_audit_tamper_evidence_smoke.py --json
+```
+
+That smoke proves a local-only audit checker detects corrupted
+`recovery_audit.jsonl` logs (malformed JSON, missing required fields,
+non-chronological timestamps, unsupported recovery event types, unsafe metadata),
+returning `verdict=FAIL` with specific error messages while a clean log still
+passes. It uses local fixtures and temporary workspaces only and does not use
+live accounts, models, embeddings, live runtime memory/vector DB, UI actions,
+browser calls, POST forms, or routes. See
+[`MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_EVIDENCE.md).

@@ -829,3 +829,43 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_recovery_audit_trail_smoke.py --json` and inspect the JSON report.
+
+## Campaign 21 - Memory review recovery audit tamper evidence smoke (Cursor)
+
+### Campaign summary
+
+- Campaign name: Dry-run Memory review recovery audit tamper-evidence coverage
+- Implemented by Cursor because Codex hit usage limits.
+- Starting clean tag: `memory_review_recovery_audit_trail_clean_1`
+- Starting HEAD: `19d9235 feat(local): add memory review recovery audit smoke`
+- Target command: `scripts/run_memory_review_recovery_audit_tamper_evidence_smoke.py --json`
+
+### Completed work
+
+- Added a dry-run/local recovery audit tamper-evidence smoke that runs the existing recovery audit-trail flow to build a valid `recovery_audit.jsonl`, then writes tampered copies inside a temp workspace and runs a self-contained, local-only audit checker (`audit_recovery_log`) against each.
+- Reuses recovery audit constants from the recovery audit-trail smoke by import; no existing local ingestion/review/server/core file was modified.
+- Proved the clean recovery audit log returns `verdict=PASS`.
+- Proved a malformed JSON line fails with a specific error containing `malformed_json`.
+- Proved a missing required field fails with a specific error containing `missing_required_field`.
+- Proved a non-chronological timestamp fails with a specific error containing `non_chronological`.
+- Proved an unsupported recovery event type fails with a specific error containing `unsupported_event` (implemented).
+- Proved unsafe metadata (for example `dry_run=false`) fails with a specific error containing `unsafe_metadata` (implemented).
+- Proved every tampered variant returns `verdict=FAIL` and the clean log still passes afterward.
+- Added `project_guardian/tests/test_memory_review_recovery_audit_tamper_evidence.py`.
+- Added `docs/MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_EVIDENCE.md`.
+- Updated `docs/MEMORY_REVIEW_RECOVERY_AUDIT_TRAIL.md`, `docs/MEMORY_REVIEW_DECISION_TAMPER_RECOVERY.md`, `docs/MEMORY_REVIEW_DECISION_TAMPER_EVIDENCE.md`, `docs/MEMORY_REVIEW_DECISION_AUDIT_TRAIL.md`, `docs/MEMORY_REVIEW_DECISION_IDEMPOTENCY.md`, `docs/MEMORY_REVIEW_DECISION_BRANCHES.md`, and `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; tampered recovery audit logs are written only inside the temp workspace.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No live runtime memory or vector DB writes were added.
+- No UI actions, browser calls, POST forms, or routes were added.
+- Route implementation did not change.
+- No backend command execution from UI was added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_recovery_audit_tamper_evidence_smoke.py --json` and inspect the JSON report.

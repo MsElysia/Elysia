@@ -79,3 +79,20 @@ The JSON report includes artifact paths under the supplied base directory so an
 operator can inspect the recovery audit log, the known-good log, the restored
 log, the quarantined corrupt log, the quarantine manifest, and the approved
 export.
+
+## Recovery Audit Tamper Evidence
+
+Recovery audit log tamper detection is covered separately by:
+
+```powershell
+python scripts/run_memory_review_recovery_audit_tamper_evidence_smoke.py --json
+```
+
+That smoke builds a clean `recovery_audit.jsonl`, then writes tampered copies
+inside a temp workspace (malformed JSON line, missing required field,
+non-chronological timestamp, unsupported recovery event type, unsafe metadata)
+and proves a local-only audit checker returns `verdict=FAIL` with specific error
+messages while the clean log still passes. It uses local fixtures and temporary
+workspaces only and does not use live accounts, models, embeddings, live runtime
+memory/vector DB, UI actions, browser calls, POST forms, or routes. See
+[`MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_EVIDENCE.md).

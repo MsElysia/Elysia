@@ -79,6 +79,22 @@ operator can inspect the known-good recovery audit log, the restored recovery
 audit log, the quarantined corrupt recovery audit log, and the quarantine
 manifest.
 
+## Recovery Inspection Bundle
+
+Operator inspection bundle coverage is available separately by:
+
+```powershell
+python scripts/run_memory_review_recovery_inspection_bundle_smoke.py --json
+```
+
+That smoke runs the tamper-recovery flow and writes a
+`recovery_inspection_bundle/` directory with an inspection summary (paths,
+recovered event sequence, SHA-256 hashes, and safety metadata). It uses local
+fixtures and temporary workspaces only and does not use live accounts, models,
+embeddings, live runtime memory, vector DB writes, UI actions, browser calls,
+POST forms, or routes. See
+[`MEMORY_REVIEW_RECOVERY_INSPECTION_BUNDLE.md`](MEMORY_REVIEW_RECOVERY_INSPECTION_BUNDLE.md).
+
 ## Recovery Audit Tamper Evidence
 
 Recovery audit log tamper detection is covered separately by:

@@ -909,3 +909,41 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_recovery_audit_tamper_recovery_smoke.py --json` and inspect the JSON report.
+
+## Campaign 23 - Memory review recovery inspection bundle smoke (Cursor)
+
+### Campaign summary
+
+- Campaign name: Dry-run Memory review recovery inspection bundle coverage
+- Implemented by Cursor because Codex hit usage limits.
+- Starting clean tag: `memory_review_recovery_audit_tamper_recovery_clean_1`
+- Starting HEAD: `fd7bba6 feat(local): add memory recovery audit tamper recovery smoke`
+- Target command: `scripts/run_memory_review_recovery_inspection_bundle_smoke.py --json`
+
+### Completed work
+
+- Added a dry-run/local recovery inspection bundle smoke that runs the existing recovery-audit tamper-recovery flow, then writes a `recovery_inspection_bundle/` directory with an operator-readable inspection summary and Markdown README.
+- Reuses `run_memory_review_recovery_audit_tamper_recovery_smoke` by import; no existing local ingestion/review/server/core file was modified.
+- Proved the bundle directory and inspection summary are created inside the temp workspace.
+- Proved the summary includes quarantine manifest path, quarantined corrupt log path, known-good recovery audit path, and recovered event sequence.
+- Proved SHA-256 hashes are included for corrupt log, known-good copy, and quarantine manifest and match the artifact files.
+- Proved corrupt log preservation, known-good resolution, and recovered event sequence match known-good state.
+- Proved summary confirms `dry_run=true`, `local_only=true`, `silently_repaired=false`, and `operator_required=true`.
+- Added `project_guardian/tests/test_memory_review_recovery_inspection_bundle.py`.
+- Added `docs/MEMORY_REVIEW_RECOVERY_INSPECTION_BUNDLE.md`.
+- Updated `docs/MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_RECOVERY.md`, `docs/MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_EVIDENCE.md`, `docs/MEMORY_REVIEW_RECOVERY_AUDIT_TRAIL.md`, `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; inspection bundle files are written only inside the temp workspace.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No live runtime memory or vector DB writes were added.
+- No UI actions, browser calls, POST forms, or routes were added.
+- Route implementation did not change.
+- No backend command execution from UI was added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_recovery_inspection_bundle_smoke.py --json` and inspect the JSON report.

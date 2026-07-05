@@ -869,3 +869,43 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_recovery_audit_tamper_evidence_smoke.py --json` and inspect the JSON report.
+
+## Campaign 22 - Memory review recovery audit tamper recovery smoke (Cursor)
+
+### Campaign summary
+
+- Campaign name: Dry-run Memory review recovery audit tamper-recovery coverage
+- Implemented by Cursor because Codex hit usage limits.
+- Starting clean tag: `memory_review_recovery_audit_tamper_evidence_clean_1`
+- Starting HEAD: `a37d9ca feat(local): add memory recovery audit tamper smoke`
+- Target command: `scripts/run_memory_review_recovery_audit_tamper_recovery_smoke.py --json`
+
+### Completed work
+
+- Added a dry-run/local recovery audit tamper-recovery smoke that runs the existing recovery audit-trail flow to build a valid `recovery_audit.jsonl`, saves a known-good copy, corrupts the working log (malformed JSON plus unsafe metadata), detects corruption, quarantines the corrupt log with a manifest, and re-resolves recovery audit state from the known-good copy only.
+- Reuses `audit_recovery_log` from the recovery audit tamper-evidence smoke and recovery audit constants from the recovery audit-trail smoke by import; no existing local ingestion/review/server/core file was modified.
+- Proved the clean recovery audit log returns `verdict=PASS`.
+- Proved the corrupted recovery audit log returns `verdict=FAIL` before recovery.
+- Proved corruption is detected before quarantine.
+- Proved the corrupt recovery audit log is preserved byte-for-byte in quarantine.
+- Proved a quarantine manifest is written with original/quarantine/known-good paths, error types, and safety metadata (`dry_run=true`, `local_only=true`, `silently_repaired=false`, `operator_required=true`).
+- Proved recovery audit state is re-resolved from known-good data only and recovered events match the pre-corruption state.
+- Proved the corrupt recovery audit log is not trusted for recovery validation.
+- Added `project_guardian/tests/test_memory_review_recovery_audit_tamper_recovery.py`.
+- Added `docs/MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_RECOVERY.md`.
+- Updated `docs/MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_EVIDENCE.md`, `docs/MEMORY_REVIEW_RECOVERY_AUDIT_TRAIL.md`, `docs/MEMORY_REVIEW_DECISION_TAMPER_RECOVERY.md`, `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; corrupt recovery audit logs, quarantine copies, and manifests are written only inside the temp workspace.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No live runtime memory or vector DB writes were added.
+- No UI actions, browser calls, POST forms, or routes were added.
+- Route implementation did not change.
+- No backend command execution from UI was added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_recovery_audit_tamper_recovery_smoke.py --json` and inspect the JSON report.

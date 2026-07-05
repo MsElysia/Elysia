@@ -110,3 +110,21 @@ passes. It uses local fixtures and temporary workspaces only and does not use
 live accounts, models, embeddings, live runtime memory/vector DB, UI actions,
 browser calls, POST forms, or routes. See
 [`MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_EVIDENCE.md).
+
+## Recovery Audit Tamper Recovery
+
+Safe recovery/quarantine after a corrupted recovery audit log is detected is
+covered separately by:
+
+```powershell
+python scripts/run_memory_review_recovery_audit_tamper_recovery_smoke.py --json
+```
+
+That smoke builds a clean `recovery_audit.jsonl` and a known-good copy, corrupts
+the working log, detects the corruption, quarantines the corrupt log (preserved,
+not repaired) with a manifest, and re-resolves recovery audit state from the
+known-good copy only. It proves the corrupt recovery audit log is never trusted
+and no silent repair occurs. It uses local fixtures and temporary workspaces
+only and does not use live accounts, models, embeddings, live runtime memory,
+vector DB writes, UI actions, browser calls, POST forms, or routes. See
+[`MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_RECOVERY.md`](MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_RECOVERY.md).

@@ -982,3 +982,36 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_recovery_inspection_bundle_smoke.py --json` and inspect detected error types in the JSON report.
+
+## Campaign 25 - Memory review recovery inspection workspace reset (Cursor)
+
+- Campaign name: Dry-run Memory review recovery inspection stale-workspace rerun handling
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `6343bbc feat(local): surface recovery inspection error types`
+- Starting clean tag: `memory_review_recovery_inspection_error_types_clean_1`
+- Final clean tag: `memory_review_recovery_inspection_workspace_reset_clean_1`
+
+### What changed
+
+- Added `--reset-workspace` to the recovery inspection bundle smoke for explicit operator rerun on a kept `--base-dir`.
+- Detect stale kept workspaces and return clear guidance instead of unsafe automatic deletion.
+- Reset removes only known generated dry-run artifacts under the supplied base directory (`source/`, `dest/`, `known_good/`, `quarantine/`, `recovery_inspection_bundle/`, `recovery_audit.jsonl`).
+- JSON report now includes `stale_workspace_detected`, `workspace_reset_performed`, `workspace_reset_paths`, and `workspace_reset_safe`.
+- Updated `scripts/run_memory_review_recovery_inspection_bundle_smoke.py`.
+- Updated `project_guardian/tests/test_memory_review_recovery_inspection_bundle.py`.
+- Updated `docs/MEMORY_REVIEW_RECOVERY_INSPECTION_BUNDLE.md`, `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Reset is explicit operator action only; no automatic deletion on stale detection.
+- Reset refuses unsafe base directories (repo root, home, drive root, empty path).
+- Reset does not delete arbitrary files, repo source files, live memory paths, vector DB paths, or account data.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No live runtime memory or vector DB writes were added.
+- No UI actions, browser calls, POST forms, or routes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can rerun with `python scripts/run_memory_review_recovery_inspection_bundle_smoke.py --json --base-dir .\tmp\recovery-inspection-rerun --keep-temp --reset-workspace`.

@@ -17,6 +17,37 @@ tamper-recovery flow, then writes a `recovery_inspection_bundle/` directory
 with an operator-readable inspection summary and optional Markdown README. The
 temporary workspace is removed unless `--keep-temp` or `--base-dir` is used.
 
+## Stale workspace rerun
+
+Re-running against the same kept `--base-dir` can fail when prior dry-run review
+state remains in the workspace. The smoke detects this stale state and returns a
+clear operator message instead of deleting anything automatically:
+
+```powershell
+python scripts/run_memory_review_recovery_inspection_bundle_smoke.py --json --base-dir .\tmp\recovery-inspection-rerun --keep-temp
+```
+
+To rerun safely on the same base directory, pass an explicit reset flag. Reset
+removes only the known generated dry-run artifacts under the supplied base
+directory (`source/`, `dest/`, `known_good/`, `quarantine/`,
+`recovery_inspection_bundle/`, and `recovery_audit.jsonl`). It never deletes
+arbitrary files, repo source files, live memory paths, vector DB paths, or
+account data:
+
+```powershell
+python scripts/run_memory_review_recovery_inspection_bundle_smoke.py --json --base-dir .\tmp\recovery-inspection-rerun --keep-temp --reset-workspace
+```
+
+`--reset-workspace` requires `--base-dir` and refuses unsafe paths such as the
+repository root, home directory, drive root, or empty path.
+
+Reset JSON fields:
+
+- `stale_workspace_detected`
+- `workspace_reset_performed`
+- `workspace_reset_paths`
+- `workspace_reset_safe`
+
 Recovery inspection bundle coverage:
 
 - Runs the existing recovery-audit tamper-recovery flow in a temp workspace.

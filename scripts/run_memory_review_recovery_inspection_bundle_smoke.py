@@ -34,6 +34,17 @@ from run_memory_review_recovery_audit_tamper_recovery_smoke import (  # noqa: E4
 BUNDLE_DIRNAME = "recovery_inspection_bundle"
 SUMMARY_FILENAME = "inspection_summary.json"
 README_FILENAME = "README.md"
+RECOVERY_AUDIT_FILENAME = "recovery_audit.jsonl"
+
+# Relative paths created by the inspection-bundle dry-run chain only.
+_GENERATED_WORKSPACE_ENTRIES: tuple[str, ...] = (
+    "source",
+    "dest",
+    "known_good",
+    "quarantine",
+    BUNDLE_DIRNAME,
+    RECOVERY_AUDIT_FILENAME,
+)
 
 
 @dataclass
@@ -41,6 +52,13 @@ class InspectionBundleReport:
     verdict: str
     workspace: str
     workspace_preserved: bool
+    base_dir: str = ""
+    keep_temp: bool = False
+    reset_workspace: bool = False
+    stale_workspace_detected: bool = False
+    workspace_reset_performed: bool = False
+    workspace_reset_paths: List[str] = field(default_factory=list)
+    workspace_reset_safe: bool = True
     bundle_path: str = ""
     inspection_summary_path: str = ""
     inspection_summary_valid_json: bool = False
@@ -85,6 +103,8 @@ def _read_autonomy_enabled() -> bool:
 
 
 def _reject_dangerous_base(base_dir: Path) -> Path:
+    if not str(base_dir).strip():
+        raise ValueError("Refusing to use empty smoke workspace path.")
     resolved = base_dir.expanduser().resolve()
     repo_root = _repo_root()
     home = Path.home().resolve()
@@ -122,6 +142,43 @@ def _path_inside_workspace(path: Path, workspace: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _known_generated_paths(workspace: Path) -> List[Path]:
+    return [workspace / name for name in _GENERATED_WORKSPACE_ENTRIES]
+
+
+def _workspace_has_generated_artifacts(workspace: Path) -> bool:
+    return any(path.exists() for path in _known_generated_paths(workspace))
+
+
+def _stale_workspace_guidance(workspace: Path) -> str:
+    return (
+        "Stale dry-run workspace detected at "
+        f"{workspace.resolve()}. Prior inspection-bundle artifacts remain from "
+        "an earlier run. Re-run with --reset-workspace to remove only the known "
+        "generated dry-run artifacts under this base directory, or choose a fresh "
+        "--base-dir path. No files were deleted automatically."
+    )
+
+
+def _reset_generated_workspace_artifacts(workspace: Path) -> tuple[bool, List[str], bool]:
+    """Remove only known generated dry-run artifacts inside the supplied workspace."""
+    reset_paths: List[str] = []
+    for artifact_path in _known_generated_paths(workspace):
+        if not artifact_path.exists():
+            continue
+        resolved = artifact_path.resolve()
+        if not _path_inside_workspace(resolved, workspace):
+            raise ValueError(
+                f"Refusing unsafe workspace reset outside base directory: {resolved}"
+            )
+        if artifact_path.is_dir():
+            shutil.rmtree(artifact_path)
+        else:
+            artifact_path.unlink()
+        reset_paths.append(str(resolved))
+    return bool(reset_paths), reset_paths, True
 
 
 def _write_readme(bundle_dir: Path, summary: Dict[str, Any]) -> Path:
@@ -386,22 +443,95 @@ def run_memory_review_recovery_inspection_bundle_smoke(
     *,
     base_dir: Path | None = None,
     keep_temp: bool = False,
+    reset_workspace: bool = False,
 ) -> InspectionBundleReport:
     """Build a dry-run operator inspection bundle after recovery-audit tamper-recovery."""
     owned_temp = base_dir is None
+    if reset_workspace and owned_temp:
+        return InspectionBundleReport(
+            verdict="FAIL",
+            workspace="",
+            workspace_preserved=False,
+            keep_temp=keep_temp,
+            reset_workspace=True,
+            workspace_reset_safe=False,
+            autonomy_enabled=_read_autonomy_enabled(),
+            errors=["--reset-workspace requires an explicit --base-dir workspace."],
+        )
+
     workspace = (
         Path(tempfile.mkdtemp(prefix="elysia_memory_recovery_inspection_bundle_"))
         if owned_temp
         else _reject_dangerous_base(Path(base_dir))
     )
     workspace.mkdir(parents=True, exist_ok=True)
-    try:
-        report = _build_inspection_bundle(workspace)
-        report.workspace_preserved = (not owned_temp) or keep_temp
+
+    report = InspectionBundleReport(
+        verdict="FAIL",
+        workspace=str(workspace.resolve()),
+        workspace_preserved=(not owned_temp) or keep_temp,
+        base_dir=str(workspace.resolve()) if not owned_temp else "",
+        keep_temp=keep_temp,
+        reset_workspace=reset_workspace,
+        autonomy_enabled=_read_autonomy_enabled(),
+    )
+    if report.autonomy_enabled:
+        report.errors.append("Autonomy is enabled; recovery inspection bundle smoke is blocked.")
         return report
-    finally:
+
+    stale_workspace = _workspace_has_generated_artifacts(workspace)
+    report.stale_workspace_detected = stale_workspace
+
+    if stale_workspace and reset_workspace:
+        try:
+            performed, reset_paths, reset_safe = _reset_generated_workspace_artifacts(workspace)
+        except ValueError as exc:
+            report.workspace_reset_safe = False
+            report.errors.append(str(exc))
+            return report
+        report.workspace_reset_performed = performed
+        report.workspace_reset_paths = reset_paths
+        report.workspace_reset_safe = reset_safe
+        stale_workspace = _workspace_has_generated_artifacts(workspace)
+        report.stale_workspace_detected = stale_workspace
+    elif stale_workspace:
+        report.errors.append(_stale_workspace_guidance(workspace))
+        return report
+
+    try:
+        built = _build_inspection_bundle(workspace)
+    except Exception as exc:  # noqa: BLE001 - convert stale fixture failures to operator guidance
+        message = str(exc)
+        if "already has final decision" in message or "MemoryCandidateReviewError" in message:
+            report.stale_workspace_detected = True
+            report.errors.append(_stale_workspace_guidance(workspace))
+            if message not in report.errors:
+                report.errors.append(message)
+        else:
+            report.errors.append(message)
         if owned_temp and not keep_temp:
             shutil.rmtree(workspace, ignore_errors=True)
+        return report
+
+    preserved_reset = (
+        report.workspace_reset_performed,
+        list(report.workspace_reset_paths),
+        report.workspace_reset_safe,
+    )
+    for field_name in built.__dataclass_fields__:
+        setattr(report, field_name, getattr(built, field_name))
+    report.base_dir = str(workspace.resolve()) if not owned_temp else ""
+    report.keep_temp = keep_temp
+    report.reset_workspace = reset_workspace
+    report.stale_workspace_detected = stale_workspace
+    report.workspace_preserved = (not owned_temp) or keep_temp
+    report.workspace_reset_performed = preserved_reset[0]
+    report.workspace_reset_paths = preserved_reset[1]
+    report.workspace_reset_safe = preserved_reset[2]
+
+    if owned_temp and not keep_temp:
+        shutil.rmtree(workspace, ignore_errors=True)
+    return report
 
 
 def format_operator_summary(report: InspectionBundleReport) -> str:
@@ -411,6 +541,12 @@ def format_operator_summary(report: InspectionBundleReport) -> str:
         f"Verdict: {report.verdict}",
         f"Workspace: {report.workspace}",
         f"Workspace preserved: {report.workspace_preserved}",
+        f"Base dir: {report.base_dir or '(temp)'}",
+        f"Keep temp: {report.keep_temp}",
+        f"Reset workspace: {report.reset_workspace}",
+        f"Stale workspace detected: {report.stale_workspace_detected}",
+        f"Workspace reset performed: {report.workspace_reset_performed}",
+        f"Workspace reset safe: {report.workspace_reset_safe}",
         f"Bundle path: {report.bundle_path}",
         f"Inspection summary: {report.inspection_summary_path}",
         "",
@@ -461,12 +597,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Preserve an automatically-created temporary workspace.",
     )
+    parser.add_argument(
+        "--reset-workspace",
+        action="store_true",
+        help=(
+            "With --base-dir, remove only known generated dry-run artifacts inside "
+            "the supplied workspace before re-running."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
         report = run_memory_review_recovery_inspection_bundle_smoke(
             base_dir=args.base_dir,
             keep_temp=args.keep_temp,
+            reset_workspace=args.reset_workspace,
         )
     except ValueError as exc:
         report = InspectionBundleReport(

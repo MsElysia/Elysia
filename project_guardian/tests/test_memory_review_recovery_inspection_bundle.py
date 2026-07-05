@@ -22,6 +22,16 @@ def _run_script(*args: str) -> dict:
     return json.loads(result.stdout)
 
 
+def _run_script_exit(*args: str) -> tuple[int, dict]:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--json", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, json.loads(result.stdout)
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     digest.update(path.read_bytes())
@@ -67,6 +77,13 @@ def test_inspection_bundle_json_contract_fields_present():
     required_fields = {
         "verdict",
         "workspace",
+        "base_dir",
+        "keep_temp",
+        "reset_workspace",
+        "stale_workspace_detected",
+        "workspace_reset_performed",
+        "workspace_reset_paths",
+        "workspace_reset_safe",
         "bundle_path",
         "inspection_summary_path",
         "inspection_summary_valid_json",
@@ -193,3 +210,84 @@ def test_inspection_bundle_script_refuses_repository_root_workspace():
     payload = json.loads(result.stdout)
     assert payload["verdict"] == "FAIL"
     assert "repository root" in payload["errors"][0]
+
+
+def test_reset_workspace_requires_base_dir():
+    exit_code, payload = _run_script_exit("--reset-workspace")
+    assert exit_code == 1
+    assert payload["verdict"] == "FAIL"
+    assert payload["reset_workspace"] is True
+    assert payload["workspace_reset_safe"] is False
+    assert "requires an explicit --base-dir" in payload["errors"][0]
+
+
+def test_stale_workspace_without_reset_fails_with_guidance(tmp_path):
+    base_dir = tmp_path / "recovery-inspection-stale"
+    first = _run_script("--base-dir", str(base_dir), "--keep-temp")
+    assert first["verdict"] == "PASS"
+
+    exit_code, second = _run_script_exit("--base-dir", str(base_dir), "--keep-temp")
+    assert exit_code == 1
+    assert second["verdict"] == "FAIL"
+    assert second["stale_workspace_detected"] is True
+    assert second["workspace_reset_performed"] is False
+    assert any("Stale dry-run workspace detected" in error for error in second["errors"])
+    assert any("--reset-workspace" in error for error in second["errors"])
+
+
+def test_stale_workspace_reset_rerun_passes(tmp_path):
+    base_dir = tmp_path / "recovery-inspection-reset"
+    first = _run_script("--base-dir", str(base_dir), "--keep-temp")
+    assert first["verdict"] == "PASS"
+
+    exit_code, stale = _run_script_exit("--base-dir", str(base_dir), "--keep-temp")
+    assert exit_code == 1
+    assert stale["stale_workspace_detected"] is True
+
+    reset = _run_script(
+        "--base-dir",
+        str(base_dir),
+        "--keep-temp",
+        "--reset-workspace",
+    )
+    assert reset["verdict"] == "PASS"
+    assert reset["reset_workspace"] is True
+    assert reset["workspace_reset_performed"] is True
+    assert reset["workspace_reset_safe"] is True
+    assert reset["workspace_reset_paths"]
+    assert reset["detected_error_types_present"] is True
+    assert reset["detected_error_types_match_manifest"] is True
+    assert reset["hashes_match_files"] is True
+    assert reset["recovered_events_match_known_good"] is True
+    _assert_safety_flags_false(reset)
+
+    workspace = base_dir.resolve()
+    for reset_path in reset["workspace_reset_paths"]:
+        assert Path(reset_path).resolve().is_relative_to(workspace)
+
+
+def test_reset_only_removes_known_generated_artifacts(tmp_path):
+    base_dir = tmp_path / "recovery-inspection-selective-reset"
+    marker = base_dir / "operator_marker.txt"
+    _run_script("--base-dir", str(base_dir), "--keep-temp")
+    marker.write_text("keep-me\n", encoding="utf-8")
+
+    reset = _run_script(
+        "--base-dir",
+        str(base_dir),
+        "--keep-temp",
+        "--reset-workspace",
+    )
+    assert reset["verdict"] == "PASS"
+    assert reset["workspace_reset_performed"] is True
+    assert marker.is_file()
+    assert marker.read_text(encoding="utf-8") == "keep-me\n"
+    assert (base_dir / "recovery_inspection_bundle").is_dir()
+
+
+def test_reset_does_not_touch_repo_source_files(tmp_path):
+    core_path = REPO_ROOT / "project_guardian" / "core.py"
+    before = core_path.read_text(encoding="utf-8")
+    base_dir = tmp_path / "recovery-inspection-repo-safe"
+    _run_script("--base-dir", str(base_dir), "--keep-temp", "--reset-workspace")
+    assert core_path.read_text(encoding="utf-8") == before

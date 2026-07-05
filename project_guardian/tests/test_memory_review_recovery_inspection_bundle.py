@@ -44,6 +44,9 @@ def test_inspection_bundle_smoke_json_cli_passes():
     assert payload["bundle_path"]
     assert payload["inspection_summary_path"]
     assert payload["inspection_summary_valid_json"] is True
+    assert payload["detected_error_types_present"] is True
+    assert payload["detected_error_type_count"] > 0
+    assert payload["detected_error_types_match_manifest"] is True
     assert payload["bundle_paths_inside_workspace"] is True
     assert payload["hashes_present"] is True
     assert payload["hashes_match_files"] is True
@@ -67,6 +70,9 @@ def test_inspection_bundle_json_contract_fields_present():
         "bundle_path",
         "inspection_summary_path",
         "inspection_summary_valid_json",
+        "detected_error_types_present",
+        "detected_error_type_count",
+        "detected_error_types_match_manifest",
         "bundle_paths_inside_workspace",
         "hashes_present",
         "hashes_match_files",
@@ -120,10 +126,17 @@ def test_inspection_bundle_preserved_workspace_artifacts(tmp_path):
         path.relative_to(workspace)
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    manifest = json.loads(quarantine_manifest.read_text(encoding="utf-8"))
     assert summary["quarantine_manifest_path"] == str(quarantine_manifest.resolve())
     assert summary["quarantined_corrupt_log_path"] == str(quarantined_corrupt.resolve())
     assert summary["known_good_recovery_audit_path"] == str(known_good.resolve())
     assert summary["recovered_event_sequence"]
+    assert summary["detected_error_types"]
+    assert summary["detected_error_type_count"] == len(summary["detected_error_types"])
+    assert summary["detected_error_types_match_manifest"] is True
+    assert summary["detected_error_types"] == manifest["detected_error_types"]
+    assert "malformed_json" in summary["detected_error_types"]
+    assert "unsafe_metadata" in summary["detected_error_types"]
     assert summary["corrupt_log_sha256"] == _sha256_file(quarantined_corrupt)
     assert summary["known_good_recovery_audit_sha256"] == _sha256_file(known_good)
     assert summary["quarantine_manifest_sha256"] == _sha256_file(quarantine_manifest)

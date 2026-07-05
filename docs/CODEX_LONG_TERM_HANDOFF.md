@@ -947,3 +947,38 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_recovery_inspection_bundle_smoke.py --json` and inspect the JSON report.
+
+## Campaign 24 - Memory review recovery inspection error types (Cursor)
+
+### Campaign summary
+
+- Campaign name: Dry-run Memory review recovery inspection error-type summary
+- Implemented by Cursor because Codex hit usage limits.
+- Starting clean tag: `memory_review_recovery_inspection_bundle_clean_1`
+- Starting HEAD: `ec027e8 feat(local): add memory recovery inspection bundle smoke`
+- Target command: `scripts/run_memory_review_recovery_inspection_bundle_smoke.py --json`
+
+### Completed work
+
+- Updated the recovery inspection bundle smoke so `inspection_summary.json` directly includes `detected_error_types`, `detected_error_type_count`, and `detected_error_types_match_manifest` copied from the quarantine manifest.
+- Proved error types are loaded from the manifest, not hardcoded.
+- Proved the summary error-type count matches the manifest list length.
+- Proved operators can triage corruption from the summary without opening the manifest.
+- Preserved existing paths, hashes, recovered event sequence, and safety metadata fields.
+- Updated `project_guardian/tests/test_memory_review_recovery_inspection_bundle.py`.
+- Updated `docs/MEMORY_REVIEW_RECOVERY_INSPECTION_BUNDLE.md`, `docs/MEMORY_REVIEW_RECOVERY_AUDIT_TAMPER_RECOVERY.md`, `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; inspection bundle files are written only inside the temp workspace.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No live runtime memory or vector DB writes were added.
+- No UI actions, browser calls, POST forms, or routes were added.
+- Route implementation did not change.
+- No backend command execution from UI was added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_recovery_inspection_bundle_smoke.py --json` and inspect detected error types in the JSON report.

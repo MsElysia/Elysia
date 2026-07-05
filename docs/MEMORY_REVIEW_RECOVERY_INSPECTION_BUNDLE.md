@@ -22,9 +22,13 @@ Recovery inspection bundle coverage:
 - Runs the existing recovery-audit tamper-recovery flow in a temp workspace.
 - Creates `recovery_inspection_bundle/inspection_summary.json` with paths to the
   quarantine manifest, quarantined corrupt log, known-good recovery audit copy,
-  and recovered event sequence.
+  recovered event sequence, and detected error types copied from the quarantine
+  manifest (`detected_error_types`, `detected_error_type_count`,
+  `detected_error_types_match_manifest`).
 - Includes SHA-256 hashes for the corrupt log, known-good copy, and quarantine
   manifest; hashes are verified against the artifact files.
+- Surfaces quarantine manifest `detected_error_types` directly in the summary so
+  operators can triage corruption without opening the manifest file.
 - Confirms the corrupt log was preserved and known-good resolution was used.
 - Confirms recovered event sequence matches the known-good pre-corruption state.
 - Confirms `dry_run=true`, `local_only=true`, `silently_repaired=false`, and

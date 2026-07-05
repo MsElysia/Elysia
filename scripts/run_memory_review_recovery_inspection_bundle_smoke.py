@@ -44,6 +44,9 @@ class InspectionBundleReport:
     bundle_path: str = ""
     inspection_summary_path: str = ""
     inspection_summary_valid_json: bool = False
+    detected_error_types_present: bool = False
+    detected_error_type_count: int = 0
+    detected_error_types_match_manifest: bool = False
     bundle_paths_inside_workspace: bool = False
     hashes_present: bool = False
     hashes_match_files: bool = False
@@ -142,6 +145,17 @@ def _write_readme(bundle_dir: Path, summary: Dict[str, Any]) -> Path:
     lines.extend(
         [
             "",
+            "## Detected error types",
+            "",
+            f"- Count: `{summary.get('detected_error_type_count', 0)}`",
+            f"- Match manifest: `{summary.get('detected_error_types_match_manifest')}`",
+        ]
+    )
+    for error_type in summary.get("detected_error_types") or []:
+        lines.append(f"- `{error_type}`")
+    lines.extend(
+        [
+            "",
             "## SHA-256 hashes",
             "",
             f"- Corrupt log: `{summary.get('corrupt_log_sha256', '')}`",
@@ -202,6 +216,12 @@ def _build_inspection_bundle(workspace: Path) -> InspectionBundleReport:
     known_good_hash = _sha256_file(known_good_path)
     manifest_hash = _sha256_file(quarantine_manifest_path)
 
+    manifest_payload = json.loads(quarantine_manifest_path.read_text(encoding="utf-8"))
+    manifest_error_types = list(manifest_payload.get("detected_error_types") or [])
+    detected_error_types = list(manifest_error_types)
+    detected_error_type_count = len(detected_error_types)
+    detected_error_types_match_manifest = detected_error_types == manifest_error_types
+
     inspection_notes = [
         "Dry-run/local recovery inspection bundle.",
         "Corrupt recovery audit log preserved byte-for-byte in quarantine.",
@@ -217,6 +237,9 @@ def _build_inspection_bundle(workspace: Path) -> InspectionBundleReport:
         "quarantined_corrupt_log_path": str(quarantined_corrupt_log_path.resolve()),
         "known_good_recovery_audit_path": str(known_good_path.resolve()),
         "recovered_event_sequence": recovered_events,
+        "detected_error_types": detected_error_types,
+        "detected_error_type_count": detected_error_type_count,
+        "detected_error_types_match_manifest": detected_error_types_match_manifest,
         "corrupt_log_sha256": corrupt_hash,
         "known_good_recovery_audit_sha256": known_good_hash,
         "quarantine_manifest_sha256": manifest_hash,
@@ -248,9 +271,16 @@ def _build_inspection_bundle(workspace: Path) -> InspectionBundleReport:
     try:
         loaded = json.loads(summary_path.read_text(encoding="utf-8"))
         report.inspection_summary_valid_json = isinstance(loaded, dict)
+        summary = loaded
     except json.JSONDecodeError:
         report.inspection_summary_valid_json = False
         errors.append("Inspection summary is not valid JSON.")
+
+    report.detected_error_types_present = bool(summary.get("detected_error_types"))
+    report.detected_error_type_count = int(summary.get("detected_error_type_count") or 0)
+    report.detected_error_types_match_manifest = bool(
+        summary.get("detected_error_types_match_manifest")
+    )
 
     path_checks = (
         bundle_dir,
@@ -303,6 +333,16 @@ def _build_inspection_bundle(workspace: Path) -> InspectionBundleReport:
         errors.append("Inspection summary was not created.")
     if not report.inspection_summary_valid_json:
         errors.append("Inspection summary is not valid JSON.")
+    if not report.detected_error_types_present:
+        errors.append("Inspection summary is missing detected_error_types.")
+    if report.detected_error_type_count <= 0:
+        errors.append("Inspection summary detected_error_type_count is not positive.")
+    if summary.get("detected_error_type_count") != len(summary.get("detected_error_types") or []):
+        errors.append("Inspection summary detected_error_type_count does not match error types.")
+    if not report.detected_error_types_match_manifest:
+        errors.append("Inspection summary detected_error_types do not match manifest.")
+    if summary.get("detected_error_types") != manifest_error_types:
+        errors.append("Inspection summary error types were not copied from manifest.")
     if not report.bundle_paths_inside_workspace:
         errors.append("One or more bundle paths are outside the temp workspace.")
     if not report.hashes_present:
@@ -376,6 +416,9 @@ def format_operator_summary(report: InspectionBundleReport) -> str:
         "",
         "Bundle checks:",
         f"  summary valid JSON: {report.inspection_summary_valid_json}",
+        f"  detected error types present: {report.detected_error_types_present}",
+        f"  detected error type count: {report.detected_error_type_count}",
+        f"  detected error types match manifest: {report.detected_error_types_match_manifest}",
         f"  paths inside workspace: {report.bundle_paths_inside_workspace}",
         f"  hashes present: {report.hashes_present}",
         f"  hashes match files: {report.hashes_match_files}",

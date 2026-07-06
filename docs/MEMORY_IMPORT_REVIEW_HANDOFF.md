@@ -206,3 +206,21 @@ fixtures and temporary workspaces only and does not use live accounts, models,
 embeddings, live runtime memory, vector DB writes, UI actions, browser calls,
 POST forms, or routes. See
 [`MEMORY_REVIEW_RECOVERY_INSPECTION_BUNDLE.md`](MEMORY_REVIEW_RECOVERY_INSPECTION_BUNDLE.md).
+
+## Approved Promotion Bundle
+
+Operator approved-promotion bundle coverage is available through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_bundle_smoke.py --json
+```
+
+That smoke stages local fixture candidates, runs approve/edit/reject review
+decisions, and writes an `approved_promotion_bundle/` directory with a promotion
+manifest listing approved and edited candidates ready for future promotion.
+Rejected candidates are excluded. Edited candidates preserve both original and
+edited text with review decision links and SHA-256 hashes. It uses local
+fixtures and temporary workspaces only and does not use live accounts, models,
+embeddings, live runtime memory, vector DB writes, UI actions, browser calls,
+POST forms, or routes. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_BUNDLE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_BUNDLE.md).

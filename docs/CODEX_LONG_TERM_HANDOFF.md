@@ -1015,3 +1015,33 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can rerun with `python scripts/run_memory_review_recovery_inspection_bundle_smoke.py --json --base-dir .\tmp\recovery-inspection-rerun --keep-temp --reset-workspace`.
+
+## Campaign 26 - Memory review approved promotion bundle (Cursor)
+
+- Campaign name: Dry-run Memory review approved promotion bundle coverage
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `6729f72 feat(local): add recovery inspection workspace reset`
+- Starting clean tag: `memory_review_recovery_inspection_workspace_reset_clean_1`
+- Final clean tag: `memory_review_approved_promotion_bundle_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_bundle_smoke.py` to package approved and edited review candidates into `approved_promotion_bundle/promotion_manifest.json`.
+- Proved rejected candidates are excluded with explicit counts.
+- Proved edited candidates preserve both original and promoted text with review decision links and SHA-256 hashes.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_bundle.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_BUNDLE.md`.
+- Updated `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md` and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; bundle files are written only inside the temp workspace.
+- Does not write live runtime memory or vector DB data.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No UI actions, browser calls, POST forms, or routes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_bundle_smoke.py --json` and inspect promotion items in the JSON report.

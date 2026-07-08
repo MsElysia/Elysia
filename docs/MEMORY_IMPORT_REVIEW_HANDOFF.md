@@ -224,3 +224,22 @@ fixtures and temporary workspaces only and does not use live accounts, models,
 embeddings, live runtime memory, vector DB writes, UI actions, browser calls,
 POST forms, or routes. See
 [`MEMORY_REVIEW_APPROVED_PROMOTION_BUNDLE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_BUNDLE.md).
+
+## Approved Promotion Tamper Evidence
+
+Approved-promotion manifest tamper detection is available through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_tamper_evidence_smoke.py --json
+```
+
+That smoke builds a clean approved-promotion bundle, verifies the clean
+`promotion_manifest.json`, then writes tampered manifest copies for malformed
+JSON, missing manifest fields, missing promotion item fields, promoted/candidate
+hash mismatches, rejected candidate inclusion, count mismatch, unsafe metadata,
+and manifest hash mismatch. Each tampered copy must return `verdict=FAIL` with
+a specific error token while the clean manifest continues to pass. It uses local
+fixtures and temporary workspaces only and does not use live accounts, models,
+embeddings, live runtime memory, vector DB writes, UI actions, browser calls,
+POST forms, or routes. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_TAMPER_EVIDENCE.md).

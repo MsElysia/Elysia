@@ -83,3 +83,16 @@ python scripts/run_memory_review_recovery_inspection_bundle_smoke.py --json
 ```
 
 See [`MEMORY_REVIEW_RECOVERY_INSPECTION_BUNDLE.md`](MEMORY_REVIEW_RECOVERY_INSPECTION_BUNDLE.md).
+
+Approved-promotion tamper evidence coverage:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_tamper_evidence_smoke.py --json
+```
+
+That smoke verifies a clean `promotion_manifest.json` passes and tampered copies
+fail with specific error tokens for malformed JSON, missing manifest fields,
+missing promotion item fields, promoted/candidate hash mismatches, rejected
+candidate inclusion, count mismatch, unsafe metadata, and manifest hash
+mismatch. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_TAMPER_EVIDENCE.md).

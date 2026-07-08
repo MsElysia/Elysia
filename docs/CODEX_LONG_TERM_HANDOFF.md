@@ -1045,3 +1045,34 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_approved_promotion_bundle_smoke.py --json` and inspect promotion items in the JSON report.
+
+## Campaign 27 - Memory review approved promotion tamper evidence (Codex)
+
+- Campaign name: Dry-run Memory review approved promotion tamper-evidence coverage
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `d9df6c8 feat(local): add memory approved promotion bundle smoke`
+- Starting clean tag: `memory_review_approved_promotion_bundle_clean_1`
+- Target clean tag: `memory_review_approved_promotion_tamper_evidence_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_tamper_evidence_smoke.py`.
+- Added a local-only promotion manifest checker that validates required manifest fields, required promotion item fields, promoted text hashes, candidate hashes, rejected-candidate exclusion, promotion item count, safety metadata, and the promotion manifest hash.
+- Proves tampered copies fail with specific tokens for `malformed_json`, `missing_required_manifest_field`, `missing_required_promotion_item_field`, `promoted_text_hash_mismatch`, `candidate_hash_mismatch`, `rejected_candidate_included`, `promotion_item_count_mismatch`, `unsafe_metadata`, and `manifest_hash_mismatch`.
+- Proves the clean approved-promotion manifest still passes after tamper checks.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_tamper_evidence.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_TAMPER_EVIDENCE.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_BUNDLE.md`, `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; tampered manifest files are written only inside the temp workspace.
+- Does not write live runtime memory or vector DB data.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No UI actions, browser calls, POST forms, or routes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_tamper_evidence_smoke.py --json` and inspect clean and tampered manifest paths in the JSON report.

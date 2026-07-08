@@ -96,3 +96,16 @@ missing promotion item fields, promoted/candidate hash mismatches, rejected
 candidate inclusion, count mismatch, unsafe metadata, and manifest hash
 mismatch. See
 [`MEMORY_REVIEW_APPROVED_PROMOTION_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_TAMPER_EVIDENCE.md).
+
+Approved-promotion operator handoff coverage:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_operator_handoff_smoke.py --json
+```
+
+That smoke runs after a clean bundle and tamper-evidence `PASS`, then writes an
+operator handoff package containing approved and edited promotion items,
+rejected-exclusion counts, the promotion manifest path and hash, the
+tamper-evidence result, and an operator checklist. The handoff is ready for
+operator review only and remains blocked from live memory writes. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md`](MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md).

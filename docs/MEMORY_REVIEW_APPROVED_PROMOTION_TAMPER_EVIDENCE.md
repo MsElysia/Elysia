@@ -62,3 +62,22 @@ python scripts/run_memory_review_approved_promotion_tamper_evidence_smoke.py --j
 
 The JSON report includes paths to the clean manifest, clean bundle artifacts,
 and each tampered manifest under the supplied base directory.
+
+## Operator handoff
+
+Approved-promotion operator handoff coverage is available through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_operator_handoff_smoke.py --json
+```
+
+That smoke runs only after a clean promotion bundle and tamper-evidence `PASS`.
+It writes an operator handoff package with approved and edited promotion items,
+rejected items excluded, the promotion manifest path and hash, the
+tamper-evidence result, and an operator checklist. The handoff is ready for
+operator review only, is not ready for live memory write, and requires explicit
+operator approval for any future live promotion. It does not implement live
+memory writes, write vector DB data, call models or embeddings, use live
+accounts, add UI actions, or add routes. `elysia/api/server.py`,
+`project_guardian/core.py`, and `config/autonomy.json` remain untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md`](MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md).

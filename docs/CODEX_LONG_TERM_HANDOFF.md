@@ -1076,3 +1076,35 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_approved_promotion_tamper_evidence_smoke.py --json` and inspect clean and tampered manifest paths in the JSON report.
+
+## Campaign 28 - Memory review approved promotion operator handoff (Codex)
+
+- Campaign name: Dry-run Memory review approved-promotion operator handoff
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `dd224e3 feat(local): add memory approved promotion tamper evidence smoke`
+- Starting clean tag: `memory_review_approved_promotion_tamper_evidence_clean_1`
+- Target clean tag: `memory_review_approved_promotion_operator_handoff_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_operator_handoff_smoke.py`.
+- Builds a clean approved-promotion bundle, validates the clean promotion manifest, runs approved-promotion tamper-evidence coverage, then writes `approved_promotion_operator_handoff/operator_handoff.json`.
+- Writes `approved_promotion_operator_handoff/OPERATOR_CHECKLIST.md` with a SHA-256 hash and a small README.
+- Handoff includes approved and edited promotion items, rejected-exclusion count, promotion manifest path/hash, tamper-evidence verdict, and explicit future approval requirements.
+- Marks the handoff ready for operator review only, not ready for live memory write, and keeps future live write blocked.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_operator_handoff.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_TAMPER_EVIDENCE.md`, `docs/MEMORY_REVIEW_APPROVED_PROMOTION_BUNDLE.md`, `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; operator handoff files are written only inside the temp workspace.
+- Does not write live runtime memory or vector DB data.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No UI actions, browser calls, POST forms, or routes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_operator_handoff_smoke.py --json --base-dir .\tmp\approved-promotion-operator-handoff --keep-temp` and inspect the handoff JSON/checklist.

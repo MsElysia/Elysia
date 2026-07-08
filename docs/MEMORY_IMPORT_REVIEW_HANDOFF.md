@@ -243,3 +243,25 @@ fixtures and temporary workspaces only and does not use live accounts, models,
 embeddings, live runtime memory, vector DB writes, UI actions, browser calls,
 POST forms, or routes. See
 [`MEMORY_REVIEW_APPROVED_PROMOTION_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_TAMPER_EVIDENCE.md).
+
+## Approved Promotion Operator Handoff
+
+Approved-promotion operator handoff coverage is available through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_operator_handoff_smoke.py --json
+```
+
+That smoke runs only after a clean approved-promotion bundle and
+tamper-evidence `PASS`. It writes an operator handoff directory with
+`operator_handoff.json`, `OPERATOR_CHECKLIST.md`, and a small README. The
+handoff includes approved and edited promotion items, keeps rejected items
+excluded, includes the promotion manifest path and hash, includes the
+tamper-evidence result, and creates an operator checklist with a SHA-256 hash.
+It is ready for operator review only, is not ready for live memory write, and
+requires explicit operator approval for any future live promotion. This campaign
+does not implement live memory writes, does not write vector DB data, does not
+call models or embeddings, does not use live accounts, and does not add UI
+actions or routes. `elysia/api/server.py`, `project_guardian/core.py`, and
+`config/autonomy.json` remain untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md`](MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md).

@@ -1108,3 +1108,47 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_approved_promotion_operator_handoff_smoke.py --json --base-dir .\tmp\approved-promotion-operator-handoff --keep-temp` and inspect the handoff JSON/checklist.
+
+## Campaign 29 - Memory review approved promotion operator approval gate (Codex)
+
+- Campaign name: Dry-run Memory review approved-promotion explicit operator approval gate
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `eb2e0ff feat(local): add memory approved promotion operator handoff smoke`
+- Starting clean tag: `memory_review_approved_promotion_operator_handoff_clean_1`
+- Target clean tag: `memory_review_approved_promotion_operator_approval_gate_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_operator_approval_gate_smoke.py`.
+- Builds the existing approved-promotion operator handoff, computes the current
+  `operator_handoff.json` SHA-256 hash, and writes
+  `approved_promotion_operator_approval_gate/operator_approval_gate.json`.
+- Writes `approved_promotion_operator_approval_gate/APPROVAL_GATE_README.md`
+  documenting the dry-run approval phrase
+  `APPROVE_DRY_RUN_MEMORY_PROMOTION_STAGING_ONLY`.
+- Proves the handoff defaults to blocked and missing approval fails closed.
+- Proves invalid approval tokens fail closed.
+- Proves mismatched handoff hashes fail closed.
+- Proves stale or mismatched handoff ids fail closed.
+- Proves a valid explicit approval passes only for dry-run staging.
+- Proves valid approval still does not allow live runtime memory writing or
+  vector DB writing.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_operator_approval_gate.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVAL_GATE.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md`,
+  `docs/MEMORY_REVIEW_APPROVED_PROMOTION_TAMPER_EVIDENCE.md`,
+  `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; approval-gate files are
+  written only inside the temp workspace.
+- Does not write live runtime memory or vector DB data.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No UI actions, browser calls, POST forms, or routes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_operator_approval_gate_smoke.py --json --base-dir .\tmp\approved-promotion-operator-approval-gate --keep-temp` and inspect the approval gate JSON/readme and local approval artifact.

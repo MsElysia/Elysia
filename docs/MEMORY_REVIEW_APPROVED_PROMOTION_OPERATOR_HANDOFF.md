@@ -69,3 +69,22 @@ Then inspect:
 
 - `tmp\approved-promotion-operator-handoff\approved_promotion_operator_handoff\operator_handoff.json`
 - `tmp\approved-promotion-operator-handoff\approved_promotion_operator_handoff\OPERATOR_CHECKLIST.md`
+
+## Explicit approval gate
+
+The next dry-run gate is available through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_operator_approval_gate_smoke.py --json
+```
+
+That smoke keeps the handoff blocked by default and requires an explicit local
+approval artifact tied to the current `operator_handoff.json` hash. Missing
+approval, invalid approval tokens, mismatched handoff hashes, and stale handoff
+ids fail closed. The documented token is
+`APPROVE_DRY_RUN_MEMORY_PROMOTION_STAGING_ONLY`, and a valid token allows
+dry-run staging only. It does not allow live memory writing, does not write
+vector DB data, does not call models or embeddings, does not use live accounts,
+and does not add UI actions or routes. `elysia/api/server.py`,
+`project_guardian/core.py`, and `config/autonomy.json` remain untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVAL_GATE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVAL_GATE.md).

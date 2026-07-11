@@ -81,3 +81,23 @@ memory writes, write vector DB data, call models or embeddings, use live
 accounts, add UI actions, or add routes. `elysia/api/server.py`,
 `project_guardian/core.py`, and `config/autonomy.json` remain untouched. See
 [`MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md`](MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md).
+
+## Operator approval gate
+
+Approved-promotion explicit operator approval gate coverage is available
+through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_operator_approval_gate_smoke.py --json
+```
+
+That smoke runs after the handoff package exists and proves the default state is
+blocked until a local approval artifact uses the documented
+`APPROVE_DRY_RUN_MEMORY_PROMOTION_STAGING_ONLY` token and references the current
+handoff hash. Missing approval, invalid tokens, mismatched hashes, and stale
+handoff ids fail closed. A valid approval allows dry-run staging only and still
+keeps live runtime memory writes and vector DB writes blocked. It does not call
+models or embeddings, does not use live accounts, does not add UI actions or
+routes, and leaves `elysia/api/server.py`, `project_guardian/core.py`, and
+`config/autonomy.json` untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVAL_GATE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVAL_GATE.md).

@@ -1152,3 +1152,49 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_approved_promotion_operator_approval_gate_smoke.py --json --base-dir .\tmp\approved-promotion-operator-approval-gate --keep-temp` and inspect the approval gate JSON/readme and local approval artifact.
+
+## Campaign 30 - Memory review approved promotion operator-approved staging (Codex)
+
+- Campaign name: Dry-run Memory review approved-promotion operator-approved staging package
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `f8ce76f feat(local): add memory approved promotion approval gate smoke`
+- Starting clean tag: `memory_review_approved_promotion_operator_approval_gate_clean_1`
+- Target clean tag: `memory_review_approved_promotion_operator_approved_staging_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_operator_approved_staging_smoke.py`.
+- Builds the existing approved-promotion bundle, tamper-evidence checks, operator
+  handoff, and approval gate, then writes
+  `approved_promotion_operator_approved_staging/operator_approved_staging_manifest.json`.
+- Writes `approved_promotion_operator_approved_staging/STAGING_README.md`
+  documenting the dry-run approval phrase
+  `APPROVE_DRY_RUN_MEMORY_PROMOTION_STAGING_ONLY`.
+- Staging only happens after a valid handoff and valid explicit operator approval.
+- Missing or invalid approval fails closed and does not create a PASS staging
+  manifest.
+- Valid approval allows dry-run staging only.
+- Staging includes approved and edited promotion items, preserves edited
+  promoted text, and keeps rejected items excluded.
+- Staging records promotion, handoff, and approval-gate SHA-256 hashes.
+- Marks staging ready for operator-approved dry-run staging only, not ready for
+  live memory write, and keeps future live write blocked.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_operator_approved_staging.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVED_STAGING.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVAL_GATE.md`,
+  `docs/MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md`,
+  `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; staging files are written
+  only inside the temp workspace.
+- Does not write live runtime memory or vector DB data.
+- No live account access was added or used.
+- No model calls were added or used.
+- No embedding calls were added or used.
+- No UI actions, browser calls, POST forms, or routes were added.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_operator_approved_staging_smoke.py --json --base-dir .\tmp\approved-promotion-operator-approved-staging --keep-temp` and inspect the staging manifest and README.

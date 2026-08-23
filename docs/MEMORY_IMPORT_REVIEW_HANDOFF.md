@@ -286,3 +286,25 @@ write, vector DB write, model calls, embedding calls, live account access, UI
 actions, POST forms, browser calls, or routes. `elysia/api/server.py`,
 `project_guardian/core.py`, and `config/autonomy.json` remain untouched. See
 [`MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVAL_GATE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVAL_GATE.md).
+
+## Approved Promotion Operator-Approved Staging
+
+Approved-promotion operator-approved dry-run staging coverage is available
+through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_operator_approved_staging_smoke.py --json
+```
+
+That smoke creates a staging package only after a valid operator handoff and a
+valid explicit operator approval. Missing or invalid approval fails closed. A
+valid approval allows dry-run staging only. Staging includes approved and
+edited promotion items, keeps rejected items excluded, and records promotion,
+handoff, and approval-gate hashes plus the documented token
+`APPROVE_DRY_RUN_MEMORY_PROMOTION_STAGING_ONLY`. Staging is not live memory
+write readiness. Live memory writing is not implemented or enabled. Vector DB
+writing is not implemented or enabled. This campaign does not call models, does
+not call embeddings, does not use live accounts, and does not add UI actions or
+routes. `elysia/api/server.py`, `project_guardian/core.py`, and
+`config/autonomy.json` remain untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVED_STAGING.md`](MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVED_STAGING.md).

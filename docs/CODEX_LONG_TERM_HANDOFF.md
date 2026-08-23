@@ -1318,3 +1318,41 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_approved_promotion_live_write_blockade_tamper_evidence_smoke.py --json --base-dir .\tmp\ap-live-write-blockade-tamper --keep-temp` and inspect the clean report plus each tampered copy.
+
+## Campaign 34 - Memory review approved promotion final readiness packet (Cursor)
+
+- Campaign name: Dry-run Memory review approved-promotion final readiness packet
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `0f55553 feat(local): add approved promotion live write blockade tamper evidence smoke`
+- Starting clean tag: `memory_review_approved_promotion_live_write_blockade_tamper_evidence_clean_1`
+- Target clean tag: `memory_review_approved_promotion_final_readiness_packet_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_final_readiness_packet_smoke.py`.
+- Builds the current valid dry-run safety chain and writes one operator packet
+  with staged items, approval proof, source hashes, safety-chain PASS status,
+  live-write blocked reasons, and operator next steps.
+- The packet is dry-run only. Live memory writing remains blocked. Vector DB
+  writing remains blocked. No live memory/vector write path is implemented.
+  Future live write requires a separate explicit milestone.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_final_readiness_packet.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_BLOCKADE_TAMPER_EVIDENCE.md`,
+  `docs/MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_BLOCKADE.md`,
+  `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; packet files are written
+  only inside the temp workspace.
+- Live memory writing is not implemented or enabled.
+- Vector DB writing is not implemented or enabled.
+- This campaign does not call models.
+- This campaign does not call embeddings.
+- This campaign does not use live accounts.
+- This campaign does not add UI actions or routes.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_final_readiness_packet_smoke.py --json --base-dir .\tmp\ap-final-readiness --keep-temp` and inspect the packet JSON and README.

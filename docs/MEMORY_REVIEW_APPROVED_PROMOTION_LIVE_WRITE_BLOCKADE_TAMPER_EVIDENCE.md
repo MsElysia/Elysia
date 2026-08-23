@@ -88,3 +88,17 @@ Then inspect:
 
 - the clean live-write blockade report
 - `tmp\ap-live-write-blockade-tamper\tampered_live_write_blockade_reports\`
+
+## Final readiness packet
+
+The final readiness packet exists. It summarizes the approved-promotion safety
+chain. It is dry-run only. Live memory writing remains blocked. Vector DB
+writing remains blocked. No live memory/vector write path is implemented.
+Future live write requires a separate explicit milestone.
+Models/embeddings/accounts/network are not called. `elysia/api/server.py`,
+`project_guardian/core.py`, and `config/autonomy.json` are untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET.md).
+
+```powershell
+python scripts/run_memory_review_approved_promotion_final_readiness_packet_smoke.py --json
+```

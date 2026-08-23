@@ -366,3 +366,19 @@ This campaign does not call models, does not call embeddings, does not use live
 accounts, and does not add UI actions or routes. `elysia/api/server.py`,
 `project_guardian/core.py`, and `config/autonomy.json` remain untouched. See
 [`MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_BLOCKADE_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_BLOCKADE_TAMPER_EVIDENCE.md).
+
+## Approved Promotion Final Readiness Packet
+
+The final readiness packet exists through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_final_readiness_packet_smoke.py --json
+```
+
+That smoke summarizes the approved-promotion safety chain in one operator
+packet. It is dry-run only. Live memory writing remains blocked. Vector DB
+writing remains blocked. No live memory/vector write path is implemented.
+Future live write requires a separate explicit milestone.
+Models/embeddings/accounts/network are not called. `elysia/api/server.py`,
+`project_guardian/core.py`, and `config/autonomy.json` are untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET.md).

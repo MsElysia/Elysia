@@ -1198,3 +1198,41 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_approved_promotion_operator_approved_staging_smoke.py --json --base-dir .\tmp\approved-promotion-operator-approved-staging --keep-temp` and inspect the staging manifest and README.
+
+## Campaign 31 - Memory review approved promotion operator-approved staging tamper evidence (Cursor)
+
+- Campaign name: Dry-run Memory review approved-promotion operator-approved staging tamper evidence
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `03b7666 feat(local): add memory approved promotion approved staging smoke`
+- Starting clean tag: `memory_review_approved_promotion_operator_approved_staging_clean_1`
+- Target clean tag: `memory_review_approved_promotion_operator_approved_staging_tamper_evidence_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_operator_approved_staging_tamper_evidence_smoke.py`.
+- Builds a clean operator-approved staging package, validates it as `PASS`, then
+  writes isolated corrupted staging-manifest copies that must return `FAIL`.
+- Covered failures include malformed JSON, missing required fields, promoted-text
+  hash mismatch, promotion/handoff/approval-gate hash mismatches, rejected
+  inclusion, staging item-count mismatch, unsafe metadata, and live-write
+  unblocked.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_operator_approved_staging_tamper_evidence.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVED_STAGING_TAMPER_EVIDENCE.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVED_STAGING.md`,
+  `docs/MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVAL_GATE.md`,
+  `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; tamper-evidence files are
+  written only inside the temp workspace.
+- Live memory writing is not implemented or enabled.
+- Vector DB writing is not implemented or enabled.
+- This campaign does not call models.
+- This campaign does not call embeddings.
+- This campaign does not use live accounts.
+- This campaign does not add UI actions or routes.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_operator_approved_staging_tamper_evidence_smoke.py --json --base-dir .\tmp\approved-promotion-operator-approved-staging-tamper-evidence --keep-temp` and inspect the clean package plus each tampered manifest.

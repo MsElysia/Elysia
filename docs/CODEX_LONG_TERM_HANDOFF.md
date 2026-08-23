@@ -1356,3 +1356,41 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_approved_promotion_final_readiness_packet_smoke.py --json --base-dir .\tmp\ap-final-readiness --keep-temp` and inspect the packet JSON and README.
+
+## Campaign 35 - Memory review approved promotion final readiness packet tamper evidence (Cursor)
+
+- Campaign name: Dry-run Memory review approved-promotion final readiness packet tamper evidence
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `49f885a feat(local): add approved promotion final readiness packet`
+- Starting clean tag: `memory_review_approved_promotion_final_readiness_packet_clean_1`
+- Target clean tag: `memory_review_approved_promotion_final_readiness_packet_tamper_evidence_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_final_readiness_packet_tamper_evidence_smoke.py`.
+- Builds a clean final readiness packet, validates it as `PASS`, then writes
+  isolated corrupted packet copies that must return `FAIL`.
+- Covered failures include hash mismatches, item edits, rejected inclusion,
+  safety-chain edits, live-write flag changes, missing blocked reasons, missing
+  future milestone requirement, and unsafe metadata.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_final_readiness_packet_tamper_evidence.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET_TAMPER_EVIDENCE.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET.md`,
+  `docs/MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_BLOCKADE_TAMPER_EVIDENCE.md`,
+  `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; tamper-evidence files are
+  written only inside the temp workspace.
+- Live memory writing is not implemented or enabled.
+- Vector DB writing is not implemented or enabled.
+- Future live write requires a separate explicit milestone.
+- This campaign does not call models.
+- This campaign does not call embeddings.
+- This campaign does not use live accounts.
+- This campaign does not add UI actions or routes.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_final_readiness_packet_tamper_evidence_smoke.py --json --base-dir .\tmp\ap-final-readiness-tamper --keep-temp` and inspect the clean packet plus each tampered copy.

@@ -382,3 +382,22 @@ Future live write requires a separate explicit milestone.
 Models/embeddings/accounts/network are not called. `elysia/api/server.py`,
 `project_guardian/core.py`, and `config/autonomy.json` are untouched. See
 [`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET.md).
+
+## Approved Promotion Final Readiness Packet Tamper Evidence
+
+Final readiness packet tamper-evidence exists through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_final_readiness_packet_tamper_evidence_smoke.py --json
+```
+
+A clean final readiness packet validates `PASS`. Corrupted packet copies
+validate `FAIL`. Covered failures include hash mismatches, item edits, rejected
+inclusion, safety-chain edits, live-write flag changes, missing blocked
+reasons, missing future milestone requirement, and unsafe metadata. Live memory
+writing remains blocked. Vector DB writing remains blocked. No live
+memory/vector write path is implemented. Future live write requires a separate
+explicit milestone. Models/embeddings/accounts/network are not called.
+`elysia/api/server.py`, `project_guardian/core.py`, and `config/autonomy.json`
+are untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET_TAMPER_EVIDENCE.md).

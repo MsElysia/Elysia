@@ -81,3 +81,22 @@ Then inspect:
 
 - the clean operator-approved staging package
 - `tmp\approved-promotion-operator-approved-staging-tamper-evidence\tampered_operator_approved_staging_manifests\`
+
+## Live-write blockade
+
+Live-write blockade proof exists through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_live_write_blockade_smoke.py --json
+```
+
+A clean staging package validates as `PASS`. Tamper evidence validates as
+`PASS`. A live memory write request is denied. A vector DB write request is
+denied. No live memory write is attempted. No vector DB write is attempted. No
+runtime memory file is created. No vector DB file is created. Live memory
+writing is not implemented or enabled. Vector DB writing is not implemented or
+enabled. Future live write requires a separate explicit milestone. This campaign
+does not call models, does not call embeddings, does not use live accounts, and
+does not add UI actions or routes. `elysia/api/server.py`,
+`project_guardian/core.py`, and `config/autonomy.json` remain untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_BLOCKADE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_BLOCKADE.md).

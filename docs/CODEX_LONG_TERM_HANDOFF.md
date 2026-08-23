@@ -1279,3 +1279,42 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_approved_promotion_live_write_blockade_smoke.py --json --base-dir .\tmp\ap-live-write-blockade --keep-temp` and inspect the blockade report and README.
+
+## Campaign 33 - Memory review approved promotion live-write blockade tamper evidence (Cursor)
+
+- Campaign name: Dry-run Memory review approved-promotion live-write blockade tamper evidence
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `5588f54 feat(local): add approved promotion live write blockade smoke`
+- Starting clean tag: `memory_review_approved_promotion_live_write_blockade_clean_1`
+- Target clean tag: `memory_review_approved_promotion_live_write_blockade_tamper_evidence_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_live_write_blockade_tamper_evidence_smoke.py`.
+- Builds a clean live-write blockade report, validates it as `PASS`, then writes
+  isolated corrupted report copies that must return `FAIL`.
+- Covered failures include malformed JSON, missing fields, source-staging hash
+  mismatch, live-write allowed/attempted/performed, vector write
+  allowed/attempted/performed, nonzero created-file counts, missing denial
+  reason, future milestone disabled, and unsafe metadata.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_live_write_blockade_tamper_evidence.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_BLOCKADE_TAMPER_EVIDENCE.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_BLOCKADE.md`,
+  `docs/MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVED_STAGING_TAMPER_EVIDENCE.md`,
+  `docs/MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVED_STAGING.md`,
+  `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; tamper-evidence files are
+  written only inside the temp workspace.
+- Live memory writing is not implemented or enabled.
+- Vector DB writing is not implemented or enabled.
+- This campaign does not call models.
+- This campaign does not call embeddings.
+- This campaign does not use live accounts.
+- This campaign does not add UI actions or routes.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_live_write_blockade_tamper_evidence_smoke.py --json --base-dir .\tmp\ap-live-write-blockade-tamper --keep-temp` and inspect the clean report plus each tampered copy.

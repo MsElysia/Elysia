@@ -98,3 +98,18 @@ Then inspect:
 - `tmp\ap-final-acceptance-gate\approved_promotion_final_readiness_operator_acceptance_gate\operator_acceptance_gate.json`
 - `tmp\ap-final-acceptance-gate\approved_promotion_final_readiness_operator_acceptance_gate\OPERATOR_ACCEPTANCE_GATE_README.md`
 - `tmp\ap-final-acceptance-gate\approved_promotion_final_readiness_operator_acceptance_gate\acceptance_cases\`
+
+## Final readiness operator acceptance gate tamper evidence
+
+Final readiness operator acceptance gate tamper-evidence exists. A clean
+acceptance gate report validates `PASS`. Corrupted acceptance gate reports
+validate `FAIL`. Covered failures include phrase changes, hash mismatches,
+missing acceptance case, invalid case marked pass, valid case marked fail,
+live-write authorization, vector-write authorization, future campaign
+requirement removal, and unsafe metadata. Valid acceptance remains
+dry-run-only. Live memory writing remains blocked. Vector DB writing remains
+blocked. No live memory/vector write path is implemented. Future live write
+requires a separate explicit campaign. Models/embeddings/accounts/network are
+not called. `elysia/api/server.py`, `project_guardian/core.py`, and
+`config/autonomy.json` are untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE_TAMPER_EVIDENCE.md).

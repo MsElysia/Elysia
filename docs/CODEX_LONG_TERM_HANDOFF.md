@@ -1435,3 +1435,45 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_approved_promotion_final_readiness_operator_acceptance_gate_smoke.py --json --base-dir .\tmp\ap-final-acceptance-gate --keep-temp` and inspect the gate JSON, README, and fail-closed acceptance cases.
+
+## Campaign 37 - Memory review approved promotion final readiness operator acceptance gate tamper evidence (Cursor)
+
+- Campaign name: Dry-run Memory review approved-promotion final readiness operator acceptance gate tamper evidence
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `acba79f feat(local): add approved promotion final readiness acceptance gate`
+- Starting clean tag: `memory_review_approved_promotion_final_readiness_operator_acceptance_gate_clean_1`
+- Target clean tag: `memory_review_approved_promotion_final_readiness_operator_acceptance_gate_tamper_evidence_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_final_readiness_operator_acceptance_gate_tamper_evidence_smoke.py`.
+- Builds a clean acceptance gate report, validates it as `PASS`, then writes
+  isolated corrupted copies that must return `FAIL`.
+- Covered failures include phrase changes, hash mismatches, missing acceptance
+  case, invalid case marked pass, valid case marked fail, live-write
+  authorization, vector-write authorization, future campaign requirement
+  removal, and unsafe metadata.
+- Valid acceptance remains dry-run-only. Live memory writing remains blocked.
+  Vector DB writing remains blocked. No live memory/vector write path is
+  implemented. Future live write requires a separate explicit campaign.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_final_readiness_operator_acceptance_gate_tamper_evidence.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE_TAMPER_EVIDENCE.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE.md`,
+  `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET_TAMPER_EVIDENCE.md`,
+  `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; tampered copies are
+  written only inside the temp workspace.
+- Live memory writing is not implemented or enabled.
+- Vector DB writing is not implemented or enabled.
+- Future live write still requires a separate explicit campaign.
+- This campaign does not call models.
+- This campaign does not call embeddings.
+- This campaign does not use live accounts.
+- This campaign does not add UI actions or routes.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_final_readiness_operator_acceptance_gate_tamper_evidence_smoke.py --json --base-dir .\tmp\ap-final-acceptance-gate-tamper --keep-temp` and inspect the clean acceptance gate report plus each tampered copy.

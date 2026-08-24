@@ -418,3 +418,23 @@ vector DB writes. Future live write still requires a separate explicit campaign.
 Models/embeddings/accounts/network are not called. `elysia/api/server.py`,
 `project_guardian/core.py`, and `config/autonomy.json` are untouched. See
 [`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE.md).
+
+## Approved Promotion Final Readiness Operator Acceptance Gate Tamper Evidence
+
+Final readiness operator acceptance gate tamper-evidence exists through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_final_readiness_operator_acceptance_gate_tamper_evidence_smoke.py --json
+```
+
+A clean acceptance gate report validates `PASS`. Corrupted acceptance gate
+reports validate `FAIL`. Covered failures include phrase changes, hash
+mismatches, missing acceptance case, invalid case marked pass, valid case
+marked fail, live-write authorization, vector-write authorization, future
+campaign requirement removal, and unsafe metadata. Valid acceptance remains
+dry-run-only. Live memory writing remains blocked. Vector DB writing remains
+blocked. No live memory/vector write path is implemented. Future live write
+requires a separate explicit campaign. Models/embeddings/accounts/network are
+not called. `elysia/api/server.py`, `project_guardian/core.py`, and
+`config/autonomy.json` are untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE_TAMPER_EVIDENCE.md).

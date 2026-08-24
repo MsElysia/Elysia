@@ -1394,3 +1394,44 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_approved_promotion_final_readiness_packet_tamper_evidence_smoke.py --json --base-dir .\tmp\ap-final-readiness-tamper --keep-temp` and inspect the clean packet plus each tampered copy.
+
+## Campaign 36 - Memory review approved promotion final readiness operator acceptance gate (Cursor)
+
+- Campaign name: Dry-run Memory review approved-promotion final readiness operator acceptance gate
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `fbd2193 feat(local): add approved promotion final readiness tamper evidence`
+- Starting clean tag: `memory_review_approved_promotion_final_readiness_packet_tamper_evidence_clean_1`
+- Target clean tag: `memory_review_approved_promotion_final_readiness_operator_acceptance_gate_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_final_readiness_operator_acceptance_gate_smoke.py`.
+- Builds a valid final readiness packet and its tamper evidence, then requires a
+  separate explicit operator acceptance artifact.
+- Missing acceptance fails closed. An invalid acceptance phrase fails closed. A
+  mismatched packet hash fails closed. A mismatched tamper-evidence hash fails
+  closed. Valid acceptance only accepts final dry-run readiness. Valid
+  acceptance does not authorize live memory writes. Valid acceptance does not
+  authorize vector DB writes. Future live write still requires a separate
+  explicit campaign.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_final_readiness_operator_acceptance_gate.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET_TAMPER_EVIDENCE.md`,
+  `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_PACKET.md`,
+  `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; acceptance-gate files are
+  written only inside the temp workspace.
+- Live memory writing is not implemented or enabled.
+- Vector DB writing is not implemented or enabled.
+- Future live write still requires a separate explicit campaign.
+- This campaign does not call models.
+- This campaign does not call embeddings.
+- This campaign does not use live accounts.
+- This campaign does not add UI actions or routes.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_final_readiness_operator_acceptance_gate_smoke.py --json --base-dir .\tmp\ap-final-acceptance-gate --keep-temp` and inspect the gate JSON, README, and fail-closed acceptance cases.

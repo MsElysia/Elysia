@@ -54,3 +54,15 @@ Then inspect:
 
 - the clean final readiness packet
 - `tmp\ap-final-readiness-tamper\tampered_final_readiness_packets\`
+
+## Final readiness operator acceptance gate
+
+The final readiness operator acceptance gate exists. Missing acceptance fails
+closed. An invalid acceptance phrase fails closed. A mismatched packet hash
+fails closed. A mismatched tamper-evidence hash fails closed. Valid acceptance
+only accepts final dry-run readiness. Valid acceptance does not authorize live
+memory writes. Valid acceptance does not authorize vector DB writes. Future live
+write still requires a separate explicit campaign.
+Models/embeddings/accounts/network are not called. `elysia/api/server.py`,
+`project_guardian/core.py`, and `config/autonomy.json` are untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE.md).

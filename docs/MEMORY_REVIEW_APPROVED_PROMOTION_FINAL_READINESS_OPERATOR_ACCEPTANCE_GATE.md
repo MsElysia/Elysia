@@ -113,3 +113,15 @@ requires a separate explicit campaign. Models/embeddings/accounts/network are
 not called. `elysia/api/server.py`, `project_guardian/core.py`, and
 `config/autonomy.json` are untouched. See
 [`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE_TAMPER_EVIDENCE.md).
+
+## Final dry-run acceptance receipt
+
+Final dry-run readiness acceptance receipt exists. It records
+`ACCEPT_FINAL_DRY_RUN_READINESS_PACKET_ONLY`. It accepts dry-run readiness
+only. It does not authorize live memory writes. It does not authorize vector
+DB writes. It does not authorize live-write design. Future live-write design
+requires a separate explicit campaign. Future live-write implementation
+requires a separate explicit campaign after design approval.
+Models/embeddings/accounts/network are not called. `elysia/api/server.py`,
+`project_guardian/core.py`, and `config/autonomy.json` are untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_DRY_RUN_ACCEPTANCE_RECEIPT.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_DRY_RUN_ACCEPTANCE_RECEIPT.md).

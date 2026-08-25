@@ -1518,3 +1518,52 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_approved_promotion_final_dry_run_acceptance_receipt_smoke.py --json --base-dir .\tmp\ap-final-dry-run-acceptance-receipt --keep-temp` and inspect the receipt JSON and README.
+
+## Campaign 39 - Memory review approved promotion final dry-run acceptance receipt tamper evidence (Cursor)
+
+- Campaign name: Dry-run Memory review approved-promotion final dry-run acceptance receipt tamper evidence
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `6f90fd0 feat(local): add approved promotion final dry-run acceptance receipt`
+- Starting clean tag: `memory_review_approved_promotion_final_dry_run_acceptance_receipt_clean_1`
+- Target clean tag: `memory_review_approved_promotion_final_dry_run_acceptance_receipt_tamper_evidence_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_final_dry_run_acceptance_receipt_tamper_evidence_smoke.py`.
+- Builds a valid final dry-run acceptance receipt, validates the clean
+  receipt as PASS, then writes isolated corrupted copies that must FAIL.
+- Final dry-run acceptance receipt tamper evidence exists. A clean receipt
+  validates PASS. Corrupted receipt copies validate FAIL. Covered failures
+  include phrase changes, checkpoint changes, source hash changes, upstream
+  verdict changes, live-write authorization, vector-write authorization,
+  live-write design authorization, future campaign requirement removal,
+  missing blocked reasons, missing next steps, and unsafe metadata.
+- Receipt acceptance remains dry-run-only. Live memory writing remains
+  blocked. Vector DB writing remains blocked. Live-write design remains
+  blocked. Future live-write design requires a separate explicit campaign.
+  Future live-write implementation requires a separate explicit campaign
+  after design approval. Models/embeddings/accounts/network are not called.
+  `elysia/api/server.py`, `project_guardian/core.py`, and
+  `config/autonomy.json` are untouched.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_final_dry_run_acceptance_receipt_tamper_evidence.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_DRY_RUN_ACCEPTANCE_RECEIPT_TAMPER_EVIDENCE.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_DRY_RUN_ACCEPTANCE_RECEIPT.md`,
+  `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_READINESS_OPERATOR_ACCEPTANCE_GATE_TAMPER_EVIDENCE.md`,
+  `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; tampered receipt copies
+  are written only inside the temp workspace.
+- Live memory writing is not implemented or enabled.
+- Vector DB writing is not implemented or enabled.
+- Live-write design remains blocked.
+- Future live-write design still requires a separate explicit campaign.
+- This campaign does not call models.
+- This campaign does not call embeddings.
+- This campaign does not use live accounts.
+- This campaign does not add UI actions or routes.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_final_dry_run_acceptance_receipt_tamper_evidence_smoke.py --json --base-dir .\tmp\ap-final-dry-run-acceptance-receipt-tamper --keep-temp` and inspect the clean receipt plus `tampered_acceptance_receipts/`.

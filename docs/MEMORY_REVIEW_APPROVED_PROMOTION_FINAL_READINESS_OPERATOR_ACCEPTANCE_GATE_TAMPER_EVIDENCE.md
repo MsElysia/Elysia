@@ -70,3 +70,20 @@ requires a separate explicit campaign after design approval.
 Models/embeddings/accounts/network are not called. `elysia/api/server.py`,
 `project_guardian/core.py`, and `config/autonomy.json` are untouched. See
 [`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_DRY_RUN_ACCEPTANCE_RECEIPT.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_DRY_RUN_ACCEPTANCE_RECEIPT.md).
+
+## Final dry-run acceptance receipt tamper evidence
+
+Final dry-run acceptance receipt tamper evidence exists. A clean receipt
+validates PASS. Corrupted receipt copies validate FAIL. Covered failures
+include phrase changes, checkpoint changes, source hash changes, upstream
+verdict changes, live-write authorization, vector-write authorization,
+live-write design authorization, future campaign requirement removal,
+missing blocked reasons, missing next steps, and unsafe metadata. Receipt
+acceptance remains dry-run-only. Live memory writing remains blocked.
+Vector DB writing remains blocked. Live-write design remains blocked.
+Future live-write design requires a separate explicit campaign. Future
+live-write implementation requires a separate explicit campaign after
+design approval. Models/embeddings/accounts/network are not called.
+`elysia/api/server.py`, `project_guardian/core.py`, and
+`config/autonomy.json` are untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_DRY_RUN_ACCEPTANCE_RECEIPT_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_DRY_RUN_ACCEPTANCE_RECEIPT_TAMPER_EVIDENCE.md).

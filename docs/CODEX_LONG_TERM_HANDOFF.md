@@ -1567,3 +1567,62 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 - `project_guardian/core.py` was untouched.
 - `config/autonomy.json` was untouched and remains `enabled=false`.
 - Operators can run `python scripts/run_memory_review_approved_promotion_final_dry_run_acceptance_receipt_tamper_evidence_smoke.py --json --base-dir .\tmp\ap-final-dry-run-acceptance-receipt-tamper --keep-temp` and inspect the clean receipt plus `tampered_acceptance_receipts/`.
+
+## Campaign 40 - Memory review approved promotion live-write design authorization gate (Cursor)
+
+- Campaign name: Dry-run Memory review approved-promotion live-write design authorization gate
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `9c261c0 feat(local): add approved promotion final acceptance receipt tamper evidence`
+- Starting clean tag: `memory_review_approved_promotion_final_dry_run_acceptance_receipt_tamper_evidence_clean_1`
+- Target clean tag: `memory_review_approved_promotion_live_write_design_authorization_gate_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_live_write_design_authorization_gate_smoke.py`.
+- Builds a valid final dry-run acceptance receipt and receipt tamper
+  evidence, then requires a separate local design-only authorization
+  artifact before a future live-write design proposal may start.
+- The live-write design authorization gate exists. It records
+  `AUTHORIZE_LIVE_WRITE_DESIGN_PROPOSAL_ONLY`. It authorizes
+  design-proposal readiness only after verification. It does not
+  authorize live-write implementation. It does not authorize live memory
+  writes. It does not authorize vector DB writes. Future live-write
+  design still requires a separate design-proposal campaign. Future
+  live-write implementation requires a separate explicit campaign after
+  design approval. Models/embeddings/accounts/network are not called.
+  `elysia/api/server.py`, `project_guardian/core.py`, and
+  `config/autonomy.json` are untouched. server.py, core.py, and
+  config/autonomy.json are untouched.
+- `ready_for_future_live_write_design=true` means only that a separate
+  future design-proposal campaign may be started after this gate is
+  verified. It does not mean design is implemented. It does not mean
+  live writes are allowed.
+- Missing, invalid, mismatched, non-PASS, and live-write-claiming
+  authorization artifacts fail closed. The valid phrase authorizes
+  design-proposal readiness only.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_live_write_design_authorization_gate.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_DESIGN_AUTHORIZATION_GATE.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_DRY_RUN_ACCEPTANCE_RECEIPT_TAMPER_EVIDENCE.md`,
+  `docs/MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_DRY_RUN_ACCEPTANCE_RECEIPT.md`,
+  `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; authorization
+  artifacts are written only inside the temp workspace.
+- This campaign does not design the live-write path.
+- This campaign does not implement the live-write path.
+- Live memory writing is not implemented or enabled.
+- Vector DB writing is not implemented or enabled.
+- This campaign does not call models.
+- This campaign does not call embeddings.
+- This campaign does not use live accounts.
+- This campaign does not add UI actions or routes.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_live_write_design_authorization_gate_smoke.py --json --base-dir .\tmp\ap-live-write-design-authorization-gate --keep-temp` and inspect the design gate JSON, README, and `authorization_cases/`.
+
+### Recommended next Cursor task
+
+Verify this design authorization gate checkpoint. Do not start live memory or vector DB writes. Do not implement the live-write path.

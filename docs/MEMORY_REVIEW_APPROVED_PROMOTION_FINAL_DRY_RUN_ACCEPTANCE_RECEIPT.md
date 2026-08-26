@@ -74,3 +74,17 @@ design approval. Models/embeddings/accounts/network are not called.
 `elysia/api/server.py`, `project_guardian/core.py`, and
 `config/autonomy.json` are untouched. See
 [`MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_DRY_RUN_ACCEPTANCE_RECEIPT_TAMPER_EVIDENCE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_FINAL_DRY_RUN_ACCEPTANCE_RECEIPT_TAMPER_EVIDENCE.md).
+
+## Live-write design authorization gate
+
+The live-write design authorization gate exists. It records
+`AUTHORIZE_LIVE_WRITE_DESIGN_PROPOSAL_ONLY`. It authorizes design-proposal
+readiness only after verification. It does not authorize live-write
+implementation. It does not authorize live memory writes. It does not
+authorize vector DB writes. Future live-write design still requires a
+separate design-proposal campaign. Future live-write implementation
+requires a separate explicit campaign after design approval.
+Models/embeddings/accounts/network are not called. `elysia/api/server.py`,
+`project_guardian/core.py`, and `config/autonomy.json` are untouched.
+server.py, core.py, and config/autonomy.json are untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_DESIGN_AUTHORIZATION_GATE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_DESIGN_AUTHORIZATION_GATE.md).

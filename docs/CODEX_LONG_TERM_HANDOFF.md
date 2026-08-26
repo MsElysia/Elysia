@@ -1626,3 +1626,54 @@ as a static prototype, without adding fetch/XHR/API calls to static Memory HTML.
 ### Recommended next Cursor task
 
 Verify this design authorization gate checkpoint. Do not start live memory or vector DB writes. Do not implement the live-write path.
+
+## Campaign 41 - Memory review approved promotion live-write design proposal (Cursor)
+
+- Campaign name: Dry-run Memory review approved-promotion live-write design proposal
+- Branch: `codex/limited-live-activation-wrapper`
+- Starting HEAD: `a5b4f7e feat(local): add approved promotion live write design authorization gate`
+- Starting clean tag: `memory_review_approved_promotion_live_write_design_authorization_gate_clean_1`
+- Target clean tag: `memory_review_approved_promotion_live_write_design_proposal_clean_1`
+
+### What changed
+
+- Added `scripts/run_memory_review_approved_promotion_live_write_design_proposal_smoke.py`.
+- Builds a valid live-write design authorization gate, then records a
+  local design-proposal packet bound to `AUTHORIZE_LIVE_WRITE_DESIGN_PROPOSAL_ONLY`
+  and the verified gate hashes.
+- The live-write design proposal exists. It records a design proposal
+  only. It does not implement the live-write path. It does not authorize
+  live memory writes. It does not authorize vector DB writes. Future
+  live-write implementation requires a separate explicit campaign after
+  design approval. Separate operator approval is still required for live
+  writes. Models/embeddings/accounts/network are not called.
+  `elysia/api/server.py`, `project_guardian/core.py`, and
+  `config/autonomy.json` are untouched.
+- Missing, invalid, mismatched, non-PASS, write-claiming, and
+  implementation-campaign-omitting proposals fail closed. The valid
+  proposal records design constraints only.
+- Added `project_guardian/tests/test_memory_review_approved_promotion_live_write_design_proposal.py`.
+- Added `docs/MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_DESIGN_PROPOSAL.md`.
+- Updated `docs/MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_DESIGN_AUTHORIZATION_GATE.md`,
+  `docs/MEMORY_IMPORT_REVIEW_HANDOFF.md`, and this handoff.
+
+### Safety notes
+
+- Uses local fixtures and temporary workspaces only; proposal artifacts
+  are written only inside the temp workspace.
+- This campaign records a design proposal only.
+- This campaign does not implement the live-write path.
+- Live memory writing is not implemented or enabled.
+- Vector DB writing is not implemented or enabled.
+- This campaign does not call models.
+- This campaign does not call embeddings.
+- This campaign does not use live accounts.
+- This campaign does not add UI actions or routes.
+- `elysia/api/server.py` was untouched.
+- `project_guardian/core.py` was untouched.
+- `config/autonomy.json` was untouched and remains `enabled=false`.
+- Operators can run `python scripts/run_memory_review_approved_promotion_live_write_design_proposal_smoke.py --json --base-dir .\tmp\ap-live-write-design-proposal --keep-temp` and inspect the design proposal JSON, README, and `proposal_cases/`.
+
+### Recommended next Cursor task
+
+Verify this design proposal checkpoint. Do not start live memory or vector DB writes. Do not implement the live-write path.

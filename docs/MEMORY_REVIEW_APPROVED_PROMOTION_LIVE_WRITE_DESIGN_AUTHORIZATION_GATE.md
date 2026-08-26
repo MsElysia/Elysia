@@ -71,3 +71,15 @@ Then inspect:
 - `tmp\ap-live-write-design-authorization-gate\approved_promotion_live_write_design_authorization_gate\live_write_design_authorization_gate.json`
 - `tmp\ap-live-write-design-authorization-gate\approved_promotion_live_write_design_authorization_gate\LIVE_WRITE_DESIGN_AUTHORIZATION_GATE.md`
 - `tmp\ap-live-write-design-authorization-gate\approved_promotion_live_write_design_authorization_gate\authorization_cases\`
+
+## Live-write design proposal
+
+The live-write design proposal exists. It records
+`AUTHORIZE_LIVE_WRITE_DESIGN_PROPOSAL_ONLY`. It records a design proposal
+only. It does not implement the live-write path. It does not authorize live
+memory writes. It does not authorize vector DB writes. Future live-write
+implementation requires a separate explicit campaign after design
+approval. Separate operator approval is still required for live writes.
+Models/embeddings/accounts/network are not called. `elysia/api/server.py`,
+`project_guardian/core.py`, and `config/autonomy.json` are untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_DESIGN_PROPOSAL.md`](MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_DESIGN_PROPOSAL.md).

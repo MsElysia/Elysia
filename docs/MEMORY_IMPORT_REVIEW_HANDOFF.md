@@ -497,3 +497,21 @@ approval. Models/embeddings/accounts/network are not called.
 `config/autonomy.json` are untouched. server.py, core.py, and
 config/autonomy.json are untouched. See
 [`MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_DESIGN_AUTHORIZATION_GATE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_DESIGN_AUTHORIZATION_GATE.md).
+
+## Approved Promotion Live-Write Design Proposal
+
+The live-write design proposal exists through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_live_write_design_proposal_smoke.py --json
+```
+
+It records `AUTHORIZE_LIVE_WRITE_DESIGN_PROPOSAL_ONLY`. It records a
+design proposal only. It does not implement the live-write path. It does
+not authorize live memory writes. It does not authorize vector DB writes.
+Future live-write implementation requires a separate explicit campaign
+after design approval. Separate operator approval is still required for
+live writes. Models/embeddings/accounts/network are not called.
+`elysia/api/server.py`, `project_guardian/core.py`, and
+`config/autonomy.json` are untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_DESIGN_PROPOSAL.md`](MEMORY_REVIEW_APPROVED_PROMOTION_LIVE_WRITE_DESIGN_PROPOSAL.md).

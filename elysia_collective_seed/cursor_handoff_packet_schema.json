@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Elysia Cursor Agent Handoff Packet",
+  "type": "object",
+  "required": [
+    "task_id",
+    "agent_role",
+    "status",
+    "objective",
+    "work_completed",
+    "evidence",
+    "next_recommended_role",
+    "next_task"
+  ],
+  "properties": {
+    "task_id": {"type": "string", "minLength": 1},
+    "parent_task_id": {"type": ["string", "null"]},
+    "agent_role": {"type": "string", "minLength": 1},
+    "status": {"enum": ["complete", "blocked", "partial", "needs_review"]},
+    "objective": {"type": "string", "minLength": 1},
+    "work_completed": {"type": "array", "items": {"type": "string"}},
+    "files_read": {"type": "array", "items": {"type": "string"}, "default": []},
+    "files_changed": {"type": "array", "items": {"type": "string"}, "default": []},
+    "tests_run": {"type": "array", "items": {"type": "string"}, "default": []},
+    "evidence": {"type": "array", "items": {"type": "string"}},
+    "uncertainties": {"type": "array", "items": {"type": "string"}, "default": []},
+    "risks": {"type": "array", "items": {"type": "string"}, "default": []},
+    "decisions": {"type": "array", "items": {"type": "string"}, "default": []},
+    "artifacts": {"type": "array", "items": {"type": "string"}, "default": []},
+    "next_recommended_role": {
+      "enum": [
+        "guardian-archaeologist",
+        "guardian-correspondence-analyst",
+        "guardian-consolidator",
+        "guardian-verifier",
+        "guardian-archivist",
+        "guardian-relay",
+        "human-review",
+        "none"
+      ]
+    },
+    "next_task": {"type": "string"},
+    "next_task_inputs": {"type": "array", "items": {"type": "string"}, "default": []},
+    "human_approval_required": {"type": "boolean", "default": false}
+  },
+  "additionalProperties": false
+}

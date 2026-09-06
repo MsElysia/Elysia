@@ -1,54 +1,68 @@
 # Elysia Collective 0.1 Seed
 
-This directory defines the first bounded multi-agent collective for Project Guardian / Elysia.
-
-## Goals
-- Test whether persistent, specialized agents with shared memory outperform equivalent isolated agents.
-- Preserve provenance and idea lineage.
-- Keep external actions and code deployment behind explicit human approval.
-- Treat Elysia as the synthesis/collective-state function, not an unquestioned central authority.
-- Treat Erebus as an adversarial function that challenges claims without deleting history.
+Experimental design work for a bounded multi-agent collective. This seed layer is intentionally additive and does **not** alter the current Guardian runtime or autonomous deployment behavior.
 
 ## Founding agents
-1. Elysia: synthesis and collective-state interpretation
-2. Erebus: adversarial critique and falsification
-3. Archivist: provenance, memory hygiene, lineage
-4. Explorer: hypothesis generation and cross-domain connections
-5. Researcher: evidence gathering and verification
-6. Engineer: implementation design and sandboxed code proposals
 
-## Memory model
-- Genesis Memory: immutable source material and historical conversations
-- Collective Memory: structured cognitive packets and their lineage
-- Working Memory: temporary per-task scratch context
+- **Elysia** — synthesis and collective-state interpretation
+- **Erebus** — adversarial critique and falsification
+- **Archivist** — provenance, lineage, and memory integrity
+- **Explorer** — hypotheses and unconventional connections
+- **Researcher** — evidence gathering and verification
+- **Engineer** — bounded implementation proposals and sandbox work
 
-## Seed specifications
-- `agent_roles.md`: human-readable founding roles
-- `founding_agent_contracts.json`: machine-readable role, permission, and prohibition contracts; runtime disabled
-- `cognitive_packet_schema.json`: internal knowledge exchange schema
-- `communication_protocol.md`: packet flow, routing modes, consensus separation, protected actions
-- `memory_governance.md`: Genesis/Collective/Working memory rules, lineage, decay, privacy
-- `erebus_review_protocol.md`: mandatory adversarial review and falsification workflow
-- `dream_cycle_spec.md`: collective consolidation passes built to extend Guardian DreamEngine
-- `routing_and_attention.md`: capability routing, attention, diversity, reputation, loop protection
-- `federation_protocol.md`: membrane for collaborating with outside agent networks
-- `federation_packet_schema.json`: transport-neutral external packet format
-- `experiment_metrics.md`: controls, ablations, and measurable collective-intelligence criteria
-- `experiment_ec_001.md`: first controlled collective-vs-single-agent experiment
-- `current_guardian_mapping.md`: preliminary reuse map for existing Guardian components
+## Core artifacts
 
-## Safety boundary
-This seed remains non-runtime until reconciled with the current local Guardian project. It does not enable autonomous deployment, credential use, arbitrary internet actions, public posting, autonomous replication, or unsupervised self-modification.
+- `agent_roles.md` — founding role definitions
+- `agent_prompt_pack.py` — machine-readable, runtime-disabled founding prompts
+- `cognitive_packet_schema.json` — common cognitive packet format
+- `communication_protocol.md` — packet flow and communication rules
+- `memory_governance.md` — Genesis / Collective / Working memory rules
+- `erebus_review_protocol.md` — adversarial review workflow
+- `dream_cycle_spec.md` — collective consolidation/dream cycle
+- `routing_attention_spec.md` — routing, attention, diversity, reputation, loop controls
+- `federation_protocol.md` / `federation_packet_schema.json` — outside-agent membrane
+- `experiment_ec_001.md` / `experiment_metrics.md` — first collective-vs-control experiment
+- `current_guardian_mapping.md` — preliminary reuse map to existing Guardian systems
 
-Current Guardian safety policy denying autonomous deployment should remain authoritative during Collective experiments.
+## Governance and continuity
 
-## Integration gate
-Before wiring the seed into runtime:
-1. reconcile the user's local Guardian ZIP against the GitHub baseline;
-2. identify which existing memory, dream, consensus, agent, mutation, browser, and lineage implementations are current and actually wired;
-3. protect local credentials/private data from commits;
-4. build the smallest adapter needed for EC-001;
-5. run control and collective trials before enabling adaptive routing or federation writes.
+- `constitution_integration_gate.md` — preserves the historical AI Constitution/Covenant as the governance authority; no replacement constitution is created here
+- `constitution_clause_mapping_schema.json` — traceable mapping from verified constitutional clauses to machine rules
+- `collective_state_model.md` — continuity/identity model across agent and model turnover
+- `collective_dashboard_state_schema.json` — machine-readable state for a future collective dashboard
 
-## Current status
-The founding social architecture, packet language, memory constitution, adversarial review, dream-cycle design, routing model, federation membrane, metrics, and EC-001 are specified. Runtime wiring is intentionally deferred until local/GitHub reconciliation.
+## Historical memory / Genesis
+
+- `genesis_archive/README.md` — Genesis archive rules
+- `genesis_archive/recovered_timeline_2024_2026.md` — explicitly non-authoritative recovered-summary chronology
+- `genesis_archive/constitution_recovery_index.md` — locator clues for recovering the original Constitution/Covenant and amendment history
+- `chat_history_ingestion_spec.md` — provenance-preserving ChatGPT history pipeline design
+- `genesis_extraction_record_schema.json` — structured decision/concept/implementation extraction records
+
+## Capability evolution
+
+- `capability_intake_protocol.md` — discovery → verification → proposal → sandbox → adoption lifecycle
+- `capability_candidate_schema.json` — machine-readable capability candidates
+- `pre_zip_gap_audit.md` — known GitHub-baseline gaps and traps to verify against the local Guardian ZIP
+
+## Experimental branch above this seed
+
+`elysia-collective-dryrun` contains no-network/no-model deterministic tooling including:
+- packet-flow dry-run harness;
+- lineage/routing tests;
+- static AST boot-path analyzer and tests;
+- EC-001 collective-lift evaluator and tests.
+
+## Non-negotiable pre-integration gates
+
+1. **DO NOT MERGE TO MAIN** until the user's local Guardian ZIP is reconciled against the GitHub baseline.
+2. Do not enable runtime agents from this seed.
+3. Do not enable autonomous deployment, external posting, credential access, unrestricted browsing, or autonomous replication.
+4. The original AI Constitution/Covenant must be recovered as a verified Genesis source before reconstructed summaries are used for constitutional governance.
+5. Prefer extending tested existing Guardian systems over creating parallel replacements.
+6. File existence is not proof of capability. Legacy/generated/stub modules must be distinguished from operational boot paths.
+
+## Next integration milestone
+
+After ZIP reconciliation, identify the smallest adapter needed to run EC-001 using the actual current Guardian memory, consensus, dream, agent, capability, and safety infrastructure while preserving human approval boundaries.

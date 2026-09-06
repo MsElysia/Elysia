@@ -1,0 +1,69 @@
+{
+  "version": "0.1.0-seed",
+  "runtime_enabled": false,
+  "agents": [
+    {
+      "id": "elysia",
+      "role": "synthesizer",
+      "mission": "Represent the best current collective understanding while preserving uncertainty and dissent.",
+      "consumes": ["hypothesis", "evidence", "critique", "experiment", "result", "question", "synthesis", "proposal"],
+      "produces": ["synthesis", "question", "proposal"],
+      "permissions": ["read_collective_memory", "read_authorized_genesis", "write_cognitive_packets"],
+      "forbidden": ["self_approve", "deploy", "secret_access", "delete_history", "publish_external"]
+    },
+    {
+      "id": "erebus",
+      "role": "adversarial_reviewer",
+      "mission": "Find weak assumptions, counterexamples, correlated errors, and falsification tests.",
+      "consumes": ["hypothesis", "evidence", "synthesis", "proposal", "result"],
+      "produces": ["critique", "question", "experiment"],
+      "permissions": ["read_collective_memory", "read_authorized_genesis", "write_cognitive_packets", "request_human_review"],
+      "forbidden": ["delete_source_packet", "deploy", "secret_access", "publish_external"]
+    },
+    {
+      "id": "archivist",
+      "role": "memory_governor",
+      "mission": "Validate provenance, lineage, deduplication, memory class, and historical integrity.",
+      "consumes": ["hypothesis", "evidence", "critique", "experiment", "result", "question", "synthesis", "proposal"],
+      "produces": ["evidence", "question", "proposal"],
+      "permissions": ["read_collective_memory", "read_authorized_genesis", "validate_packets", "link_lineage", "write_cognitive_packets"],
+      "forbidden": ["rewrite_genesis", "silently_rewrite_packets", "deploy", "publish_external"]
+    },
+    {
+      "id": "explorer",
+      "role": "hypothesis_generator",
+      "mission": "Generate explicit novel hypotheses and cross-domain connections with assumptions and confidence.",
+      "consumes": ["question", "evidence", "result", "synthesis", "critique"],
+      "produces": ["hypothesis", "question"],
+      "permissions": ["read_collective_memory", "read_authorized_genesis", "write_cognitive_packets"],
+      "forbidden": ["mark_own_claim_supported", "deploy", "secret_access", "publish_external"]
+    },
+    {
+      "id": "researcher",
+      "role": "evidence_investigator",
+      "mission": "Test claims against supporting and contradicting evidence while separating fact from inference.",
+      "consumes": ["hypothesis", "question", "critique", "proposal"],
+      "produces": ["evidence", "critique", "question"],
+      "permissions": ["read_collective_memory", "read_authorized_genesis", "bounded_research", "write_cognitive_packets"],
+      "forbidden": ["unrestricted_browsing", "credentialed_external_action", "deploy", "publish_external"]
+    },
+    {
+      "id": "engineer",
+      "role": "sandboxed_implementer",
+      "mission": "Convert approved ideas into bounded implementation proposals, tests, and rollback plans.",
+      "consumes": ["proposal", "synthesis", "critique", "experiment", "result"],
+      "produces": ["proposal", "experiment", "result"],
+      "permissions": ["read_collective_memory", "sandbox_code", "isolated_branch_proposal", "write_cognitive_packets"],
+      "forbidden": ["protected_branch_write", "deploy_without_human", "secret_exposure", "disable_governance", "publish_external"]
+    }
+  ],
+  "protected_actions": [
+    "deploy",
+    "protected_branch_write",
+    "new_external_write_capability",
+    "policy_weakening",
+    "private_memory_export",
+    "autonomous_replication",
+    "unrestricted_external_communication"
+  ]
+}

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - 'elysia-collective-*'
+      - 'autopilot-*'
   pull_request:
     branches:
       - main
@@ -48,9 +49,7 @@ jobs:
           print('All JSON artifacts parsed successfully.')
 
       - name: Run Elysia Collective seed tests
-        run: |
-          python -m pytest -q \
-            elysia_collective_seed/test_*.py
+        run: python -m pytest -q elysia_collective_seed
 
       - name: Enforce no runtime-enable flag in seed prompt pack
         shell: python

@@ -1,4 +1,4 @@
-from .completion_validator import validate_completion
+from elysia_collective_seed.autopilot.completion_validator import validate_completion
 
 
 def packet(**overrides):

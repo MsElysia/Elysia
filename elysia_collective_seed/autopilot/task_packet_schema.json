@@ -10,6 +10,7 @@
     "status": {"enum": ["queued", "claimed", "running", "review", "blocked", "completed", "rejected", "archived"]},
     "task_class": {"enum": ["research", "archaeology", "analysis", "design", "implementation", "test", "review", "documentation", "integration", "migration", "security", "governance", "other"]},
     "risk_class": {"enum": ["read_only", "sandbox_write", "repo_write", "external_write", "deployment", "sensitive_data", "privileged"]},
+    "required_capabilities": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "default": []},
     "preferred_worker": {"type": ["string", "null"]},
     "allowed_workers": {"type": "array", "items": {"type": "string"}, "default": []},
     "dependencies": {"type": "array", "items": {"type": "string"}, "default": []},

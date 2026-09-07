@@ -1,0 +1,70 @@
+{
+  "task_id": "ELY-TASK-000001",
+  "worker": {
+    "provider": "chatgpt",
+    "role": "autopilot-supervisor",
+    "model": null,
+    "run_id": null
+  },
+  "outcome": "completed",
+  "summary": "Added a runtime-disabled deterministic dispatcher foundation for AUTOPILOT-004. It performs dependency/risk/attempt gating, capability-based worker selection, and bounded follow-up validation without invoking any provider or project runtime.",
+  "files_read": [
+    "elysia_collective_seed/autopilot/orchestrator_spec.md",
+    "elysia_collective_seed/autopilot/task_packet_schema.json",
+    "elysia_collective_seed/autopilot/completion_packet_schema.json"
+  ],
+  "files_changed": [
+    "elysia_collective_seed/autopilot/dispatcher.py",
+    "elysia_collective_seed/autopilot/test_dispatcher.py",
+    "elysia_collective_seed/autopilot/handoffs/ELY-TASK-000001-completion.json"
+  ],
+  "commits": [
+    "24bd1b2953451fc51a974655592c643812408f0e",
+    "cd302d29ff54b0b5a7fd2360b7184d6cef7f0f28"
+  ],
+  "pull_requests": [],
+  "claims": [
+    {
+      "claim": "Protected risk classes and explicit human-approval tasks cannot be dispatched automatically by this module.",
+      "evidence": ["dispatcher.py: dispatch authority gate"],
+      "confidence": 0.99
+    },
+    {
+      "claim": "Follow-up validation rejects source-scope expansion and duplicate open-task titles.",
+      "evidence": ["dispatcher.py: validate_followup", "test_dispatcher.py"],
+      "confidence": 0.99
+    }
+  ],
+  "checks": [
+    {
+      "name": "static design review",
+      "result": "pass",
+      "details": "Module has no provider invocation, subprocess, network, merge, deployment, or Guardian runtime import path."
+    },
+    {
+      "name": "tests committed",
+      "result": "pass",
+      "details": "Seven deterministic tests cover routing, dependency gate, protected risk gate, attempt limit, scope expansion, duplicate follow-up, and valid follow-up. Tests require execution by CI/independent verifier."
+    },
+    {
+      "name": "test execution",
+      "result": "not_run",
+      "details": "GitHub connector can write repository files but does not execute branch tests in this supervisor run."
+    }
+  ],
+  "uncertainties": [
+    "Task schema does not yet declare required_capabilities, although dispatcher tolerates it as an optional extension. Schema alignment should be reviewed before integration.",
+    "Worker scoring is intentionally minimal until outcome-history/calibration data exists."
+  ],
+  "risks": [
+    "This is only the deterministic selection core; leases, persistence, GitHub synchronization, completion validation, and real provider adapters remain unimplemented."
+  ],
+  "blockers": [],
+  "next_recommendation": {
+    "action": "verify",
+    "preferred_role": "guardian-verifier",
+    "task_title": "Verify AUTOPILOT-004 dispatcher foundation",
+    "task_objective": "Run tests and independently review dispatcher gates before extending it with persistent ledger and leases."
+  },
+  "completed_at": "2026-09-07T05:21:15Z"
+}

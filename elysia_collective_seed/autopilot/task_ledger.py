@@ -13,8 +13,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping
 
-ACTIVE_LEASE_STATES = {"claimed", "running", "verifying"}
+ACTIVE_LEASE_STATES = {"claimed", "running"}
 TERMINAL_STATES = {"completed", "rejected", "archived"}
+NON_DISPATCHABLE_STATES = ACTIVE_LEASE_STATES | {"verifying", "review", "blocked", "human_review"} | TERMINAL_STATES
 
 
 def _utcnow() -> datetime:
@@ -88,7 +89,7 @@ class TaskLedger:
                    VALUES(?,?,?,?,?)
                    ON CONFLICT(task_id) DO UPDATE SET
                      payload_json=excluded.payload_json,
-                     status=CASE WHEN tasks.status IN ('claimed','running','verifying','completed','rejected','archived')
+                     status=CASE WHEN tasks.status IN ('claimed','running','verifying','review','blocked','human_review','completed','rejected','archived')
                                  THEN tasks.status ELSE excluded.status END,
                      updated_at=excluded.updated_at""",
                 (task_id, payload, status, int(task.get("attempt", 0)), now),
@@ -109,38 +110,36 @@ class TaskLedger:
         return result
 
     def claim(self, task_id: str, worker_id: str, lease_seconds: int = 900, now: datetime | None = None) -> ClaimResult:
-        """Atomically renew an owned live lease or acquire an available lease."""
+        """Atomically renew an owned live lease or acquire a queued task.
+
+        Acquisition is deliberately queued-only. Review/verifying/blocked states
+        require an explicit state transition before another execution lease may be
+        granted, preventing a stale caller from silently bypassing those gates.
+        """
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
         now = now or _utcnow()
         now_s = _iso(now)
         expires = _iso(now + timedelta(seconds=lease_seconds))
-        terminal = tuple(sorted(TERMINAL_STATES))
 
         with self.conn:
-            # Renewal is a separate conditional write so it never increments the
-            # attempt counter and cannot be confused with an expired reacquisition.
             renewed = self.conn.execute(
                 """UPDATE tasks SET status='claimed', lease_expires_at=?, updated_at=?
                    WHERE task_id=? AND claimed_by=?
                      AND lease_expires_at IS NOT NULL AND lease_expires_at>?
-                     AND status NOT IN (?,?,?)""",
-                (expires, now_s, task_id, worker_id, now_s, terminal[0], terminal[1], terminal[2]),
+                     AND status IN ('claimed','running')""",
+                (expires, now_s, task_id, worker_id, now_s),
             )
             if renewed.rowcount == 1:
                 self._event(task_id, "lease_renewed", worker_id, {"expires": expires}, now_s)
                 return ClaimResult(True, task_id, worker_id, "renewed", expires)
 
-            # Acquisition eligibility is inside the UPDATE. Two independent
-            # connections cannot both acquire the same available row: after one
-            # serialized write succeeds, the other's predicate no longer matches.
             acquired = self.conn.execute(
                 """UPDATE tasks
                    SET status='claimed', attempt=attempt+1, claimed_by=?, lease_expires_at=?, updated_at=?
-                   WHERE task_id=?
-                     AND status NOT IN (?,?,?)
+                   WHERE task_id=? AND status='queued'
                      AND (claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=?)""",
-                (worker_id, expires, now_s, task_id, terminal[0], terminal[1], terminal[2], now_s),
+                (worker_id, expires, now_s, task_id, now_s),
             )
             if acquired.rowcount == 1:
                 self._event(task_id, "task_claimed", worker_id, {"expires": expires}, now_s)
@@ -151,6 +150,8 @@ class TaskLedger:
                 return ClaimResult(False, task_id, worker_id, "task_not_found")
             if row["status"] in TERMINAL_STATES:
                 return ClaimResult(False, task_id, worker_id, "terminal_task")
+            if row["status"] != "queued":
+                return ClaimResult(False, task_id, worker_id, "state_not_claimable", row["lease_expires_at"])
             return ClaimResult(False, task_id, worker_id, "active_lease", row["lease_expires_at"])
 
     def release(self, task_id: str, worker_id: str, next_status: str = "queued", now: datetime | None = None) -> bool:
@@ -172,7 +173,7 @@ class TaskLedger:
         now = now or _utcnow()
         now_s = _iso(now)
         rows = self.conn.execute(
-            "SELECT task_id, claimed_by, lease_expires_at FROM tasks WHERE claimed_by IS NOT NULL"
+            "SELECT task_id, claimed_by, lease_expires_at FROM tasks WHERE claimed_by IS NOT NULL AND status IN ('claimed','running')"
         ).fetchall()
         expired = [r for r in rows if (_parse(r["lease_expires_at"]) or now) <= now]
         with self.conn:
@@ -180,7 +181,7 @@ class TaskLedger:
             for row in expired:
                 cursor = self.conn.execute(
                     """UPDATE tasks SET status='queued', claimed_by=NULL, lease_expires_at=NULL, updated_at=?
-                       WHERE task_id=? AND claimed_by=? AND lease_expires_at=?""",
+                       WHERE task_id=? AND claimed_by=? AND lease_expires_at=? AND status IN ('claimed','running')""",
                     (now_s, row["task_id"], row["claimed_by"], row["lease_expires_at"]),
                 )
                 if cursor.rowcount == 1:

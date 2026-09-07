@@ -109,14 +109,7 @@ class TaskLedger:
         return result
 
     def claim(self, task_id: str, worker_id: str, lease_seconds: int = 900, now: datetime | None = None) -> ClaimResult:
-        """Atomically claim or renew a task lease.
-
-        The eligibility predicate is part of the UPDATE itself. This is important:
-        a read-then-write claim can allow two independent SQLite connections to
-        observe an unclaimed row before either writes it. SQLite serializes the
-        conditional UPDATE, so only a worker that still satisfies the predicate
-        at write time can acquire the lease.
-        """
+        """Atomically renew an owned live lease or acquire an available lease."""
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
         now = now or _utcnow()
@@ -125,30 +118,33 @@ class TaskLedger:
         terminal = tuple(sorted(TERMINAL_STATES))
 
         with self.conn:
-            cursor = self.conn.execute(
+            # Renewal is a separate conditional write so it never increments the
+            # attempt counter and cannot be confused with an expired reacquisition.
+            renewed = self.conn.execute(
+                """UPDATE tasks SET status='claimed', lease_expires_at=?, updated_at=?
+                   WHERE task_id=? AND claimed_by=?
+                     AND lease_expires_at IS NOT NULL AND lease_expires_at>?
+                     AND status NOT IN (?,?,?)""",
+                (expires, now_s, task_id, worker_id, now_s, terminal[0], terminal[1], terminal[2]),
+            )
+            if renewed.rowcount == 1:
+                self._event(task_id, "lease_renewed", worker_id, {"expires": expires}, now_s)
+                return ClaimResult(True, task_id, worker_id, "renewed", expires)
+
+            # Acquisition eligibility is inside the UPDATE. Two independent
+            # connections cannot both acquire the same available row: after one
+            # serialized write succeeds, the other's predicate no longer matches.
+            acquired = self.conn.execute(
                 """UPDATE tasks
-                   SET status='claimed',
-                       attempt=attempt + CASE
-                           WHEN claimed_by=? AND lease_expires_at IS NOT NULL AND lease_expires_at>? THEN 0
-                           ELSE 1 END,
-                       claimed_by=?, lease_expires_at=?, updated_at=?
+                   SET status='claimed', attempt=attempt+1, claimed_by=?, lease_expires_at=?, updated_at=?
                    WHERE task_id=?
                      AND status NOT IN (?,?,?)
-                     AND (
-                         claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=? OR claimed_by=?
-                     )""",
-                (
-                    worker_id, now_s, worker_id, expires, now_s, task_id,
-                    terminal[0], terminal[1], terminal[2], now_s, worker_id,
-                ),
+                     AND (claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=?)""",
+                (worker_id, expires, now_s, task_id, terminal[0], terminal[1], terminal[2], now_s),
             )
-            if cursor.rowcount == 1:
-                row = self.conn.execute(
-                    "SELECT attempt FROM tasks WHERE task_id=?", (task_id,)
-                ).fetchone()
-                event_type = "lease_renewed" if row and int(row["attempt"]) > 0 and self._last_claim_actor(task_id) == worker_id else "task_claimed"
-                self._event(task_id, event_type, worker_id, {"expires": expires}, now_s)
-                return ClaimResult(True, task_id, worker_id, "renewed" if event_type == "lease_renewed" else "claimed", expires)
+            if acquired.rowcount == 1:
+                self._event(task_id, "task_claimed", worker_id, {"expires": expires}, now_s)
+                return ClaimResult(True, task_id, worker_id, "claimed", expires)
 
             row = self.conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if not row:
@@ -156,15 +152,6 @@ class TaskLedger:
             if row["status"] in TERMINAL_STATES:
                 return ClaimResult(False, task_id, worker_id, "terminal_task")
             return ClaimResult(False, task_id, worker_id, "active_lease", row["lease_expires_at"])
-
-    def _last_claim_actor(self, task_id: str) -> str | None:
-        row = self.conn.execute(
-            """SELECT actor FROM events
-               WHERE task_id=? AND event_type IN ('task_claimed','lease_renewed')
-               ORDER BY event_id DESC LIMIT 1""",
-            (task_id,),
-        ).fetchone()
-        return row["actor"] if row else None
 
     def release(self, task_id: str, worker_id: str, next_status: str = "queued", now: datetime | None = None) -> bool:
         if next_status in ACTIVE_LEASE_STATES:

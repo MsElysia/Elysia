@@ -110,11 +110,12 @@ class TaskLedger:
         return result
 
     def claim(self, task_id: str, worker_id: str, lease_seconds: int = 900, now: datetime | None = None) -> ClaimResult:
-        """Atomically renew an owned live lease or acquire a queued task.
+        """Atomically renew an owned live lease or acquire eligible execution work.
 
-        Acquisition is deliberately queued-only. Review/verifying/blocked states
-        require an explicit state transition before another execution lease may be
-        granted, preventing a stale caller from silently bypassing those gates.
+        Fresh acquisition is queued-only. An expired claimed/running lease may be
+        atomically reclaimed as a new attempt without first requiring a separate
+        reap transaction. Review/verifying/blocked states still require an explicit
+        transition before another execution lease may be granted.
         """
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
@@ -137,9 +138,11 @@ class TaskLedger:
             acquired = self.conn.execute(
                 """UPDATE tasks
                    SET status='claimed', attempt=attempt+1, claimed_by=?, lease_expires_at=?, updated_at=?
-                   WHERE task_id=? AND status='queued'
-                     AND (claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=?)""",
-                (worker_id, expires, now_s, task_id, now_s),
+                   WHERE task_id=? AND (
+                     (status='queued' AND (claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=?))
+                     OR (status IN ('claimed','running') AND lease_expires_at IS NOT NULL AND lease_expires_at<=?)
+                   )""",
+                (worker_id, expires, now_s, task_id, now_s, now_s),
             )
             if acquired.rowcount == 1:
                 self._event(task_id, "task_claimed", worker_id, {"expires": expires}, now_s)

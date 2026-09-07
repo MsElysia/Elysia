@@ -34,3 +34,9 @@ def test_dispatcher_fields_are_schema_declared():
         "title",
     }
     assert dispatcher_fields <= declared
+
+
+def test_task_schema_declares_runtime_control_states():
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    states = set(schema["properties"]["status"]["enum"])
+    assert {"queued", "claimed", "running", "verifying", "review", "blocked", "human_review", "completed", "rejected", "archived"} <= states

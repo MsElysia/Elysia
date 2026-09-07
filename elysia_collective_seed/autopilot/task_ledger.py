@@ -150,6 +150,9 @@ class TaskLedger:
                 return ClaimResult(False, task_id, worker_id, "task_not_found")
             if row["status"] in TERMINAL_STATES:
                 return ClaimResult(False, task_id, worker_id, "terminal_task")
+            lease_expiry = _parse(row["lease_expires_at"])
+            if row["status"] in ACTIVE_LEASE_STATES and row["claimed_by"] is not None and lease_expiry is not None and lease_expiry > now:
+                return ClaimResult(False, task_id, worker_id, "active_lease", row["lease_expires_at"])
             if row["status"] != "queued":
                 return ClaimResult(False, task_id, worker_id, "state_not_claimable", row["lease_expires_at"])
             return ClaimResult(False, task_id, worker_id, "active_lease", row["lease_expires_at"])

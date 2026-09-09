@@ -3,10 +3,17 @@ Planner - Turns abstract proposals into concrete implementation plans
 """
 
 import logging
+from dataclasses import replace
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
-from .data_models import ImplementationPlan, ImplementationStep, Task, TaskGraph
+from .data_models import (
+    ImplementationPlan,
+    ImplementationStep,
+    Task,
+    TaskGraph,
+    implementation_plan_from_proposal_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,20 +47,31 @@ class Planner:
         proposal_id = proposal.get("proposal_id", "unknown")
         domain = proposal.get("domain", "unknown")
         design_impact = proposal.get("design_impact", {})
-        
+
+        stored = implementation_plan_from_proposal_dict(proposal)
+        if stored is not None and stored.steps:
+            logger.info(
+                "Using embedded implementation plan for %s (%s steps)",
+                proposal_id,
+                len(stored.steps),
+            )
+            if stored.domain is None and domain and domain != "unknown":
+                stored = replace(stored, domain=domain)
+            return stored
+
         # For now, use simple static planning based on domain
         # Later: Use LLM to interpret design documents and generate steps
-        
+
         steps = self._generate_steps_for_domain(domain, proposal, design_impact)
-        
+
         plan = ImplementationPlan(
             proposal_id=proposal_id,
             steps=steps,
             assumptions=self._extract_assumptions(proposal),
             risks=self._extract_risks(proposal),
-            domain=domain
+            domain=domain,
         )
-        
+
         logger.info(f"Built implementation plan for {proposal_id} with {len(steps)} steps")
         return plan
     

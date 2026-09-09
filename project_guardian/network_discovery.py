@@ -6,10 +6,12 @@ import logging
 import json
 import asyncio
 import socket
+import ipaddress
+import os
 from typing import Dict, Any, List, Optional, Set
 from datetime import datetime, timedelta
 from pathlib import Path
-from threading import Lock
+from threading import RLock, Thread
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 import uuid
@@ -113,7 +115,7 @@ class NetworkDiscovery:
         self.node_timeout = node_timeout
         
         # Thread-safe operations
-        self._lock = Lock()
+        self._lock = RLock()
         
         # Node registry
         self.nodes: Dict[str, NetworkNode] = {}
@@ -121,6 +123,7 @@ class NetworkDiscovery:
         # Discovery state
         self._discovery_running = False
         self._discovery_task: Optional[asyncio.Task] = None
+        self._discovery_thread: Optional[Thread] = None
         
         # Load existing nodes
         self.load()
@@ -164,16 +167,128 @@ class NetworkDiscovery:
         if self.trust_registry:
             trust_data = self.trust_registry.get_node_trust(node_id)
             if trust_data:
-                node.trust_score = trust_data.get("overall_trust", 0.5)
+                if hasattr(trust_data, "general_trust"):
+                    node.trust_score = float(getattr(trust_data, "general_trust", 0.5))
+                elif isinstance(trust_data, dict):
+                    node.trust_score = float(
+                        trust_data.get("overall_trust", trust_data.get("general_trust", 0.5))
+                    )
         
         with self._lock:
             self.nodes[node_id] = node
             self.save()
         
         # Verify connectivity
-        asyncio.create_task(self._verify_node(node_id))
+        self._launch_background_coroutine(self._verify_node(node_id), f"verify-node-{node_id}")
         
         logger.info(f"Registered node: {name} ({node_id}) at {address}:{port}")
+        return node_id
+
+    def _launch_background_coroutine(self, coroutine: Any, thread_name: str) -> None:
+        """Schedule async work whether or not a loop is already running."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            Thread(
+                target=lambda: asyncio.run(coroutine),
+                name=thread_name,
+                daemon=True,
+            ).start()
+            return
+
+        loop.create_task(coroutine)
+
+    def _expand_discovery_addresses(self, address_range: Optional[str]) -> List[str]:
+        """Expand configured hosts, host lists, or small CIDR ranges into probe targets."""
+        seed = str(address_range or os.environ.get("ELYSIA_DISCOVERY_SEEDS") or "").strip()
+        max_hosts = max(1, int(os.environ.get("ELYSIA_DISCOVERY_MAX_HOSTS", "32") or 32))
+        addresses: List[str] = []
+
+        if seed:
+            for chunk in seed.replace(";", ",").split(","):
+                candidate = chunk.strip()
+                if not candidate:
+                    continue
+                if "/" in candidate:
+                    try:
+                        network = ipaddress.ip_network(candidate, strict=False)
+                        for host in network.hosts():
+                            addresses.append(str(host))
+                            if len(addresses) >= max_hosts:
+                                return addresses
+                    except ValueError:
+                        logger.warning("Invalid discovery CIDR ignored: %s", candidate)
+                else:
+                    addresses.append(candidate)
+                    if len(addresses) >= max_hosts:
+                        return addresses
+
+        if not addresses:
+            addresses = ["127.0.0.1"]
+
+        return addresses[:max_hosts]
+
+    def _expand_discovery_ports(self, port_range: Optional[tuple]) -> List[int]:
+        """Expand configured ports or a bounded inclusive range."""
+        if port_range:
+            start, end = port_range
+            start = int(start)
+            end = int(end)
+            if end < start:
+                start, end = end, start
+            return list(range(start, min(end, start + 31) + 1))
+
+        env_ports = str(os.environ.get("ELYSIA_DISCOVERY_PORTS") or "").strip()
+        if env_ports:
+            ports: List[int] = []
+            for chunk in env_ports.replace(";", ",").split(","):
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                try:
+                    ports.append(int(chunk))
+                except ValueError:
+                    logger.warning("Invalid discovery port ignored: %s", chunk)
+            if ports:
+                return ports[:32]
+
+        known_ports = sorted({int(node.port) for node in self.nodes.values() if getattr(node, "port", None)})
+        if known_ports:
+            return known_ports[:32]
+
+        return [8080]
+
+    def _upsert_discovered_node(self, address: str, port: int, metadata: Optional[Dict[str, Any]] = None) -> str:
+        """Create or update a discovered node record."""
+        with self._lock:
+            for node in self.nodes.values():
+                if node.address == address and int(node.port) == int(port):
+                    node.status = NodeStatus.ACTIVE
+                    node.last_seen = datetime.now()
+                    if metadata:
+                        node.metadata.update(metadata)
+                    self.save()
+                    return node.node_id
+
+            node_id = f"{address}:{port}"
+            node = NetworkNode(
+                node_id=node_id,
+                name=f"Node {address}:{port}",
+                address=address,
+                port=int(port),
+                status=NodeStatus.ACTIVE,
+                last_seen=datetime.now(),
+                metadata=metadata or {},
+            )
+            self.nodes[node_id] = node
+            self.save()
+
+        if self.trust_registry and not self.trust_registry.get_node(node_id):
+            try:
+                self.trust_registry.register_node(node_id=node_id, initial_trust=0.5)
+            except Exception:
+                logger.debug("Failed to register discovered node %s with trust registry", node_id, exc_info=True)
+
         return node_id
     
     async def _verify_node(self, node_id: str) -> bool:
@@ -237,23 +352,42 @@ class NetworkDiscovery:
         Returns:
             List of discovered node IDs
         """
-        discovered = []
-        
-        # For now, implement basic discovery
-        # In production, this would:
-        # - Broadcast discovery packets
-        # - Listen for node announcements
-        # - Scan network ranges
-        # - Use service discovery protocols
-        
         logger.info("Starting network discovery...")
-        
-        # Placeholder: In real implementation, this would:
-        # 1. Send multicast discovery packets
-        # 2. Listen for responses
-        # 3. Parse node information
-        # 4. Register discovered nodes
-        
+
+        addresses = self._expand_discovery_addresses(address_range)
+        ports = self._expand_discovery_ports(port_range)
+        timeout_s = float(os.environ.get("ELYSIA_DISCOVERY_CONNECT_TIMEOUT_SEC", "1.0") or 1.0)
+        discovered: List[str] = []
+
+        async def probe(address: str, port: int) -> Optional[str]:
+            try:
+                reader, writer = await asyncio.wait_for(asyncio.open_connection(address, port), timeout=timeout_s)
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+            except Exception:
+                return None
+
+            return self._upsert_discovered_node(
+                address,
+                port,
+                metadata={
+                    "discovered_via": "tcp_probe",
+                    "last_probe_at": datetime.now().isoformat(),
+                },
+            )
+
+        probe_results = await asyncio.gather(
+            *(probe(address, port) for address in addresses for port in ports),
+            return_exceptions=True,
+        )
+
+        for result in probe_results:
+            if isinstance(result, str) and result:
+                discovered.append(result)
+
         logger.info(f"Discovery completed, found {len(discovered)} nodes")
         return discovered
     
@@ -391,7 +525,17 @@ class NetworkDiscovery:
                     logger.error(f"Discovery loop error: {e}")
                     await asyncio.sleep(self.discovery_interval)
         
-        self._discovery_task = asyncio.create_task(discovery_loop())
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._discovery_thread = Thread(
+                target=lambda: asyncio.run(discovery_loop()),
+                name="network-auto-discovery",
+                daemon=True,
+            )
+            self._discovery_thread.start()
+        else:
+            self._discovery_task = loop.create_task(discovery_loop())
         logger.info("Auto-discovery started")
     
     async def stop_auto_discovery(self):
@@ -403,6 +547,9 @@ class NetworkDiscovery:
                 await self._discovery_task
             except asyncio.CancelledError:
                 pass
+        elif self._discovery_thread and self._discovery_thread.is_alive():
+            await asyncio.to_thread(self._discovery_thread.join, self.discovery_interval + 1)
+            self._discovery_thread = None
         
         logger.info("Auto-discovery stopped")
     
@@ -491,27 +638,73 @@ class NetworkDiscovery:
             logger.error(f"Failed to load node registry: {e}")
 
 
-# Example usage
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
+
+
+def configure_network_discovery(
+    *,
+    network_discovery: Optional["NetworkDiscovery"] = None,
+    local_node_id: Optional[str] = None,
+    local_name: str = "Elysia",
+    trust_registry: Optional[TrustRegistry] = None,
+    guardian: Optional[Any] = None,
+    storage_path: str = "data/network_nodes.json",
+    discovery_interval: int = 60,
+    node_timeout: int = 300,
+) -> "NetworkDiscovery":
+    """
+    Return an existing ``NetworkDiscovery`` (explicit or from ``guardian``), or construct one.
+    """
+    if network_discovery is not None:
+        return network_discovery
+    existing = _guardian_component(guardian, "network_discovery")
+    if existing is not None:
+        return existing
+
+    resolved_trust = trust_registry or _guardian_component(guardian, "trust_registry")
+    resolved_local_id = local_node_id or _guardian_component(guardian, "local_node_id", "node_id")
+
+    return NetworkDiscovery(
+        local_node_id=resolved_local_id,
+        local_name=local_name,
+        trust_registry=resolved_trust,
+        storage_path=storage_path,
+        discovery_interval=discovery_interval,
+        node_timeout=node_timeout,
+    )
+
+
 if __name__ == "__main__":
-    async def test_discovery():
-        """Test NetworkDiscovery."""
-        discovery = NetworkDiscovery(local_name="TestNode")
-        
-        # Register a node
+    import sys
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        discovery = configure_network_discovery(
+            local_name="TestNode",
+            storage_path=str(Path(tmp) / "network_nodes.json"),
+            discovery_interval=1,
+            node_timeout=60,
+        )
+
         node_id = discovery.register_node(
             name="RemoteNode1",
-            address="192.168.1.100",
+            address="127.0.0.1",
             port=8080,
-            capabilities=["ai_generation", "storage"]
+            capabilities=["ai_generation", "storage"],
         )
-        
-        # Get statistics
+        print(f"Registered node: {node_id}")
+
         stats = discovery.get_statistics()
         print(f"Network stats: {stats}")
-        
-        # Find nodes by capability
+
         ai_nodes = discovery.find_nodes_by_capability("ai_generation")
         print(f"AI nodes: {len(ai_nodes)}")
-    
-    asyncio.run(test_discovery())
+    sys.exit(0)
 

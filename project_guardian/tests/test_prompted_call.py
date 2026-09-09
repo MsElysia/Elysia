@@ -8,6 +8,7 @@ from project_guardian.llm.prompted_call import (
     log_prompted_call,
     prepare_prompted_messages,
     prepare_prompted_system,
+    prompt_payload_fingerprint,
     require_prompt_profile,
 )
 
@@ -68,8 +69,24 @@ def test_log_prompted_call_includes_standard_keys(caplog):
         },
         prompt_length=100,
         legacy_prompt_path=False,
+        call_id="ullm_test",
+        route_task_type="reasoning",
+        attempt_index=2,
+        fallback_from="openai",
+        prompt_hash="abc123",
     )
     text = caplog.text
     assert "prompt_core_name=elysia_core" in text
     assert "legacy_prompt_path=False" in text
     assert "prompt_length=100" in text
+    assert "call_id=ullm_test" in text
+    assert "route_task_type=reasoning" in text
+    assert "attempt_index=2" in text
+    assert "fallback_from=openai" in text
+    assert "prompt_hash=abc123" in text
+
+
+def test_prompt_payload_fingerprint_is_stable_and_short():
+    payload = [{"role": "user", "content": "hi"}]
+    assert prompt_payload_fingerprint(payload) == prompt_payload_fingerprint(list(payload))
+    assert len(prompt_payload_fingerprint(payload)) == 16

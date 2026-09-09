@@ -58,6 +58,27 @@ def _quality_score(archetype: str, payload: Any) -> float:
         gaps = p.get("gaps")
         if isinstance(gaps, list) and len(gaps) >= 1:
             score += 0.08
+        deliverables = p.get("deliverables")
+        if isinstance(deliverables, list) and len(deliverables) >= 1:
+            score += min(0.18, len(deliverables) * 0.03)
+            if len(deliverables) >= 3:
+                score += 0.08
+        pricing = p.get("pricing_options")
+        if isinstance(pricing, list) and len(pricing) >= 1:
+            score += min(0.16, len(pricing) * 0.05)
+            if len(pricing) >= 2:
+                score += 0.06
+        if isinstance(p.get("validation_prompt"), str) and p.get("validation_prompt", "").strip():
+            score += 0.08
+        listing = p.get("listing_markdown")
+        if isinstance(listing, str) and listing.strip():
+            score += 0.08
+            if "## Pricing" in listing:
+                score += 0.04
+        if isinstance(p.get("problem"), str) and p.get("problem", "").strip():
+            score += 0.04
+        if isinstance(p.get("target_customer"), str) and p.get("target_customer", "").strip():
+            score += 0.04
     elif isinstance(p, list) and len(p) > 0:
         score += min(0.3, len(p) * 0.05)
     return max(0.0, min(1.0, score))
@@ -169,6 +190,32 @@ def evaluate_task_advancement(
         if duplicate and isinstance(summ, list):
             score *= 0.45
             reason_parts.append("synthesis_duplicate")
+
+    if "offer_pack" in arch or "package_operator_offer" in arch:
+        deliverables = p.get("deliverables") if isinstance(p, dict) else None
+        pricing = p.get("pricing_options") if isinstance(p, dict) else None
+        listing = p.get("listing_markdown") if isinstance(p, dict) else None
+        validation = p.get("validation_prompt") if isinstance(p, dict) else None
+        sources = (p.get("source_artifacts") or p.get("sources_or_origin")) if isinstance(p, dict) else None
+        has_sources = isinstance(sources, list) and len(sources) >= 1
+        if (
+            isinstance(deliverables, list)
+            and len(deliverables) >= 3
+            and isinstance(pricing, list)
+            and len(pricing) >= 2
+            and isinstance(listing, str)
+            and listing.strip()
+            and isinstance(validation, str)
+            and validation.strip()
+        ):
+            score += 0.14
+            reason_parts.append("buyer_ready_offer_pack")
+            if has_sources:
+                score += 0.05
+                reason_parts.append("offer_pack_grounded_in_sources")
+        else:
+            score *= 0.6
+            reason_parts.append("offer_pack_incomplete")
 
     if not duplicate and (improved or first_best):
         reason_parts.append("improved_or_first_best")

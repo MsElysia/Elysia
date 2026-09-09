@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "filesystem_readme": {
+      "comment": "Example: requires Node/npx. Copy to mcp_servers.json (gitignored locally if you prefer) and adjust paths.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\\\Users\\\\mrnat\\\\OneDrive\\\\Desktop"],
+      "env": {}
+    }
+  }
+}

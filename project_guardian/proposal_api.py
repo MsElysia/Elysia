@@ -7,7 +7,12 @@ REST API endpoints for managing proposals via Architect-Core and WebScout.
 import logging
 from typing import Dict, Any, Optional, List
 from flask import Flask, request, jsonify
-from flask_cors import CORS
+
+try:
+    from flask_cors import CORS
+except ImportError:
+    def CORS(_app):  # type: ignore[misc]
+        return None
 
 logger = logging.getLogger(__name__)
 

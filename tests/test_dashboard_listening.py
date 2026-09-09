@@ -21,22 +21,42 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "project_guardian"))
 
 
+def _free_port():
+    for _ in range(20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            if port < 65000:
+                return port
+    return port
+
+
 class TestDashboardListening:
     """Test dashboard server listening behavior."""
+
+    def setup_method(self):
+        from project_guardian.ui_control_panel import reset_dashboard_guard
+
+        reset_dashboard_guard()
+
+    def teardown_method(self):
+        from project_guardian.ui_control_panel import reset_dashboard_guard
+
+        reset_dashboard_guard()
     
-    def test_port_fallback_when_5000_occupied(self):
-        """Test that port fallback works when port 5000 is occupied."""
+    def test_port_fallback_when_requested_port_occupied(self):
+        """Test that port fallback works when the requested port is occupied."""
         from project_guardian.ui_control_panel import UIControlPanel
         
-        # Create a socket to occupy port 5000
+        requested_port = _free_port()
         occupied_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            occupied_socket.bind(('127.0.0.1', 5000))
+            occupied_socket.bind(('127.0.0.1', requested_port))
             occupied_socket.listen(1)
             
             # Create UI panel (mock orchestrator)
             mock_orchestrator = Mock()
-            ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
+            ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=requested_port)
             
             # Mock socketio.run to avoid actually starting server
             with patch.object(ui_panel, 'socketio') as mock_socketio:
@@ -48,8 +68,8 @@ class TestDashboardListening:
                     ui_panel.start(debug=False, source="test")
                     
                     # Verify port was changed
-                    assert ui_panel.port != 5000, "Port should have been changed from 5000"
-                    assert ui_panel.port >= 5001, "Port should be >= 5001"
+                    assert ui_panel.port != requested_port, "Port should have been changed"
+                    assert ui_panel.port >= requested_port + 1, "Port should advance from requested port"
                     assert ui_panel._actual_port == ui_panel.port, "Actual port should match"
                     
         finally:
@@ -60,7 +80,7 @@ class TestDashboardListening:
         from project_guardian.ui_control_panel import UIControlPanel
         
         mock_orchestrator = Mock()
-        ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
+        ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=_free_port())
         
         # Mock socketio.run
         with patch.object(ui_panel, 'socketio') as mock_socketio:
@@ -88,7 +108,7 @@ class TestDashboardListening:
         from project_guardian.ui_control_panel import UIControlPanel
         
         mock_orchestrator = Mock()
-        ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
+        ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=_free_port())
         
         # Mock socketio.run to raise an error
         error_msg = "Port already in use"
@@ -118,7 +138,7 @@ class TestDashboardListening:
         from project_guardian.ui_control_panel import UIControlPanel
         
         mock_orchestrator = Mock()
-        ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
+        ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=_free_port())
         
         # Mock socketio.run
         with patch.object(ui_panel, 'socketio') as mock_socketio:
@@ -139,7 +159,7 @@ class TestDashboardListening:
         from project_guardian.ui_control_panel import UIControlPanel
         
         mock_orchestrator = Mock()
-        ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
+        ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=_free_port())
         
         # Test with available port (should return True)
         # Use a high port that's unlikely to be in use
@@ -147,15 +167,16 @@ class TestDashboardListening:
         assert available == True, "Available port should return True"
         
         # Test with occupied port
+        occupied_port = _free_port()
         occupied_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            occupied_socket.bind(('127.0.0.1', 5000))
+            occupied_socket.bind(('127.0.0.1', occupied_port))
             occupied_socket.listen(1)
             
             # Small delay to ensure socket is bound
             time.sleep(0.1)
             
-            available = ui_panel._check_port_available('127.0.0.1', 5000)
+            available = ui_panel._check_port_available('127.0.0.1', occupied_port)
             assert available == False, "Occupied port should return False"
         finally:
             occupied_socket.close()
@@ -165,21 +186,22 @@ class TestDashboardListening:
         from project_guardian.ui_control_panel import UIControlPanel
         
         mock_orchestrator = Mock()
-        ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
+        requested_port = _free_port()
+        ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=requested_port)
         
-        # Occupy port 5000
+        # Occupy requested port
         occupied_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            occupied_socket.bind(('127.0.0.1', 5000))
+            occupied_socket.bind(('127.0.0.1', requested_port))
             occupied_socket.listen(1)
             time.sleep(0.1)
             
             # Find available port
-            available_port = ui_panel._find_available_port(5000, max_attempts=10)
+            available_port = ui_panel._find_available_port(requested_port, max_attempts=10)
             
-            # Verify it's different from 5000 and available
-            assert available_port != 5000, "Should find different port"
-            assert available_port >= 5001, "Should be >= 5001"
+            # Verify it's different from requested port and available
+            assert available_port != requested_port, "Should find different port"
+            assert available_port >= requested_port + 1, "Should advance from requested port"
             assert ui_panel._check_port_available('127.0.0.1', available_port), "Found port should be available"
         finally:
             occupied_socket.close()

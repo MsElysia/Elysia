@@ -25,6 +25,12 @@ def test_infer_social_moltbook_before_plain_moltbook():
     assert rsn == "keyword_social_moltbook_observe"
 
 
+def test_infer_full_moltbook_interaction_routes_social():
+    tt, rsn = infer_canonical_routing_task_type("I want full interaction with MoltBook")
+    assert tt == "social_moltbook_observe"
+    assert rsn == "keyword_social_moltbook_observe"
+
+
 def test_infer_moltbook_before_bounded_and_fetch():
     tt, rsn = infer_canonical_routing_task_type("Scroll moltbook.com for community posts")
     assert tt == "moltbook_browse"
@@ -112,8 +118,7 @@ def test_self_task_behavior_unchanged_generic():
     r.ensure_minimal_builtin_tools()
     tr = TaskRouter(r)
     out = tr.route_task("self_task", {})
-    # tie-break order still applies
-    assert out["routed_to"] == "elysia_builtin_web"
+    assert out["routed_to"] == "elysia_builtin_llm"
 
 
 def test_bridge_merge_payload_emits_fetch_for_url_goal():

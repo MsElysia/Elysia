@@ -96,6 +96,17 @@ def get_guardian_core(
             return None
 
 
+def get_existing_guardian_core() -> Optional[Any]:
+    """
+    Return the existing GuardianCore singleton without creating one.
+
+    Lightweight components can use this to borrow already-initialized services
+    without accidentally triggering a full GuardianCore startup.
+    """
+    with _guardian_core_lock:
+        return _guardian_core_instance
+
+
 def reset_singleton() -> None:
     """
     Reset the singleton instance (for testing only).
@@ -112,10 +123,10 @@ def reset_singleton() -> None:
             except Exception:
                 pass
             
-            # Reset class-level flag in GuardianCore
-            _guardian_core_class()._any_instance_initialized = False
-        
         _guardian_core_instance = None
+        # Reset class-level flag even when GuardianCore was constructed directly
+        # and never stored in this module's singleton slot.
+        _guardian_core_class()._any_instance_initialized = False
 
     with _monitoring_lock:
         _monitoring_started = False

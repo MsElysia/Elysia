@@ -1,0 +1,6 @@
+{"id": "r1", "category": "planning", "text": "Plan the next three concrete steps to harden local RAG injection (observability, failure modes, operator toggles). Keep each step under one hour of work."}
+{"id": "r2", "category": "summarization", "text": "Summarize in five bullets what 'autonomy-safe reasoning' should mean for this codebase, based only on what you know from our stack (no web)."}
+{"id": "r3", "category": "guardian_dev", "text": "List which files implement unified chat routing and self-build RAG prepend, and what metadata the router returns to callers."}
+{"id": "r4", "category": "planning", "text": "Given intermittent OpenAI quota issues, outline a fallback strategy for a weekly planning session using local Ollama first."}
+{"id": "r5", "category": "summarization", "text": "Condense this operator goal into one sentence: keep embeddings fresh, inject only when policy allows, and log enough to tune min_score without guessing."}
+{"id": "r6", "category": "guardian_dev", "text": "Explain when orchestration selects parallel_compare_and_judge vs serial_plan_execute_review, without citing docs outside the repo."}

@@ -11,6 +11,48 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def planner_lightweight_inference_probe(
+    base_url: str,
+    model: str,
+    *,
+    timeout: float = 6.0,
+) -> Tuple[bool, str]:
+    """
+    Minimal /api/chat only (no /api/tags). num_predict=1 for fast planner liveness.
+    Returns (ok, detail).
+    """
+    try:
+        import requests
+    except ImportError as e:
+        return False, f"requests_missing:{e}"
+    base = normalize_ollama_base(base_url)
+    chat_url = f"{base}/api/chat"
+    m = (model or "").strip()
+    if not m:
+        return False, "no_model"
+    try:
+        from .planner_readiness import should_short_circuit_verify_ollama_for_bad_tag
+
+        sc, why = should_short_circuit_verify_ollama_for_bad_tag(m)
+        if sc:
+            return False, f"skipped:{why}"
+    except Exception:
+        pass
+    payload = {
+        "model": m,
+        "stream": False,
+        "messages": [{"role": "user", "content": "."}],
+        "options": {"temperature": 0.0, "num_predict": 1},
+    }
+    try:
+        r = requests.post(chat_url, json=payload, timeout=max(2.0, float(timeout)))
+        if r.status_code == 200:
+            return True, "planner_ping_ok"
+        return False, f"chat_http_{r.status_code}"
+    except Exception as e:
+        return False, str(e)[:120]
+
+
 @dataclass
 class OllamaHealthResult:
     ok: bool
@@ -70,6 +112,7 @@ def normalize_ollama_base(url: Optional[str]) -> str:
 
 
 def _chat_payload(model: str, probe: bool = True) -> Dict[str, Any]:
+    """Minimal /api/chat JSON. ``probe=True`` uses a tiny completion; ``False`` allows a short real reply."""
     if probe:
         return {
             "model": model,
@@ -77,7 +120,12 @@ def _chat_payload(model: str, probe: bool = True) -> Dict[str, Any]:
             "messages": [{"role": "user", "content": "."}],
             "options": {"temperature": 0.1, "num_predict": 3},
         }
-    raise NotImplementedError
+    return {
+        "model": model,
+        "stream": False,
+        "messages": [{"role": "user", "content": "Reply with the single word OK."}],
+        "options": {"temperature": 0.1, "num_predict": 32},
+    }
 
 
 def verify_ollama_runtime(

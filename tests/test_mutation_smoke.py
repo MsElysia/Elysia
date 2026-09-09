@@ -30,10 +30,10 @@ class TestProtectedPathDenied:
         """Verify mutation touching CONTROL.md without override raises MutationDeniedError"""
         memory = MemoryCore()
         trust = TrustMatrix(memory)
-        
-        mutation = MutationEngine(memory, trust_matrix=trust)
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
+            mutation = MutationEngine(memory, trust_matrix=trust, repo_root=Path(tmpdir))
+
             # Create a test file that looks like CONTROL.md
             test_file = Path(tmpdir) / "CONTROL.md"
             test_file.write_text("CURRENT_TASK: NONE\n")
@@ -41,14 +41,14 @@ class TestProtectedPathDenied:
             # Attempt mutation without override
             with pytest.raises(MutationDeniedError) as exc_info:
                 mutation.apply(
-                    str(test_file),
+                    "CONTROL.md",
                     "CURRENT_TASK: TASK-0001\n",
                     origin="test",
                     allow_governance_mutation=False
                 )
             
             # Verify exception details
-            assert exc_info.value.filename == str(test_file)
+            assert exc_info.value.filename == "CONTROL.md"
             assert exc_info.value.reason == "PROTECTED_PATH_WITHOUT_OVERRIDE"
             
             # Verify file was NOT modified
@@ -74,7 +74,8 @@ class TestProtectedPathReview:
                 memory, 
                 trust_matrix=trust,
                 review_queue=review_queue,
-                approval_store=approval_store
+                approval_store=approval_store,
+                repo_root=Path(tmpdir)
             )
             
             # Mock trust to return review decision
@@ -93,7 +94,7 @@ class TestProtectedPathReview:
             # Attempt mutation with override
             with pytest.raises(MutationReviewRequiredError) as exc_info:
                 mutation.apply(
-                    str(test_file),
+                    "CONTROL.md",
                     "CURRENT_TASK: TASK-0001\n",
                     origin="test",
                     allow_governance_mutation=True
@@ -133,7 +134,8 @@ class TestApprovalReplay:
                 memory, 
                 trust_matrix=trust,
                 review_queue=review_queue,
-                approval_store=approval_store
+                approval_store=approval_store,
+                repo_root=Path(tmpdir)
             )
             
             # Create and approve a request
@@ -153,7 +155,7 @@ class TestApprovalReplay:
             
             # Call apply with approved request_id
             result = mutation.apply(
-                str(test_file),
+                "CONTROL.md",
                 "CURRENT_TASK: TASK-0001\n",
                 origin="test",
                 allow_governance_mutation=True,
@@ -166,14 +168,14 @@ class TestApprovalReplay:
             assert isinstance(result, MutationResult), "Result should be MutationResult"
             assert result.ok is True, "Mutation should succeed"
             assert len(result.changed_files) == 1, "Should have one changed file"
-            assert result.changed_files[0] == str(test_file), "Changed file should match"
+            assert result.changed_files[0] == "CONTROL.md", "Changed file should match"
             assert len(result.backup_paths) == 1, "Should have one backup"
             
             # Verify file was modified
             assert test_file.read_text() == "CURRENT_TASK: TASK-0001\n", "File should be modified on success"
             
             # Verify backup exists
-            backup_path = Path(result.backup_paths[0])
+            backup_path = Path(tmpdir) / result.backup_paths[0]
             assert backup_path.exists(), "Backup should exist"
             assert backup_path.read_text() == "CURRENT_TASK: NONE\n", "Backup should contain original content"
 
@@ -219,16 +221,16 @@ class TestNonProtectedPathSuccess:
         """Verify mutation to non-protected file succeeds without governance gating"""
         memory = MemoryCore()
         trust = TrustMatrix(memory)
-        
-        mutation = MutationEngine(memory, trust_matrix=trust)
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
+            mutation = MutationEngine(memory, trust_matrix=trust, repo_root=Path(tmpdir))
+
             test_file = Path(tmpdir) / "test.py"
             test_file.write_text("print('old')\n")
             
             # Apply mutation (non-protected path, no override needed)
             result = mutation.apply(
-                str(test_file),
+                "test.py",
                 "print('new')\n",
                 origin="test"
             )
@@ -242,7 +244,7 @@ class TestNonProtectedPathSuccess:
             assert test_file.read_text() == "print('new')\n", "File should be modified"
             
             # Verify backup exists
-            backup_path = Path(result.backup_paths[0])
+            backup_path = Path(tmpdir) / result.backup_paths[0]
             assert backup_path.exists(), "Backup should exist"
             assert backup_path.read_text() == "print('old')\n", "Backup should contain original content"
 
@@ -284,7 +286,8 @@ class TestContextMismatchReplay:
                 memory, 
                 trust_matrix=trust,
                 review_queue=review_queue,
-                approval_store=approval_store
+                approval_store=approval_store,
+                repo_root=Path(tmpdir)
             )
             
             # Create and approve a request for CONTROL.md
@@ -306,7 +309,7 @@ class TestContextMismatchReplay:
             # Should raise MutationDeniedError (context mismatch)
             with pytest.raises(MutationDeniedError) as exc_info:
                 mutation.apply(
-                    str(test_file),  # Different file
+                    "SPEC.md",  # Different file
                     "NEW\n",
                     origin="test",
                     allow_governance_mutation=True,

@@ -5,6 +5,7 @@
 import logging
 import json
 import re
+import inspect
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from enum import Enum
@@ -144,24 +145,37 @@ class AIMutationValidator:
         Returns:
             ValidationResult
         """
-        if not self.ask_ai:
-            logger.warning("AskAI not available, returning default pass")
-            return ValidationResult(
-                mutation_id=proposal.mutation_id,
-                passed=True,
-                confidence=0.5,
-                score=0.5,
-                summary="AI validation not available"
-            )
-        
         self.stats["total_validations"] += 1
+
+        if not self.ask_ai:
+            logger.warning("AskAI not available; mutation validation requires manual review")
+            return self._record_validation_result(ValidationResult(
+                mutation_id=proposal.mutation_id,
+                passed=False,
+                confidence=0.0,
+                score=0.0,
+                issues=[
+                    ValidationIssue(
+                        severity=ValidationSeverity.ERROR,
+                        category=ValidationCategory.COMPATIBILITY,
+                        description="AskAI is not configured; AI mutation validation cannot run.",
+                        suggestion="Configure AskAI/LLM validation or route this mutation through manual review before approval.",
+                        confidence=1.0,
+                    )
+                ],
+                summary="AI validation not available; manual review required",
+                recommendations=[
+                    "Configure AskAI/LLM validation before automated approval.",
+                    "Route this mutation through manual review before applying it.",
+                ],
+            ))
         
         # Build validation prompt
         prompt = self._build_validation_prompt(proposal, original_code)
         
         try:
             # Call AI for validation
-            response = await self.ask_ai.ask(
+            response = await self.ask_ai.ask_async(
                 prompt=prompt,
                 provider=self.provider,
                 temperature=0.3,  # Lower temperature for more consistent analysis
@@ -170,13 +184,13 @@ class AIMutationValidator:
             
             if not response.success:
                 logger.error(f"AI validation failed: {response.error}")
-                return ValidationResult(
+                return self._record_validation_result(ValidationResult(
                     mutation_id=proposal.mutation_id,
                     passed=False,
                     confidence=0.0,
                     score=0.0,
                     summary=f"AI validation error: {response.error}"
-                )
+                ))
             
             # Parse AI response
             validation_result = self._parse_ai_response(
@@ -184,36 +198,36 @@ class AIMutationValidator:
                 response.content,
                 proposal.proposed_code
             )
-            
-            # Update statistics
-            if validation_result.passed:
-                self.stats["passed"] += 1
-            else:
-                self.stats["failed"] += 1
-            
-            # Update average score
-            total_score = self.stats["average_score"] * (self.stats["total_validations"] - 1)
-            total_score += validation_result.score
-            self.stats["average_score"] = total_score / self.stats["total_validations"]
-            
-            # Count critical issues
-            critical_count = sum(
-                1 for issue in validation_result.issues
-                if issue.severity == ValidationSeverity.CRITICAL
-            )
-            self.stats["critical_issues_found"] += critical_count
-            
-            return validation_result
+            return self._record_validation_result(validation_result)
             
         except Exception as e:
             logger.error(f"Error in AI validation: {e}", exc_info=True)
-            return ValidationResult(
+            return self._record_validation_result(ValidationResult(
                 mutation_id=proposal.mutation_id,
                 passed=False,
                 confidence=0.0,
                 score=0.0,
                 summary=f"Validation error: {str(e)}"
-            )
+            ))
+
+    def _record_validation_result(self, validation_result: ValidationResult) -> ValidationResult:
+        """Update aggregate validation statistics for a completed result."""
+        if validation_result.passed:
+            self.stats["passed"] += 1
+        else:
+            self.stats["failed"] += 1
+
+        total_score = self.stats["average_score"] * (self.stats["total_validations"] - 1)
+        total_score += validation_result.score
+        self.stats["average_score"] = total_score / max(1, self.stats["total_validations"])
+
+        critical_count = sum(
+            1 for issue in validation_result.issues
+            if issue.severity == ValidationSeverity.CRITICAL
+        )
+        self.stats["critical_issues_found"] += critical_count
+
+        return validation_result
     
     def _build_validation_prompt(
         self,
@@ -247,6 +261,10 @@ VALIDATION REQUIREMENTS:
 4. **Style**: Check code style and best practices
 5. **Maintainability**: Assess code maintainability
 6. **Compatibility**: Check for compatibility issues with existing code
+7. **Replication Gating**: Flag autonomous deployment, cloning, slave spawning, persistence, or resource acquisition that lacks explicit human approval.
+8. **Lineage Tracking**: Flag missing provenance, signing, parent identifiers, or registry metadata for generated modules, model variants, or mutation pipelines.
+9. **Deception Robustness**: Look for hidden triggers, filter avoidance, camouflage/obfuscation, impersonation, or code paths that would behave differently under tests.
+10. **Selection Pressure Risk**: Flag objectives based on engagement, cost minimization, rate-limit/filter avoidance, or competitive survival when they may select for unsafe behavior.
 
 Return a JSON response with this structure:
 {{
@@ -435,6 +453,54 @@ Return ONLY valid JSON, no markdown or explanation outside the JSON."""
 
 
 # Integration with MutationReviewManager
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
+
+
+def configure_ai_validator_integration(
+    *,
+    review_manager: Optional[Any] = None,
+    mutation_engine: Optional[Any] = None,
+    guardian: Optional[Any] = None,
+    ai_validator: Optional["AIMutationValidator"] = None,
+):
+    """
+    Resolve review dependencies from explicit args or a minimal guardian object.
+
+    Returns the configured review manager so standalone helpers can avoid placeholder
+    ``None`` wiring.
+    """
+    resolved_review_manager = review_manager or _guardian_component(
+        guardian,
+        "mutation_review_manager",
+        "review_manager",
+    )
+    resolved_mutation_engine = mutation_engine or _guardian_component(
+        guardian,
+        "mutation_engine",
+        "mutation",
+    )
+
+    if resolved_review_manager is None:
+        raise ValueError("review_manager is required for AI validator integration")
+
+    if resolved_mutation_engine is not None and getattr(resolved_review_manager, "mutation_engine", None) is None:
+        try:
+            resolved_review_manager.mutation_engine = resolved_mutation_engine
+        except Exception:
+            logger.debug("Unable to attach mutation_engine to review_manager", exc_info=True)
+
+    if ai_validator is not None:
+        integrate_ai_validator(resolved_review_manager, ai_validator)
+    return resolved_review_manager
+
+
 def integrate_ai_validator(
     review_manager,
     ai_validator: AIMutationValidator
@@ -446,84 +512,43 @@ def integrate_ai_validator(
         review_manager: MutationReviewManager instance
         ai_validator: AIMutationValidator instance
     """
-    from mutation_review_manager import ReviewDecision
-    
+    if review_manager is None:
+        raise ValueError("review_manager is required")
+    if ai_validator is None:
+        raise ValueError("ai_validator is required")
+
+    if getattr(review_manager, "_integrated_ai_validator", None) is ai_validator:
+        return review_manager
+
     original_review = review_manager.review_mutation
-    
-    async def enhanced_review_mutation(*args, **kwargs):
-        """Enhanced review that includes AI validation."""
-        mutation_id = args[0] if args else kwargs.get("mutation_id")
-        
-        # Get proposal
-        if not review_manager.mutation_engine:
-            return original_review(*args, **kwargs)
-        
-        proposal = review_manager.mutation_engine.get_proposal(mutation_id)
-        if not proposal:
-            return original_review(*args, **kwargs)
-        
-        # Run AI validation
-        try:
-            import asyncio
-            ai_result = await ai_validator.validate_mutation(
-                proposal,
-                original_code=proposal.original_code
-            )
-            
-            # Enhance review with AI results
-            review = original_review(*args, **kwargs)
-            
-            # Add AI validation to review metadata
-            review.metadata["ai_validation"] = ai_result.to_dict()
-            
-            # Adjust review based on AI results
-            if not ai_result.passed:
-                # AI found issues - enhance review concerns
-                review.concerns.extend([
-                    f"AI Validation: {issue.description}"
-                    for issue in ai_result.issues
-                    if issue.severity in [ValidationSeverity.CRITICAL, ValidationSeverity.ERROR]
-                ])
-                
-                # If critical AI issues, consider deferring
-                critical_ai_issues = [
-                    issue for issue in ai_result.issues
-                    if issue.severity == ValidationSeverity.CRITICAL
-                ]
-                if critical_ai_issues:
-                    review.decision = ReviewDecision.DEFER
-                    review.reasoning += f" AI found {len(critical_ai_issues)} critical issues."
-            
-            # Add AI recommendations
-            if ai_result.recommendations:
-                review.conditions.extend(ai_result.recommendations)
-            
-            return review
-            
-        except Exception as e:
-            logger.error(f"AI validation integration error: {e}")
-            # Fall back to original review
-            return original_review(*args, **kwargs)
-    
+    signature = inspect.signature(original_review)
+    supports_ai_validator = (
+        "ai_validator" in signature.parameters
+        or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+    )
+
+    def enhanced_review_mutation(*args, **kwargs):
+        """Enhanced review that forwards the configured AI validator when supported."""
+        if supports_ai_validator:
+            kwargs.setdefault("ai_validator", ai_validator)
+        return original_review(*args, **kwargs)
+
     # Replace review method
     review_manager.review_mutation = enhanced_review_mutation
+    review_manager._integrated_ai_validator = ai_validator
     logger.info("AI mutation validator integrated with MutationReviewManager")
+    return review_manager
 
 
-# Example usage
 if __name__ == "__main__":
-    # Initialize components
-    ask_ai = None  # Would be provided
-    mutation_engine = None  # Would be provided
-    
-    validator = AIMutationValidator(
-        ask_ai=ask_ai,
-        provider=AIProvider.OPENAI if AIProvider else None,
-        min_confidence_threshold=0.7
-    )
-    
-    # Validate a mutation
-    # proposal = mutation_engine.get_proposal("mut_123")
-    # result = await validator.validate_mutation(proposal)
-    # print(validator.get_validation_summary(result))
+    import sys
 
+    print(
+        "AIMutationValidator is a library component. Wire it with "
+        "configure_ai_validator_integration(...) / integrate_ai_validator(...) "
+        "using a live AskAI and MutationReviewManager from your guardian runtime."
+    )
+    sys.exit(0)

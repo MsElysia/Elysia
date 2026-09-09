@@ -41,6 +41,9 @@ def browse_task(
     max_pages: int = 5,
     max_scrolls_per_page: int = 3,
     max_depth: int = 2,
+    max_links_per_page: int = 1,
+    force_link_follow: bool = False,
+    exploratory_link_floor: float = 0.12,
     relevance_floor: float = 0.06,
     memory_store: Optional[BrowserAgentMemoryStore] = None,
     memory_core: Optional[Any] = None,
@@ -50,7 +53,7 @@ def browse_task(
     allowed_domains_for_log: Optional[Iterable[str]] = None,
 ) -> BrowseTaskResult:
     """
-    Read-only bounded exploration: scroll a little, optionally enqueue one best link per page.
+    Bounded exploration: scroll a little, optionally enqueue promising links per page.
 
     Safety: no form submit, no login flows; navigation uses direct goto (not in-page destructive clicks).
 
@@ -76,6 +79,14 @@ def browse_task(
 
     be = backend or create_browser_backend()
     store = memory_store or BrowserAgentMemoryStore()
+    try:
+        max_links_per_page = max(1, min(6, int(max_links_per_page)))
+    except (TypeError, ValueError):
+        max_links_per_page = 1
+    try:
+        exploratory_link_floor = max(0.0, min(1.0, float(exploratory_link_floor)))
+    except (TypeError, ValueError):
+        exploratory_link_floor = 0.12
 
     result = BrowseTaskResult(goal=goal, start_url=start, stop_reason="")
     visited: Set[str] = set()
@@ -150,13 +161,17 @@ def browse_task(
 
                 best_link_score = 0.0
                 best_link_idx: Optional[int] = None
+                link_candidates: List[Tuple[float, int, str]] = []
                 for L in links:
                     if allowed_normalized is not None and not url_matches_allowlist(L.href, allowed_normalized):
                         continue
                     sc = score_link_for_goal(goal, L.href, L.text, visited)
+                    if sc > 0:
+                        link_candidates.append((sc, L.index, L.href))
                     if sc > best_link_score:
                         best_link_score = sc
                         best_link_idx = L.index
+                link_candidates.sort(key=lambda x: x[0], reverse=True)
 
                 rec, det = recommend_next(
                     goal=goal,
@@ -189,7 +204,34 @@ def browse_task(
                     )
                     store.append_finding(be.current_url(), best_findings, best_rel)
 
+                def _enqueue_promising_links() -> int:
+                    if depth >= max_depth or len(result.steps) >= max_pages:
+                        return 0
+                    enqueued = 0
+                    queued_urls = {u for u, _d in queue}
+                    for sc, _idx, href in link_candidates:
+                        if sc < exploratory_link_floor:
+                            continue
+                        if href in visited or href in queued_urls:
+                            continue
+                        if allowed_normalized is not None and not url_matches_allowlist(href, allowed_normalized):
+                            continue
+                        queue.append((href, depth + 1))
+                        queued_urls.add(href)
+                        enqueued += 1
+                        if enqueued >= max_links_per_page:
+                            break
+                    return enqueued
+
                 if rec == ContinueAction.STOP.value:
+                    if force_link_follow:
+                        enq = _enqueue_promising_links()
+                        if enq:
+                            _emit_step(
+                                ContinueAction.CLICK_LINK.value,
+                                f"{det}; force_link_follow_enqueued={enq}",
+                            )
+                            break
                     _emit_step(rec, det)
                     break
 
@@ -197,8 +239,11 @@ def browse_task(
                     chosen = next((L for L in links if L.index == best_link_idx), None)
                     if chosen and chosen.href not in visited:
                         _emit_step(rec, det)
-                        if depth < max_depth and len(result.steps) < max_pages:
-                            queue.append((chosen.href, depth + 1))
+                        if not force_link_follow:
+                            if depth < max_depth and len(result.steps) < max_pages:
+                                queue.append((chosen.href, depth + 1))
+                        else:
+                            _enqueue_promising_links()
                         break
                     rec = ContinueAction.SCROLL.value
 
@@ -207,6 +252,14 @@ def browse_task(
                     scroll_i += 1
                     continue
 
+                if force_link_follow:
+                    enq = _enqueue_promising_links()
+                    if enq:
+                        _emit_step(
+                            ContinueAction.CLICK_LINK.value,
+                            f"{det}; force_link_follow_enqueued={enq}",
+                        )
+                        break
                 _emit_step(rec, det)
                 break
 

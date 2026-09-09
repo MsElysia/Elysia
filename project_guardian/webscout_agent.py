@@ -13,10 +13,14 @@ import os
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, asdict
+
+from .llm.cloud_openai_chat import openai_chat_completion
+from .module_prompt_registry import structured_messages_for_llm_call, validate_module_llm_output
 from collections import defaultdict
 
 try:
@@ -127,6 +131,39 @@ class ProposalMetadata:
         return self.impact_score / self.effort_score
 
 
+def _parse_research_json_payload_flex(json_block: str, full_text: str) -> Dict[str, Any]:
+    """Parse LLM JSON with tolerant fallbacks (trailing commas, shared repair helper)."""
+    last_err: Optional[Exception] = None
+    for candidate in (json_block, re.sub(r",(\s*[\]}])", r"\1", json_block)):
+        if not candidate:
+            continue
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError as e:
+            last_err = e
+            continue
+        if isinstance(data, dict):
+            return data
+
+    try:
+        from .context_pipeline.structured_response_validator import repair_json_candidate
+    except ImportError:
+        repair_json_candidate = None  # type: ignore[assignment]
+
+    if repair_json_candidate is not None:
+        for raw in (full_text, json_block):
+            if not raw:
+                continue
+            repaired, _notes = repair_json_candidate(raw)
+            if isinstance(repaired, dict):
+                return repaired
+
+    msg = f"LLM research fallback returned invalid JSON: {last_err or 'unknown'}"
+    if last_err is not None:
+        raise ValueError(msg) from last_err
+    raise ValueError(msg)
+
+
 class ElysiaWebScout:
     """
     Elysia-WebScout Agent
@@ -141,7 +178,7 @@ class ElysiaWebScout:
         Initialize WebScout agent.
         
         Args:
-            web_reader: WebReader instance (optional - will try to get from GuardianCore singleton if None,
+            web_reader: WebReader instance (optional - will reuse an existing GuardianCore singleton if None,
                 unless ELYSIA_WEBSCOUT_SKIP_GUARDIAN_READER=1)
             proposals_root: Root directory for proposals (default: ./proposals)
             require_api_keys: If True, raise error if no API keys available.
@@ -151,14 +188,15 @@ class ElysiaWebScout:
         self.agent_name = "Elysia-WebScout"
         self.role = "External Intelligence Officer"
         
-        # Try to get web_reader from GuardianCore singleton if not provided
+        # Try to get web_reader from an existing GuardianCore singleton if not provided.
+        # Do not create GuardianCore here; that boot path can be expensive and unrelated to research setup.
         if web_reader is None and os.environ.get("ELYSIA_WEBSCOUT_SKIP_GUARDIAN_READER") != "1":
             try:
                 try:
-                    from .guardian_singleton import get_guardian_core
+                    from .guardian_singleton import get_existing_guardian_core
                 except ImportError:
-                    from guardian_singleton import get_guardian_core
-                guardian_core = get_guardian_core()
+                    from guardian_singleton import get_existing_guardian_core
+                guardian_core = get_existing_guardian_core()
                 if guardian_core and hasattr(guardian_core, 'web_reader') and guardian_core.web_reader:
                     web_reader = guardian_core.web_reader
                     logger.info(f"{self.agent_name} using WebReader from GuardianCore singleton")
@@ -194,9 +232,12 @@ class ElysiaWebScout:
         # Load API keys
         try:
             try:
-                from project_guardian.api_key_manager import get_api_key_manager
+                from .api_key_manager import get_api_key_manager
             except ImportError:
-                from api_key_manager import get_api_key_manager
+                try:
+                    from project_guardian.api_key_manager import get_api_key_manager
+                except ImportError:
+                    from api_key_manager import get_api_key_manager
             self.api_manager = get_api_key_manager()
             self.has_llm = self.api_manager.has_llm_access()
             
@@ -527,35 +568,45 @@ class ElysiaWebScout:
             raise RuntimeError("No LLM client available")
         
         try:
-            from .prompts.prompt_builder import log_legacy_llm_call
-
-            log_legacy_llm_call(
-                "",
-                caller="WebScoutAgent.research_with_llm",
-                reason="inline_prompt_webscout_research",
-            )
-            # Step 1: Use LLM to generate search queries and suggest URLs
-            if hasattr(client, 'chat'):  # OpenAI-style
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a research assistant. For the given query, suggest 3-5 specific URLs that would contain relevant information. Return only a JSON array of URLs, like: [\"https://example.com/page1\", \"https://example.com/page2\"]"},
-                        {"role": "user", "content": f"Research query: {query}\n\nSuggest {max_sources} specific URLs that would help answer this query. Return only a JSON array of URLs."}
-                    ],
-                    temperature=0.3,
-                    max_tokens=500
-                )
-                llm_response = response.choices[0].message.content
-                
-                # Extract URLs from LLM response
-                urls = self._extract_urls_from_llm_response(llm_response)
-                
-                # If LLM didn't provide URLs, use a web search approach
+            # Step 1: Use LLM to suggest URLs (structured JSON) or fall back to search APIs
+            if hasattr(client, "chat"):
+                pe = {
+                    "task_id": f"ws_ud_{int(time.time())}",
+                    "task": {"query": query, "max_sources": max_sources},
+                }
+                base = [{"role": "user", "content": "external_research webscout: URL discovery (task JSON)."}]
+                msgs, triple = structured_messages_for_llm_call(base, pe, "external_research:webscout_url_discovery")
+                llm_response = ""
+                if triple[0]:
+                    llm_response, uerr = openai_chat_completion(
+                        client,
+                        model="gpt-4o-mini",
+                        messages=msgs,
+                        max_tokens=500,
+                        temperature=0.3,
+                    )
+                    if uerr:
+                        logger.warning("WebScout URL LLM error: %s", uerr)
+                        llm_response = ""
+                    vd = validate_module_llm_output(triple[0], triple[1], triple[2], llm_response)
+                    if vd.get("valid"):
+                        raw_urls = (vd.get("data") or {}).get("urls")
+                        if isinstance(raw_urls, list):
+                            urls = [
+                                str(u).strip()
+                                for u in raw_urls
+                                if str(u).strip().startswith(("http://", "https://"))
+                            ]
+                        else:
+                            urls = self._extract_urls_from_llm_response(llm_response)
+                    else:
+                        urls = self._extract_urls_from_llm_response(llm_response)
+                else:
+                    urls = self._extract_urls_from_llm_response("")
                 if not urls:
                     logger.warning("LLM didn't provide URLs, using fallback search")
                     urls = self._generate_search_urls(query, max_sources)
             else:
-                # Fallback: generate search URLs
                 urls = self._generate_search_urls(query, max_sources)
             
             # Step 2: Actually fetch and read web pages
@@ -580,17 +631,34 @@ class ElysiaWebScout:
                 for i, s in enumerate(sources)
             ])
             
-            if hasattr(client, 'chat'):
-                summary_response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a research assistant. Summarize the research findings from the provided sources."},
-                        {"role": "user", "content": f"Research query: {query}\n\nSources found:\n{sources_text}\n\nProvide a comprehensive research summary."}
-                    ],
-                    temperature=0.7,
-                    max_tokens=1500
+            if hasattr(client, "chat"):
+                pe2 = {
+                    "task_id": f"ws_sum_{int(time.time())}",
+                    "task": {"query": query, "sources_text": sources_text},
+                }
+                base2 = [{"role": "user", "content": "external_research webscout: summarize sources (task JSON)."}]
+                msgs2, triple2 = structured_messages_for_llm_call(
+                    base2, pe2, "external_research:webscout_source_summary"
                 )
-                research_summary = summary_response.choices[0].message.content
+                research_summary = ""
+                if triple2[0]:
+                    research_summary, serr = openai_chat_completion(
+                        client,
+                        model="gpt-4o-mini",
+                        messages=msgs2,
+                        max_tokens=1500,
+                        temperature=0.7,
+                    )
+                    if serr:
+                        logger.warning("WebScout summary LLM error: %s", serr)
+                        research_summary = ""
+                    vd2 = validate_module_llm_output(triple2[0], triple2[1], triple2[2], research_summary)
+                    if vd2.get("valid"):
+                        research_summary = str((vd2.get("data") or {}).get("summary") or "").strip()
+                if not research_summary:
+                    research_summary = (
+                        f"## Research Summary for '{query}'\n\nFound {len(sources)} sources with relevant information."
+                    )
             else:
                 research_summary = f"## Research Summary for '{query}'\n\nFound {len(sources)} sources with relevant information."
             
@@ -626,6 +694,73 @@ class ElysiaWebScout:
         urls = [u for u in urls if u.startswith(('http://', 'https://'))]
         
         return urls[:10]  # Limit to 10 URLs
+
+    def _extract_json_block(self, text: str) -> Optional[str]:
+        """Extract a JSON object from plain text or fenced markdown."""
+        if not text:
+            return None
+        stripped = text.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            return stripped
+
+        fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
+        if fenced_match:
+            return fenced_match.group(1).strip()
+
+        object_match = re.search(r"\{.*\}", text, re.DOTALL)
+        if object_match:
+            return object_match.group(0).strip()
+        return None
+
+    def _parse_structured_llm_research(
+        self,
+        llm_response: str,
+        max_sources: int,
+    ) -> Tuple[List[ResearchSource], str]:
+        """Parse structured JSON research from the LLM fallback response."""
+        json_block = self._extract_json_block(llm_response)
+        if not json_block:
+            raise ValueError("LLM research fallback did not return a structured JSON object")
+
+        payload = _parse_research_json_payload_flex(json_block, llm_response)
+
+        if not isinstance(payload, dict):
+            raise ValueError("LLM research fallback payload must be a JSON object")
+
+        summary = payload.get("summary")
+        sources_payload = payload.get("sources")
+        if not isinstance(summary, str) or not summary.strip():
+            raise ValueError("LLM research fallback payload is missing a non-empty 'summary'")
+        if not isinstance(sources_payload, list):
+            raise ValueError("LLM research fallback payload is missing a 'sources' list")
+
+        sources: List[ResearchSource] = []
+        for item in sources_payload[:max_sources]:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            title = str(item.get("title") or url).strip()
+            if not url or not title:
+                continue
+            patterns = item.get("extracted_patterns")
+            if not isinstance(patterns, list):
+                pattern = str(item.get("pattern") or item.get("relevance_reason") or "").strip()
+                patterns = [pattern] if pattern else []
+            extracted_patterns = [str(pattern).strip() for pattern in patterns if str(pattern).strip()]
+            sources.append(
+                ResearchSource(
+                    url=url,
+                    title=title,
+                    relevance=str(item.get("relevance") or "medium").strip() or "medium",
+                    extracted_patterns=extracted_patterns or [f"Relevant to {title}"],
+                    summary=str(item.get("summary") or summary).strip() or summary.strip(),
+                )
+            )
+
+        if not sources:
+            raise ValueError("LLM research fallback payload did not contain any usable sources")
+
+        return sources, summary.strip()
     
     def _generate_search_urls(self, query: str, max_sources: int) -> List[str]:
         """
@@ -642,7 +777,28 @@ class ElysiaWebScout:
         # Try Tavily first (better for research, provides summaries)
         if self.api_manager.keys.tavily:
             try:
-                urls = self._tavily_search(query, max_sources)
+                from .unified_api_budget import (
+                    can_spend,
+                    enabled as _ub_on,
+                    flat_units_for_channel,
+                    opportunistic_surplus_available,
+                    remaining_units,
+                )
+
+                urls: List[str] = []
+                _tflat = flat_units_for_channel("tavily_search")
+                _t_ok = (not _ub_on()) or can_spend(_tflat)
+                if (
+                    _ub_on()
+                    and not _t_ok
+                    and opportunistic_surplus_available()
+                    and remaining_units() > 0
+                ):
+                    _t_ok = can_spend(min(_tflat, remaining_units()))
+                if _ub_on() and not _t_ok:
+                    logger.info("[UnifiedBudget] skipping Tavily — period budget exhausted")
+                elif _t_ok:
+                    urls = self._tavily_search(query, max_sources)
                 if urls:
                     return urls
             except Exception as e:
@@ -651,6 +807,26 @@ class ElysiaWebScout:
         # Fall back to Brave Search
         if self.api_manager.keys.brave_search:
             try:
+                from .unified_api_budget import (
+                    can_spend,
+                    enabled as _ub_on2,
+                    flat_units_for_channel,
+                    opportunistic_surplus_available,
+                    remaining_units,
+                )
+
+                _bflat = flat_units_for_channel("brave_search")
+                _b_ok = (not _ub_on2()) or can_spend(_bflat)
+                if (
+                    _ub_on2()
+                    and not _b_ok
+                    and opportunistic_surplus_available()
+                    and remaining_units() > 0
+                ):
+                    _b_ok = can_spend(min(_bflat, remaining_units()))
+                if _ub_on2() and not _b_ok:
+                    logger.info("[UnifiedBudget] skipping Brave — period budget exhausted")
+                    return []
                 return self._brave_search(query, max_sources)
             except Exception as e:
                 logger.warning(f"Brave Search failed: {e}")
@@ -731,7 +907,13 @@ class ElysiaWebScout:
             
             # Increment usage counter only on success
             self._increment_brave_search_usage()
-            
+            try:
+                from .api_usage_meter import record_transport
+
+                record_transport("brave_search", True)
+            except Exception:
+                pass
+
             logger.info(f"Brave Search found {len(urls)} URLs for query: {query} (Usage: {self.brave_search_usage['requests_this_month']}/{limit})")
             return urls[:count]
             
@@ -813,7 +995,13 @@ class ElysiaWebScout:
             
             # Increment usage counter only on success
             self._increment_tavily_usage()
-            
+            try:
+                from .api_usage_meter import record_transport
+
+                record_transport("tavily_search", True)
+            except Exception:
+                pass
+
             logger.info(f"Tavily Search found {len(urls)} URLs for query: {query} (Usage: {self.tavily_usage['requests_this_month']}/{limit})")
             return urls[:count]
             
@@ -959,33 +1147,37 @@ class ElysiaWebScout:
             raise RuntimeError("No LLM client available")
         
         try:
-            if hasattr(client, 'chat'):  # OpenAI-style
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a research assistant. Generate a research summary and suggest relevant sources for the given query."},
-                        {"role": "user", "content": f"Research query: {query}\n\nGenerate a research summary and suggest 3-5 relevant sources with URLs, titles, and key patterns."}
-                    ],
-                    temperature=0.7,
-                    max_tokens=1000
+            if not hasattr(client, 'chat'):
+                raise RuntimeError(
+                    "LLM client does not support chat completions for structured research fallback"
                 )
-                llm_summary = response.choices[0].message.content
-            else:
-                llm_summary = f"Research summary for {query} (LLM response format not implemented)"
-            
-            # Parse LLM response into sources
-            sources = [
-                ResearchSource(
-                    url=f"https://example.com/source-{i}",
-                    title=f"Source {i+1} from LLM research",
-                    relevance="high",
-                    extracted_patterns=[f"Pattern from LLM research"],
-                    summary=llm_summary[:200] + "..." if len(llm_summary) > 200 else llm_summary
+
+            pe = {
+                "task_id": f"ws_fb_{int(time.time())}",
+                "task": {"query": query, "max_sources": max_sources},
+            }
+            base = [{"role": "user", "content": "external_research webscout: LLM-only structured research (task JSON)."}]
+            msgs, triple = structured_messages_for_llm_call(base, pe, "external_research:webscout_llm_only_research")
+            if not triple[0]:
+                raise RuntimeError("structured profile webscout_llm_only_research missing")
+            llm_response, ferr = openai_chat_completion(
+                client,
+                model="gpt-4o-mini",
+                messages=msgs,
+                max_tokens=1200,
+                temperature=0.3,
+            )
+            if ferr:
+                raise RuntimeError(ferr)
+            vd = validate_module_llm_output(triple[0], triple[1], triple[2], llm_response)
+            if vd.get("valid"):
+                data = vd.get("data") or {}
+                synthetic = json.dumps(
+                    {"summary": data.get("summary"), "sources": data.get("sources")},
+                    ensure_ascii=False,
                 )
-                for i in range(min(max_sources, 3))
-            ]
-            
-            return sources, llm_summary
+                return self._parse_structured_llm_research(synthetic, max_sources)
+            return self._parse_structured_llm_research(llm_response, max_sources)
         except Exception as e:
             logger.error(f"LLM-only research error: {e}")
             raise

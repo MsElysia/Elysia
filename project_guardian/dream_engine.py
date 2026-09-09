@@ -144,21 +144,113 @@ class BehaviorAnalyzer:
         return insights if insights else ["No significant behavioral patterns detected"]
 
 
+def _coerce_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.strip().rstrip("%")
+        try:
+            number = float(cleaned)
+            return number / 100.0 if number > 1.0 else number
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_count(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+        return 1 if stripped else 0
+    return 0
+
+
+def _as_list(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, set):
+        return list(value)
+    return [value]
+
+
 class Optimizer:
     """Optimizes system performance based on past data."""
     
     def __init__(self):
         self.optimization_history: List[Dict[str, Any]] = []
     
-    async def optimize(self) -> List[str]:
+    async def optimize(self, context: Optional[Dict[str, Any]] = None) -> List[str]:
         """Generate optimization recommendations."""
+        context = context or {}
         insights = []
-        
-        # Example optimizations (in production, would analyze actual performance data)
-        insights.append("Consider reducing memory usage during idle periods")
-        insights.append("API rate limits could be better distributed")
-        insights.append("Task scheduling could benefit from predictive prioritization")
-        
+
+        memory_values = [
+            value for value in (
+                _coerce_float(context.get("memory_usage")),
+                _coerce_float(context.get("memory_pressure")),
+                _coerce_float(context.get("memory_percent")),
+            )
+            if value is not None
+        ]
+        memory_usage = max(memory_values) if memory_values else None
+        if memory_usage is not None and memory_usage >= 0.85:
+            insights.append(
+                f"Memory is at {memory_usage:.0%}; run cleanup before browser scans, "
+                "dream expansion, or nonessential self-task generation"
+            )
+
+        rate_hits = _coerce_count(
+            context.get("api_rate_limit_hits")
+            or context.get("rate_limit_hits")
+            or context.get("quota_events")
+        )
+        if rate_hits:
+            insights.append(
+                f"Route pressure has {rate_hits} recent rate-limit signal(s); keep simple work local "
+                "and reserve online calls for packet synthesis"
+            )
+
+        recent_errors = _coerce_count(context.get("recent_errors") or context.get("errors"))
+        if recent_errors:
+            insights.append(
+                f"Resolve {recent_errors} recent error signal(s) before starting another exploratory cycle"
+            )
+
+        queue_depth = _coerce_count(
+            context.get("task_queue_depth")
+            or context.get("pending_tasks")
+            or context.get("unresolved_tasks")
+        )
+        if queue_depth:
+            insights.append(
+                f"Queue depth is {queue_depth}; prefer finishing the oldest actionable task over adding new plans"
+            )
+
+        if not insights:
+            insights.append(
+                "No immediate optimization blocker surfaced; keep the next idle cycle bounded and evidence-backed"
+            )
+
+        self.optimization_history.append({
+            "optimized_at": datetime.now().isoformat(),
+            "context_keys": sorted(context.keys()),
+            "insights": insights,
+        })
         return insights
 
 
@@ -166,17 +258,67 @@ class Planner:
     """Plans future actions based on current state."""
     
     def __init__(self):
-        pass
+        self.plan_history: List[Dict[str, Any]] = []
     
     async def plan(self, context: Optional[Dict[str, Any]] = None) -> List[str]:
         """Generate planning insights."""
+        context = context or {}
         insights = []
-        
-        # Example planning insights
-        insights.append("Consider scheduling maintenance during low-activity periods")
-        insights.append("Long-term objectives should be broken down into smaller tasks")
-        insights.append("Trust scores suggest increasing trial tasks for new nodes")
-        
+
+        pending_tasks = _coerce_count(
+            context.get("pending_tasks")
+            or context.get("unresolved_tasks")
+            or context.get("task_queue_depth")
+        )
+        if pending_tasks:
+            insights.append(
+                f"Start with the {pending_tasks} pending task(s); complete or retire stale work before creating new self-tasks"
+            )
+
+        memory_values = [
+            value for value in (
+                _coerce_float(context.get("memory_pressure")),
+                _coerce_float(context.get("memory_usage")),
+                _coerce_float(context.get("memory_percent")),
+            )
+            if value is not None
+        ]
+        memory_pressure = max(memory_values) if memory_values else None
+        if memory_pressure is not None and memory_pressure >= 0.85:
+            insights.append(
+                f"Memory pressure is {memory_pressure:.0%}; defer dream/browser exploration until cleanup creates headroom"
+            )
+
+        underused_modules = _as_list(context.get("underused_modules") or context.get("starved_modules"))
+        if underused_modules:
+            module_names = ", ".join(str(name) for name in underused_modules[:3])
+            insights.append(
+                f"Schedule one bounded run for underused module(s): {module_names}; require a concrete artifact or observation"
+            )
+
+        revenue_items = _as_list(context.get("revenue_opportunities") or context.get("offer_candidates"))
+        if revenue_items:
+            insights.append(
+                "Turn the strongest revenue opportunity into a validation action with a visible buyer signal"
+            )
+
+        blocked_actions = _as_list(context.get("blocked_actions"))
+        if blocked_actions:
+            blocked = ", ".join(str(action) for action in blocked_actions[:3])
+            insights.append(
+                f"Do not reselect blocked action(s) {blocked}; choose the nearest unblocked capability with fresh evidence"
+            )
+
+        if not insights:
+            insights.append(
+                "No strong planning signal was supplied; run one bounded health, revenue, or queue-reduction task next"
+            )
+
+        self.plan_history.append({
+            "planned_at": datetime.now().isoformat(),
+            "context_keys": sorted(context.keys()),
+            "insights": insights,
+        })
         return insights
 
 
@@ -276,6 +418,7 @@ class DreamEngine:
             Dream object
         """
         import uuid
+        context = context or {}
         
         # Select dream type
         if not dream_type:
@@ -311,7 +454,7 @@ class DreamEngine:
                 content = "Analyzing behavioral patterns and trends"
             
             elif dream_type == DreamType.OPTIMIZATION:
-                base_insights = await self.optimizer.optimize()
+                base_insights = await self.optimizer.optimize(context)
                 # Enhance with AI analysis if available
                 if self.ask_ai and base_insights:
                     insights = await self._ai_enhance_insights(base_insights, "optimization")
@@ -411,7 +554,7 @@ class DreamEngine:
 Make the insights more specific, actionable, and deeper. Return as a JSON array of insight strings."""
 
         try:
-            response = await self.ask_ai.ask(
+            response = await self.ask_ai.ask_async(
                 prompt=prompt,
                 provider=AIProvider.OPENAI,
                 temperature=0.7,

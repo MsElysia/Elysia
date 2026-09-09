@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, cast
 
 TargetKind = Literal["module", "tool", "none"]
 
@@ -54,25 +54,58 @@ def strip_json_fence(text: str) -> str:
     return t
 
 
+def _first_json_object_dict(text: str) -> Optional[Dict[str, Any]]:
+    """Scan for the first top-level JSON object (handles preamble / trailing prose from LLMs)."""
+    dec = json.JSONDecoder()
+    s = text or ""
+    n = len(s)
+    i = 0
+    while i < n:
+        if s[i] != "{":
+            i += 1
+            continue
+        try:
+            obj, _end = dec.raw_decode(s[i:])
+        except json.JSONDecodeError:
+            i += 1
+            continue
+        if isinstance(obj, dict):
+            return cast(Dict[str, Any], obj)
+        i += 1
+    return None
+
+
+def _action_intent_from_dict(obj: Dict[str, Any]) -> ActionIntent:
+    tk = str(obj.get("target_kind") or "none").lower()
+    if tk not in ("module", "tool", "none"):
+        tk = "none"
+    return ActionIntent(
+        action_type=str(obj.get("action_type") or "unknown"),
+        target_kind=tk,  # type: ignore[arg-type]
+        target_name=(str(obj["target_name"]).strip() if obj.get("target_name") else None),
+        payload=dict(obj.get("payload") or {}) if isinstance(obj.get("payload"), dict) else {},
+        confidence=float(obj.get("confidence") or 0.5),
+        rationale=str(obj.get("rationale") or "")[:2000],
+    )
+
+
 def parse_action_intent(text: str) -> Optional[ActionIntent]:
     raw = strip_json_fence(text)
     if not raw.strip():
         return None
+    obj: Optional[Dict[str, Any]] = None
+    if raw.strip().startswith("{"):
+        try:
+            val = json.loads(raw)
+            obj = val if isinstance(val, dict) else None
+        except Exception:
+            obj = None
+    if obj is None:
+        obj = _first_json_object_dict(raw)
+    if not isinstance(obj, dict):
+        return None
     try:
-        obj = json.loads(raw) if raw.strip().startswith("{") else None
-        if not isinstance(obj, dict):
-            return None
-        tk = str(obj.get("target_kind") or "none").lower()
-        if tk not in ("module", "tool", "none"):
-            tk = "none"
-        return ActionIntent(
-            action_type=str(obj.get("action_type") or "unknown"),
-            target_kind=tk,  # type: ignore[arg-type]
-            target_name=(str(obj["target_name"]).strip() if obj.get("target_name") else None),
-            payload=dict(obj.get("payload") or {}) if isinstance(obj.get("payload"), dict) else {},
-            confidence=float(obj.get("confidence") or 0.5),
-            rationale=str(obj.get("rationale") or "")[:2000],
-        )
+        return _action_intent_from_dict(obj)
     except Exception:
         return None
 

@@ -74,16 +74,31 @@ class GumroadClient:
 
 
 class StripeClient:
-    """Client for Stripe API integration (placeholder for future implementation)"""
+    """Client for Stripe API integration."""
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
     
     def get_balance(self) -> Dict[str, Any]:
         """Get Stripe account balance"""
-        # Placeholder - implement Stripe API integration
-        logging.warning("Stripe integration not yet implemented")
-        return {"status": "not_implemented"}
+        if not self.api_key:
+            logging.warning("Stripe API key not set")
+            return {"status": "not_configured"}
+
+        endpoint = "https://api.stripe.com/v1/balance"
+        try:
+            response = requests.get(endpoint, auth=(self.api_key, ""), timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            return {
+                "status": "ok",
+                "available": data.get("available", []),
+                "pending": data.get("pending", []),
+                "livemode": data.get("livemode"),
+            }
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Failed to retrieve Stripe balance: {e}")
+            return {"status": "error", "error": str(e)}
 
 
 class IncomeExecutor:

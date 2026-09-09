@@ -1,802 +1,802 @@
 [
   {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_62a879adf4b6",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 33/33 rejected, 0 admitted",
-    "created_at": "2026-03-24T21:52:08.153075"
-  },
-  {
-    "finding_id": "adv_188021dfce31",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (18); reprioritization needed",
-    "created_at": "2026-03-25T05:08:40.216722"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_8e01a4d33cc7",
+    "type": "repeated_failure",
     "severity": "high",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:43:10.160816"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
-  },
-  {
-    "finding_id": "adv_329088ed2d41",
-    "type": "noisy_learning_pattern",
+    "finding_id": "adv_9894789dbdda",
+    "type": "repeated_failure",
     "severity": "high",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 24/24 rejected, 0 admitted",
-    "created_at": "2026-03-25T17:59:57.674188"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:43:10.160860"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_93821029f9b1",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:43:11.343250"
+  },
+  {
+    "finding_id": "adv_fa36d65732a5",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:43:11.343284"
+  },
+  {
+    "finding_id": "adv_8e2703871591",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:43:12.566531"
+  },
+  {
+    "finding_id": "adv_ff9a523737a0",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:43:12.566558"
+  },
+  {
+    "finding_id": "adv_b6156e91d566",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:43:13.779783"
+  },
+  {
+    "finding_id": "adv_e254a8dc236e",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:43:13.779810"
+  },
+  {
+    "finding_id": "adv_76bdbaff7575",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:43:14.942497"
+  },
+  {
+    "finding_id": "adv_e667cfe0a42f",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:43:14.942541"
+  },
+  {
+    "finding_id": "adv_fc6dacdf5bd4",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:43:16.493642"
+  },
+  {
+    "finding_id": "adv_4e5cb1309dbf",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:43:16.493680"
+  },
+  {
+    "finding_id": "adv_260123e3971d",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:43:18.046296"
+  },
+  {
+    "finding_id": "adv_a4dd19b00271",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:43:18.046321"
+  },
+  {
+    "finding_id": "adv_66519a75dad9",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:43:30.521718"
+  },
+  {
+    "finding_id": "adv_4291d9fc73ca",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:43:30.521745"
+  },
+  {
+    "finding_id": "adv_b13e1e08b25d",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:43:31.962956"
+  },
+  {
+    "finding_id": "adv_b6b9ffe5b9f5",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:43:31.962988"
+  },
+  {
+    "finding_id": "adv_9b741fc94ced",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:43:33.168283"
+  },
+  {
+    "finding_id": "adv_8a00c6bbf856",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:43:33.168308"
+  },
+  {
+    "finding_id": "adv_0b51d377db7a",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:43:59.050869"
+  },
+  {
+    "finding_id": "adv_bfa6befed8bf",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:43:59.050918"
+  },
+  {
+    "finding_id": "adv_7c2e586cf661",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:48:19.412583"
+  },
+  {
+    "finding_id": "adv_1a62ee0672ab",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:48:21.103527"
+  },
+  {
+    "finding_id": "adv_1440c9d396c4",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:48:22.640875"
+  },
+  {
+    "finding_id": "adv_0b25f9ca2799",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:49:09.150816"
+  },
+  {
+    "finding_id": "adv_c17c88850aee",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:49:09.150853"
+  },
+  {
+    "finding_id": "adv_86db2bb92bfb",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-14T09:49:10.389403"
+  },
+  {
+    "finding_id": "adv_6a2389c07c81",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-14T09:49:10.389430"
+  },
+  {
+    "finding_id": "adv_453ac5c332e8",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-15T20:45:28.408086"
+  },
+  {
+    "finding_id": "adv_467c23bc890f",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-15T20:45:28.408182"
+  },
+  {
+    "finding_id": "adv_6f92630db5fc",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:55:44.914724"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_e02d23931d4f",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:55:44.914758"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_bda058789c6a",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:55:57.600973"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_30689bb8a6ed",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:55:57.601003"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_4367860a49e7",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:55:58.890307"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_5d78c95f5fa6",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:55:58.890342"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_58e54a7969a0",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:56:00.042709"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_cd61b29857a2",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:56:00.042741"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_140ce02d0b4a",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:13.576894"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_c1eb619fc104",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:13.576932"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_4fdd70457974",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:14.900586"
   },
   {
-    "finding_id": "adv_329088ed2d41",
-    "type": "noisy_learning_pattern",
+    "finding_id": "adv_89706e3a24d5",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 24/24 rejected, 0 admitted",
-    "created_at": "2026-03-25T17:59:57.674188"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:14.900621"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_76fe5c2cc83c",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:16.054485"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_7a0620ebc1bb",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:16.054514"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_2ee7ae4bb1e3",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:17.077934"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_96ca21ad5640",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:17.077966"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_27c0716a7f9c",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:18.126344"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_00cf32d79043",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:18.126370"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_c67f0cda21f6",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:19.171705"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_1cee30cfe992",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:19.171731"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_82e8c0bb82d8",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:20.276134"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_f83bb5a17c36",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:20.276161"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_2ac0e0b5715c",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:21.298324"
   },
   {
-    "finding_id": "adv_329088ed2d41",
-    "type": "noisy_learning_pattern",
+    "finding_id": "adv_19293fb26066",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 24/24 rejected, 0 admitted",
-    "created_at": "2026-03-25T17:59:57.674188"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:21.298352"
   },
   {
-    "finding_id": "adv_4721f544d03e",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_35de19a30632",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-25T18:30:54.944007"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:22.383467"
   },
   {
-    "finding_id": "adv_b78ffc441606",
+    "finding_id": "adv_a2a8b5b78ed6",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:22.383495"
+  },
+  {
+    "finding_id": "adv_c1ab5889502a",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:23.417189"
+  },
+  {
+    "finding_id": "adv_1550162f8f95",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:23.417220"
+  },
+  {
+    "finding_id": "adv_a38a77faecbe",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:24.530933"
+  },
+  {
+    "finding_id": "adv_a1290aaa9b8c",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:24.530959"
+  },
+  {
+    "finding_id": "adv_6d8bae16fd9f",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:36.678840"
+  },
+  {
+    "finding_id": "adv_439d6f309b4c",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:36.678871"
+  },
+  {
+    "finding_id": "adv_3526453eb343",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:38.431688"
+  },
+  {
+    "finding_id": "adv_abbf2de76598",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:38.431719"
+  },
+  {
+    "finding_id": "adv_5e6126c2b6e7",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:39.735048"
+  },
+  {
+    "finding_id": "adv_255e51c7fa96",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:39.735072"
+  },
+  {
+    "finding_id": "adv_86ae9ddff73e",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T12:58:41.077960"
+  },
+  {
+    "finding_id": "adv_415806129ec0",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T12:58:41.077993"
+  },
+  {
+    "finding_id": "adv_ba65295e4c75",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T13:08:16.952715"
+  },
+  {
+    "finding_id": "adv_cb95058f6079",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T13:08:16.952745"
+  },
+  {
+    "finding_id": "adv_6f09850645ed",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-16T13:08:19.498517"
+  },
+  {
+    "finding_id": "adv_aab029e1d614",
+    "type": "repeated_failure",
+    "severity": "high",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-16T13:08:19.498546"
+  },
+  {
+    "finding_id": "adv_aa2a0e00802d",
     "type": "degraded_vector_state",
     "severity": "high",
     "recommended_action": "prioritize_vector_rebuild",
     "summary": "Vector memory degraded or rebuild pending",
-    "created_at": "2026-03-26T21:53:53.004776"
+    "created_at": "2026-06-16T13:09:38.852194"
   },
   {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_a86eaa0612d1",
+    "type": "degraded_vector_state",
     "severity": "high",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
+    "recommended_action": "prioritize_vector_rebuild",
+    "summary": "Vector memory degraded or rebuild pending",
+    "created_at": "2026-06-16T13:10:14.272776"
   },
   {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_c2d7661dded6",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:32:25.098376"
   },
   {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_9838963a2741",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-26T22:57:23.046616"
-  },
-  {
-    "finding_id": "adv_87d9f3c981e1",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_52bc9cc4c3eb",
+    "type": "repeated_failure",
     "severity": "high",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-28T11:52:54.130292"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (6x): [FileWriter] Error writing test.txt: Invalid mode: x...",
+    "created_at": "2026-06-17T16:32:25.098402"
   },
   {
-    "finding_id": "adv_87d9f3c981e1",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_114bc714753b",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-28T11:52:54.130292"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:32:41.876327"
   },
   {
-    "finding_id": "adv_87d9f3c981e1",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_8c02da7dd8fb",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-28T11:52:54.130292"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:32:42.809485"
   },
   {
-    "finding_id": "adv_87d9f3c981e1",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_8fffd545ef4a",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-28T11:52:54.130292"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:32:43.648782"
   },
   {
-    "finding_id": "adv_87d9f3c981e1",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_588512c8397d",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-28T11:52:54.130292"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:37.644900"
   },
   {
-    "finding_id": "adv_87d9f3c981e1",
-    "type": "task_outcome_contradiction",
+    "finding_id": "adv_5e99a4c30a8f",
+    "type": "repeated_failure",
     "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-28T11:52:54.130292"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:38.374627"
   },
   {
-    "finding_id": "adv_87d9f3c981e1",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-28T11:52:54.130292"
-  },
-  {
-    "finding_id": "adv_87d9f3c981e1",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-28T11:52:54.130292"
-  },
-  {
-    "finding_id": "adv_87d9f3c981e1",
-    "type": "task_outcome_contradiction",
-    "severity": "critical",
-    "recommended_action": "review_task_queue",
-    "summary": "Multiple unresolved tasks (3); reprioritization needed",
-    "created_at": "2026-03-28T11:52:54.130292"
-  },
-  {
-    "finding_id": "adv_725fcecbdfe9",
-    "type": "noisy_learning_pattern",
+    "finding_id": "adv_b42b24b0e814",
+    "type": "repeated_failure",
     "severity": "high",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 39/39 rejected, 0 admitted",
-    "created_at": "2026-03-29T20:04:46.577138"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:39.024743"
   },
   {
-    "finding_id": "adv_1b3eddbfd564",
-    "type": "noisy_learning_pattern",
+    "finding_id": "adv_3b9355dc3577",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:39.663546"
+  },
+  {
+    "finding_id": "adv_23d3934ab7d1",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:40.348821"
+  },
+  {
+    "finding_id": "adv_11d834827f3b",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:40.995019"
+  },
+  {
+    "finding_id": "adv_ce380da82558",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:41.747916"
+  },
+  {
+    "finding_id": "adv_bbd3815860c0",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:42.452646"
+  },
+  {
+    "finding_id": "adv_8f923edcfc1c",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:43.113433"
+  },
+  {
+    "finding_id": "adv_52e69606515f",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:43.803913"
+  },
+  {
+    "finding_id": "adv_eddbae911c9f",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:44.475472"
+  },
+  {
+    "finding_id": "adv_18d25919c952",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:56.183170"
+  },
+  {
+    "finding_id": "adv_0f102617c2a1",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:57.165452"
+  },
+  {
+    "finding_id": "adv_40ea7234319f",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:57.987729"
+  },
+  {
+    "finding_id": "adv_b5124238f73e",
+    "type": "repeated_failure",
+    "severity": "critical",
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:35:59.116617"
+  },
+  {
+    "finding_id": "adv_fac2867701a4",
+    "type": "repeated_failure",
     "severity": "high",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 21/21 rejected, 0 admitted",
-    "created_at": "2026-04-01T18:31:28.042012"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (9x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:46:48.113209"
   },
   {
-    "finding_id": "adv_1b3eddbfd564",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 21/21 rejected, 0 admitted",
-    "created_at": "2026-04-01T18:31:28.042012"
-  },
-  {
-    "finding_id": "adv_ee40d496c1e0",
-    "type": "noisy_learning_pattern",
+    "finding_id": "adv_0b96dc9c6c7d",
+    "type": "repeated_failure",
     "severity": "high",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 14/15 rejected, 1 admitted",
-    "created_at": "2026-04-03T18:12:06.639583"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-17T16:46:49.732969"
   },
   {
-    "finding_id": "adv_ee40d496c1e0",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 14/15 rejected, 1 admitted",
-    "created_at": "2026-04-03T18:12:06.639583"
-  },
-  {
-    "finding_id": "adv_ee40d496c1e0",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 14/15 rejected, 1 admitted",
-    "created_at": "2026-04-03T18:12:06.639583"
-  },
-  {
-    "finding_id": "adv_ee40d496c1e0",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 14/15 rejected, 1 admitted",
-    "created_at": "2026-04-03T18:12:06.639583"
-  },
-  {
-    "finding_id": "adv_ee40d496c1e0",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 14/15 rejected, 1 admitted",
-    "created_at": "2026-04-03T18:12:06.639583"
-  },
-  {
-    "finding_id": "adv_b3def3789ae4",
-    "type": "noisy_learning_pattern",
+    "finding_id": "adv_673d2aead233",
+    "type": "repeated_failure",
     "severity": "high",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 14/15 rejected, 1 admitted",
-    "created_at": "2026-04-06T21:52:39.342945"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-18T21:18:55.071106"
   },
   {
-    "finding_id": "adv_b3def3789ae4",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 14/15 rejected, 1 admitted",
-    "created_at": "2026-04-06T21:52:39.342945"
-  },
-  {
-    "finding_id": "adv_d5a9f4f289d9",
-    "type": "noisy_learning_pattern",
+    "finding_id": "adv_d8cdd914e8a0",
+    "type": "repeated_failure",
     "severity": "high",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-07T20:34:06.926971"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-18T21:19:03.350187"
   },
   {
-    "finding_id": "adv_d5a9f4f289d9",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-07T20:34:06.926971"
-  },
-  {
-    "finding_id": "adv_d5a9f4f289d9",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-07T20:34:06.926971"
-  },
-  {
-    "finding_id": "adv_d5a9f4f289d9",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-07T20:34:06.926971"
-  },
-  {
-    "finding_id": "adv_d5a9f4f289d9",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-07T20:34:06.926971"
-  },
-  {
-    "finding_id": "adv_d5a9f4f289d9",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-07T20:34:06.926971"
-  },
-  {
-    "finding_id": "adv_3114f8b2caf3",
-    "type": "noisy_learning_pattern",
+    "finding_id": "adv_bdf1b1cc5520",
+    "type": "repeated_failure",
     "severity": "high",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-09T18:04:38.913876"
-  },
-  {
-    "finding_id": "adv_3114f8b2caf3",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-09T18:04:38.913876"
-  },
-  {
-    "finding_id": "adv_3114f8b2caf3",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-09T18:04:38.913876"
-  },
-  {
-    "finding_id": "adv_3114f8b2caf3",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-09T18:04:38.913876"
-  },
-  {
-    "finding_id": "adv_3114f8b2caf3",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-09T18:04:38.913876"
-  },
-  {
-    "finding_id": "adv_3114f8b2caf3",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-09T18:04:38.913876"
-  },
-  {
-    "finding_id": "adv_3114f8b2caf3",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 15/15 rejected, 0 admitted",
-    "created_at": "2026-04-09T18:04:38.913876"
-  },
-  {
-    "finding_id": "adv_606a6d3bee2b",
-    "type": "noisy_learning_pattern",
-    "severity": "high",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 16/16 rejected, 0 admitted",
-    "created_at": "2026-04-12T18:31:59.472123"
-  },
-  {
-    "finding_id": "adv_606a6d3bee2b",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 16/16 rejected, 0 admitted",
-    "created_at": "2026-04-12T18:31:59.472123"
-  },
-  {
-    "finding_id": "adv_606a6d3bee2b",
-    "type": "noisy_learning_pattern",
-    "severity": "critical",
-    "recommended_action": "tighten_learning_filters",
-    "summary": "Bad learning session: 16/16 rejected, 0 admitted",
-    "created_at": "2026-04-12T18:31:59.472123"
+    "recommended_action": "investigate_repeated_failure",
+    "summary": "Repeated failure (8x): [SubprocessRunner] Command timed out: sleep 100...",
+    "created_at": "2026-06-18T21:19:04.144196"
   }
 ]

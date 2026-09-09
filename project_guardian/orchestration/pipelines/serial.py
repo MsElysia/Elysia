@@ -186,7 +186,14 @@ class SerialPlanExecuteReviewPipeline:
             )
         nodes.append(plan_nr)
 
-        raw_intent = parse_action_intent(str(plan_nr.output or ""))
+        _plan_out = str(plan_nr.output or "")
+        raw_intent = parse_action_intent(_plan_out)
+        if raw_intent is None:
+            logger.debug(
+                "[bounded_action] plan output not parseable as ActionIntent (chars=%s head=%r)",
+                len(_plan_out),
+                _plan_out[:220].replace("\n", "\\n"),
+            )
         validated = validate_action_intent(
             raw_intent,
             candidates,

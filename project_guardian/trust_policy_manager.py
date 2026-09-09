@@ -134,8 +134,28 @@ class TrustPolicyManager:
                 "allowed_domains": [],
             },
             "filesystem": {
-                "restricted_paths": [],
-                "critical_directories": [],
+                "restricted_paths": [
+                    "/etc",
+                    "/bin",
+                    "/sbin",
+                    "/usr/bin",
+                    "/usr/sbin",
+                    "C:\\Windows",
+                    "C:/Windows",
+                    "C:\\Program Files",
+                    "C:/Program Files",
+                ],
+                "critical_directories": [
+                    "/etc",
+                    "/bin",
+                    "/sbin",
+                    "/usr/bin",
+                    "/usr/sbin",
+                    "C:\\Windows",
+                    "C:/Windows",
+                    "C:\\Program Files",
+                    "C:/Program Files",
+                ],
                 "dangerous_extensions": [],
             },
             "users": {
@@ -583,18 +603,58 @@ class TrustPolicyManager:
             logger.error(f"Failed to load policies: {e}")
 
 
-# Example usage
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
+
+
+def configure_trust_policy_manager(
+    *,
+    trust_policy_manager: Optional["TrustPolicyManager"] = None,
+    guardian: Optional[Any] = None,
+    storage_path: str = "data/trust_policies.json",
+    default_deny: bool = True,
+) -> "TrustPolicyManager":
+    """
+    Return an existing ``TrustPolicyManager`` (explicit or from ``guardian``), or construct one.
+    """
+    if trust_policy_manager is not None:
+        return trust_policy_manager
+    existing = _guardian_component(
+        guardian,
+        "trust_policy_manager",
+        "trust_policy",
+    )
+    if existing is not None:
+        return existing
+    return TrustPolicyManager(
+        storage_path=storage_path,
+        default_deny=default_deny,
+    )
+
+
 if __name__ == "__main__":
-    # Create policy manager
-    manager = TrustPolicyManager()
-    
-    # Evaluate an action
-    result = manager.evaluate_action({
-        "action_type": "mutation",
-        "trust_score": 0.9
-    })
-    print(f"Evaluation result: {result}")
-    
-    # Get policy summary
-    summary = manager.get_current_policy_summary()
-    print(f"Policy summary: {summary}")
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "trust_policies.json")
+        manager = configure_trust_policy_manager(storage_path=path)
+
+        result = manager.evaluate_action(
+            {
+                "action_type": "mutation",
+                "trust_score": 0.9,
+            }
+        )
+        print(f"Evaluation result: {result}")
+
+        summary = manager.get_current_policy_summary()
+        print(f"Policy summary: {summary}")
+    sys.exit(0)

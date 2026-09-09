@@ -6,12 +6,23 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
 
-from .data_models import Task, TaskGraph, TaskResult, TaskStatus, ImplementationResult, ImplementationStatus
+from .data_models import (
+    Task,
+    TaskGraph,
+    TaskResult,
+    TaskStatus,
+    ImplementationResult,
+    ImplementationStatus,
+    ImplementationPlan,
+    ImplementationStep,
+    implementation_plan_from_proposal_dict,
+)
 from .repo_adapter import RepoAdapter
 from .codegen_client import CodeGenClient
 from .test_runner import TestRunner
 
 logger = logging.getLogger(__name__)
+_DEFAULT_ACCEPTANCE_CRITERIA = ["Code compiles", "Tests pass"]
 
 
 @dataclass
@@ -48,8 +59,14 @@ class TaskRunner:
         self.codegen = codegen_client
         self.tests = test_runner
         self.guardrails = guardrails
+        self._logged_default_acceptance = False
     
-    def execute(self, task_graph: TaskGraph, proposal: Dict[str, Any]) -> ImplementationResult:
+    def execute(
+        self,
+        task_graph: TaskGraph,
+        proposal: Dict[str, Any],
+        plan: Optional[ImplementationPlan] = None,
+    ) -> ImplementationResult:
         """
         Execute all tasks in the task graph.
         
@@ -87,7 +104,7 @@ class TaskRunner:
             
             # Execute task
             logger.info(f"Executing task {task.id}: {task.description}")
-            result = self._execute_single_task(task, proposal)
+            result = self._execute_single_task(task, proposal, plan=plan)
             task_results.append(result)
             
             if result.status == TaskStatus.PASSED:
@@ -129,7 +146,12 @@ class TaskRunner:
         logger.info(f"Task execution complete: {tasks_completed}/{len(ordered_tasks)} tasks passed")
         return result
     
-    def _execute_single_task(self, task: Task, proposal: Dict[str, Any]) -> TaskResult:
+    def _execute_single_task(
+        self,
+        task: Task,
+        proposal: Dict[str, Any],
+        plan: Optional[ImplementationPlan] = None,
+    ) -> TaskResult:
         """
         Execute a single task.
         
@@ -147,9 +169,11 @@ class TaskRunner:
                 task.target_files
             )
             
-            # Get step info from proposal (simplified - in real implementation, would get from plan)
-            step_description = task.description
-            acceptance_criteria = ["Code compiles", "Tests pass"]  # Simplified
+            step_description, acceptance_criteria = self._resolve_task_step_context(
+                task,
+                proposal,
+                plan=plan,
+            )
             
             if self.guardrails.dry_run:
                 # Dry run: just generate patches, don't apply
@@ -238,4 +262,49 @@ class TaskRunner:
                     return False
         
         return True
+
+    def _resolve_task_step_context(
+        self,
+        task: Task,
+        proposal: Dict[str, Any],
+        plan: Optional[ImplementationPlan] = None,
+    ) -> tuple[str, list[str]]:
+        """Resolve step description and acceptance criteria from the plan when available."""
+        eff_plan = plan
+        if eff_plan is None:
+            eff_plan = implementation_plan_from_proposal_dict(proposal)
+
+        step = self._get_plan_step(task, eff_plan)
+        if step:
+            criteria = [str(item).strip() for item in (step.acceptance_criteria or []) if str(item).strip()]
+            if not criteria:
+                extra = proposal.get("acceptance_criteria")
+                if isinstance(extra, list):
+                    criteria = [str(x).strip() for x in extra if str(x).strip()]
+                elif isinstance(extra, str) and extra.strip():
+                    criteria = [extra.strip()]
+            if criteria:
+                return step.description or task.description, criteria
+
+        if not self._logged_default_acceptance:
+            logger.debug(
+                "No acceptance criteria found for task %s in proposal %s; using defaults",
+                task.id,
+                proposal.get("proposal_id", "unknown"),
+            )
+            self._logged_default_acceptance = True
+        desc = (step.description if step else None) or task.description
+        return desc, list(_DEFAULT_ACCEPTANCE_CRITERIA)
+
+    def _get_plan_step(
+        self,
+        task: Task,
+        plan: Optional[ImplementationPlan] = None,
+    ) -> Optional[ImplementationStep]:
+        if not plan:
+            return None
+        for step in plan.steps:
+            if step.id == task.step_id:
+                return step
+        return None
 

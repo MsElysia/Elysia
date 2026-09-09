@@ -488,60 +488,106 @@ class TaskAssignmentEngine:
         }
 
 
-# Example usage
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
+
+
+def configure_task_assignment_engine(
+    *,
+    task_assignment_engine: Optional["TaskAssignmentEngine"] = None,
+    runtime_loop: Optional[RuntimeLoop] = None,
+    trust_registry: Optional[TrustRegistry] = None,
+    guardian: Optional[Any] = None,
+    min_trust_for_assignment: float = 0.3,
+    trial_task_probability: float = 0.1,
+    trust_registry_path: str = "data/trust_registry.json",
+) -> "TaskAssignmentEngine":
+    """
+    Return existing ``TaskAssignmentEngine`` (explicit or from ``guardian``), or construct one.
+    """
+    if task_assignment_engine is not None:
+        return task_assignment_engine
+    existing = _guardian_component(guardian, "task_assignment_engine", "assignment_engine")
+    if existing is not None:
+        return existing
+
+    resolved_runtime = runtime_loop or _guardian_component(guardian, "runtime_loop", "loop")
+    resolved_registry = trust_registry or _guardian_component(
+        guardian,
+        "task_assignment_trust_registry",
+        "assignment_trust_registry",
+    )
+    if resolved_registry is None:
+        resolved_registry = TrustRegistry(storage_path=trust_registry_path)
+
+    return TaskAssignmentEngine(
+        runtime_loop=resolved_runtime,
+        trust_registry=resolved_registry,
+        min_trust_for_assignment=min_trust_for_assignment,
+        trial_task_probability=trial_task_probability,
+    )
+
+
 if __name__ == "__main__":
-    import asyncio
-    from runtime_loop_core import RuntimeLoop
-    
-    async def test_assignment():
-        """Test the TaskAssignmentEngine."""
-        runtime = RuntimeLoop()
-        runtime.start()
-        
-        engine = TaskAssignmentEngine(runtime_loop=runtime)
-        
-        # Register some nodes
+    import sys
+    import tempfile
+
+    class _DemoRuntimeLoop:
+        def __init__(self):
+            self.tasks: Dict[str, Dict[str, Any]] = {}
+
+        def submit_task(self, func, args=(), kwargs=None, priority=5, module="unknown"):
+            task_id = str(uuid.uuid4())
+            self.tasks[task_id] = {
+                "func": getattr(func, "__name__", "callable"),
+                "args": args,
+                "kwargs": kwargs or {},
+                "priority": priority,
+                "module": module,
+            }
+            return task_id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = configure_task_assignment_engine(
+            runtime_loop=_DemoRuntimeLoop(),
+            trust_registry_path=str(Path(tmp) / "assignment_trust_registry.json"),
+        )
+
         engine.register_node(
             node_id="node_alpha",
             specializations=[TaskCategory.COGNITIVE, TaskCategory.GENERAL],
-            capabilities=["ai_reasoning", "text_generation"]
+            capabilities=["ai_reasoning", "text_generation"],
         )
-        
         engine.register_node(
             node_id="node_beta",
             specializations=[TaskCategory.MUTATION, TaskCategory.NETWORK],
-            capabilities=["code_analysis", "network_ops"]
+            capabilities=["code_analysis", "network_ops"],
         )
-        
-        # Simulate some successful tasks to build trust
+
         engine.trust_registry.update_trust("node_alpha", "cognitive", True, TaskCategory.COGNITIVE)
         engine.trust_registry.update_trust("node_alpha", "cognitive", True, TaskCategory.COGNITIVE)
         engine.trust_registry.update_trust("node_beta", "mutation", True, TaskCategory.MUTATION)
-        
-        # Assign a cognitive task
-        async def cognitive_task():
-            await asyncio.sleep(0.1)
+
+        def cognitive_task():
             return "Cognitive task completed"
-        
+
         task_id = engine.assign_task(
             task_func=cognitive_task,
             category=TaskCategory.COGNITIVE,
             module_name="cognitive",
-            priority=7
+            priority=7,
         )
-        
         print(f"Assigned cognitive task: {task_id}")
-        
-        await asyncio.sleep(1)
-        
-        # Record success
-        engine.record_task_outcome(task_id, success=True)
-        
-        # Check stats
+
+        if task_id:
+            engine.record_task_outcome(task_id, success=True)
         stats = engine.get_routing_stats()
         print(f"Routing stats: {stats}")
-        
-        runtime.stop()
-    
-    asyncio.run(test_assignment())
+    sys.exit(0)
 

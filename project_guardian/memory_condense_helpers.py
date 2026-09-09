@@ -44,6 +44,11 @@ def build_memory_condense_prompt_extra(chunk_text: str) -> Dict[str, Any]:
         "task_text": task_text,
         "output_schema": MEMORY_CONDENSE_OUTPUT_SCHEMA,
         "task_type": "memory_condense",
+        "task": {
+            "kind": "memory_condensation",
+            "format": "json_array",
+            "instructions_and_chunk": task_text,
+        },
     }
 
 

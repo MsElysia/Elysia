@@ -4,14 +4,27 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ...external_storage import get_configured_external_data_dir
+
 from .events import LLMCallEvent
 
 logger = logging.getLogger(__name__)
+
+
+def _orchestration_telemetry_mirror_interval_sec() -> float:
+    """Seconds between SQLite backups to external ``data_dir``; ``0`` disables."""
+    raw = os.environ.get("ELYSIA_ORCH_TELEMETRY_MIRROR_SEC", "120")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 120.0
+    return max(0.0, v)
 
 
 def prompt_hash(text: str) -> str:
@@ -19,12 +32,29 @@ def prompt_hash(text: str) -> str:
 
 
 class TelemetrySqliteStore:
-    """Orchestration-only SQLite telemetry."""
+    """Orchestration-only SQLite telemetry.
 
-    def __init__(self, db_path: Optional[Path] = None) -> None:
+    ``llm_calls.success`` is a **per-row step outcome** (1/0), not a global “HTTP succeeded” flag.
+    For example, a ``plan`` row may be 0 when the model returned text that did not become a valid
+    downstream score; ``validate`` / ``review_action`` rows record validator and review gates.
+    Use ``node_id``, ``validation_reason``, and ``review_verdict`` when triaging failures — do not
+    treat ``COUNT(*) WHERE success=0`` alone as “Ollama is down.”
+    """
+
+    def __init__(
+        self,
+        db_path: Optional[Path] = None,
+        *,
+        telemetry_mirror_interval_sec: Optional[float] = None,
+    ) -> None:
         root = Path(__file__).resolve().parent.parent.parent.parent
         self.db_path = Path(db_path) if db_path else root / "data" / "orchestration_telemetry.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if telemetry_mirror_interval_sec is not None:
+            self._orch_mirror_interval = float(telemetry_mirror_interval_sec)
+        else:
+            self._orch_mirror_interval = _orchestration_telemetry_mirror_interval_sec()
+        self._orch_mirror_last_ts: float = 0.0
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
@@ -148,8 +178,28 @@ class TelemetrySqliteStore:
                     ),
                 )
                 conn.commit()
+                self._maybe_mirror_orchestration_db()
         except Exception as e:
             logger.debug("orchestration telemetry log: %s", e)
+
+    def _maybe_mirror_orchestration_db(self) -> None:
+        if self._orch_mirror_interval <= 0.0:
+            return
+        ext = get_configured_external_data_dir()
+        if ext is None:
+            return
+        now = time.time()
+        if (now - self._orch_mirror_last_ts) < self._orch_mirror_interval:
+            return
+        dest = ext / "orchestration_telemetry.db"
+        try:
+            ext.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(str(self.db_path)) as src, sqlite3.connect(str(dest)) as dst:
+                src.backup(dst)
+            self._orch_mirror_last_ts = now
+            logger.debug("[ExternalMirror] orchestration_telemetry.db -> %s", dest)
+        except Exception as e:
+            logger.debug("orchestration telemetry mirror: %s", e)
 
     @staticmethod
     def _tri_state_bool(b: Optional[bool]) -> Optional[int]:
@@ -185,6 +235,8 @@ class TelemetrySqliteStore:
             "fanout_ok": 0,
             "validate_total": 0,
             "invalid_intents": 0,
+            "invalid_unparseable_intent": 0,
+            "invalid_policy_or_candidate_mismatch": 0,
             "intent_labeled": 0,
             "fallback_labeled": 0,
             "legacy_fallbacks": 0,
@@ -241,6 +293,8 @@ class TelemetrySqliteStore:
                     SELECT
                       COUNT(*),
                       COALESCE(SUM(CASE WHEN action_intent_valid IS NOT NULL AND action_intent_valid = 0 THEN 1 ELSE 0 END), 0),
+                      COALESCE(SUM(CASE WHEN action_intent_valid IS NOT NULL AND action_intent_valid = 0 AND COALESCE(validation_reason,'') = 'unparseable_intent' THEN 1 ELSE 0 END), 0),
+                      COALESCE(SUM(CASE WHEN action_intent_valid IS NOT NULL AND action_intent_valid = 0 AND COALESCE(validation_reason,'') != 'unparseable_intent' THEN 1 ELSE 0 END), 0),
                       COALESCE(SUM(CASE WHEN action_intent_valid IS NOT NULL THEN 1 ELSE 0 END), 0),
                       COALESCE(SUM(CASE WHEN fallback_mode IS NOT NULL AND TRIM(COALESCE(fallback_mode,'')) != '' THEN 1 ELSE 0 END), 0),
                       COALESCE(SUM(CASE WHEN fallback_mode = 'legacy_capability_loop' THEN 1 ELSE 0 END), 0)
@@ -252,9 +306,11 @@ class TelemetrySqliteStore:
                 if vrow:
                     out["validate_total"] = int(vrow[0] or 0)
                     out["invalid_intents"] = int(vrow[1] or 0)
-                    out["intent_labeled"] = int(vrow[2] or 0)
-                    out["fallback_labeled"] = int(vrow[3] or 0)
-                    out["legacy_fallbacks"] = int(vrow[4] or 0)
+                    out["invalid_unparseable_intent"] = int(vrow[2] or 0)
+                    out["invalid_policy_or_candidate_mismatch"] = int(vrow[3] or 0)
+                    out["intent_labeled"] = int(vrow[4] or 0)
+                    out["fallback_labeled"] = int(vrow[5] or 0)
+                    out["legacy_fallbacks"] = int(vrow[6] or 0)
 
                 rrow = conn.execute(
                     """

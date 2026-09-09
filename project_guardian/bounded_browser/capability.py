@@ -16,9 +16,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_PAGES = 3
 DEFAULT_MAX_SCROLLS = 2
 DEFAULT_MAX_DEPTH = 1
+DEFAULT_MAX_LINKS_PER_PAGE = 1
 _CAP_MAX_PAGES = 8
 _CAP_MAX_SCROLLS = 6
 _CAP_MAX_DEPTH = 3
+_CAP_MAX_LINKS_PER_PAGE = 4
 
 
 def _clamp_int(v: Any, default: int, cap: int) -> int:
@@ -98,6 +100,7 @@ def run_bounded_browser_for_capability(
     Optional payload:
     - allowed_hosts: list of apex hostnames (e.g. ["moltbook.com"]); www. is normalized.
     - allow_any_domain: if true, ignore allowed_hosts (operator override).
+    - max_links_per_page / force_link_follow: opt-in deeper same-domain exploration.
     """
     p = dict(payload or {})
     goal = str(p.get("goal") or p.get("task") or p.get("query") or p.get("objective") or "").strip()
@@ -120,6 +123,12 @@ def run_bounded_browser_for_capability(
     max_pages = _clamp_int(p.get("max_pages"), DEFAULT_MAX_PAGES, _CAP_MAX_PAGES)
     max_scrolls = _clamp_int(p.get("max_scrolls_per_page"), DEFAULT_MAX_SCROLLS, _CAP_MAX_SCROLLS)
     max_depth = _clamp_int(p.get("max_depth"), DEFAULT_MAX_DEPTH, _CAP_MAX_DEPTH)
+    max_links = _clamp_int(
+        p.get("max_links_per_page"),
+        DEFAULT_MAX_LINKS_PER_PAGE,
+        _CAP_MAX_LINKS_PER_PAGE,
+    )
+    force_link_follow = bool(p.get("force_link_follow", False))
 
     memory_core = getattr(guardian, "memory", None) if guardian is not None else None
 
@@ -136,6 +145,8 @@ def run_bounded_browser_for_capability(
             max_pages=max_pages,
             max_scrolls_per_page=max_scrolls,
             max_depth=max_depth,
+            max_links_per_page=max_links,
+            force_link_follow=force_link_follow,
             memory_core=memory_core,
             **({"allowed_hosts": allowed_hosts_set} if allowed_hosts_set is not None else {}),
         )
@@ -148,5 +159,12 @@ def run_bounded_browser_for_capability(
     compact = build_compact_browser_result(r, scrolls_used=scrolls_used)
     if allowed_hosts_set is not None:
         compact["allowed_domains"] = sorted(allowed_hosts_set)
+    compact["budget"] = {
+        "max_pages": max_pages,
+        "max_scrolls_per_page": max_scrolls,
+        "max_depth": max_depth,
+        "max_links_per_page": max_links,
+    }
+    compact["force_link_follow"] = force_link_follow
 
     return {"success": True, "result": compact}

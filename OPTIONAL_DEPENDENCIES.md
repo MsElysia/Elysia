@@ -324,6 +324,43 @@ If you encounter issues with Python 3.13:
    - Check package documentation for Python 3.13 support
    - Consider waiting for package updates
 
+---
+
+### MCP (Model Context Protocol — stdio client)
+
+**Package:** `mcp` (official [Model Context Protocol Python SDK](https://github.com/modelcontextprotocol/python-sdk))
+
+**Impact:** Lets Guardian/Elysia talk to **external MCP servers** (filesystem, fetch, custom tools) over stdio using the same protocol as Cursor and other MCP hosts.
+
+**Installation:**
+```bash
+pip install "mcp>=1.26.0,<2"
+# or
+pip install -r requirements-optional.txt
+```
+
+`requirements-optional.txt` also pins `sse-starlette<3` so MCP's SSE transport stays
+compatible with the FastAPI dashboard's Starlette range.
+
+**Usage:** Copy `config/mcp_servers.example.json` to `config/mcp_servers.json`, edit `command` / `args`, then:
+
+```bash
+python scripts/mcp_probe.py --config config/mcp_servers.json --server YOUR_NAME --list-tools
+```
+
+**API:** `project_guardian.mcp_stdio_bridge` — `list_tools_stdio`, `call_tool_stdio`, and async variants.
+
+**Chat (tool-first):** When `config/mcp_capability_allowlist.json` exists with `"enabled": true` and the `mcp` package is installed, the registry exposes tool **`elysia_mcp_tool`**. Operator messages containing **“mcp”** can run **before** the LLM when the capability match score clears the decider threshold:
+
+- `mcp list <server_name>` — lists tools from that server (must be allowlisted).
+- Or a single JSON object: `{"server":"...","tool":"...","arguments":{...}}` for one allowlisted call.
+
+See `config/mcp_capability_allowlist.example.json` and `project_guardian/mcp_capability.py`.
+
+**Fallback:** If `mcp` is not installed, imports fail gracefully; `mcp_probe.py` prints install instructions.
+
+---
+
 ## Verification
 
 After installing dependencies, verify they're detected:

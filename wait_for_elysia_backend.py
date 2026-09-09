@@ -4,9 +4,10 @@ Poll the Elysia status HTTP API until the backend is up or timeout.
 Used by START_ELYSIA_FULL.bat (do not import heavy project modules before elysia.py is ready).
 
 Env:
-  ELYSIA_STARTUP_WAIT_SEC   — max wait seconds (default 300)
-  ELYSIA_STARTUP_POLL_SEC   — interval between polls (default 3)
-  ELYSIA_STARTUP_GRACE_SEC  — seconds before treating missing elysia.py process as crash (default 20)
+  ELYSIA_STARTUP_WAIT_SEC              - max wait seconds (default 300)
+  ELYSIA_STARTUP_POLL_SEC              - interval between polls (default 3)
+  ELYSIA_STARTUP_GRACE_SEC             - seconds before treating missing elysia.py process as crash (default 20)
+  ELYSIA_STARTUP_REQUEST_TIMEOUT_SEC   - per-request timeout seconds (default 3)
 """
 from __future__ import annotations
 
@@ -34,11 +35,18 @@ def _status_endpoint() -> str:
     return get_status_url().rstrip("/") + "/status"
 
 
+def _request_timeout() -> float:
+    try:
+        return max(0.5, float(os.environ.get("ELYSIA_STARTUP_REQUEST_TIMEOUT_SEC", "3")))
+    except Exception:
+        return 3.0
+
+
 def _fetch_status_json() -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     url = _status_endpoint()
     req = urllib.request.Request(url, headers={"User-Agent": "ElysiaStartupWait/1"})
     try:
-        with urllib.request.urlopen(req, timeout=8) as r:
+        with urllib.request.urlopen(req, timeout=_request_timeout()) as r:
             raw = r.read().decode("utf-8", errors="replace")
             return json.loads(raw), None
     except urllib.error.HTTPError as e:
@@ -107,7 +115,7 @@ def main() -> int:
             if _backend_ready(body):
                 phase = body.get("startup_phase") or "unknown"
                 print(
-                    f"  [{elapsed:7.1f}s] attempt {attempt}: OK — backend responding "
+                    f"  [{elapsed:7.1f}s] attempt {attempt}: OK - backend responding "
                     f"(startup_phase={phase!r})"
                 )
                 return 0
@@ -119,7 +127,7 @@ def main() -> int:
             if phase_hint:
                 phase_hint = f" phase={phase_hint!r}"
 
-        print(f"  [{elapsed:7.1f}s] attempt {attempt}: waiting… ({err_s}){phase_hint}")
+        print(f"  [{elapsed:7.1f}s] attempt {attempt}: waiting... ({err_s}){phase_hint}")
 
         if elapsed >= grace and sys.platform == "win32":
             if not _elysia_backend_process_running_windows():
@@ -132,7 +140,7 @@ def main() -> int:
         time.sleep(interval)
 
     print()
-    print(f"Timeout after {max_wait:.0f}s — status URL never returned a ready JSON payload.")
+    print(f"Timeout after {max_wait:.0f}s - status URL never returned a ready JSON payload.")
     print(f"Last error: {last_err}")
     if last_body:
         try:

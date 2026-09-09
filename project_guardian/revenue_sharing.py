@@ -1,10 +1,15 @@
 # project_guardian/revenue_sharing.py
 # RevenueSharing: Secure Revenue Sharing System
 # Ensures master receives share from slave earnings
+#
+# Ledger vs payouts: this module records shares, statuses, and (when configured)
+# master-side ``AssetManager`` income. It does **not** move real money to external slave
+# wallets. Keep ``ELYSIA_REVENUE_LEDGER_ONLY=1`` (default) until payment rails are integrated.
 
 import logging
 import json
 import hashlib
+import os
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,6 +35,12 @@ except ImportError:
         AuditSeverity = None
 
 logger = logging.getLogger(__name__)
+
+
+def revenue_ledger_only_mode() -> bool:
+    """When True (default), slave payouts are metadata/ledger only — no external transfers."""
+    v = (os.environ.get("ELYSIA_REVENUE_LEDGER_ONLY", "1") or "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
 
 
 class RevenueStatus(Enum):
@@ -384,9 +395,26 @@ class RevenueSharing:
                 amount=trust_delta
             )
         
-        # In production: Transfer slave share to slave's account/wallet
-        # For now, track it in metadata
-        logger.info(f"Distributed: Master=${transaction.master_share_amount:.2f}, Slave=${transaction.slave_share_amount:.2f}")
+        # Slave share: ledger / metadata only unless real payout rails are integrated.
+        transaction.metadata.setdefault("distribution_ledger", []).append(
+            {
+                "ts": datetime.now().isoformat(),
+                "slave_share_amount": transaction.slave_share_amount,
+                "currency": transaction.currency,
+                "ledger_only": revenue_ledger_only_mode(),
+                "note": (
+                    "no_external_slave_payout"
+                    if revenue_ledger_only_mode()
+                    else "ledger_only_flag_disabled_review_payout_integrity"
+                ),
+            }
+        )
+        logger.info(
+            "Distributed ledger: master=$%.2f slave=$%.2f (ledger_only=%s)",
+            transaction.master_share_amount,
+            transaction.slave_share_amount,
+            revenue_ledger_only_mode(),
+        )
     
     def _use_escrow(self) -> bool:
         """Check if escrow system should be used."""
@@ -601,33 +629,69 @@ class RevenueSharing:
             logger.error(f"Failed to load revenue sharing data: {e}")
 
 
-# Example usage
-if __name__ == "__main__":
-    # This demonstrates the revenue sharing flow
-    
-    # Slave reports earnings
-    revenue_sharing = RevenueSharing(
-        master_slave=None,  # Would be provided
-        default_master_share=0.3  # 30% to master
-    )
-    
-    # Slave reports $100 earned
-    transaction_id = revenue_sharing.report_slave_earnings(
-        slave_id="slave_001",
-        amount=100.0,
-        currency="USD",
-        source="gumroad_sale",
-        payment_proof="txn_hash_abc123"
-    )
-    
-    # Master verifies
-    revenue_sharing.verify_transaction(
-        transaction_id,
-        verified=True,
-        verification_notes="Payment verified via API"
-    )
-    
-    # Funds distributed:
-    # Master receives: $30.00 (30%)
-    # Slave receives: $70.00 (70%)
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
 
+
+def configure_revenue_sharing(
+    *,
+    master_slave: Optional[MasterSlaveController] = None,
+    asset_manager: Optional[AssetManager] = None,
+    trust_registry: Optional[TrustRegistry] = None,
+    audit_log: Optional[TrustAuditLog] = None,
+    franchise_manager: Optional[Any] = None,
+    guardian: Optional[Any] = None,
+    default_master_share: float = 0.3,
+    storage_path: str = "data/revenue_sharing.json",
+) -> RevenueSharing:
+    """
+    Build ``RevenueSharing`` from explicit dependencies or a minimal guardian object.
+
+    Requires a ``MasterSlaveController`` (``master_slave=`` or ``guardian.master_slave_controller``).
+    """
+    resolved_ms = master_slave or _guardian_component(
+        guardian,
+        "master_slave_controller",
+        "master_slave",
+    )
+    if resolved_ms is None:
+        raise ValueError("RevenueSharing requires master_slave")
+
+    resolved_am = asset_manager or _guardian_component(guardian, "asset_manager")
+    resolved_tr = trust_registry or _guardian_component(guardian, "trust_registry")
+    resolved_audit = audit_log or _guardian_component(
+        guardian,
+        "trust_audit_log",
+        "audit_log",
+    )
+    resolved_fm = franchise_manager or _guardian_component(
+        guardian,
+        "franchise_manager",
+    )
+
+    return RevenueSharing(
+        master_slave=resolved_ms,
+        asset_manager=resolved_am,
+        trust_registry=resolved_tr,
+        audit_log=resolved_audit,
+        franchise_manager=resolved_fm,
+        default_master_share=default_master_share,
+        storage_path=storage_path,
+    )
+
+
+if __name__ == "__main__":
+    import sys
+
+    print(
+        "RevenueSharing is constructed via configure_revenue_sharing(...) with a "
+        "MasterSlaveController (or guardian exposing master_slave_controller), plus optional "
+        "AssetManager, TrustRegistry, TrustAuditLog, and FranchiseManager."
+    )
+    sys.exit(0)

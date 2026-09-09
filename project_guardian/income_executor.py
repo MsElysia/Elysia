@@ -7,7 +7,7 @@ import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 from enum import Enum
 from dataclasses import dataclass, field
 
@@ -85,7 +85,7 @@ class IncomeExecutor:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Thread-safe operations
-        self._lock = Lock()
+        self._lock = RLock()
         
         # Revenue streams
         self.revenue_streams: Dict[str, RevenueStream] = {}
@@ -182,6 +182,8 @@ class IncomeExecutor:
             result = await self._execute_content_creation(stream, use_slaves, min_slave_trust)
         elif stream.strategy == IncomeStrategy.AUTOMATION:
             result = await self._execute_automation(stream, use_slaves, min_slave_trust)
+        elif stream.strategy == IncomeStrategy.MARKETPLACE:
+            result = await self._execute_marketplace(stream)
         else:
             result = {"success": False, "error": f"Strategy {stream.strategy.value} not implemented"}
         
@@ -237,7 +239,8 @@ class IncomeExecutor:
             return {"success": False, "error": "GumroadClient not available"}
         
         # Sync sales data
-        self.gumroad_client.sync_data()
+        if hasattr(self.gumroad_client, "sync_data"):
+            self.gumroad_client.sync_data()
         
         # Get recent sales
         sales = self.gumroad_client.get_sales(limit=100)
@@ -391,15 +394,181 @@ class IncomeExecutor:
         Returns:
             Execution result
         """
-        # Master creates automation workflows
-        # Slaves execute automated tasks
-        
+        automation_type = str(
+            stream.metadata.get("automation_type")
+            or stream.metadata.get("workflow")
+            or stream.name
+        ).strip()
+        plan_description = str(
+            stream.metadata.get("objective_description")
+            or stream.metadata.get("description")
+            or f"Automate revenue work for {stream.name} using repeatable execution steps."
+        ).strip()
+        priority = int(stream.metadata.get("priority", 6) or 6)
+        task_ids: List[str] = []
+        objective_id: Optional[str] = None
+
+        if self.longterm_planner:
+            try:
+                objective_id = self.longterm_planner.add_objective(
+                    name=f"Revenue automation: {stream.name}",
+                    description=plan_description,
+                    priority=priority,
+                    metadata={
+                        "stream_id": stream.stream_id,
+                        "strategy": stream.strategy.value,
+                        "automation_type": automation_type,
+                        "source": "income_executor",
+                    },
+                )
+                if stream.metadata.get("auto_breakdown", True):
+                    task_ids = await self.longterm_planner.breakdown_objective(
+                        objective_id,
+                        strategy=str(stream.metadata.get("breakdown_strategy", "hierarchical")),
+                    )
+                stream.metadata["last_objective_id"] = objective_id
+            except Exception as e:
+                logger.warning("Automation planning failed for %s: %s", stream.stream_id, e)
+
+        dispatched_slave_ids: List[str] = []
+        dispatch_limit = max(1, int(stream.metadata.get("dispatch_limit", 1) or 1))
+        priority_for_dispatch = max(5, min(priority, 10))
+
+        if use_slaves and self.master_slave:
+            candidate_slaves = self.master_slave.list_slaves(
+                status=SlaveStatus.ACTIVE,
+                role=SlaveRole.WORKER,
+                min_trust=min_trust,
+            )
+            if not candidate_slaves:
+                candidate_slaves = self.master_slave.list_slaves(
+                    status=SlaveStatus.ACTIVE,
+                    role=SlaveRole.TRUSTED,
+                    min_trust=min_trust,
+                )
+
+            dispatch_payload = {
+                "stream_id": stream.stream_id,
+                "stream_name": stream.name,
+                "automation_type": automation_type,
+                "objective_id": objective_id,
+                "task_ids": task_ids,
+                "steps": list(stream.metadata.get("steps") or []),
+                "metadata": {
+                    key: value
+                    for key, value in stream.metadata.items()
+                    if key not in {"steps"}
+                },
+            }
+
+            for slave in candidate_slaves[:dispatch_limit]:
+                if self.master_slave.send_command(
+                    slave.slave_id,
+                    "run_automation",
+                    data=dispatch_payload,
+                    priority=priority_for_dispatch,
+                ):
+                    dispatched_slave_ids.append(slave.slave_id)
+
+        expected_revenue = float(stream.metadata.get("expected_revenue", 0.0) or 0.0)
+        stream.metadata["last_automation_run"] = datetime.now().isoformat()
+
         return {
             "success": True,
-            "revenue": 0.0,
+            "revenue": expected_revenue,
+            "executed_by": "slave" if dispatched_slave_ids else "master",
+            "method": "automation_orchestration",
+            "automation_type": automation_type,
+            "objective_id": objective_id,
+            "task_ids": task_ids,
+            "dispatched_slave_ids": dispatched_slave_ids,
+            "note": (
+                "Automation objective planned and dispatched"
+                if dispatched_slave_ids
+                else "Automation objective planned locally"
+                if objective_id
+                else "Automation execution recorded"
+            ),
+        }
+
+    async def _execute_marketplace(self, stream: RevenueStream) -> Dict[str, Any]:
+        """
+        Execute marketplace strategy.
+        Financial marketplace actions stay on the master node.
+        """
+        if not self.gumroad_client:
+            return {"success": False, "error": "GumroadClient not available"}
+
+        platform = str(stream.metadata.get("platform", "gumroad") or "gumroad").strip().lower()
+        if platform != "gumroad":
+            return {
+                "success": False,
+                "error": f"Marketplace platform {platform} not supported",
+            }
+
+        operation = str(stream.metadata.get("operation", "sync") or "sync").strip().lower()
+
+        if operation in ("create_listing", "publish_listing", "create_product"):
+            if not hasattr(self.gumroad_client, "create_product"):
+                return {"success": False, "error": "GumroadClient does not support listing creation"}
+
+            listing_name = str(stream.metadata.get("product_name") or stream.name)
+            listing_price = float(stream.metadata.get("price", 0.0) or 0.0)
+            description = str(stream.metadata.get("description", "") or "")
+            product_metadata = stream.metadata.get("product_metadata", {})
+            if not isinstance(product_metadata, dict):
+                product_metadata = {}
+
+            listing_result = self.gumroad_client.create_product(
+                name=listing_name,
+                price=listing_price,
+                description=description,
+                metadata=product_metadata,
+            )
+
+            if isinstance(listing_result, dict):
+                product_id = (
+                    listing_result.get("id")
+                    or listing_result.get("product_id")
+                    or listing_result.get("product", {}).get("id")
+                )
+            else:
+                product_id = listing_result
+
+            if not product_id:
+                return {"success": False, "error": "Marketplace listing creation failed"}
+
+            stream.metadata["product_id"] = str(product_id)
+            return {
+                "success": True,
+                "revenue": 0.0,
+                "executed_by": "master",
+                "method": "marketplace_listing",
+                "platform": platform,
+                "operation": operation,
+                "product_id": str(product_id),
+            }
+
+        if hasattr(self.gumroad_client, "sync_data"):
+            self.gumroad_client.sync_data()
+
+        sales_limit = int(stream.metadata.get("sales_limit", 100) or 100)
+        sales = list(self.gumroad_client.get_sales(limit=sales_limit) or [])
+
+        product_id = stream.metadata.get("product_id")
+        if product_id:
+            sales = [sale for sale in sales if sale.get("product_id") == product_id]
+
+        revenue = sum(float(sale.get("price", 0)) for sale in sales)
+
+        return {
+            "success": True,
+            "revenue": revenue,
+            "sales_count": len(sales),
             "executed_by": "master",
-            "method": "automation",
-            "note": "Automation strategy executed"
+            "method": "marketplace_sync",
+            "platform": platform,
+            "operation": operation,
         }
     
     def get_revenue_report(

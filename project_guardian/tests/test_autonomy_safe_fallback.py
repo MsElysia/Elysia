@@ -207,6 +207,9 @@ def test_operator_chat_with_llm_unified_path_unchanged(monkeypatch):
 
     def fake_unified(**kwargs):
         captured["safe"] = kwargs.get("require_autonomy_safe_reasoning")
+        captured["module_name"] = kwargs.get("module_name")
+        captured["agent_name"] = kwargs.get("agent_name")
+        captured["prompt_extra"] = kwargs.get("prompt_extra") or {}
         return ("hi", "", {"backend": "openai"})
 
     monkeypatch.setattr("project_guardian.unified_llm_route.unified_chat_completion", fake_unified)
@@ -217,7 +220,66 @@ def test_operator_chat_with_llm_unified_path_unchanged(monkeypatch):
     monkeypatch.setattr(inst, "_mistral_model_for_chat", lambda: "mistral")
     monkeypatch.setattr(inst, "_llm_completion_cloud_openai", lambda m, t: ("", ""))
     monkeypatch.setattr(inst, "_llm_completion_cloud_openrouter", lambda m, t: ("", ""))
+    monkeypatch.setattr(
+        inst,
+        "_build_operator_chat_context",
+        lambda message: {"runtime": {"status": "ok"}, "providers": {"canonical_ollama_model": "mistral:7b"}},
+    )
 
     reply, err = UnifiedElysiaSystem.chat_with_llm(inst, "hello")
     assert reply == "hi" and not err
     assert captured.get("safe") is not True
+    assert captured.get("module_name") == "operator_chat"
+    assert captured.get("agent_name") is None
+    assert captured["prompt_extra"].get("task_type") == "conversation"
+    assert captured["prompt_extra"].get("context", {}).get("providers", {}).get("canonical_ollama_model") == "mistral:7b"
+
+
+def test_build_operator_chat_context_exposes_runtime_facts():
+    UnifiedElysiaSystem = _load_unified_elysia_system()
+
+    inst = UnifiedElysiaSystem.__new__(UnifiedElysiaSystem)
+    inst.guardian = None
+    inst.modules = {}
+    inst.get_status = lambda: {
+        "status": "running",
+        "uptime": "0:01:23",
+        "startup_phase": "running",
+        "dashboard_ready": True,
+        "warnings": ["Last vector rebuild skipped: no rebuild pending or degraded"],
+        "components": {"guardian_core": True, "runtime_loop": True},
+        "guardian_status": {
+            "memory": {"total_memories": 42},
+            "planner_runtime_status": {
+                "canonical_ollama_model": "mistral:7b",
+                "planner_readiness": "ready",
+                "ollama_reachable": True,
+                "ollama_exact_tag_match": True,
+                "planner_startup_stabilization_required": False,
+                "early_runtime_budget": False,
+                "runtime_decision": {
+                    "local_usable": True,
+                    "local_block_reason": None,
+                    "reasoning_provider_selected": "openai",
+                    "reasoning_provider_autonomy_safe": "local",
+                    "openai_usable": True,
+                    "openrouter_usable": True,
+                },
+            },
+        },
+        "income_modules": {
+            "income_generator": {"total_earned": 0.0, "active_projects": 3},
+            "wallet": {"balance": 0},
+        },
+    }
+    inst._unified_chat_llm_router_enabled = lambda: True
+    inst._mistral_model_for_chat = lambda: "mistral:7b"
+
+    ctx = UnifiedElysiaSystem._build_operator_chat_context(inst, "can you use ollama better for elysia program")
+    assert ctx["planner_runtime"]["planner_readiness"] == "ready"
+    assert ctx["routing"]["local_usable"] is True
+    facts = ctx["current_state_facts"]
+    assert "unified_chat_llm_router=true" in facts
+    assert "canonical_ollama_model=mistral:7b" in facts
+    assert "planner_readiness=ready" in facts
+    assert "local_usable=true" in facts

@@ -37,6 +37,17 @@ python -m project_guardian
 
 The repo includes `pyproject.toml` and `poetry.lock` for a package-based install. With [Poetry](https://python-poetry.org/) installed: `poetry install`
 
+### Safe-stack smoke tests (CI slice)
+
+Verifies conversation memory, brain trace visibility, TDA naming, self-improvement proposals/export, prompt contracts, and memory ranking — **without** starting servers, enabling autonomy, or calling external APIs:
+
+```bash
+python scripts/run_safe_stack_smoke_tests.py
+# or: make safe-smoke
+```
+
+GitHub Actions: workflow **Safe stack smoke** (`.github/workflows/safe-stack-smoke.yml`). See `docs/ELYSIA_ARCHITECTURE_CHECKPOINT.md` for scope and limits.
+
 ---
 
 ## Documentation
@@ -192,6 +203,12 @@ project_guardian/
 ```bash
 # Run verification
 python verify_system.py
+
+# Run safe-stack smoke tests (pytest slice; no services, autonomy, or live execution)
+python scripts/run_safe_stack_smoke_tests.py
+
+# Optional Makefile shortcut
+make safe-smoke
 
 # Manual testing
 python test_mutation_manual.py

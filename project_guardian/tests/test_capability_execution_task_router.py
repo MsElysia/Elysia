@@ -23,7 +23,7 @@ def _guardian(fake: _FakeTaskRouter):
     return type("G", (), {"_modules": {"task_router": fake}})()
 
 
-def test_real_task_route_metadata_counts_as_success():
+def test_real_task_web_route_without_url_does_not_count_as_success():
     fake = _FakeTaskRouter(
         {
             "task_type": "text-gen",
@@ -41,6 +41,52 @@ def test_real_task_route_metadata_counts_as_success():
             "structured_task": {
                 "task_type": "text-gen",
                 "objective": "hello",
+            }
+        },
+    )
+    assert out["success"] is False
+    assert "task_router_no_matching_tool" in str(out.get("error", ""))
+    assert out["result"]["route_blocked_reason"] == "no_strict_capability_match"
+
+
+def test_real_task_strict_route_metadata_counts_as_success():
+    fake = _FakeTaskRouter(
+        {
+            "task_type": "completion",
+            "routed_to": "elysia_builtin_llm",
+            "score": 60.0,
+            "available_tools": 1,
+        }
+    )
+    g = _guardian(fake)
+    out = execute_capability_kind(
+        g,
+        "module",
+        "task_router",
+        {"structured_task": {"task_type": "completion", "objective": "hello"}},
+    )
+    assert out["success"] is True
+    assert out["result"]["routed_to"] == "elysia_builtin_llm"
+
+
+def test_real_task_web_route_with_url_counts_as_success():
+    fake = _FakeTaskRouter(
+        {
+            "task_type": "fetch",
+            "routed_to": "elysia_builtin_web",
+            "score": 60.0,
+            "available_tools": 1,
+        }
+    )
+    g = _guardian(fake)
+    out = execute_capability_kind(
+        g,
+        "module",
+        "task_router",
+        {
+            "structured_task": {
+                "task_type": "fetch",
+                "objective": "Fetch https://example.com/status",
             }
         },
     )

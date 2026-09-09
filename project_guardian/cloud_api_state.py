@@ -70,6 +70,135 @@ def openrouter_key_loaded() -> bool:
     return bool(cloud_credentials_snapshot().get("openrouter"))
 
 
+def openrouter_routing_disabled_by_policy() -> bool:
+    v = (os.environ.get("ELYSIA_DISABLE_OPENROUTER_ROUTING") or "").strip().lower()
+    return v in ("1", "true", "yes")
+
+
+def anthropic_routing_disabled_by_policy() -> bool:
+    v = (os.environ.get("ELYSIA_DISABLE_ANTHROPIC_ROUTING") or "").strip().lower()
+    return v in ("1", "true", "yes")
+
+
+def openrouter_ready_for_reasoning() -> bool:
+    """Backward-compatible: key present (does not assert routability or policy). Prefer openrouter_usable_for_reasoning()."""
+    return openrouter_key_loaded()
+
+
+def openrouter_usable_for_reasoning() -> bool:
+    """Key present and not policy-disabled — counts toward capability sufficiency."""
+    if not openrouter_key_loaded():
+        return False
+    if openrouter_routing_disabled_by_policy():
+        return False
+    return True
+
+
+def anthropic_usable_for_reasoning() -> bool:
+    """
+    Conservative: key + policy allow is not enough for unified reasoning sufficiency.
+    Requires ELYSIA_ANTHROPIC_REASONING_TRUST=1 so operators explicitly opt in (no live probe here).
+    """
+    if not anthropic_key_loaded():
+        return False
+    if anthropic_routing_disabled_by_policy():
+        return False
+    v = (os.environ.get("ELYSIA_ANTHROPIC_REASONING_TRUST") or "").strip().lower()
+    return v in ("1", "true", "yes")
+
+
+def _compact_openai_blocked_reason(code: Optional[str]) -> Optional[str]:
+    """Stable short codes for operator snapshots (usable → caller passes None)."""
+    if not code or code == "openai_ok":
+        return None
+    m = {
+        "openai_policy_disabled": "policy_disabled",
+        "openai_key_missing": "not_configured",
+        "openai_insufficient_quota_blocked": "quota",
+        "openai_degraded_cooldown": "cooldown",
+        "openai_guard_state_unreadable": "not_routable",
+    }
+    return m.get(code, "not_routable")
+
+
+def provider_reasoning_truth_snapshot(*, refresh: bool = False) -> Dict[str, Any]:
+    """
+    Per-provider configured / routable / usable for reasoning (compact, no network I/O).
+    - configured: API key present
+    - routable: configured and not blocked by policy from appearing on routes
+    - usable: routable and not degraded / quota-blocked (OpenAI) or explicit trust (Anthropic)
+    - autonomy_safe: same as usable here — stricter than raw API-router selectability (router may still
+      consider Anthropic from key alone; usable/autonomy_safe require trust + policy for Anthropic).
+    - blocked_reason: short stable token when not usable (see _compact_openai_blocked_reason)
+    """
+    s = cloud_credentials_snapshot(refresh=refresh)
+    oa_cfg = bool(s.get("openai"))
+    oa_routable = oa_cfg and not openai_routing_disabled_by_policy()
+    oa_use = bool(openai_usable_for_routing())
+    oa_br = None if oa_use else _compact_openai_blocked_reason(openai_routing_block_reason())
+
+    or_cfg = bool(s.get("openrouter"))
+    or_routable = or_cfg and not openrouter_routing_disabled_by_policy()
+    or_use = bool(openrouter_usable_for_reasoning())
+    if or_use:
+        or_br = None
+    elif not or_cfg:
+        or_br = "not_configured"
+    elif openrouter_routing_disabled_by_policy():
+        or_br = "policy_disabled"
+    else:
+        or_br = "not_routable"
+
+    an_cfg = bool(s.get("anthropic"))
+    an_routable = an_cfg and not anthropic_routing_disabled_by_policy()
+    an_use = bool(anthropic_usable_for_reasoning())
+    if an_use:
+        an_br = None
+    elif not an_cfg:
+        an_br = "not_configured"
+    elif anthropic_routing_disabled_by_policy():
+        an_br = "policy_disabled"
+    else:
+        an_br = "not_routable"
+
+    return {
+        "openai": {
+            "configured": oa_cfg,
+            "routable": oa_routable,
+            "usable": oa_use,
+            "autonomy_safe": bool(oa_use),
+            "blocked_reason": oa_br,
+        },
+        "openrouter": {
+            "configured": or_cfg,
+            "routable": or_routable,
+            "usable": or_use,
+            "autonomy_safe": bool(or_use),
+            "blocked_reason": or_br,
+        },
+        "anthropic": {
+            "configured": an_cfg,
+            "routable": an_routable,
+            "usable": an_use,
+            "autonomy_safe": bool(an_use),
+            "blocked_reason": an_br,
+        },
+    }
+
+
+def capability_reasoning_snapshot() -> Dict[str, Any]:
+    """
+    Capability-level view (local staged planner + cloud keys), for dashboards.
+    Does not call remote providers.
+    """
+    try:
+        from .planner_readiness import build_runtime_decision_status_dict
+
+        return build_runtime_decision_status_dict(None)
+    except Exception:
+        return {}
+
+
 def anthropic_key_loaded() -> bool:
     return bool(cloud_credentials_snapshot().get("anthropic"))
 
@@ -87,7 +216,7 @@ def openai_routing_disabled_by_policy() -> bool:
     return v in ("1", "true", "yes")
 
 
-def openai_usable_for_routing() -> bool:
+def openai_usable_for_routing(*, allow_quota_reprobe: bool = False) -> bool:
     """Key present, policy allows, not in openai_degraded cooldown, not in insufficient_quota reasoning block."""
     if openai_routing_disabled_by_policy():
         return False
@@ -99,7 +228,7 @@ def openai_usable_for_routing() -> bool:
             openai_insufficient_quota_reasoning_blocked,
         )
 
-        if openai_insufficient_quota_reasoning_blocked():
+        if openai_insufficient_quota_reasoning_blocked(allow_reprobe=allow_quota_reprobe):
             return False
         if is_openai_degraded_active():
             return False
@@ -158,8 +287,16 @@ def usable_cloud_routing_snapshot(*, refresh: bool = False) -> Dict[str, Any]:
             "routing_block_message": human_openai_routing_message(oa_br),
             "policy_disables_routing": openai_routing_disabled_by_policy(),
         },
-        "openrouter": {"key_loaded": bool(s.get("openrouter"))},
-        "anthropic": {"key_loaded": bool(s.get("anthropic"))},
+        "openrouter": {
+            "key_loaded": bool(s.get("openrouter")),
+            "routable": bool(s.get("openrouter")) and not openrouter_routing_disabled_by_policy(),
+            "usable_for_reasoning": openrouter_usable_for_reasoning(),
+        },
+        "anthropic": {
+            "key_loaded": bool(s.get("anthropic")),
+            "routable": bool(s.get("anthropic")) and not anthropic_routing_disabled_by_policy(),
+            "usable_for_reasoning": anthropic_usable_for_reasoning(),
+        },
         "huggingface": {"key_loaded": bool(s.get("huggingface"))},
         "cohere": {"key_loaded": bool(s.get("cohere"))},
         "any_llm_key_loaded": any_llm_cloud_key_loaded(),

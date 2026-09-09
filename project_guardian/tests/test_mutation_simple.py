@@ -6,7 +6,11 @@ from pathlib import Path
 # Add project to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from types import SimpleNamespace
+
 from project_guardian.mutation_engine import MutationEngine, MutationStatus
+from project_guardian.mutation_publisher import configure_mutation_publisher
+from project_guardian.mutation_review_manager import configure_mutation_review_manager
 
 
 def test_mutation_engine_basic():
@@ -44,6 +48,33 @@ def test_mutation_engine_basic():
         # Cleanup
         if os.path.exists(temp_path):
             os.unlink(temp_path)
+
+
+def test_configure_mutation_publisher_requires_engine():
+    with pytest.raises(ValueError, match="mutation_engine"):
+        configure_mutation_publisher()
+
+
+def test_configure_mutation_publisher_resolves_from_guardian(tmp_path):
+    engine_path = str(tmp_path / "mut_store.json")
+    engine = MutationEngine(storage_path=engine_path)
+    guardian = SimpleNamespace(mutation_engine=engine)
+    publisher = configure_mutation_publisher(guardian=guardian, codebase_path=str(tmp_path))
+    assert publisher.mutation_engine is engine
+
+
+def test_configure_mutation_review_manager_requires_engine():
+    with pytest.raises(ValueError, match="mutation_engine"):
+        configure_mutation_review_manager()
+
+
+def test_configure_mutation_review_manager_resolves_from_guardian(tmp_path):
+    engine_path = str(tmp_path / "mut_store2.json")
+    engine = MutationEngine(storage_path=engine_path)
+    guardian = SimpleNamespace(mutation_engine=engine)
+    reviews_path = str(tmp_path / "mutation_reviews.json")
+    mgr = configure_mutation_review_manager(guardian=guardian, storage_path=reviews_path)
+    assert mgr.mutation_engine is engine
 
 
 if __name__ == "__main__":

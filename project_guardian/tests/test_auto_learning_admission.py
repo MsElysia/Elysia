@@ -9,6 +9,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from project_guardian.auto_learning import (
+    _chained_social_item_signal_score,
+    _should_collect_chained_social_item,
     should_ingest_learned_item,
     score_learned_item,
     is_cross_session_duplicate,
@@ -138,3 +140,47 @@ class TestAutoLearningAdmissionFilters:
         assert _is_generic_title_for_dedup("") is True
         # Specific title is not generic
         assert _is_generic_title_for_dedup("ai advances in machine learning 2025") is False
+
+    def test_chained_social_signal_prefers_complaints_over_generic_promo(self):
+        complaint = {
+            "source": "twitter",
+            "title": "Customer complaint automation bottleneck",
+            "text": "Teams keep complaining that manual customer complaint triage is time-consuming and needs automation.",
+            "public_metrics": {"like_count": 3, "reply_count": 1, "retweet_count": 0},
+        }
+        promo = {
+            "source": "twitter",
+            "title": "As I work with merchant brands",
+            "text": "As I work with merchant brands, data automation is key, check out my tool and follow me.",
+            "public_metrics": {"like_count": 0, "reply_count": 0, "retweet_count": 0},
+        }
+
+        complaint_score = _chained_social_item_signal_score(complaint, ["automation", "customer complaints"])
+        promo_score = _chained_social_item_signal_score(promo, ["automation", "customer complaints"])
+
+        assert complaint_score >= 2
+        assert promo_score < 2
+        assert _should_collect_chained_social_item(complaint, ["automation", "customer complaints"]) is True
+        assert _should_collect_chained_social_item(promo, ["automation", "customer complaints"]) is False
+
+    def test_chained_social_signal_drops_generic_conversational_reddit_post(self):
+        generic = {
+            "source": "reddit",
+            "title": "On the path towards a true science of deep learning [D]",
+            "text": "General discussion about deep learning progress and future directions.",
+            "score": 5,
+            "num_comments": 4,
+        }
+
+        assert _should_collect_chained_social_item(generic, ["AI", "machine learning"]) is False
+
+    def test_chained_social_signal_does_not_count_query_text_as_content_signal(self):
+        tweet = {
+            "source": "twitter",
+            "title": "As I work with merchant brands",
+            "text": "As I work with merchant brands, data automation is key, check out my tool and follow me.",
+            "query": "automation pain point",
+            "public_metrics": {"like_count": 0, "reply_count": 0, "retweet_count": 0},
+        }
+
+        assert _should_collect_chained_social_item(tweet, ["automation", "customer complaints"]) is False

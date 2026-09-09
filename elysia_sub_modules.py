@@ -3,9 +3,68 @@
 import os
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def build_harvest_engine_from_current_keys() -> Tuple[Any, Optional[str], Optional[str]]:
+    """
+    Construct HarvestEngine from resolve_gumroad_access_token / resolve_stripe_secret_key.
+    Used at boot and after Control Panel saves income keys (no process restart).
+    """
+    from harvest_engine import HarvestEngine
+
+    from project_guardian.api_key_manager import resolve_gumroad_access_token, resolve_stripe_secret_key
+
+    gumroad_token = resolve_gumroad_access_token()
+    stripe_key = resolve_stripe_secret_key()
+    eng = HarvestEngine(gumroad_token=gumroad_token, stripe_key=stripe_key)
+    return eng, gumroad_token, stripe_key
+
+
+def refresh_harvest_engine_in_modules(modules: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Replace modules[\"harvest_engine\"] after API keys change. GuardianCore shares this dict via wire_modules.
+    """
+    if not isinstance(modules, dict):
+        return {"ok": False, "reason": "invalid_modules"}
+    try:
+        eng, g, s = build_harvest_engine_from_current_keys()
+        modules["harvest_engine"] = eng
+        logger.info(
+            "[Income] Harvest Engine refreshed in-process — gumroad=%s stripe=%s",
+            "ok" if g else "skipped",
+            "ok" if s else "skipped",
+        )
+        return {"ok": True, "gumroad_bound": bool(g), "stripe_bound": bool(s)}
+    except Exception as e:
+        logger.warning("refresh_harvest_engine_in_modules failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+class WebScoutModuleSurface:
+    """Quota-limited facade around ElysiaWebScout for runtime integration."""
+
+    def __init__(self, scout: Any, max_sources_per_query: int):
+        self.webscout = scout
+        self.max_sources_per_query = max(1, int(max_sources_per_query))
+
+    def conduct_web_research(self, query: str, max_sources: Optional[int] = None):
+        requested = self.max_sources_per_query if max_sources is None else int(max_sources)
+        capped = max(1, min(requested, self.max_sources_per_query))
+        return self.webscout.conduct_web_research(query=query, max_sources=capped)
+
+    def list_proposals(self, status_filter: Optional[str] = None):
+        return self.webscout.list_proposals(status_filter=status_filter)
+
+    def get_status(self) -> Dict[str, Any]:
+        status: Dict[str, Any] = {"max_sources_per_query": self.max_sources_per_query}
+        if hasattr(self.webscout, "get_brave_search_usage"):
+            status["brave_search_usage"] = self.webscout.get_brave_search_usage()
+        if hasattr(self.webscout, "get_tavily_usage"):
+            status["tavily_usage"] = self.webscout.get_tavily_usage()
+        return status
 
 
 def init_integrated_modules(
@@ -60,14 +119,14 @@ def init_integrated_modules(
     except Exception as e:
         logger.warning(f"  [WARN] FractalMind failed: {e}")
 
-    # Harvest Engine
+    # Harvest Engine (Gumroad / Stripe — tokens from APIKeyManager: env, config/api_keys.json, API keys folder)
     try:
-        from harvest_engine import HarvestEngine
-        modules["harvest_engine"] = HarvestEngine(
-            gumroad_token=os.environ.get("GUMROAD_ACCESS_TOKEN"),
-            stripe_key=os.environ.get("STRIPE_SECRET_KEY"),
+        modules["harvest_engine"], gumroad_token, stripe_key = build_harvest_engine_from_current_keys()
+        logger.info(
+            "  [OK] Harvest Engine initialized — Income gumroad=%s stripe=%s",
+            "ok" if gumroad_token else "skipped",
+            "ok" if stripe_key else "skipped",
         )
-        logger.info("  [OK] Harvest Engine initialized")
     except Exception as e:
         logger.warning(f"  [WARN] Harvest Engine failed: {e}")
 
@@ -101,6 +160,28 @@ def init_integrated_modules(
         logger.info("  [OK] Long Term Planner initialized")
     except Exception as e:
         logger.warning(f"  [WARN] Long Term Planner failed: {e}")
+
+    if config.get("enable_webscout_agent", False):
+        try:
+            from project_guardian.webscout_agent import ElysiaWebScout
+
+            proposals_root = Path(config.get("webscout_proposals_root", "proposals"))
+            max_sources = int(config.get("webscout_max_sources", 3))
+            hard_cap = int(config.get("webscout_hard_cap", 5))
+            max_sources = max(1, min(max_sources, max(1, hard_cap)))
+            web_reader = getattr(guardian, "web_reader", None) if guardian else None
+            scout = ElysiaWebScout(
+                web_reader=web_reader,
+                proposals_root=proposals_root,
+                require_api_keys=bool(config.get("webscout_require_api_keys", False)),
+            )
+            modules["webscout_agent"] = WebScoutModuleSurface(
+                scout=scout,
+                max_sources_per_query=max_sources,
+            )
+            logger.info("  [OK] WebScout Agent initialized (max_sources_per_query=%s)", max_sources)
+        except Exception as e:
+            logger.warning(f"  [WARN] WebScout Agent failed: {e}")
 
     logger.info(f"  [OK] {len(modules)} modules initialized")
     return modules

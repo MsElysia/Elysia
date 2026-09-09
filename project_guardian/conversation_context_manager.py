@@ -201,10 +201,10 @@ class ConversationContextManager:
 
 {messages_text}
 
-Provide a concise summary for maintaining conversation continuity."""
+        Provide a concise summary for maintaining conversation continuity."""
 
         try:
-            response = await self.ask_ai.ask(
+            response = await self.ask_ai.ask_async(
                 prompt=prompt,
                 provider=AIProvider.OPENAI,
                 temperature=0.5,
@@ -416,7 +416,7 @@ Provide a concise summary for maintaining conversation continuity."""
         
         # Generate response with AI
         try:
-            response = await self.ask_ai.ask(
+            response = await self.ask_ai.ask_async(
                 prompt=enhanced_prompt,
                 provider=AIProvider.OPENAI,
                 system_prompt=system_prompt,

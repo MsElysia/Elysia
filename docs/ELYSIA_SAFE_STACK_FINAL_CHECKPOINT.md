@@ -201,7 +201,7 @@ Default `config/brain_pipeline.json` (unchanged):
 ## Smoke/test inventory
 
 **Command:** `python scripts/run_safe_stack_smoke_tests.py`  
-**Result:** **385 passed, 3 warnings** (2026-05-21)
+**Result:** **386 passed, 3 warnings** (2026-05-24, post-commit audit)
 
 **Script:** `scripts/run_safe_stack_smoke_tests.py` — 28 required modules + 2 optional alternates (TDA naming, memory-ranking imports).
 

@@ -588,30 +588,60 @@ class RecoveryVault:
             logger.error(f"Failed to load recovery vault metadata: {e}")
 
 
-# Example usage
-if __name__ == "__main__":
-    # Create recovery vault
-    vault = RecoveryVault()
-    
-    # Create snapshot before mutation
-    snapshot_id = vault.create_mutation_snapshot(
-        mutation_id="mut_123",
-        target_module="runtime_loop_core.py",
-        description="Before runtime loop optimization"
-    )
-    
-    print(f"Created snapshot: {snapshot_id}")
-    
-    # ... mutation happens ...
-    
-    # If mutation fails, rollback
-    # vault.rollback_mutation("mut_123")
-    
-    # List snapshots
-    snapshots = vault.list_snapshots()
-    print(f"Total snapshots: {len(snapshots)}")
-    
-    # Get statistics
-    stats = vault.get_statistics()
-    print(f"Vault statistics: {stats}")
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
 
+
+def configure_recovery_vault(
+    *,
+    vault_path: str = "data/recovery_vault",
+    max_snapshots: int = 100,
+    audit_log: Optional[TrustAuditLog] = None,
+    protected_paths: Optional[List[str]] = None,
+    guardian: Optional[Any] = None,
+) -> "RecoveryVault":
+    """
+    Build ``RecoveryVault`` from explicit arguments or resolve ``audit_log`` from ``guardian``.
+    """
+    resolved_audit = audit_log or _guardian_component(
+        guardian,
+        "trust_audit_log",
+        "audit_log",
+    )
+    return RecoveryVault(
+        vault_path=vault_path,
+        max_snapshots=max_snapshots,
+        audit_log=resolved_audit,
+        protected_paths=protected_paths,
+    )
+
+
+if __name__ == "__main__":
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        vault_path = str(Path(tmp) / "recovery_vault")
+        vault = configure_recovery_vault(vault_path=vault_path)
+
+        snapshot_id = vault.create_mutation_snapshot(
+            mutation_id="mut_123",
+            target_module="runtime_loop_core.py",
+            description="Before runtime loop optimization",
+        )
+
+        print(f"Created snapshot: {snapshot_id}")
+
+        snapshots = vault.list_snapshots()
+        print(f"Total snapshots: {len(snapshots)}")
+
+        stats = vault.get_statistics()
+        print(f"Vault statistics: {stats}")
+    sys.exit(0)

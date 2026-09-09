@@ -16,11 +16,14 @@ from project_guardian.monitoring import (
     CLEANUP_OUTCOME_SKIPPED_BELOW_THRESHOLD,
     CLEANUP_OUTCOME_SKIPPED_COOLDOWN,
     CLEANUP_OUTCOME_SKIPPED_SMALL_DELTA,
+    CLEANUP_OUTCOME_SKIPPED_QUIET_ZONE,
     CLEANUP_OUTCOME_PARTIAL_RECLAIM,
     CLEANUP_OUTCOME_CONSOLIDATED,
     CLEANUP_OUTCOME_FAILED,
     _PRESSURE_CONSOLIDATION_MIN_COUNT,
     _PRESSURE_EMERGENCY_MIN_COUNT,
+    _compute_pressure_emergency_target,
+    _effective_pressure_emergency_floor,
     _load_memory_pressure_config,
 )
 
@@ -60,19 +63,57 @@ def system_monitor(minimal_memory, mock_guardian):
 class TestCleanupReasonOutcome:
     """Cleanup reason/outcome model and single-terminal outcome."""
 
+    def test_system_health_reflects_host_ram_pressure(self, system_monitor, monkeypatch):
+        """Host RAM pressure should prevent a misleading HEALTHY status."""
+        monkeypatch.setattr(
+            "project_guardian.monitoring._system_memory_pressure_fraction",
+            lambda: 0.96,
+        )
+
+        health = system_monitor.get_system_health()
+
+        assert health["status"] == "critical"
+        assert health["health_score"] <= 0.4
+        assert health["heartbeat"]["system_memory_percent"] == 96.0
+
+    def test_effective_pressure_emergency_floor_clamps_aggressive_config(self):
+        """Emergency floor should honor a safe fraction clamp even with aggressive config values."""
+        aggressive_cfg = {
+            "pressure_emergency_min_count": 25,
+            "pressure_emergency_floor_fraction": 0.9,
+        }
+        assert _effective_pressure_emergency_floor(1000, aggressive_cfg) == 900
+        assert _effective_pressure_emergency_floor(1750, aggressive_cfg) == 1575
+
+    def test_pressure_emergency_target_is_proportional_and_bounded(self):
+        """Emergency target should trim proportionally while staying above effective floor."""
+        cfg = {
+            "pressure_emergency_trim_ratio": 0.15,
+            "pressure_emergency_min_count": 900,
+            "pressure_emergency_floor_fraction": 0.9,
+        }
+        floor = _effective_pressure_emergency_floor(1000, cfg)
+        assert floor == 900
+        assert _compute_pressure_emergency_target(2000, floor, cfg) == 1700
+        # Near floor: bounded and does not undercut effective floor.
+        assert _compute_pressure_emergency_target(930, floor, cfg) == 900
+
     def test_pressure_below_threshold_outcome_skipped_below_threshold(
         self, system_monitor, minimal_memory
     ):
-        """Below-threshold pressure path should either skip or run emergency cleanup based on configured emergency floor."""
+        """Below-threshold pressure path should only emergency-trim when count exceeds safe effective floor."""
         # Memory has 50 items, threshold 3500.
-        # With aggressive pressure_emergency_min_count (e.g., 25), this now consolidates.
+        # Effective floor clamp should prevent emergency over-trim at this low count.
         result = system_monitor._perform_cleanup(
             memory_threshold=1750,
             reason=CLEANUP_REASON_SYSTEM_MEMORY_PRESSURE,
             system_memory_percent=0.92,
             consolidation_threshold=3500,
         )
-        emergency_floor = int(_load_memory_pressure_config().get("pressure_emergency_min_count", _PRESSURE_EMERGENCY_MIN_COUNT))
+        emergency_floor = _effective_pressure_emergency_floor(
+            1750,
+            pressure_cfg=_load_memory_pressure_config(),
+        )
         assert result["attempted"] is True
         if 50 > emergency_floor:
             assert result["outcome"] == CLEANUP_OUTCOME_CONSOLIDATED
@@ -82,17 +123,24 @@ class TestCleanupReasonOutcome:
             assert result["outcome"] == CLEANUP_OUTCOME_SKIPPED_BELOW_THRESHOLD
             assert result["action_taken"] is False
             assert result["no_op_reason"] == "memory_count_below_threshold"
+            assert result.get("trim_policy", {}).get("source") == "config_memory_pressure"
+            assert result.get("trim_policy", {}).get("trigger_threshold") is not None
         assert result["cooldown_active"] is False
 
     def test_pressure_emergency_cleanup_runs_when_count_below_consolidation_threshold(
         self, tmp_path
     ):
-        """When host RAM pressure is high, but guardian count is below the caller threshold, emergency cleanup should still consolidate to the pressure min count."""
+        """When count is above effective floor, pressure path can still emergency-consolidate."""
         from project_guardian.memory import MemoryCore
 
         mem_path = tmp_path / "pressure_emergency.json"
-        # Choose a count that is below consolidation_threshold (3500) but above the pressure min count (1000).
-        n = _PRESSURE_CONSOLIDATION_MIN_COUNT + 17
+        trim_target = 1000
+        emergency_floor = _effective_pressure_emergency_floor(
+            trim_target,
+            pressure_cfg=_load_memory_pressure_config(),
+        )
+        # Keep below consolidation_threshold but above effective floor.
+        n = emergency_floor + 50
         now_iso = "2025-01-15"
         data = [
             {"time": now_iso, "thought": f"x{i}", "category": "g", "priority": 0.5, "metadata": {}}
@@ -112,7 +160,7 @@ class TestCleanupReasonOutcome:
         mon = SystemMonitor(mem, g)
 
         result = mon._perform_cleanup(
-            memory_threshold=1750,
+            memory_threshold=trim_target,
             reason=CLEANUP_REASON_SYSTEM_MEMORY_PRESSURE,
             system_memory_percent=0.82,  # non-critical (so skip_thresh uses consolidation_threshold)
             consolidation_threshold=3500,
@@ -120,14 +168,25 @@ class TestCleanupReasonOutcome:
 
         assert result["action_taken"] is True
         assert result.get("cleanup_path") == "pressure_emergency_cleanup"
-        assert result["memory_after"] <= _PRESSURE_CONSOLIDATION_MIN_COUNT
+        expected_target = _compute_pressure_emergency_target(
+            n,
+            emergency_floor,
+            pressure_cfg=_load_memory_pressure_config(),
+        )
+        assert result["trim_policy"]["trim_target"] == expected_target
+        assert result["memory_after"] <= expected_target
 
-    def test_pressure_critical_low_count_uses_emergency_floor(self, tmp_path):
-        """Critical host pressure should still use emergency cleanup for low counts above emergency floor."""
+    def test_pressure_critical_low_count_uses_effective_floor_clamp(self, tmp_path):
+        """Critical pressure uses a safe floor close to pressure trim target, not raw config min."""
         from project_guardian.memory import MemoryCore
 
         mem_path = tmp_path / "pressure_critical_low_count.json"
-        n = _PRESSURE_EMERGENCY_MIN_COUNT + 7
+        trim_target = 1000
+        emergency_floor = _effective_pressure_emergency_floor(
+            trim_target,
+            pressure_cfg=_load_memory_pressure_config(),
+        )
+        n = emergency_floor + 7
         data = [
             {"time": "2025-01-15", "thought": f"x{i}", "category": "g", "priority": 0.5, "metadata": {}}
             for i in range(n)
@@ -146,7 +205,7 @@ class TestCleanupReasonOutcome:
         mon = SystemMonitor(mem, g)
 
         result = mon._perform_cleanup(
-            memory_threshold=1750,
+            memory_threshold=trim_target,
             reason=CLEANUP_REASON_SYSTEM_MEMORY_PRESSURE,
             system_memory_percent=0.96,  # critical pressure
             consolidation_threshold=3500,
@@ -154,7 +213,14 @@ class TestCleanupReasonOutcome:
 
         assert result.get("cleanup_path") == "pressure_emergency_cleanup"
         assert result["action_taken"] is True
-        assert result["memory_after"] <= _PRESSURE_EMERGENCY_MIN_COUNT
+        expected_target = _compute_pressure_emergency_target(
+            n,
+            emergency_floor,
+            pressure_cfg=_load_memory_pressure_config(),
+        )
+        assert result["trim_policy"]["trim_target"] == expected_target
+        assert result["memory_after"] <= expected_target
+        assert emergency_floor > _PRESSURE_EMERGENCY_MIN_COUNT
 
     def test_cooldown_on_later_attempt_outcome_skipped_cooldown(
         self, system_monitor, minimal_memory
@@ -295,3 +361,83 @@ class TestCleanupReasonOutcome:
         assert result["trim_policy"] is not None
         assert result["trim_policy"]["trim_target"] == 1750
         assert result["trim_policy"]["min_trim_delta"] == 25
+
+    def test_pressure_critical_bypasses_small_delta_wait(self, tmp_path):
+        """Critical host RAM should not wait several cycles before a small-delta pressure cleanup."""
+        from project_guardian.memory import MemoryCore
+
+        mem_path = tmp_path / "critical_small_delta.json"
+        data = [
+            {"time": "2025-01-01", "thought": f"x{i}", "category": "g", "priority": 0.5, "metadata": {}}
+            for i in range(1020)
+        ]
+        mem_path.write_text(json.dumps(data), encoding="utf-8")
+        mem = MemoryCore(filepath=str(mem_path), lazy_load=False)
+
+        class MockG:
+            config = {}
+            memory = None
+            web_reader = None
+            proposal_system = None
+
+        g = MockG()
+        g.memory = mem
+        mon = SystemMonitor(mem, g)
+
+        result = mon._perform_cleanup(
+            memory_threshold=1000,
+            reason=CLEANUP_REASON_SYSTEM_MEMORY_PRESSURE,
+            system_memory_percent=0.97,
+            consolidation_threshold=3500,
+        )
+
+        assert result["outcome"] == CLEANUP_OUTCOME_CONSOLIDATED
+        assert result["action_taken"] is True
+        assert result["force_cleanup_bypass_delta"] is True
+        assert result["force_cleanup_reason"] == "critical_memory_pressure"
+        assert result["memory_after"] <= 1000
+
+    def test_pressure_quiet_zone_skips_noncritical_but_not_critical(self, tmp_path):
+        """Quiet zone remains gentle below critical RAM and yields under critical pressure."""
+        from project_guardian.memory import MemoryCore
+
+        def make_monitor(path_name: str):
+            mem_path = tmp_path / path_name
+            data = [
+                {"time": "2025-01-01", "thought": f"x{i}", "category": "g", "priority": 0.5, "metadata": {}}
+                for i in range(930)
+            ]
+            mem_path.write_text(json.dumps(data), encoding="utf-8")
+            mem = MemoryCore(filepath=str(mem_path), lazy_load=False)
+
+            class MockG:
+                config = {}
+                memory = None
+                web_reader = None
+                proposal_system = None
+
+            g = MockG()
+            g.memory = mem
+            mon = SystemMonitor(mem, g)
+            mon._post_cleanup_quiet_until = time.time() + 300
+            return mon
+
+        noncritical = make_monitor("quiet_noncritical.json")
+        skipped = noncritical._perform_cleanup(
+            memory_threshold=1000,
+            reason=CLEANUP_REASON_SYSTEM_MEMORY_PRESSURE,
+            system_memory_percent=0.90,
+            consolidation_threshold=3500,
+        )
+        assert skipped["outcome"] == CLEANUP_OUTCOME_SKIPPED_QUIET_ZONE
+
+        critical = make_monitor("quiet_critical.json")
+        result = critical._perform_cleanup(
+            memory_threshold=1000,
+            reason=CLEANUP_REASON_SYSTEM_MEMORY_PRESSURE,
+            system_memory_percent=0.97,
+            consolidation_threshold=3500,
+        )
+        assert result["outcome"] == CLEANUP_OUTCOME_CONSOLIDATED
+        assert result.get("cleanup_path") == "pressure_emergency_cleanup"
+        assert result["memory_after"] <= 900

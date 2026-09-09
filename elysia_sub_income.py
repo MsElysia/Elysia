@@ -8,6 +8,18 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+def _ensure_launcher_package_path(launcher_path: Path) -> None:
+    """
+    Make ``organized_project/launcher`` importable as ``launcher.*`` without letting the large
+    legacy ``organized_project`` tree shadow stdlib/site packages (for example asyncio).
+    """
+    import sys
+
+    parent = str(launcher_path.parent)
+    if parent not in sys.path:
+        sys.path.append(parent)
+
+
 def init_income_modules(modules: Dict[str, Any], project_root: Path) -> None:
     """
     Initialize income generation modules and add them to the modules dict.
@@ -24,9 +36,7 @@ def init_income_modules(modules: Dict[str, Any], project_root: Path) -> None:
     # API Manager
     if (launcher_path / "api_manager.py").exists():
         try:
-            import sys
-            if str(launcher_path.parent) not in sys.path:
-                sys.path.insert(0, str(launcher_path.parent))
+            _ensure_launcher_package_path(launcher_path)
             from launcher.api_manager import APIManager
             api_manager = APIManager()
             logger.info("  [OK] API Manager initialized for income modules")
@@ -36,9 +46,7 @@ def init_income_modules(modules: Dict[str, Any], project_root: Path) -> None:
     # Income Generator
     if (launcher_path / "elysia_income_generator.py").exists():
         try:
-            import sys
-            if str(launcher_path.parent) not in sys.path:
-                sys.path.insert(0, str(launcher_path.parent))
+            _ensure_launcher_package_path(launcher_path)
             from launcher.elysia_income_generator import ElysiaIncomeGenerator
             modules["income_generator"] = ElysiaIncomeGenerator(api_manager=api_manager)
             logger.info("  [OK] Income Generator initialized")
@@ -48,9 +56,7 @@ def init_income_modules(modules: Dict[str, Any], project_root: Path) -> None:
     # Financial Manager
     if (launcher_path / "elysia_financial_manager.py").exists():
         try:
-            import sys
-            if str(launcher_path.parent) not in sys.path:
-                sys.path.insert(0, str(launcher_path.parent))
+            _ensure_launcher_package_path(launcher_path)
             from launcher.elysia_financial_manager import ElysiaFinancialManager
             modules["financial_manager"] = ElysiaFinancialManager(
                 api_manager=api_manager,
@@ -63,9 +69,7 @@ def init_income_modules(modules: Dict[str, Any], project_root: Path) -> None:
     # Revenue Creator
     if (launcher_path / "elysia_revenue_creator.py").exists():
         try:
-            import sys
-            if str(launcher_path.parent) not in sys.path:
-                sys.path.insert(0, str(launcher_path.parent))
+            _ensure_launcher_package_path(launcher_path)
             from launcher.elysia_revenue_creator import ElysiaRevenueCreator
             modules["revenue_creator"] = ElysiaRevenueCreator(api_manager=api_manager)
             logger.info("  [OK] Revenue Creator initialized")
@@ -75,9 +79,7 @@ def init_income_modules(modules: Dict[str, Any], project_root: Path) -> None:
     # Wallet
     if (launcher_path / "elysia_wallet.py").exists():
         try:
-            import sys
-            if str(launcher_path.parent) not in sys.path:
-                sys.path.insert(0, str(launcher_path.parent))
+            _ensure_launcher_package_path(launcher_path)
             from launcher.elysia_wallet import ElysiaWallet
             modules["wallet"] = ElysiaWallet(api_manager=api_manager)
             logger.info("  [OK] Wallet initialized")

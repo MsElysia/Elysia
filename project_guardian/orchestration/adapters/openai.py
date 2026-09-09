@@ -59,24 +59,24 @@ class OpenAIAdapter:
         if kwargs.get("response_format_json"):
             body["response_format"] = {"type": "json_object"}
         t0 = time.perf_counter()
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-            r = await client.post(
-                f"{self._base}/chat/completions",
-                headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
-                json=body,
-            )
-            try:
-                r.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                if e.response is not None and e.response.status_code == 429:
-                    try:
-                        from ...openai_degraded import note_openai_transport_failure
+        from ...llm.openai_http_chat import post_openai_chat_completion_async
 
-                        note_openai_transport_failure(e, context="orchestration_openai_chat")
-                    except Exception:
-                        pass
-                raise
-            data = r.json()
+        try:
+            data = await post_openai_chat_completion_async(
+                base_url=self._base,
+                api_key=self._api_key,
+                body=body,
+                timeout_sec=120.0,
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response is not None and e.response.status_code == 429:
+                try:
+                    from ...openai_degraded import note_openai_transport_failure
+
+                    note_openai_transport_failure(e, context="orchestration_openai_chat")
+                except Exception:
+                    pass
+            raise
         _ = time.perf_counter() - t0
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}

@@ -229,6 +229,46 @@ class ArchitectCore:
             return {"status": "error", "message": f"Unknown target '{target}'. Available: {list(self.registry.keys())}"}
         handler = self.registry[target]
         return handler.receive_command(command, data or {})
+
+    def chat(self, message: str, context: str = "general") -> Dict[str, Any]:
+        """Small first-person operator chat surface for the runtime API."""
+        text = (message or "").strip()
+        context = (context or "general").strip() or "general"
+        status = self.get_status_report()
+        persona = self.persona_architect.status_report().get("active_persona", {})
+        module_count = status.get("ModuleArchitect", {}).get("count", 0)
+        webscout_status = status.get("WebScout", {}).get("status", "unknown")
+        proposal_status = status.get("ProposalSystem", {}).get("status", "unknown")
+
+        lower = text.lower()
+        if any(token in lower for token in ("status", "health", "online", "ready")):
+            response = (
+                f"I am online in {context}. I have {module_count} registered module(s), "
+                f"WebScout is {webscout_status}, and the proposal system is {proposal_status}."
+            )
+        elif any(token in lower for token in ("who are you", "introduce", "yourself", "speak")):
+            response = (
+                f"I am Elysia, running in {persona.get('voice_mode', 'guardian')} mode. "
+                "I can coordinate proposals, research, implementation plans, and runtime status."
+            )
+        elif any(token in lower for token in ("proposal", "proposals")):
+            count = status.get("ProposalSystem", {}).get("proposals_count", 0)
+            response = (
+                f"I can see {count} proposal(s). Ask for a proposal by id or ask me to create "
+                "a research proposal with WebScout."
+            )
+        else:
+            response = (
+                "I am here. Give me a target, a proposal id, or a system area, and I will route it "
+                "through the architecture I have wired instead of pretending with an echo."
+            )
+
+        return {
+            "response": response,
+            "context": context,
+            "persona": persona,
+            "source": "architect_core",
+        }
     
     def register_new_module(self, module_data: Dict[str, Any]) -> Dict[str, Any]:
         """Convenience method to register a new module"""

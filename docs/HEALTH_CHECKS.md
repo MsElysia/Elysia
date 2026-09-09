@@ -45,3 +45,15 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8888/chat" -Method POST -ContentType "a
 - **Debug:** http://127.0.0.1:5000/api/debug — diagnostic info (flask, orchestrator, memory, loop, etc.)
 - **Root (link to dashboard):** http://127.0.0.1:8888/
 - **Dashboard:** http://127.0.0.1:5000 or 5001 (if 5000 is in use)
+
+## 5. Autonomy Loop Health
+
+After restarting Elysia, decision cycles should emit `[AutonomyDecisionTrace]` lines. Use the log analyzer to summarize recent loop health:
+
+```powershell
+python scripts/autonomy_loop_health.py .\tmp_elysia_live.out --tail 800
+Get-Content .\tmp_elysia_live.err -Tail 800 | python scripts/autonomy_loop_health.py
+python scripts/autonomy_loop_health.py .\tmp_elysia_live.out --tail 800 --json
+```
+
+**Watch for:** `decision_traces=0`, URL-less `elysia_builtin_web` errors, repeated zero-harvest work, useful-but-non-advancing self-task suppression, memory pressure, or one dominant action above 75% of decisions.

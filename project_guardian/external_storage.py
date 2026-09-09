@@ -5,11 +5,12 @@ External Storage Management
 Utilities for detecting and using external storage (USB drives, etc.) for memory storage
 """
 
+import json
+import logging
 import os
 import shutil
-import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
 
 try:
     import psutil
@@ -20,6 +21,166 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 _fallback_warned: set = set()  # Paths we've already warned about (avoid spam)
+
+# Default JSON path; tests may monkeypatch this.
+EXTERNAL_STORAGE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "external_storage.json"
+# (config file mtime, resolved data_dir or None)
+_mirror_data_dir_cache: Optional[tuple[float, Optional[Path]]] = None
+
+
+def get_configured_external_data_dir() -> Optional[Path]:
+    """
+    When ``config/external_storage.json`` sets ``use_external_storage`` and ``data_dir``,
+    return that directory (creating it when possible). Used to mirror telemetry such as
+    ``capability_usage_log.jsonl`` onto the USB / external volume.
+
+    Set ``ELYSIA_DISABLE_EXTERNAL_DATA_MIRROR=1`` to skip resolution (returns None).
+    """
+    global _mirror_data_dir_cache
+    if os.environ.get("ELYSIA_DISABLE_EXTERNAL_DATA_MIRROR", "").strip().lower() in ("1", "true", "yes"):
+        return None
+    cfg_p = EXTERNAL_STORAGE_CONFIG_PATH
+    try:
+        mtime = cfg_p.stat().st_mtime
+    except OSError:
+        mtime = -1.0
+    if _mirror_data_dir_cache is not None and _mirror_data_dir_cache[0] == mtime:
+        return _mirror_data_dir_cache[1]
+
+    out: Optional[Path] = None
+    try:
+        if not cfg_p.exists():
+            _mirror_data_dir_cache = (mtime, None)
+            return None
+        with open(cfg_p, "r", encoding="utf-8") as f:
+            ext = json.load(f)
+        if not bool(ext.get("use_external_storage")):
+            _mirror_data_dir_cache = (mtime, None)
+            return None
+        raw = str(ext.get("data_dir") or "").strip()
+        if not raw:
+            _mirror_data_dir_cache = (mtime, None)
+            return None
+        out = Path(raw.replace("/", os.sep))
+        out.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.debug("[ExternalMirror] data_dir resolve failed: %s", e)
+        out = None
+    _mirror_data_dir_cache = (mtime, out)
+    return out
+
+
+def build_external_volume_snapshot() -> Dict[str, Any]:
+    """
+    Facts for status JSON / UI: external data mirror path and removable volumes (no logging).
+
+    Called once at unified startup; /status reads the cached dict from UnifiedElysiaSystem.
+    """
+    snap: Dict[str, Any] = {
+        "external_data_mirror_active": False,
+        "external_data_mirror_path": None,
+        "removable_volumes": [],
+        "removable_count": 0,
+        "hint_level": "none",
+    }
+    try:
+        ext = get_configured_external_data_dir()
+        if ext is not None:
+            snap["external_data_mirror_active"] = True
+            snap["external_data_mirror_path"] = str(ext)
+            snap["hint_level"] = "mirror_active"
+            return snap
+    except Exception as e:
+        logger.debug("[ExternalVolumes] mirror probe: %s", e)
+
+    try:
+        drives = detect_removable_drives()
+        removable = [d for d in drives if d.get("is_removable")][:8]
+        vols: List[Dict[str, Any]] = []
+        for d in removable:
+            mp = str(d.get("mountpoint") or "").rstrip("/\\")
+            if not mp:
+                continue
+            vols.append({
+                "mountpoint": mp,
+                "free_gb": d.get("free_gb"),
+                "total_gb": d.get("total_gb"),
+            })
+        snap["removable_volumes"] = vols
+        snap["removable_count"] = len(vols)
+        if vols:
+            snap["hint_level"] = "removable_present"
+    except Exception as e:
+        logger.debug("[ExternalVolumes] snapshot drives: %s", e)
+    return snap
+
+
+def log_startup_external_volume_hints() -> Dict[str, Any]:
+    """
+    Build :func:`build_external_volume_snapshot`, log one INFO line when appropriate,
+    return the snapshot for caching on UnifiedElysiaSystem.
+
+    Disable log noise in CI/tests with ``ELYSIA_SKIP_EXTERNAL_VOLUME_HINTS=1`` (snapshot still returned).
+    """
+    snap = build_external_volume_snapshot()
+    if os.environ.get("ELYSIA_SKIP_EXTERNAL_VOLUME_HINTS", "").strip().lower() in ("1", "true", "yes"):
+        return snap
+
+    try:
+        if snap.get("external_data_mirror_active") and snap.get("external_data_mirror_path"):
+            logger.info("[ExternalVolumes] External data mirror active: %s", snap["external_data_mirror_path"])
+            return snap
+        vols = snap.get("removable_volumes") or []
+        if not vols:
+            return snap
+        parts: List[str] = []
+        for v in vols:
+            mp = str(v.get("mountpoint") or "")
+            fg = v.get("free_gb")
+            if mp:
+                parts.append(f"{mp} (~{fg} GB free)" if fg is not None else mp)
+        if parts:
+            logger.info(
+                "[ExternalVolumes] Removable volumes: %s — enable storage with config/external_storage.json "
+                "(use_external_storage + data_dir) or set ELYSIA_THUMB_DRIVE / ELYSIA_MEMORY markers on the volume.",
+                "; ".join(parts),
+            )
+    except Exception as e:
+        logger.debug("[ExternalVolumes] hint skipped: %s", e)
+    return snap
+
+
+def attach_elysia_unified_log_mirror(
+    root_logger: logging.Logger,
+    *,
+    formatter: logging.Formatter,
+    max_bytes: int,
+    backup_count: int,
+    ansi_strip_filter: Optional[logging.Filter] = None,
+) -> None:
+    """Append a rotating ``elysia_unified.log`` under ``<external data_dir>/logs/`` when configured."""
+    ext = get_configured_external_data_dir()
+    if not ext:
+        return
+    log_dir = ext / "logs"
+    try:
+        from logging.handlers import RotatingFileHandler
+
+        log_dir.mkdir(parents=True, exist_ok=True)
+        dest = log_dir / "elysia_unified.log"
+        mh = RotatingFileHandler(
+            str(dest),
+            maxBytes=int(max_bytes),
+            backupCount=int(backup_count),
+            encoding="utf-8",
+        )
+        mh.setFormatter(formatter)
+        if ansi_strip_filter is not None:
+            mh.addFilter(ansi_strip_filter)
+        root_logger.addHandler(mh)
+        logger.info("[ExternalMirror] elysia_unified.log mirror -> %s", dest)
+    except Exception as e:
+        logger.debug("[ExternalMirror] elysia log mirror skipped: %s", e)
 
 
 def normalize_storage_root(path: str) -> str:

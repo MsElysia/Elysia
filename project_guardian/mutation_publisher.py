@@ -30,6 +30,64 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
+
+
+def configure_mutation_publisher(
+    *,
+    metacoder: Optional["MetaCoder"] = None,
+    mutation_engine: Optional["MutationEngine"] = None,
+    recovery_vault: Optional["RecoveryVault"] = None,
+    audit_log: Optional["TrustAuditLog"] = None,
+    guardian: Optional[Any] = None,
+    codebase_path: str = "project_guardian",
+) -> "MutationPublisher":
+    """
+    Build a ``MutationPublisher`` from explicit dependencies or a minimal guardian object.
+
+    Requires a ``MutationEngine``; ``MetaCoder`` and ``RecoveryVault`` are optional but
+    recommended for apply and rollback workflows.
+    """
+    resolved_engine = mutation_engine or _guardian_component(
+        guardian,
+        "mutation_engine",
+        "mutation",
+    )
+    if resolved_engine is None:
+        raise ValueError("MutationPublisher requires mutation_engine")
+
+    resolved_metacoder = metacoder or _guardian_component(
+        guardian,
+        "metacoder",
+        "meta_coder",
+    )
+    resolved_vault = recovery_vault or _guardian_component(
+        guardian,
+        "recovery_vault",
+        "vault",
+    )
+    resolved_audit = audit_log or _guardian_component(
+        guardian,
+        "trust_audit_log",
+        "audit_log",
+    )
+
+    return MutationPublisher(
+        metacoder=resolved_metacoder,
+        mutation_engine=resolved_engine,
+        recovery_vault=resolved_vault,
+        audit_log=resolved_audit,
+        codebase_path=codebase_path,
+    )
+
+
 class PublishStatus(Enum):
     """Publish operation status."""
     PENDING = "pending"
@@ -481,24 +539,12 @@ class MutationPublisher:
         }
 
 
-# Example usage
 if __name__ == "__main__":
-    # Initialize components
-    metacoder = None  # Would be provided
-    mutation_engine = None  # Would be provided
-    recovery_vault = None  # Would be provided
-    
-    publisher = MutationPublisher(
-        metacoder=metacoder,
-        mutation_engine=mutation_engine,
-        recovery_vault=recovery_vault
-    )
-    
-    # Publish a mutation
-    # result = publisher.publish_mutation("mut_123")
-    # print(f"Publish result: {result}")
-    
-    # Rollback if needed
-    # rollback_result = publisher.rollback_publish("mut_123")
-    # print(f"Rollback result: {rollback_result}")
+    import sys
 
+    print(
+        "MutationPublisher is constructed via configure_mutation_publisher(...) with a "
+        "MutationEngine (and optionally MetaCoder, RecoveryVault, TrustAuditLog), or pass "
+        "guardian= for attribute-based resolution."
+    )
+    sys.exit(0)

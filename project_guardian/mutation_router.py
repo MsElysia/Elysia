@@ -28,6 +28,68 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
+
+
+def configure_mutation_router(
+    *,
+    review_manager: Optional[MutationReviewManager] = None,
+    mutation_engine: Optional[MutationEngine] = None,
+    guardian: Optional[Any] = None,
+    audit_log: Optional[TrustAuditLog] = None,
+) -> "MutationRouter":
+    """
+    Construct a router from explicit dependencies or a minimal guardian object.
+
+    This keeps the standalone examples practical without requiring placeholder ``None``
+    values in user code.
+    """
+    resolved_review_manager = review_manager or _guardian_component(
+        guardian,
+        "mutation_review_manager",
+        "review_manager",
+    )
+    resolved_mutation_engine = mutation_engine or _guardian_component(
+        guardian,
+        "mutation_engine",
+        "mutation",
+    )
+    resolved_audit_log = audit_log or _guardian_component(
+        guardian,
+        "trust_audit_log",
+        "audit_log",
+    )
+
+    missing = []
+    if resolved_review_manager is None:
+        missing.append("review_manager")
+    if resolved_mutation_engine is None:
+        missing.append("mutation_engine")
+    if missing:
+        raise ValueError(
+            "MutationRouter requires " + ", ".join(missing)
+        )
+
+    if getattr(resolved_review_manager, "mutation_engine", None) is None:
+        try:
+            resolved_review_manager.mutation_engine = resolved_mutation_engine
+        except Exception:
+            logger.debug("Unable to attach mutation_engine to review_manager", exc_info=True)
+
+    return MutationRouter(
+        review_manager=resolved_review_manager,
+        mutation_engine=resolved_mutation_engine,
+        audit_log=resolved_audit_log,
+    )
+
+
 class RouteStatus(Enum):
     """Route status."""
     PENDING = "pending"
@@ -190,7 +252,7 @@ class MutationRouter:
             return {"success": True, "message": "Mutation already applied"}
         
         # Approve and apply
-        approved = self.mutation_engine.approve_proposal(mutation_id, reviewer="auto_router")
+        approved = self._approve_mutation(mutation_id, reviewer="auto_router")
         if not approved:
             return {"success": False, "error": "Failed to approve mutation"}
         
@@ -218,6 +280,24 @@ class MutationRouter:
             }
         else:
             return {"success": False, "error": "Failed to apply mutation"}
+
+    def _approve_mutation(
+        self,
+        mutation_id: str,
+        reviewer: str = "auto_router",
+        notes: Optional[str] = None,
+    ) -> bool:
+        """Support both legacy and current mutation engine approval methods."""
+        approve_fn = getattr(self.mutation_engine, "approve_proposal", None)
+        if callable(approve_fn):
+            return bool(approve_fn(mutation_id, reviewer=reviewer, notes=notes))
+
+        review_fn = getattr(self.mutation_engine, "review_mutation", None)
+        if callable(review_fn):
+            return bool(review_fn(mutation_id, approved=True, reviewer=reviewer, notes=notes))
+
+        logger.error("Mutation engine does not support proposal approval")
+        return False
     
     def _handle_human_review(
         self,
@@ -335,19 +415,11 @@ class MutationRouter:
         ]
 
 
-# Example usage
 if __name__ == "__main__":
-    # Initialize components
-    review_manager = None  # Would be provided
-    mutation_engine = None  # Would be provided
-    
-    router = MutationRouter(
-        review_manager=review_manager,
-        mutation_engine=mutation_engine
-    )
-    
-    # Route a mutation
-    # route = router.route_mutation("mut_123")
-    # print(f"Route status: {route.route_status.value}")
-    # print(f"Handler: {route.target_handler}")
+    import sys
 
+    print(
+        "MutationRouter is constructed via configure_mutation_router(...) with a "
+        "MutationReviewManager and MutationEngine (or a guardian exposing them)."
+    )
+    sys.exit(0)

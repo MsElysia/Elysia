@@ -37,6 +37,8 @@ def setup_logging(
         Configured root logger
     """
     # Parse log level
+    # Suppress internal handler tracebacks (e.g., transient closed stderr) in runtime logs.
+    logging.raiseExceptions = False
     numeric_level = getattr(logging, log_level.upper(), DEFAULT_LOG_LEVEL)
     
     # Create log directory

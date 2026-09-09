@@ -7,10 +7,13 @@ import json
 import asyncio
 import hashlib
 import secrets
+import os
+import shlex
+import subprocess
 from typing import Dict, Any, List, Optional, Set
 from datetime import datetime, timedelta
 from pathlib import Path
-from threading import Lock, RLock
+from threading import Lock, RLock, Thread
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 import uuid
@@ -122,6 +125,7 @@ class MasterSlaveController:
         trust_registry: Optional[TrustRegistry] = None,
         trust_policy: Optional[TrustPolicyManager] = None,
         audit_log: Optional[TrustAuditLog] = None,
+        eai_safety: Optional[Any] = None,
         storage_path: str = "data/master_slaves.json",
         auth_token_path: str = "data/slave_tokens.json"  # Separate secure storage
     ):
@@ -144,6 +148,7 @@ class MasterSlaveController:
         self.trust_registry = trust_registry
         self.trust_policy = trust_policy
         self.audit_log = audit_log
+        self.eai_safety = eai_safety
         
         self.storage_path = Path(storage_path)
         self.auth_token_path = Path(auth_token_path)
@@ -177,7 +182,26 @@ class MasterSlaveController:
         self.load()
         
         logger.info(f"MasterSlaveController initialized: {master_name} ({master_id})")
-        logger.warning(f"MASTER TOKEN: {self.master_token} - KEEP SECURE!")
+        token_tail = self.master_token[-6:] if self.master_token else ""
+        logger.warning(
+            "MASTER TOKEN generated (masked, len=%s, tail=%s) - KEEP SECURE!",
+            len(self.master_token or ""),
+            token_tail,
+        )
+
+    def _launch_background_coroutine(self, coroutine: Any, thread_name: str) -> None:
+        """Schedule async work whether or not a loop is already running."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            Thread(
+                target=lambda: asyncio.run(coroutine),
+                name=thread_name,
+                daemon=True,
+            ).start()
+            return
+
+        loop.create_task(coroutine)
     
     def register_slave(
         self,
@@ -211,6 +235,14 @@ class MasterSlaveController:
             auth_token=auth_token,
             capabilities=capabilities or []
         )
+
+        eai_assessment = self._evaluate_eai_slave_action(
+            action_type="register_slave",
+            slave=slave,
+            metadata={"registration_only": True},
+        )
+        if eai_assessment is not None:
+            slave.metadata["eai_safety_registration"] = eai_assessment.to_dict()
         
         with self._lock:
             self.slaves[slave_id] = slave
@@ -249,11 +281,19 @@ class MasterSlaveController:
         """
         Deploy slave code to target.
         Note: Only deploys limited slave functionality, never master code.
-        
+
+        Default: short simulated delay then mark ACTIVE. For a real hook, set env
+        ``ELYSIA_SLAVE_DEPLOY_COMMAND`` to a **single argv string** parsed by ``shlex``
+        (no implicit shell). The subprocess receives ``ELYSIA_SLAVE_ID``,
+        ``ELYSIA_SLAVE_AUTH_TOKEN``, ``ELYSIA_DEPLOYMENT_TARGET``, and optionally
+        ``ELYSIA_SLAVE_CODE_PATH``. Non-zero exit, timeout, or parse error → ``ERROR``
+        with ``metadata["last_deploy"]``. Optional ``ELYSIA_SLAVE_DEPLOY_TIMEOUT_SEC``
+        (default 120).
+
         Args:
             slave_id: Slave ID to deploy
             slave_code_path: Optional path to slave code package
-            
+
         Returns:
             True if deployment initiated successfully
         """
@@ -261,6 +301,30 @@ class MasterSlaveController:
         if not slave:
             logger.error(f"Slave {slave_id} not found")
             return False
+
+        eai_assessment = self._evaluate_eai_slave_action(
+            action_type="deploy_slave",
+            slave=slave,
+            metadata={"slave_code_path": slave_code_path},
+        )
+        if eai_assessment is not None:
+            slave.metadata["eai_safety_deployment"] = eai_assessment.to_dict()
+            eai_decision = eai_assessment.decision.value
+            eai_approved = bool(
+                slave.metadata.get("human_approved")
+                or getattr(eai_assessment, "approval_verified", False)
+            )
+            if eai_decision in {"deny", "review"} and not eai_approved:
+                self._log_eai_slave_gate(slave, eai_assessment)
+                with self._lock:
+                    slave.status = SlaveStatus.PENDING
+                    slave.metadata["last_deploy"] = {
+                        "ok": False,
+                        "error": f"eai_safety_{eai_decision}",
+                        "assessment": eai_assessment.to_dict(),
+                    }
+                    self.save()
+                return False
         
         with self._lock:
             slave.status = SlaveStatus.DEPLOYING
@@ -273,39 +337,116 @@ class MasterSlaveController:
         # 4. Start slave service
         # 5. Register in network discovery
         
-        # Placeholder implementation
-        logger.info(f"Deploying slave {slave_id} to {slave.deployment_target}")
-        
-        # Simulate deployment
+        logger.info("Deploying slave %s to %s", slave_id, slave.deployment_target)
+
+        deploy_cmd = (os.environ.get("ELYSIA_SLAVE_DEPLOY_COMMAND") or "").strip()
+
         async def deploy():
-            await asyncio.sleep(2)  # Simulate deployment time
-            
-            with self._lock:
-                slave.status = SlaveStatus.ACTIVE
-                slave.deployed_at = datetime.now()
-                slave.last_heartbeat = datetime.now()
-                self.stats["active_slaves"] += 1
-                self.save()
-            
-            # Register in network discovery if available
-            if self.network_discovery:
-                try:
-                    # Parse deployment target for address/port
-                    parts = slave.deployment_target.split(":")
-                    address = parts[0]
-                    port = int(parts[1]) if len(parts) > 1 else 8080
-                    
-                    self.network_discovery.register_node(
-                        name=slave.name,
-                        address=address,
-                        port=port,
-                        node_id=slave_id,
-                        capabilities=slave.capabilities
+            """Simulated deploy by default; optional real hook via ELYSIA_SLAVE_DEPLOY_COMMAND."""
+            if deploy_cmd:
+                env = os.environ.copy()
+                env["ELYSIA_SLAVE_ID"] = slave_id
+                env["ELYSIA_SLAVE_AUTH_TOKEN"] = (self.auth_tokens.get(slave_id) or getattr(slave, "auth_token", "") or "")
+                env["ELYSIA_DEPLOYMENT_TARGET"] = slave.deployment_target
+                if slave_code_path:
+                    env["ELYSIA_SLAVE_CODE_PATH"] = str(Path(slave_code_path).resolve())
+
+                def _run_subprocess() -> subprocess.CompletedProcess:
+                    argv = shlex.split(deploy_cmd, posix=os.name != "nt")
+                    if not argv:
+                        raise ValueError("ELYSIA_SLAVE_DEPLOY_COMMAND parsed to empty argv")
+                    return subprocess.run(
+                        argv,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        timeout=min(120, int(os.environ.get("ELYSIA_SLAVE_DEPLOY_TIMEOUT_SEC", "120") or 120)),
                     )
+
+                try:
+                    proc = await asyncio.wait_for(asyncio.to_thread(_run_subprocess), timeout=130.0)
+                except asyncio.TimeoutError:
+                    logger.error("[MasterSlave] deploy timeout slave_id=%s", slave_id)
+                    with self._lock:
+                        s = self.slaves.get(slave_id)
+                        if s:
+                            s.status = SlaveStatus.ERROR
+                            s.metadata["last_deploy"] = {"ok": False, "error": "timeout"}
+                            self.save()
+                    return
                 except Exception as e:
-                    logger.error(f"Failed to register slave in network discovery: {e}")
-        
-        asyncio.create_task(deploy())
+                    logger.error("[MasterSlave] deploy failed slave_id=%s: %s", slave_id, e)
+                    with self._lock:
+                        s = self.slaves.get(slave_id)
+                        if s:
+                            s.status = SlaveStatus.ERROR
+                            s.metadata["last_deploy"] = {"ok": False, "error": str(e)[:500]}
+                            self.save()
+                    return
+
+                if proc.returncode != 0:
+                    logger.error(
+                        "[MasterSlave] deploy command non-zero rc=%s stderr=%s",
+                        proc.returncode,
+                        (proc.stderr or "")[:400],
+                    )
+                    with self._lock:
+                        s = self.slaves.get(slave_id)
+                        if s:
+                            s.status = SlaveStatus.ERROR
+                            s.metadata["last_deploy"] = {
+                                "ok": False,
+                                "returncode": proc.returncode,
+                                "stderr": (proc.stderr or "")[:800],
+                                "stdout": (proc.stdout or "")[:400],
+                            }
+                            self.save()
+                    return
+
+                with self._lock:
+                    s = self.slaves.get(slave_id)
+                    if s:
+                        s.metadata["last_deploy"] = {
+                            "ok": True,
+                            "returncode": proc.returncode,
+                            "stdout_tail": (proc.stdout or "")[-400:],
+                        }
+                        self.save()
+            else:
+                await asyncio.sleep(
+                    float(os.environ.get("ELYSIA_SLAVE_SIMULATED_DEPLOY_DELAY_SEC", "2") or 2)
+                )
+
+            with self._lock:
+                s = self.slaves.get(slave_id)
+                if not s or s.status == SlaveStatus.REVOKED:
+                    return
+                was_active = s.status == SlaveStatus.ACTIVE
+                s.status = SlaveStatus.ACTIVE
+                s.deployed_at = datetime.now()
+                s.last_heartbeat = datetime.now()
+                if not was_active:
+                    self.stats["active_slaves"] += 1
+                self.save()
+
+            if self.network_discovery:
+                s2 = self.slaves.get(slave_id)
+                if s2:
+                    try:
+                        parts = s2.deployment_target.split(":")
+                        address = parts[0]
+                        port = int(parts[1]) if len(parts) > 1 else 8080
+                        self.network_discovery.register_node(
+                            name=s2.name,
+                            address=address,
+                            port=port,
+                            node_id=slave_id,
+                            capabilities=s2.capabilities,
+                        )
+                    except Exception as e:
+                        logger.error("Failed to register slave in network discovery: %s", e)
+
+        self._launch_background_coroutine(deploy(), f"deploy-slave-{slave_id}")
         
         return True
     
@@ -527,6 +668,68 @@ class MasterSlaveController:
             self.trust_registry.adjust_trust(slave_id, trust_delta, "master_evaluation")
         
         logger.debug(f"Updated trust for slave {slave_id}: {old_trust:.2f} -> {slave.trust_score:.2f}")
+
+    def _evaluate_eai_slave_action(
+        self,
+        action_type: str,
+        slave: SlaveInstance,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Any]:
+        """Run optional EAI safety checks for slave registration/deployment."""
+        if self.eai_safety is None:
+            return None
+
+        details = dict(metadata or {})
+        details.update(
+            {
+                "slave_id": slave.slave_id,
+                "name": slave.name,
+                "role": slave.role.value,
+                "status": slave.status.value,
+                "deployment_target": slave.deployment_target,
+                "capabilities": slave.capabilities,
+                "trust_score": slave.trust_score,
+                "autonomous": details.get("autonomous", True),
+                "human_approved": slave.metadata.get("human_approved", False),
+                "request_id": slave.metadata.get("request_id"),
+                "review_id": slave.metadata.get("review_id"),
+                "approval_id": slave.metadata.get("approval_id"),
+                "controlled_evolution": slave.metadata.get("controlled_evolution", False),
+                "lineage_parent_ids": slave.metadata.get("lineage_parent_ids", []),
+            }
+        )
+        try:
+            return self.eai_safety.assess_action(
+                action_type=action_type,
+                actor="MasterSlaveController",
+                target=slave.deployment_target,
+                metadata=details,
+                lineage_parent_ids=details.get("lineage_parent_ids", []),
+            )
+        except Exception as e:
+            logger.warning("EAI safety assessment failed for slave %s: %s", slave.slave_id, e)
+            return None
+
+    def _log_eai_slave_gate(self, slave: SlaveInstance, assessment: Any) -> None:
+        if not self.audit_log or not AuditEventType or not AuditSeverity:
+            return
+        try:
+            severity = AuditSeverity.CRITICAL if assessment.decision.value == "deny" else AuditSeverity.WARNING
+            self.audit_log.log_event(
+                event_type=AuditEventType.SECURITY_ALERT,
+                description=(
+                    f"EAI safety gate blocked slave deployment: "
+                    f"{slave.name} ({slave.slave_id})"
+                ),
+                severity=severity,
+                metadata={
+                    "slave_id": slave.slave_id,
+                    "deployment_target": slave.deployment_target,
+                    "assessment": assessment.to_dict(),
+                },
+            )
+        except Exception:
+            logger.debug("Failed to log EAI slave gate", exc_info=True)
     
     def get_slave(self, slave_id: str) -> Optional[SlaveInstance]:
         """Get a slave instance."""
@@ -661,39 +864,125 @@ class MasterSlaveController:
                 logger.error(f"Failed to load auth tokens: {e}")
 
 
-# Example usage
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
+
+
+def _guardian_config_value(guardian: Any, key: str, default: Any = None) -> Any:
+    cfg = getattr(guardian, "config", None)
+    if isinstance(cfg, dict):
+        return cfg.get(key, default)
+    return default
+
+
+def configure_master_slave_controller(
+    *,
+    master_slave_controller: Optional["MasterSlaveController"] = None,
+    master_id: Optional[str] = None,
+    master_name: Optional[str] = None,
+    network_discovery: Optional[NetworkDiscovery] = None,
+    trust_registry: Optional[TrustRegistry] = None,
+    trust_policy: Optional[TrustPolicyManager] = None,
+    audit_log: Optional[TrustAuditLog] = None,
+    guardian: Optional[Any] = None,
+    storage_path: str = "data/master_slaves.json",
+    auth_token_path: str = "data/slave_tokens.json",
+) -> "MasterSlaveController":
+    """
+    Return an existing ``MasterSlaveController`` (explicit or from ``guardian``), or construct one.
+    """
+    if master_slave_controller is not None:
+        return master_slave_controller
+    existing = _guardian_component(guardian, "master_slave_controller", "master_slave")
+    if existing is not None:
+        return existing
+
+    resolved_master_id = (
+        master_id
+        or _guardian_component(guardian, "master_id")
+        or _guardian_config_value(guardian, "master_id", "elysia-master")
+    )
+    resolved_master_name = (
+        master_name
+        or _guardian_component(guardian, "master_name")
+        or _guardian_config_value(guardian, "master_name", "Elysia-Master")
+    )
+    resolved_network = network_discovery or _guardian_component(guardian, "network_discovery")
+    resolved_registry = trust_registry or _guardian_component(guardian, "trust_registry")
+    resolved_policy = trust_policy or _guardian_component(
+        guardian,
+        "trust_policy_manager",
+        "trust_policy",
+    )
+    resolved_audit = audit_log or _guardian_component(
+        guardian,
+        "trust_audit_log",
+        "audit_log",
+    )
+
+    return MasterSlaveController(
+        master_id=str(resolved_master_id),
+        master_name=str(resolved_master_name),
+        network_discovery=resolved_network,
+        trust_registry=resolved_registry,
+        trust_policy=resolved_policy,
+        audit_log=resolved_audit,
+        storage_path=storage_path,
+        auth_token_path=auth_token_path,
+    )
+
+
 if __name__ == "__main__":
+    import sys
+    import tempfile
+
     async def test_master_slave():
-        """Test MasterSlaveController."""
-        controller = MasterSlaveController(
-            master_id="master_001",
-            master_name="Elysia-Master"
-        )
-        
-        # Register a slave
-        slave_id, token = controller.register_slave(
-            name="Slave-Node-1",
-            deployment_target="192.168.1.100:8080",
-            role=SlaveRole.WORKER,
-            capabilities=["ai_generation", "storage"]
-        )
-        
-        print(f"Registered slave: {slave_id}")
-        print(f"Auth token: {token}")
-        
-        # Deploy slave
-        controller.deploy_slave(slave_id)
-        
-        # Send command
-        controller.send_command(
-            slave_id,
-            "execute_task",
-            data={"task_type": "ai_generation", "prompt": "Hello"}
-        )
-        
-        # Get statistics
-        stats = controller.get_statistics()
-        print(f"Master-slave stats: {stats}")
-    
+        """Run a small local smoke test with temp storage."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            controller = configure_master_slave_controller(
+                master_id="master_001",
+                master_name="Elysia-Master",
+                storage_path=str(base / "master_slaves.json"),
+                auth_token_path=str(base / "slave_tokens.json"),
+            )
+
+            slave_id, token = controller.register_slave(
+                name="Slave-Node-1",
+                deployment_target="127.0.0.1:8080",
+                role=SlaveRole.WORKER,
+                capabilities=["ai_generation", "storage"],
+            )
+            print(f"Registered slave: {slave_id}")
+            print(f"Auth token length: {len(token)}")
+
+            previous_delay = os.environ.get("ELYSIA_SLAVE_SIMULATED_DEPLOY_DELAY_SEC")
+            os.environ["ELYSIA_SLAVE_SIMULATED_DEPLOY_DELAY_SEC"] = "0"
+            try:
+                controller.deploy_slave(slave_id)
+                await asyncio.sleep(0.05)
+            finally:
+                if previous_delay is None:
+                    os.environ.pop("ELYSIA_SLAVE_SIMULATED_DEPLOY_DELAY_SEC", None)
+                else:
+                    os.environ["ELYSIA_SLAVE_SIMULATED_DEPLOY_DELAY_SEC"] = previous_delay
+
+            queued = controller.send_command(
+                slave_id,
+                "execute_task",
+                data={"task_type": "ai_generation", "prompt": "Hello"},
+            )
+            print(f"Command queued: {queued}")
+
+            stats = controller.get_statistics()
+            print(f"Master-slave stats: {stats}")
+
     asyncio.run(test_master_slave())
+    sys.exit(0)
 

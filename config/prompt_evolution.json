@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "auto_review": true,
+  "auto_generate_candidates": true,
+  "auto_promote": false,
+  "min_calls_before_review": 20,
+  "min_valid_json_rate": 0.95,
+  "min_schema_pass_rate": 0.9,
+  "max_retry_rate": 0.25,
+  "max_human_override_rate": 0.3,
+  "min_candidate_score": 0.85,
+  "reviewer_count": 3,
+  "candidate_count": 3
+}

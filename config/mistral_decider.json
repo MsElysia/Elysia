@@ -1,7 +1,15 @@
 {
+  "prefer_local_reasoning_when_planner_ready": true,
+  "prefer_local_simple_when_planner_ready": false,
+  "use_context_pipeline": true,
+  "context_pipeline_run_online_reasoning": false,
   "use_llm_orchestration_broker": true,
   "mistral_primary_decider_enabled": true,
-  "mistral_decider_model": "mistral:7b",
+  "mistral_decider_model": "llama3.2:3b",
+  "ollama_model_pool": ["llama3.2:3b", "qwen2.5:3b-instruct"],
+  "ollama_model_pick_strategy": "round_robin",
+  "ollama_model_pick_index_mode": "process_monotonic",
+  "mistral_ollama_pool_failover": true,
   "mistral_decision_temperature": 0.3,
   "mistral_decision_temperature_after_overrides": 0.42,
   "mistral_decision_confidence_threshold": 0.5,
@@ -14,7 +22,7 @@
   "mistral_module_cooldown_minutes": 2,
   "mistral_exploration_score_bias": 0.45,
   "mistral_skip_auto_execute_when_ask_user": false,
-  "mistral_exploratory_actions": ["consider_learning", "consider_dream_cycle", "consider_adversarial_learning", "consider_prompt_evolution", "question_probe", "code_analysis", "consider_mutation", "fractalmind_planning", "work_on_objective", "harvest_income_report", "income_modules_pulse", "tool_registry_pulse", "execute_self_task"],
+  "mistral_exploratory_actions": ["consider_learning", "consider_dream_cycle", "consider_adversarial_learning", "consider_prompt_evolution", "question_probe", "code_analysis", "consider_mutation", "fractalmind_planning", "work_on_objective", "harvest_income_report", "income_modules_pulse", "tool_registry_pulse", "delegate_openclaw", "consider_moltbook_direction", "execute_self_task"],
   "mistral_min_candidates": 5,
   "mistral_novelty_same_action_threshold": 3,
   "mistral_execute_task_cooldown_minutes": 5,
@@ -39,5 +47,19 @@
   "chat_capability_execute_threshold": 3.0,
   "chat_max_api_calls_per_turn": 8,
   "orchestration_dynamic_capability_actions": true,
-  "orchestration_dynamic_capability_max": 6
+  "orchestration_dynamic_capability_max": 6,
+  "elysia_unified_budget_enabled": false,
+  "elysia_unified_budget_max_units_per_period": 200000,
+  "elysia_unified_budget_period_seconds": 86400,
+  "elysia_unified_budget_flat_units": {
+    "tavily_search": 1200,
+    "brave_search": 800,
+    "openai_structured": 4000,
+    "openai_chat": 2500,
+    "openrouter_chat": 2500
+  },
+  "elysia_unified_budget_surplus_opportunistic": true,
+  "elysia_unified_budget_surplus_min_remaining_frac": 0.22,
+  "elysia_unified_budget_surplus_preflight_blend": 0.38,
+  "elysia_unified_budget_surplus_structured_blend": 0.45
 }

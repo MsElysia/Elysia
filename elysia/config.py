@@ -18,6 +18,8 @@ class RuntimeConfig:
     api_host: str = "127.0.0.1"
     api_port: int = 8123
     enable_webscout: bool = True
+    enable_implementer: bool = True
+    auto_implement_on_approval: bool = False
     require_api_keys: bool = False
 
 
@@ -42,6 +44,10 @@ def load_runtime_config(
         api_port=int(os.getenv("ELYSIA_API_PORT", "8123")),
         enable_webscout=os.getenv("ELYSIA_ENABLE_WEBSCOUT", "1")
         not in ("0", "false", "False"),
+        enable_implementer=os.getenv("ELYSIA_ENABLE_IMPLEMENTER", "1")
+        not in ("0", "false", "False"),
+        auto_implement_on_approval=os.getenv("ELYSIA_AUTO_IMPLEMENT_ON_APPROVAL", "0")
+        in ("1", "true", "True"),
         require_api_keys=os.getenv("ELYSIA_REQUIRE_KEYS", "0")
         in ("1", "true", "True"),
     )

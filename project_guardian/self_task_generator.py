@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from .module_activity import activity_age_minutes
 from .self_task_queue import SelfTaskQueue
 
 logger = logging.getLogger(__name__)
@@ -186,6 +187,51 @@ def enrich_task_metadata(t: Dict[str, Any]) -> None:
         t.setdefault("value_tier", "internal")
 
 
+def _is_monetization_like_archetype(archetype: str) -> bool:
+    a = str(archetype or "").lower()
+    return any(
+        token in a
+        for token in (
+            "revenue",
+            "monetiz",
+            "income",
+            "harvest",
+            "offer_ideas",
+            "offer_pack",
+            "operator_offer",
+            "offer_page",
+            "finance_idle",
+            "shortlist",
+            "market_value",
+        )
+    )
+
+
+def _task_repeat_suppression_reason(task: Dict[str, Any], ctx: Dict[str, Any]) -> Optional[str]:
+    arch = str(task.get("archetype") or "").strip()
+    if not arch:
+        return None
+    stale = {str(x) for x in (ctx.get("stale_self_task_archetypes") or []) if str(x).strip()}
+    if arch in stale:
+        return "recent_stale_self_task_repeat"
+    if bool(ctx.get("stale_monetization_loop")) and _is_monetization_like_archetype(arch):
+        return "recent_stale_monetization_loop"
+    return None
+
+
+def _append_task_if_fresh(tasks: List[Dict[str, Any]], task: Dict[str, Any], ctx: Dict[str, Any]) -> bool:
+    reason = _task_repeat_suppression_reason(task, ctx)
+    if reason:
+        logger.info(
+            "[SelfTaskGenerator] suppressed archetype=%s reason=%s",
+            str(task.get("archetype") or "")[:64],
+            reason,
+        )
+        return False
+    tasks.append(task)
+    return True
+
+
 def attach_objectives_to_tasks(
     guardian: Any,
     tasks: List[Dict[str, Any]],
@@ -256,8 +302,8 @@ class SelfTaskGenerator:
             nonlocal n
             if n >= max_hv:
                 return
-            tasks.append(t)
-            n += 1
+            if _append_task_if_fresh(tasks, t, ctx):
+                n += 1
 
         if has("income_generator"):
             push(
@@ -275,6 +321,22 @@ class SelfTaskGenerator:
                     value_tier="high",
                 )
             )
+            if has("tool_registry"):
+                push(
+                    new_task_dict(
+                        archetype="package_operator_offer_pack",
+                        title="Package operator offer page",
+                        goal="Turn the strongest local opportunity and recent artifacts into an offer_pack JSON with deliverables, pricing options, validation prompt, and listing markdown.",
+                        category="finance",
+                        reason="Elysia needs one concrete thing it can try to sell before optimizing distribution.",
+                        priority=0.87,
+                        recommended_capabilities=["tool:artifact_synthesizer"],
+                        success_criteria="Structured offer_pack JSON with listing_markdown.",
+                        dedupe_key=f"package_operator_offer_pack_{hour // 6}",
+                        output_contract_id="offer_pack",
+                        value_tier="high",
+                    )
+                )
             push(
                 new_task_dict(
                     archetype="create_small_dry_run_offer_ideas",
@@ -445,7 +507,8 @@ class SelfTaskGenerator:
         # 1–2: low confidence / fallback loops → inspect capabilities (read-only)
         if ctx.get("low_confidence_streak", 0) >= 1 or ctx.get("repeated_action_streak", 0) >= 2:
             if has("tool_registry"):
-                tasks.append(
+                _append_task_if_fresh(
+                    tasks,
                     new_task_dict(
                         archetype="validate_tool_registry_snapshot",
                         title="Validate tool registry snapshot",
@@ -457,14 +520,16 @@ class SelfTaskGenerator:
                         success_criteria="Non-empty tool list returned; response includes structured tool ids or count ≥ 1.",
                         dedupe_key="validate_tool_registry_snapshot",
                         unlocks_task_kind="repair_tool_registry_coverage",
-                    )
+                    ),
+                    ctx,
                 )
 
         if ctx.get("repeated_action_streak", 0) >= int(
             self.cfg.get("repeated_action_streak_trigger", 3)
         ):
             if has("longterm_planner"):
-                tasks.append(
+                _append_task_if_fresh(
+                    tasks,
                     new_task_dict(
                         archetype="refresh_objective_snapshot",
                         title="Refresh planner objective snapshot",
@@ -475,14 +540,16 @@ class SelfTaskGenerator:
                         recommended_capabilities=["module:longterm_planner"],
                         success_criteria="Returns objective count or list preview without error.",
                         dedupe_key="refresh_objective_snapshot",
-                    )
+                    ),
+                    ctx,
                 )
 
         # 3: underused modules
         if ctx.get("underused_modules"):
             for um in ctx["underused_modules"][:2]:
                 if um == "longterm_planner" and has("longterm_planner"):
-                    tasks.append(
+                    _append_task_if_fresh(
+                        tasks,
                         new_task_dict(
                             archetype=f"exercise_module_{um}",
                             title=f"Exercise module: {um}",
@@ -493,10 +560,12 @@ class SelfTaskGenerator:
                             recommended_capabilities=["module:longterm_planner"],
                             success_criteria="Structured planner data returned.",
                             dedupe_key=f"exercise_{um}_{int(time.time() // 3600)}",
-                        )
+                        ),
+                        ctx,
                     )
                 if um == "harvest_engine" and has("harvest_engine"):
-                    tasks.append(
+                    _append_task_if_fresh(
+                        tasks,
                         new_task_dict(
                             archetype="harvest_readonly_snapshot",
                             title="Harvest income snapshot (read-only)",
@@ -508,12 +577,46 @@ class SelfTaskGenerator:
                             success_criteria="Report dict returned with totals or explicit empty state.",
                             dedupe_key="harvest_readonly_snapshot",
                             unlocks_task_kind="harvest_research_brief",
-                        )
+                        ),
+                        ctx,
+                    )
+                if um == "tool_registry" and has("tool_registry"):
+                    _append_task_if_fresh(
+                        tasks,
+                        new_task_dict(
+                            archetype="validate_tool_registry_snapshot",
+                            title="Exercise module: tool_registry",
+                            goal="List registered tools and confirm builtin llm/web/exec surfaces exist.",
+                            category="tooling",
+                            reason="Tool registry has been unused longer than configured threshold.",
+                            priority=0.54,
+                            recommended_capabilities=["module:tool_registry"],
+                            success_criteria="Non-empty tool list returned or explicit structured empty-state.",
+                            dedupe_key="exercise_tool_registry_snapshot",
+                        ),
+                        ctx,
+                    )
+                if um == "income_generator" and has("income_generator"):
+                    _append_task_if_fresh(
+                        tasks,
+                        new_task_dict(
+                            archetype="generate_revenue_shortlist",
+                            title="Exercise module: income bundle",
+                            goal="Generate a local ranked revenue shortlist from current income and wallet context.",
+                            category="finance",
+                            reason="Income modules have been unused longer than configured threshold.",
+                            priority=0.53,
+                            recommended_capabilities=["module:income_generator"],
+                            success_criteria="Structured shortlist or explicit empty-state returned.",
+                            dedupe_key=f"exercise_income_bundle_{int(time.time() // 3600)}",
+                        ),
+                        ctx,
                     )
 
         # 4: tool registry weak / empty
         if ctx.get("tool_registry_weak") and has("tool_registry"):
-            tasks.append(
+            _append_task_if_fresh(
+                tasks,
                 new_task_dict(
                     archetype="repair_tool_registry_coverage",
                     title="Repair tool registry coverage",
@@ -524,12 +627,14 @@ class SelfTaskGenerator:
                     recommended_capabilities=["module:tool_registry"],
                     success_criteria="list_tools shows at least three entries including builtin stubs or equivalents.",
                     dedupe_key="repair_tool_registry_coverage",
-                )
+                ),
+                ctx,
             )
 
         # 5: API available (heuristic: env keys) — bounded routing awareness
         if ctx.get("api_unused_hint") and has("tool_registry"):
-            tasks.append(
+            _append_task_if_fresh(
+                tasks,
                 new_task_dict(
                     archetype="api_capability_smoke",
                     title="API capability inventory (local)",
@@ -540,13 +645,15 @@ class SelfTaskGenerator:
                     recommended_capabilities=["module:tool_registry"],
                     success_criteria="Tool list retrieved; at least one tool metadata inspected locally.",
                     dedupe_key="api_capability_smoke",
-                )
+                ),
+                ctx,
             )
 
         # 6: startup / health warnings
         if ctx.get("startup_issue"):
             if has("tool_registry"):
-                tasks.append(
+                _append_task_if_fresh(
+                    tasks,
                     new_task_dict(
                         archetype="post_startup_health_snapshot",
                         title="Post-startup health snapshot",
@@ -557,12 +664,14 @@ class SelfTaskGenerator:
                         recommended_capabilities=["module:tool_registry"],
                         success_criteria="Tool list or error captured for logs.",
                         dedupe_key="post_startup_health_snapshot",
-                    )
+                    ),
+                    ctx,
                 )
 
         # 7: learning — memory recall summary (no raw log paste as goal text)
         if ctx.get("learning_digest_worthy") and getattr(guardian, "memory", None):
-            tasks.append(
+            _append_task_if_fresh(
+                tasks,
                 new_task_dict(
                     archetype="learning_recent_digest",
                     title="Digest recent autonomy memories",
@@ -573,7 +682,8 @@ class SelfTaskGenerator:
                     recommended_capabilities=["module:tool_registry"],
                     success_criteria="Executor records a short structured summary to memory (handled in core).",
                     dedupe_key="learning_recent_digest",
-                )
+                ),
+                ctx,
             )
 
         # 8: financial idle
@@ -586,7 +696,8 @@ class SelfTaskGenerator:
             if has("financial_manager"):
                 cap.append("module:financial_manager")
             if cap:
-                tasks.append(
+                _append_task_if_fresh(
+                    tasks,
                     new_task_dict(
                         archetype="finance_idle_pulse",
                         title="Financial modules dry-read",
@@ -598,7 +709,8 @@ class SelfTaskGenerator:
                         success_criteria="At least one module returns a dict summary.",
                         dedupe_key="finance_idle_pulse",
                         unlocks_task_kind="finance_revenue_shortlist",
-                    )
+                    ),
+                    ctx,
                 )
 
         from .self_task_objectives import ObjectiveStore
@@ -625,6 +737,8 @@ def build_context_for_guardian(
         "weak_decision": False,
         "low_confidence_streak": int(getattr(guardian, "_self_task_low_confidence_streak", 0) or 0),
         "repeated_action_streak": int(getattr(guardian, "_mistral_repeated_action_count", 0) or 0),
+        "stale_self_task_archetypes": [],
+        "stale_monetization_loop": False,
     }
     thr = float(decider_cfg.get("mistral_decision_confidence_threshold", 0.5))
     if mistral_decision is not None:
@@ -676,6 +790,29 @@ def build_context_for_guardian(
 
     ctx["learning_digest_worthy"] = bool(getattr(guardian, "_last_introspection_result", None))
 
+    try:
+        from .mission_autonomy import MissionAutonomyStore
+
+        store = MissionAutonomyStore()
+        stale_arches: List[str] = []
+        stale_monetization = False
+        seen: List[str] = []
+        for rec in store.recent_artifacts(limit=8):
+            arch = str(rec.get("archetype") or "").strip()
+            if arch and arch not in seen:
+                seen.append(arch)
+        for arch in seen:
+            sig = store.recent_archetype_signal(arch, limit=8)
+            if int(sig.get("non_adv_useful_streak", 0) or 0) < 2:
+                continue
+            stale_arches.append(arch)
+            if _is_monetization_like_archetype(arch):
+                stale_monetization = True
+        ctx["stale_self_task_archetypes"] = stale_arches[:8]
+        ctx["stale_monetization_loop"] = stale_monetization
+    except Exception:
+        pass
+
     return ctx
 
 
@@ -690,21 +827,14 @@ def _underused_modules(guardian: Any, min_hours: float) -> List[str]:
     ]
     out: List[str] = []
     used = getattr(guardian, "_module_last_invoked", {}) or {}
-    now = datetime.now(timezone.utc)
     for m in candidates:
         if m not in mods:
             continue
-        ts = used.get(m)
-        if not ts:
+        age_min = activity_age_minutes(used, m, now=datetime.now(timezone.utc))
+        if age_min is None:
             out.append(m)
             continue
-        try:
-            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            if (now - dt).total_seconds() > min_hours * 3600:
-                out.append(m)
-        except Exception:
+        if age_min > min_hours * 60:
             out.append(m)
     return out
 
@@ -714,16 +844,10 @@ def _financial_idle(guardian: Any, min_idle_sec: float) -> bool:
     if not any(k in mods for k in ("income_generator", "wallet", "financial_manager")):
         return False
     used = getattr(guardian, "_module_last_invoked", {}) or {}
-    ts = used.get("income_modules")
-    if not ts:
+    age_min = activity_age_minutes(used, "income_modules", now=datetime.now(timezone.utc))
+    if age_min is None:
         return True
-    try:
-        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - dt).total_seconds() > min_idle_sec
-    except Exception:
-        return True
+    return age_min * 60 > min_idle_sec
 
 
 def maybe_fork_objective_for_repeated_archetype(

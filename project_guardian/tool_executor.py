@@ -2,7 +2,8 @@
 # Execute Mistral decision actions with guardian delegation
 
 import logging
-from typing import Dict, Any, List, Set
+from datetime import datetime
+from typing import Dict, Any, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -103,9 +104,168 @@ def _ask_user(guardian, message: str = "", **kwargs: Any) -> Dict[str, Any]:
     return {"status": "deferred", "message": message or "User input required"}
 
 
+def _submit_guardian_task(
+    guardian: Any,
+    task: Any,
+    *,
+    task_data: Optional[Dict[str, Any]] = None,
+    args: tuple = (),
+    kwargs: Optional[Dict[str, Any]] = None,
+    priority: int = 5,
+    module: str = "autonomy",
+    dependencies: Optional[list] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Submit a task through the best available guardian surface."""
+    submitter = getattr(guardian, "submit_task", None)
+    if callable(submitter):
+        if callable(task):
+            return submitter(
+                task,
+                priority=priority,
+                module=module,
+                args=args,
+                kwargs=kwargs or {},
+                dependencies=dependencies,
+                metadata=metadata,
+            )
+        return submitter(
+            task,
+            task_data=task_data or {},
+            priority=priority,
+            module=module,
+            args=args,
+            kwargs=kwargs or {},
+            dependencies=dependencies,
+            metadata=metadata,
+        )
+
+    runtime_loop = getattr(guardian, "runtime_loop", None)
+    runtime_submitter = getattr(runtime_loop, "submit_task", None) if runtime_loop else None
+    if callable(runtime_submitter) and callable(task):
+        return runtime_submitter(
+            task,
+            args=args,
+            kwargs=kwargs or {},
+            priority=priority,
+            module=module,
+            dependencies=dependencies,
+        )
+
+    task_queue = getattr(guardian, "task_queue", None)
+    queue_submitter = getattr(task_queue, "submit_task", None) if task_queue else None
+    if callable(queue_submitter) and callable(task):
+        return queue_submitter(
+            task,
+            args=args,
+            kwargs=kwargs or {},
+            priority=priority,
+            module=module,
+            dependencies=dependencies,
+            metadata=metadata,
+        )
+
+    return None
+
+
 def _execute_task(guardian, task_id: int = None, **kwargs: Any) -> Dict[str, Any]:
-    """Execute a task - stub that triggers autonomy path."""
-    return {"status": "ok", "action": "execute_task", "task_id": task_id}
+    """Execute or queue a task through the guardian's real task surfaces."""
+    try:
+        task_type = str(kwargs.pop("task_type", "") or "").strip()
+        directives = kwargs.pop("directives", None)
+        callable_task = kwargs.pop("callable_task", None)
+        priority = int(kwargs.pop("priority", 5) or 5)
+        module = str(kwargs.pop("module", "autonomy") or "autonomy")
+        raw_args = kwargs.pop("args", ())
+        raw_kwargs = kwargs.pop("kwargs", {}) or {}
+        dependencies = kwargs.pop("dependencies", None)
+        metadata = dict(kwargs.pop("metadata", None) or {})
+
+        if not isinstance(raw_args, (list, tuple)):
+            return {"status": "error", "error": "args must be a list or tuple"}
+        if not isinstance(raw_kwargs, dict):
+            return {"status": "error", "error": "kwargs must be a dict"}
+
+        metadata.setdefault("source", "tool_executor.execute_task")
+        if task_id is not None:
+            metadata.setdefault("requested_task_id", task_id)
+
+        if task_type and hasattr(guardian, "_execute_task"):
+            resolved_task_id = str(
+                task_id
+                or f"tool-task-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+            )
+            result = guardian._execute_task(
+                resolved_task_id,
+                task_type,
+                directives=directives,
+            )
+            status = result.get("status", "ok") if isinstance(result, dict) else "ok"
+            return {
+                "status": status,
+                "action": "execute_task",
+                "task_id": resolved_task_id,
+                "task_type": task_type,
+                "result": result,
+                "executed": status == "ok",
+            }
+
+        if task_type:
+            task_payload = dict(kwargs)
+            if directives is not None:
+                task_payload["directives"] = directives
+            if task_id is not None:
+                task_payload.setdefault("task_id", task_id)
+
+            queued_task_id = _submit_guardian_task(
+                guardian,
+                task_type,
+                task_data=task_payload,
+                args=tuple(raw_args),
+                kwargs=raw_kwargs,
+                priority=priority,
+                module=module,
+                dependencies=dependencies,
+                metadata=metadata,
+            )
+            if queued_task_id:
+                return {
+                    "status": "ok",
+                    "action": "execute_task",
+                    "task_id": queued_task_id,
+                    "task_type": task_type,
+                    "queued": True,
+                }
+
+        if callable(callable_task):
+            queued_task_id = _submit_guardian_task(
+                guardian,
+                callable_task,
+                args=tuple(raw_args),
+                kwargs=raw_kwargs,
+                priority=priority,
+                module=module,
+                dependencies=dependencies,
+                metadata=metadata,
+            )
+            if queued_task_id:
+                return {
+                    "status": "ok",
+                    "action": "execute_task",
+                    "task_id": queued_task_id,
+                    "queued": True,
+                }
+
+        return {
+            "status": "error",
+            "error": (
+                "No executable task contract available. Provide task_type with guardian "
+                "execution support, or pass a callable_task with a submission surface."
+            ),
+        }
+    except Exception as e:
+        logger.debug("execute_task: %s", e)
+        return {"status": "error", "error": str(e)}
 
 
 def _consider_learning(guardian, **kwargs: Any) -> Dict[str, Any]:

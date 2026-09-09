@@ -3,7 +3,7 @@
 Elysia subroutine: Load API keys into environment.
 
 Must run first so APIManager and MultiAPIRouter can use keys for parallel AI.
-Keys: OPENAI, OPENROUTER, COHERE, HUGGINGFACE, REPLICATE, ALPHA_VANTAGE.
+Keys: OPENAI, OPENROUTER, COHERE, HUGGINGFACE, REPLICATE, ALPHA_VANTAGE, GUMROAD, STRIPE (Harvest).
 """
 import logging
 from typing import Optional

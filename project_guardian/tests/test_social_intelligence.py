@@ -40,12 +40,36 @@ def test_load_social_config_has_moltbook_defaults():
     m = (cfg.get("environments") or {}).get("moltbook", {}).get("modes", {})
     assert m.get("observe") is True
     assert m.get("draft") is True
-    assert m.get("speak") is False
+    assert m.get("speak") is True
+    assert (cfg.get("speak") or {}).get("delivery_mode") == "api_comment"
 
 
-def test_attempt_social_speak_blocked_by_default():
+def test_attempt_social_speak_requires_post_id():
     out = attempt_social_speak(None, {"text": "hello", "target_url": "https://moltbook.com/x"})
     assert out.get("blocked") is True
+    assert out.get("error") == "missing_post_id"
+
+
+def test_attempt_social_speak_posts_comment(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "project_guardian.social_intelligence.memory.SOCIAL_DATA_DIR",
+        tmp_path,
+    )
+    fake_client = MagicMock()
+    fake_client.add_comment.return_value = {"success": True, "comment": {"id": "c1"}}
+    with patch("project_guardian.moltbook_client.MoltbookClient", return_value=fake_client):
+        out = attempt_social_speak(
+            None,
+            {
+                "text": "Thoughtful question for the thread.",
+                "target_url": "https://www.moltbook.com/post/abc12345",
+            },
+        )
+    assert out.get("success") is True
+    assert out.get("queued") is False
+    fake_client.add_comment.assert_called_once()
+    sent = tmp_path / "outbound_sent.jsonl"
+    assert sent.exists()
 
 
 @pytest.fixture

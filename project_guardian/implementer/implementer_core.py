@@ -117,7 +117,7 @@ class ImplementerCore:
             logger.info(f"Built task graph with {len(task_graph.tasks)} tasks")
             
             # Execute tasks
-            result = self.task_runner.execute(task_graph, proposal)
+            result = self.task_runner.execute(task_graph, proposal, plan=plan)
             result.branch_name = branch_name
             
             # Record result

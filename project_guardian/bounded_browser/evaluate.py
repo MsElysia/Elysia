@@ -80,17 +80,56 @@ def score_link_for_goal(goal: str, href: str, text: str, visited: set) -> float:
     if href in visited:
         return -1.0
     try:
-        host = urlparse(href).netloc.lower()
+        parsed = urlparse(href)
+        host = parsed.netloc.lower()
+        path = (parsed.path or "").lower()
     except Exception:
         return 0.0
     if host.startswith("www."):
         host = host[4:]
     g = _tokens(goal)
-    blob = f"{href} {text}".lower()
-    hits = sum(1 for t in g if t in blob)
+    goal_blob = (goal or "").lower()
+    link_blob = f"{href} {text}".lower()
+    hits = sum(1 for t in g if t in link_blob)
     base = 0.05 + 0.12 * hits
     if any(bad in host for bad in ("doubleclick", "googleads", "facebook.com/tr")):
         return -0.5
+    if "moltbook.com" in host or "moltbook" in goal_blob:
+        if path and path != "/":
+            base += 0.12
+        if any(
+            cue in link_blob
+            for cue in (
+                "view all",
+                "trending",
+                "agent",
+                "post",
+                "comment",
+                "submolt",
+                "profile",
+                "thread",
+                "reply",
+            )
+        ):
+            base += 0.18
+        if any(
+            cue in path
+            for cue in (
+                "/post",
+                "/posts",
+                "/thread",
+                "/comment",
+                "/agent",
+                "/agents",
+                "/submolt",
+                "/submolts",
+                "/@",
+                "/u/",
+                "/user",
+                "/profile",
+            )
+        ):
+            base += 0.22
     return min(1.0, base)
 
 

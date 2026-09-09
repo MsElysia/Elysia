@@ -514,15 +514,74 @@ class MetaCoder:
             logger.error(f"Error loading MetaCoder state: {e}")
 
 
-# Example usage
-if __name__ == "__main__":
-    metacoder = MetaCoder()
-    
-    # Analyze a module
-    analysis = metacoder.analyze_module("project_guardian/memory.py")
-    print(f"Module analysis: {analysis}")
-    
-    # Get statistics
-    stats = metacoder.get_statistics()
-    print(f"Statistics: {stats}")
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
 
+
+def configure_metacoder(
+    *,
+    mutation_engine: Optional["MutationEngine"] = None,
+    trust_eval: Optional["TrustEvalAction"] = None,
+    file_writer: Optional[Any] = None,
+    subprocess_runner: Optional[Any] = None,
+    project_root: str = ".",
+    storage_path: str = "data/metacoder.json",
+    guardian: Optional[Any] = None,
+) -> "MetaCoder":
+    """
+    Build ``MetaCoder`` from explicit arguments or resolve common dependencies from ``guardian``.
+    """
+    resolved_engine = mutation_engine or _guardian_component(
+        guardian,
+        "mutation_engine",
+        "mutation",
+    )
+    resolved_trust = trust_eval or _guardian_component(
+        guardian,
+        "trust_eval",
+        "trust_eval_action",
+    )
+    resolved_fw = file_writer or _guardian_component(guardian, "file_writer")
+    resolved_sr = subprocess_runner or _guardian_component(
+        guardian,
+        "subprocess_runner",
+    )
+
+    return MetaCoder(
+        mutation_engine=resolved_engine,
+        trust_eval=resolved_trust,
+        file_writer=resolved_fw,
+        subprocess_runner=resolved_sr,
+        project_root=project_root,
+        storage_path=storage_path,
+    )
+
+
+if __name__ == "__main__":
+    import os
+    import sys
+    import tempfile
+
+    fd, storage_path = tempfile.mkstemp(suffix="_metacoder.json")
+    os.close(fd)
+    with open(storage_path, "w", encoding="utf-8") as f:
+        f.write('{"mutation_history":[]}')
+
+    try:
+        metacoder = configure_metacoder(storage_path=storage_path)
+
+        analysis = metacoder.analyze_module("project_guardian/memory.py")
+        print(f"Module analysis: {analysis}")
+
+        stats = metacoder.get_statistics()
+        print(f"Statistics: {stats}")
+    finally:
+        if os.path.exists(storage_path):
+            os.unlink(storage_path)
+    sys.exit(0)

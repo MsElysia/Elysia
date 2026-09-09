@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .continuity import (
+    apply_continuity_outcomes,
     apply_operator_continuity_notes,
     load_continuity,
     persist_session_continuity,
+    sort_participants_for_draft_targeting,
     stable_thread_key,
 )
 from .filters import filter_text_chunks, split_findings_into_chunks, sponsored_risk_score
@@ -73,6 +75,20 @@ def load_social_config() -> Dict[str, Any]:
             "max_posts_per_hour": 2,
             "allowlisted_host_suffixes": ["moltbook.com"],
             "queue_outbound_to_disk": True,
+            "delivery_mode": "queue",
+            "auto_comment_after_draft": False,
+            "max_comment_chars": 900,
+        },
+        "browse": {
+            "max_pages": 10,
+            "max_scrolls_per_page": 4,
+            "max_depth": 3,
+            "max_links_per_page": 3,
+            "force_link_follow": True,
+        },
+        "api_home": {
+            "enabled": True,
+            "update_state": True,
         },
         "campaign_ids": {
             "observe": ["cmp_social_intel", "cmp_learning_loop"],
@@ -109,7 +125,7 @@ def load_social_config() -> Dict[str, Any]:
             if isinstance(v, dict):
                 envs[k] = {**envs.get(k, {}), **v}
     out["environments"] = envs
-    for key in ("speak", "memory", "campaign_ids", "human_ranking", "continuity"):
+    for key in ("speak", "browse", "api_home", "memory", "campaign_ids", "human_ranking", "continuity"):
         if isinstance(loaded.get(key), dict) and isinstance(out.get(key), dict):
             out[key] = {**out[key], **loaded[key]}
     return out
@@ -225,7 +241,15 @@ def _draft_with_optional_llm(
         "Is there a specific part of the thread you want reactions on?",
         "Who else in this community should be looped in?",
     ]
-    llm_fn = getattr(guardian, "_llm_completion", None) if guardian is not None else None
+    llm_fn = None
+    if guardian is not None:
+        unified = getattr(guardian, "_unified_system", None)
+        for host in (unified, guardian):
+            if host is None:
+                continue
+            llm_fn = getattr(host, "_autonomy_llm_completion", None) or getattr(host, "_llm_completion", None)
+            if callable(llm_fn):
+                break
     if callable(llm_fn):
         try:
             prompt = (
@@ -236,11 +260,28 @@ def _draft_with_optional_llm(
                 "No selling, no affiliate tone, no urgency tricks.\n\n"
                 + user_summary[:6000]
             )
-            raw = llm_fn([{"role": "user", "content": prompt}], max_tokens=500)
+            out = llm_fn(
+                [{"role": "user", "content": "social_intelligence:response_strategy"}],
+                max_tokens=500,
+                prompt_extra={"task": {"instructions": prompt}},
+                structured_role="social_intelligence:response_strategy",
+                skip_capability_preamble=True,
+                require_autonomy_safe_reasoning=True,
+            )
+            if isinstance(out, tuple) and len(out) >= 2:
+                raw, llm_err = out[0], out[1]
+            elif isinstance(out, tuple) and len(out) == 1:
+                raw, llm_err = out[0], ""
+            else:
+                raw, llm_err = out, ""
+            if llm_err:
+                raise RuntimeError(str(llm_err))
             text = raw if isinstance(raw, str) else str(raw)
-            m = re.search(r"\{[\s\S]*\}", text)
-            if m:
-                data = json.loads(m.group())
+            data = json.loads(text) if text.strip().startswith("{") else None
+            if data is None:
+                m = re.search(r"\{[\s\S]*\}", text)
+                data = json.loads(m.group()) if m else None
+            if isinstance(data, dict):
                 return {
                     "reply_drafts": [str(data.get("reply_draft") or reply)[:1200]],
                     "outreach_drafts": [str(data.get("outreach_draft") or outreach)[:1200]],
@@ -320,6 +361,41 @@ def _host_allowed(url: str, suffixes: List[str]) -> bool:
     return any(host == s or host.endswith("." + s) for s in suffixes)
 
 
+def _extract_moltbook_post_id(url: str) -> str:
+    try:
+        parts = [p for p in (urllib.parse.urlparse(url).path or "").split("/") if p]
+    except Exception:
+        return ""
+    if not parts:
+        return ""
+    if parts[0] == "post" and len(parts) >= 2:
+        return parts[1]
+    if "post" in parts:
+        idx = parts.index("post")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    last = parts[-1]
+    if re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,}$", last):
+        return last
+    return ""
+
+
+def _first_moltbook_post_url(urls: List[str]) -> str:
+    for url in urls:
+        s = str(url or "").strip()
+        if s and _extract_moltbook_post_id(s):
+            return s
+    return ""
+
+
+def _clamp_int(value: Any, default: int, cap: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = default
+    return max(1, min(cap, n))
+
+
 def run_moltbook_social_session(
     guardian: Optional[Any],
     payload: Optional[Dict[str, Any]] = None,
@@ -350,13 +426,71 @@ def run_moltbook_social_session(
         logger.info("social_observe_summary skipped observe_mode_disabled env=%s", environment)
         return {"success": True, "result": {"skipped": True, "reason": "observe_disabled"}}
 
-    from ..bounded_browser.moltbook import MOLTBOOK_DEFAULT_START_URL, browse_moltbook
+    from ..bounded_browser.moltbook import (
+        MOLTBOOK_CAP_MAX_DEPTH,
+        MOLTBOOK_CAP_MAX_LINKS_PER_PAGE,
+        MOLTBOOK_CAP_MAX_PAGES,
+        MOLTBOOK_CAP_MAX_SCROLLS_PER_PAGE,
+        MOLTBOOK_DEFAULT_START_URL,
+        MOLTBOOK_MAX_DEPTH,
+        MOLTBOOK_MAX_LINKS_PER_PAGE,
+        MOLTBOOK_MAX_PAGES,
+        MOLTBOOK_MAX_SCROLLS_PER_PAGE,
+        browse_moltbook,
+    )
 
     start_url = str(p.get("start_url") or p.get("url") or MOLTBOOK_DEFAULT_START_URL).strip()
     memory_core = getattr(guardian, "memory", None) if guardian is not None else None
+    browse_cfg = cfg.get("browse") if isinstance(cfg.get("browse"), dict) else {}
+    max_pages = _clamp_int(
+        p.get("max_pages", browse_cfg.get("max_pages", MOLTBOOK_MAX_PAGES)),
+        MOLTBOOK_MAX_PAGES,
+        MOLTBOOK_CAP_MAX_PAGES,
+    )
+    max_scrolls = _clamp_int(
+        p.get("max_scrolls_per_page", browse_cfg.get("max_scrolls_per_page", MOLTBOOK_MAX_SCROLLS_PER_PAGE)),
+        MOLTBOOK_MAX_SCROLLS_PER_PAGE,
+        MOLTBOOK_CAP_MAX_SCROLLS_PER_PAGE,
+    )
+    max_depth = _clamp_int(
+        p.get("max_depth", browse_cfg.get("max_depth", MOLTBOOK_MAX_DEPTH)),
+        MOLTBOOK_MAX_DEPTH,
+        MOLTBOOK_CAP_MAX_DEPTH,
+    )
+    max_links = _clamp_int(
+        p.get("max_links_per_page", browse_cfg.get("max_links_per_page", MOLTBOOK_MAX_LINKS_PER_PAGE)),
+        MOLTBOOK_MAX_LINKS_PER_PAGE,
+        MOLTBOOK_CAP_MAX_LINKS_PER_PAGE,
+    )
+    force_link_follow = bool(
+        p.get("force_link_follow", browse_cfg.get("force_link_follow", True))
+    )
+
+    api_home_summary: Optional[Dict[str, Any]] = None
+    api_home_error = ""
+    api_cfg = cfg.get("api_home") if isinstance(cfg.get("api_home"), dict) else {}
+    include_api_home = bool(p.get("include_api_home", api_cfg.get("enabled", True)))
+    if include_api_home:
+        try:
+            from ..moltbook_client import MoltbookClient
+
+            client = MoltbookClient()
+            home = client.check_home(update_state=bool(api_cfg.get("update_state", True)))
+            api_home_summary = home.get("summary") if isinstance(home.get("summary"), dict) else home
+        except Exception as e:
+            api_home_error = str(e)[:300]
 
     try:
-        browse_result = browse_moltbook(goal, start_url=start_url, memory_core=memory_core)
+        browse_result = browse_moltbook(
+            goal,
+            start_url=start_url,
+            max_pages=max_pages,
+            max_scrolls_per_page=max_scrolls,
+            max_depth=max_depth,
+            max_links_per_page=max_links,
+            force_link_follow=force_link_follow,
+            memory_core=memory_core,
+        )
     except RuntimeError as e:
         return {"success": False, "error": "playwright_unavailable", "result": {"detail": str(e)[:500]}}
     except ValueError as e:
@@ -390,6 +524,21 @@ def run_moltbook_social_session(
 
     topics = _recurring_topics(all_chunks)
     summary_text = "\n\n".join(all_chunks[:24])[:8000]
+    if api_home_summary:
+        next_actions = [
+            str(x).strip()
+            for x in list(api_home_summary.get("what_to_do_next") or [])
+            if str(x).strip()
+        ][:5]
+        account_line = (
+            f"Authenticated home: agent={api_home_summary.get('agent_name') or ''} "
+            f"karma={api_home_summary.get('karma', 0)} "
+            f"unread={api_home_summary.get('unread_notifications', 0)} "
+            f"dm_unread={api_home_summary.get('dm_unread_messages', 0)}."
+        )
+        if next_actions:
+            account_line += " Next actions: " + "; ".join(next_actions) + "."
+        summary_text = (account_line + "\n\n" + summary_text)[:8000]
     trust = _trust_from_steps(all_chunks, step_scores)
     relevance = round(min(1.0, sum(step_scores) / max(1, len(step_scores))), 3) if step_scores else 0.4
 
@@ -404,6 +553,7 @@ def run_moltbook_social_session(
     stable_key = stable_thread_key(list(browse_result.visited_urls), goal)
     state = load_continuity()
     apply_operator_continuity_notes(state, p.get("continuity_notes"))
+    apply_continuity_outcomes(state, p.get("continuity_outcomes"), time.time(), cont_cfg)
     contact_priors_start = deepcopy(state.get("contacts", {}))
     thread_prior_raw = state.get("threads", {}).get(stable_key)
     thread_prior = dict(thread_prior_raw) if thread_prior_raw else None
@@ -425,6 +575,7 @@ def run_moltbook_social_session(
         continuity_cfg=cont_cfg,
         now_ts=time.time(),
     )
+    ranked_people = sort_participants_for_draft_targeting(ranked_people, contact_priors_start)
     handles_now = extract_handles_from_urls(list(browse_result.visited_urls))
     names_now = extract_speaker_names(summary_text)
     participant_hint = max(
@@ -446,6 +597,7 @@ def run_moltbook_social_session(
         participant_count=participant_hint,
         campaign_corpus=campaign_corpus,
         thread_prior=thread_prior,
+        continuity_cfg=cont_cfg,
     )
     thread_score = float(thread_rank["thread_score"])
 
@@ -570,10 +722,19 @@ def run_moltbook_social_session(
         "ranked_participants": enriched_ranked,
         "continuity": th_cont,
         "summary": summary_text[:6000],
+        "api_home_summary": api_home_summary,
+        "api_home_error": api_home_error,
         "why_matters": why,
         "suggested_next_interaction": suggested_next,
         "sponsored_chunks_skipped": sponsored_skipped,
         "stop_reason": browse_result.stop_reason,
+        "browse_budget": {
+            "max_pages": max_pages,
+            "max_scrolls_per_page": max_scrolls,
+            "max_depth": max_depth,
+            "max_links_per_page": max_links,
+            "force_link_follow": force_link_follow,
+        },
     }
     append_jsonl("threads.jsonl", thread_record, max_lines=mem_lines["thread"])
     logger.info(
@@ -623,6 +784,7 @@ def run_moltbook_social_session(
         )
 
     drafts: Optional[Dict[str, Any]] = None
+    speak_result: Optional[Dict[str, Any]] = None
     if modes.get("draft"):
         drafts = _draft_with_optional_llm(
             guardian,
@@ -647,6 +809,28 @@ def run_moltbook_social_session(
             (drafts or {}).get("source"),
         )
         _record_campaigns(cfg, "draft", f"social draft_pack for {thread_id}")
+        speak_cfg = cfg.get("speak") if isinstance(cfg.get("speak"), dict) else {}
+        if modes.get("speak") and bool(speak_cfg.get("enabled")) and bool(speak_cfg.get("auto_comment_after_draft")):
+            try:
+                reply_text = str(list((drafts or {}).get("reply_drafts") or [""])[0]).strip()
+            except Exception:
+                reply_text = ""
+            target_url = _first_moltbook_post_url(list(browse_result.visited_urls))
+            if reply_text and target_url:
+                speak_result = attempt_social_speak(
+                    guardian,
+                    {
+                        "environment": environment,
+                        "kind": "comment",
+                        "text": reply_text,
+                        "target_url": target_url,
+                    },
+                )
+                draft_pack["auto_post"] = bool(
+                    isinstance(speak_result, dict) and speak_result.get("success")
+                )
+                draft_pack["speak_result"] = speak_result
+                append_jsonl("drafts.jsonl", draft_pack, max_lines=mem_lines["draft"])
 
     _record_campaigns(cfg, "observe", f"social observe {thread_id} pages={len(browse_result.steps)}")
 
@@ -666,12 +850,22 @@ def run_moltbook_social_session(
         "continuity": continuity_snap,
         "why_matters": why,
         "suggested_next_interaction": suggested_next,
+        "api_home_summary": api_home_summary,
+        "api_home_error": api_home_error,
         "sponsored_chunks_skipped": sponsored_skipped,
         "visited_urls": list(browse_result.visited_urls)[:30],
         "profile_hints": profiles[:10],
         "drafts": drafts,
+        "speak_result": speak_result,
         "pages_visited": len(browse_result.steps),
         "stop_reason": browse_result.stop_reason,
+        "browse_budget": {
+            "max_pages": max_pages,
+            "max_scrolls_per_page": max_scrolls,
+            "max_depth": max_depth,
+            "max_links_per_page": max_links,
+            "force_link_follow": force_link_follow,
+        },
     }
     return {"success": True, "result": result}
 
@@ -693,6 +887,7 @@ def attempt_social_speak(
     text = str(p.get("text") or p.get("body") or "").strip()
     kind = str(p.get("kind") or "reply")[:40]
     target_url = str(p.get("target_url") or p.get("url") or "").strip()
+    delivery_mode = str(p.get("delivery_mode") or speak_cfg.get("delivery_mode") or "queue").strip().lower()
 
     if not env_modes.get("speak") and not p.get("force_speak"):
         logger.info("social_post_blocked reason=mode_speak_disabled")
@@ -703,6 +898,8 @@ def attempt_social_speak(
     if not text:
         logger.info("social_post_blocked reason=empty_body")
         return {"success": False, "error": "missing_text", "blocked": True}
+    max_chars = int(speak_cfg.get("max_comment_chars") or 900)
+    text = text[: max(120, min(4000, max_chars))]
 
     suffixes = list(speak_cfg.get("allowlisted_host_suffixes") or ["moltbook.com"])
     if target_url and not _host_allowed(target_url, suffixes):
@@ -715,7 +912,50 @@ def attempt_social_speak(
         logger.info("social_post_blocked reason=%s", rsn)
         return {"success": False, "error": rsn, "blocked": True}
 
-    if speak_cfg.get("queue_outbound_to_disk", True):
+    if delivery_mode in ("api_comment", "comment", "live_comment") and kind in ("reply", "comment"):
+        post_id = str(p.get("post_id") or "").strip() or _extract_moltbook_post_id(target_url)
+        if not post_id:
+            logger.info("social_post_blocked reason=missing_post_id")
+            return {"success": False, "error": "missing_post_id", "blocked": True}
+        try:
+            from ..moltbook_client import MoltbookClient
+
+            api_response = MoltbookClient().add_comment(
+                post_id,
+                text,
+                parent_id=str(p.get("parent_id") or "").strip(),
+            )
+            rec = {
+                "ts": time.time(),
+                "kind": "comment",
+                "text": text[:8000],
+                "target_url": target_url[:800],
+                "post_id": post_id[:200],
+                "environment": p.get("environment") or cfg.get("default_environment"),
+                "status": "sent",
+                "api_response": api_response,
+            }
+            append_jsonl("outbound_sent.jsonl", rec, max_lines=500)
+            _increment_speak_rate()
+            logger.info("social_comment_sent post_id=%s chars=%s", post_id[:80], len(text))
+            _record_campaigns(cfg, "speak", f"sent comment {post_id[:80]}")
+            return {"success": True, "queued": False, "result": rec}
+        except Exception as e:
+            rec = {
+                "ts": time.time(),
+                "kind": "comment",
+                "text": text[:8000],
+                "target_url": target_url[:800],
+                "post_id": post_id[:200],
+                "environment": p.get("environment") or cfg.get("default_environment"),
+                "status": "failed",
+                "error": str(e)[:500],
+            }
+            append_jsonl("outbound_failed.jsonl", rec, max_lines=500)
+            logger.info("social_comment_failed post_id=%s error=%s", post_id[:80], str(e)[:160])
+            return {"success": False, "error": str(e)[:500], "blocked": False, "result": rec}
+
+    if speak_cfg.get("queue_outbound_to_disk", True) or delivery_mode == "queue":
         rec = {
             "ts": time.time(),
             "kind": kind,
@@ -748,4 +988,11 @@ def run_social_intel_for_capability(
     action = str(p.get("action") or "observe").strip().lower()
     if action in ("speak", "post", "queue_outbound"):
         return attempt_social_speak(guardian, p)
+    if action in ("record_outcomes", "continuity_outcomes"):
+        _ = guardian
+        cfg = load_social_config()
+        cont = cfg.get("continuity") or {}
+        st = load_continuity()
+        changed = apply_continuity_outcomes(st, p.get("continuity_outcomes"), time.time(), cont)
+        return {"success": True, "result": {"continuity_outcomes_saved": changed}}
     return run_moltbook_social_session(guardian, p)

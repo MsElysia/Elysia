@@ -56,7 +56,17 @@ def infer_portfolio_category(archetype: str, task: Optional[Dict[str, Any]] = No
         return "research"
     if "execute_best" in a or "generate_execution_plan" in a or ("rank_top" in a and "opportunit" in a):
         return "execution"
-    if "revenue" in a or "shortlist" in a or "offer_ideas" in a or "monetization" in a or "finance_revenue" in a:
+    if (
+        "revenue" in a
+        or "shortlist" in a
+        or "offer_ideas" in a
+        or "offer_pack" in a
+        or "operator_offer" in a
+        or "offer_page" in a
+        or "market_value" in a
+        or "monetization" in a
+        or "finance_revenue" in a
+    ):
         return "revenue"
     if "diagnostic" in a or "idle_pulse" in a or "validate_tool" in a or "repair_tool" in a or "repair_registry" in a:
         return "maintenance"

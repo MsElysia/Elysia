@@ -5,11 +5,430 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+_SAFE_FETCH_MAX_BYTES = 200_000
+_SAFE_FETCH_TEXT_PREVIEW = 24_000
+
+
+def _first_http_url_from_payload(payload: Dict[str, Any]) -> str:
+    """Extract the first http(s) URL from common capability payload fields."""
+    for key in ("url", "href", "link"):
+        value = str(payload.get(key) or "").strip()
+        if value.startswith(("http://", "https://")):
+            return value
+    haystack = " ".join(
+        str(payload.get(key) or "")
+        for key in ("task", "objective", "query", "prompt", "text")
+    )
+    match = re.search(r"https?://[^\s<>'\")]+", haystack)
+    return match.group(0).rstrip(".,;") if match else ""
+
+
+def _safe_builtin_web_fetch(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Small read-only HTTP fetch for the builtin web tool."""
+    url = _first_http_url_from_payload(payload)
+    if not url:
+        return {
+            "success": False,
+            "error": "elysia_builtin_web requires an http(s) URL in url/objective/query/task/prompt",
+        }
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return {"success": False, "error": f"Refusing non-http(s) URL: {url[:120]}"}
+
+    timeout = max(1.0, min(float(payload.get("timeout_sec", 12.0) or 12.0), 30.0))
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "ProjectGuardian-ElysiaBuiltinWeb/1.0",
+            "Accept": "text/html,application/json,text/plain;q=0.9,*/*;q=0.5",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read(_SAFE_FETCH_MAX_BYTES + 1)
+            truncated = len(raw) > _SAFE_FETCH_MAX_BYTES
+            raw = raw[:_SAFE_FETCH_MAX_BYTES]
+            content_type = str(resp.headers.get("Content-Type") or "")
+            text = raw.decode("utf-8", errors="replace")
+            return {
+                "success": True,
+                "data": {
+                    "url": url,
+                    "status_code": getattr(resp, "status", 200),
+                    "content_type": content_type,
+                    "text": text[:_SAFE_FETCH_TEXT_PREVIEW],
+                    "bytes_read": len(raw),
+                    "truncated": truncated or len(text) > _SAFE_FETCH_TEXT_PREVIEW,
+                },
+            }
+    except urllib.error.HTTPError as e:
+        return {
+            "success": False,
+            "error": f"HTTP {getattr(e, 'code', '?')} while fetching {url}",
+            "status_code": getattr(e, "code", None),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def _task_router_gate_payload(payload: Dict[str, Any], structured_task: Dict[str, Any]) -> Dict[str, Any]:
+    gate_payload = dict(payload)
+    gate_payload.update(structured_task)
+    nested = structured_task.get("payload")
+    if isinstance(nested, dict):
+        gate_payload.update(nested)
+    return gate_payload
+
+
+def _task_router_route_metadata_gate(route: Dict[str, Any], payload: Dict[str, Any]) -> Tuple[bool, str]:
+    routed_to = str(route.get("routed_to") or "").strip().lower()
+    score = route.get("score")
+    if not routed_to or score is None:
+        return False, "missing_route_or_score"
+
+    if "available_tools" in route:
+        try:
+            if int(route.get("available_tools") or 0) <= 0:
+                return False, "no_strict_capability_match"
+        except (TypeError, ValueError):
+            return False, "bad_available_tools"
+
+    if routed_to == "elysia_builtin_web" and not _first_http_url_from_payload(payload):
+        return False, "web_route_missing_url"
+    if routed_to == "elysia_builtin_exec":
+        return False, "exec_route_requires_explicit_execution"
+
+    return True, "route_metadata"
+
+
+def _artifact_search_roots(guardian: Any) -> List[Path]:
+    roots: List[Path] = []
+    ui_roots = getattr(guardian, "ui_data_roots", None)
+    if isinstance(ui_roots, (list, tuple)):
+        for root in ui_roots:
+            try:
+                path = Path(root)
+            except Exception:
+                continue
+            if path not in roots:
+                roots.append(path)
+    repo_root = Path(__file__).resolve().parent.parent
+    if repo_root not in roots:
+        roots.append(repo_root)
+    return roots
+
+
+def _iter_operator_artifact_entries(guardian: Any) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    seen_paths = set()
+    contract_defaults = {
+        "generated_reports": None,
+        "revenue_briefs": "revenue_shortlist",
+        "research_briefs": "research_brief",
+    }
+    for root in _artifact_search_roots(guardian):
+        for folder_name, default_contract in contract_defaults.items():
+            for folder in (root / folder_name, root / "data" / folder_name):
+                if not folder.is_dir():
+                    continue
+                for fp in sorted(folder.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+                    sp = str(fp.resolve())
+                    if sp in seen_paths:
+                        continue
+                    seen_paths.add(sp)
+                    try:
+                        with open(fp, "r", encoding="utf-8") as f:
+                            blob = json.load(f)
+                    except Exception:
+                        continue
+                    if not isinstance(blob, dict):
+                        continue
+                    payload = blob.get("payload")
+                    entries.append(
+                        {
+                            "path": sp,
+                            "file_name": fp.name,
+                            "contract_id": blob.get("contract_id") or default_contract,
+                            "payload": payload if isinstance(payload, dict) else {},
+                            "blob": blob,
+                            "mtime": fp.stat().st_mtime,
+                        }
+                    )
+    entries.sort(key=lambda item: float(item.get("mtime") or 0.0), reverse=True)
+    return entries
+
+
+def _select_offer_pack_revenue_payload(artifacts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    best_score = float("-inf")
+    best_payload: Optional[Dict[str, Any]] = None
+    best_opp: Optional[Dict[str, Any]] = None
+    fallback: Optional[Dict[str, Any]] = None
+    for item in artifacts:
+        if item.get("contract_id") != "revenue_shortlist":
+            continue
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if fallback is None:
+            fallback = payload
+        opportunities = payload.get("opportunities")
+        if not isinstance(opportunities, list):
+            continue
+        for opp in opportunities:
+            if not isinstance(opp, dict):
+                continue
+            title = str(opp.get("title") or "").strip()
+            title_l = title.lower()
+            score = 0.0
+            if title and not title_l.startswith("revenue angle:"):
+                score += 4.0
+            if "system optimization" not in title_l:
+                score += 1.0
+            if any(token in title_l for token in ("audit", "brief", "service", "sprint", "offer", "dashboard")):
+                score += 2.0
+            expected = str(opp.get("expected_value") or "").strip().lower()
+            if expected == "high":
+                score += 2.0
+            elif expected == "medium":
+                score += 1.0
+            difficulty = str(opp.get("difficulty") or "").strip().lower()
+            if difficulty == "low":
+                score += 1.5
+            elif difficulty == "medium":
+                score += 1.0
+            if score > best_score:
+                best_score = score
+                best_opp = dict(opp)
+                best_payload = payload
+    if best_opp is not None:
+        base = dict(best_payload or {})
+        base["opportunities"] = [best_opp]
+        return base
+    return fallback
+
+
+def _expected_value_score(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip().lower()
+    if not text:
+        return 0.0
+    label_scores = {
+        "critical": 5.0,
+        "very high": 4.5,
+        "high": 4.0,
+        "medium-high": 3.25,
+        "medium": 2.5,
+        "visibility": 2.0,
+        "low-medium": 1.75,
+        "low": 1.0,
+        "uncertain": 0.75,
+    }
+    if text in label_scores:
+        return label_scores[text]
+    money = re.search(r"\$?\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmM])?", text)
+    if money:
+        amount = float(money.group(1))
+        suffix = (money.group(2) or "").lower()
+        if suffix == "k":
+            amount *= 1000
+        elif suffix == "m":
+            amount *= 1_000_000
+        if amount >= 1000:
+            return 5.0
+        if amount >= 250:
+            return 4.0
+        if amount >= 50:
+            return 3.0
+        return 1.5
+    for label, score in label_scores.items():
+        if label in text:
+            return score
+    return 1.0
+
+
+def _difficulty_score(value: Any) -> float:
+    text = str(value or "").strip().lower()
+    if text in ("trivial", "very low"):
+        return 2.0
+    if text == "low":
+        return 1.5
+    if text == "medium":
+        return 0.8
+    if text in ("high", "hard"):
+        return -0.6
+    if text in ("very high", "blocked"):
+        return -1.2
+    return 0.0
+
+
+def _score_revenue_opportunity(opp: Dict[str, Any], mtime: float = 0.0) -> float:
+    title = str(opp.get("title") or "").strip().lower()
+    capability = str(opp.get("required_capability") or "").strip().lower()
+    score = _expected_value_score(opp.get("expected_value")) * 10.0
+    score += _difficulty_score(opp.get("difficulty")) * 2.0
+    if capability and capability not in ("none", "unknown", "tbd"):
+        score += 1.25
+    if any(token in title for token in ("offer", "buyer", "service", "sprint", "brief", "dashboard", "audit")):
+        score += 1.0
+    if title.startswith("revenue angle:"):
+        score -= 1.0
+    if mtime:
+        score += min(1.0, max(0.0, mtime / 4_000_000_000.0))
+    return round(score, 4)
+
+
+def _rank_revenue_opportunities(
+    artifacts: List[Dict[str, Any]],
+    *,
+    limit: int = 12,
+) -> Tuple[List[Dict[str, Any]], str]:
+    ranked: List[Tuple[float, float, int, Dict[str, Any]]] = []
+    for item in artifacts:
+        if item.get("contract_id") != "revenue_shortlist":
+            continue
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        opportunities = payload.get("opportunities")
+        if not isinstance(opportunities, list):
+            continue
+        mtime = float(item.get("mtime") or 0.0)
+        for local_idx, opp in enumerate(opportunities[:24]):
+            if not isinstance(opp, dict):
+                continue
+            candidate = dict(opp)
+            candidate.setdefault("source_file", str(item.get("path") or ""))
+            candidate["rank_score"] = _score_revenue_opportunity(candidate, mtime)
+            ranked.append((float(candidate["rank_score"]), mtime, -local_idx, candidate))
+    ranked.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
+    out = [row[3] for row in ranked[: max(1, min(limit, 24))]]
+    source_file = ""
+    if out:
+        source_file = str(out[0].get("source_file") or "")
+    return out, source_file
+
+
+def _execution_plan_for_opportunity(opp: Dict[str, Any], source_file: str = "") -> Dict[str, Any]:
+    title = str(opp.get("title") or "selected opportunity").strip()
+    capability = str(opp.get("required_capability") or "").strip() or "operator_review"
+    difficulty = str(opp.get("difficulty") or "unknown").strip()
+    expected_value = str(opp.get("expected_value") or "unknown").strip()
+    steps = [
+        f"Review selected opportunity: {title[:120]}",
+        f"Verify required capability is available: {capability}",
+        "Run one bounded validation task and save the result as an operator artifact",
+        "Only move to external posting, payment, or outreach after explicit operator approval",
+    ]
+    if source_file:
+        steps.insert(1, f"Use source artifact: {source_file}")
+    return {
+        "selected_title": title,
+        "required_capability": capability,
+        "difficulty": difficulty,
+        "expected_value": expected_value,
+        "steps": steps,
+        "constraints": [
+            "no_external_posting_without_operator",
+            "no_payment_or_transfer_without_operator",
+            "record_artifact_before_next_action",
+        ],
+    }
+
+
+def _builtin_elysia_builtin_llm_via_unified(guardian: Any, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Run elysia_builtin_llm through the same stack as internal autonomy/chat (unified router, autonomy-safe when available).
+    Used when ``modules['tool_registry']`` is the lightweight core catalog without ``call_tool``.
+    """
+    us = getattr(guardian, "_unified_system", None)
+    if us is None:
+        return None
+    raw_msgs = payload.get("messages")
+    messages: List[Dict[str, str]]
+    if isinstance(raw_msgs, list) and raw_msgs:
+        messages = []
+        for m in raw_msgs:
+            if not isinstance(m, dict):
+                continue
+            role = str(m.get("role") or "user").strip().lower()
+            if role not in ("system", "user", "assistant"):
+                role = "user"
+            content = str(m.get("content") or "")[:12000]
+            if content:
+                messages.append({"role": role, "content": content})
+        if not messages:
+            messages = [{"role": "user", "content": "(empty)"}]
+    else:
+        parts: List[str] = []
+        for key in ("prompt", "task", "query", "objective", "user_text", "message", "content"):
+            val = payload.get(key)
+            if val is not None and str(val).strip():
+                parts.append(str(val).strip())
+        blob = "\n\n".join(parts).strip()[:12000]
+        messages = [{"role": "user", "content": blob or "(empty)"}]
+    try:
+        mt = int(payload.get("max_tokens") or payload.get("max_output_tokens") or 512)
+    except (TypeError, ValueError):
+        mt = 512
+    mt = max(32, min(8000, mt))
+    module_name = str(payload.get("module_name") or "planner")
+    agent_raw = payload.get("agent_name")
+    agent_name = str(agent_raw) if agent_raw is not None else "orchestrator"
+    pe = payload.get("prompt_extra")
+    prompt_extra = pe if isinstance(pe, dict) else None
+    sr_raw = payload.get("structured_role") or payload.get("structuredRole")
+    structured_role = str(sr_raw).strip() if sr_raw is not None and str(sr_raw).strip() else None
+    # This bridge is itself the generic LLM capability. Letting unified chat run
+    # capability preamble/tool-first selection here can recursively select
+    # elysia_builtin_llm again and produce nested "Capability executed" payloads.
+    skip_pre = bool(payload.get("skip_capability_preamble", True))
+    try:
+        if hasattr(us, "_autonomy_llm_completion"):
+            reply, err = us._autonomy_llm_completion(
+                messages,
+                mt,
+                module_name=module_name,
+                agent_name=agent_name,
+                prompt_extra=prompt_extra,
+                skip_capability_preamble=skip_pre,
+                structured_role=structured_role,
+            )
+        elif hasattr(us, "_llm_completion"):
+            reply, err = us._llm_completion(
+                messages,
+                mt,
+                module_name=module_name,
+                agent_name=agent_name,
+                prompt_extra=prompt_extra,
+                skip_capability_preamble=skip_pre,
+                require_autonomy_safe_reasoning=True,
+                structured_role=structured_role,
+            )
+        else:
+            return None
+    except Exception as e:
+        logger.debug("builtin_llm unified: %s", e)
+        return {"success": False, "error": str(e)}
+    ok = bool((reply or "").strip()) and not (err or "").strip()
+    inner = {
+        "success": ok,
+        "data": reply if ok else "",
+        "error": (err or "")[:2000] if not ok else "",
+    }
+    return {"success": True, "result": inner}
+
 
 # Real-task task_router executions only (excludes health_probe and probe_like DEBUG paths).
 _TASK_ROUTER_GATE_METRICS: Dict[str, Any] = {
@@ -84,60 +503,77 @@ def _builtin_operator_tool_result(guardian: Any, tool_name: str, payload: Dict[s
     Used when catalog tools are empty so autonomy still progresses.
     """
     mods = getattr(guardian, "_modules", None) or {}
-    root = Path(__file__).resolve().parent.parent
     tname = (tool_name or "").strip().lower()
     st = str(payload.get("self_task_archetype") or "")
 
     if tname == "artifact_synthesizer":
+        artifacts = _iter_operator_artifact_entries(guardian)
+        if st in ("package_operator_offer_pack", "package_operator_offer_page"):
+            from .self_task_output_contracts import build_offer_pack_from_artifacts
+
+            revenue = _select_offer_pack_revenue_payload(artifacts)
+            digest = next(
+                (
+                    item.get("payload")
+                    for item in artifacts
+                    if item.get("contract_id") == "learned_digest" and isinstance(item.get("payload"), dict)
+                ),
+                None,
+            )
+            improvement = next(
+                (
+                    item.get("payload")
+                    for item in artifacts
+                    if item.get("contract_id") in (
+                        "system_improvement_proposal",
+                        "capability_gap_report",
+                        "research_brief",
+                    )
+                    and isinstance(item.get("payload"), dict)
+                ),
+                None,
+            )
+            source_names = [
+                str(item.get("file_name") or item.get("path") or "")
+                for item in artifacts
+                if item.get("contract_id") != "offer_pack"
+            ][:8]
+            return {
+                "success": True,
+                "result": build_offer_pack_from_artifacts(
+                    revenue_payload=revenue,
+                    digest_payload=digest,
+                    improvement_payload=improvement,
+                    source_names=source_names,
+                ),
+            }
+
         out: Dict[str, Any] = {"summaries": [], "sources": []}
-        for sub in ("data/generated_reports", "data/revenue_briefs", "data/research_briefs"):
-            p = root / sub
-            if not p.is_dir():
+        for item in artifacts[:12]:
+            blob = item.get("blob")
+            if not isinstance(blob, dict):
                 continue
-            for fp in sorted(p.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True)[:6]:
-                try:
-                    with open(fp, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    out["summaries"].append({"file": fp.name, "preview_keys": list(data.keys())[:14]})
-                    out["sources"].append(str(fp))
-                except Exception:
-                    continue
+            out["summaries"].append(
+                {
+                    "file": item.get("file_name"),
+                    "contract_id": item.get("contract_id"),
+                    "preview_keys": list(blob.keys())[:14],
+                }
+            )
+            out["sources"].append(str(item.get("path") or ""))
         return {"success": True, "result": out}
 
     if tname == "opportunity_ranker":
-        best_ops: Optional[List[Any]] = None
-        best_path = ""
-        best_mtime = 0.0
-        for sub in ("data/revenue_briefs", "data/generated_reports"):
-            p = root / sub
-            if not p.is_dir():
-                continue
-            for fp in p.glob("*.json"):
-                try:
-                    mtime = fp.stat().st_mtime
-                    with open(fp, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    pl = data.get("payload") if isinstance(data, dict) else None
-                    blob = pl if isinstance(pl, dict) else data
-                    opps = blob.get("opportunities") if isinstance(blob, dict) else None
-                    if isinstance(opps, list) and opps and mtime >= best_mtime:
-                        best_mtime = mtime
-                        best_ops = opps
-                        best_path = str(fp)
-                except Exception:
-                    continue
-        if not best_ops:
+        artifacts = _iter_operator_artifact_entries(guardian)
+        ranked_ops, source_file = _rank_revenue_opportunities(artifacts)
+        if not ranked_ops:
             return {"success": True, "result": {"ranked": [], "note": "no_opportunity_artifacts"}}
-        ranked = sorted(
-            range(len(best_ops)),
-            key=lambda i: str((best_ops[i] or {}).get("expected_value", "")),
-            reverse=True,
-        )
         return {
             "success": True,
             "result": {
-                "ranked": [best_ops[i] for i in ranked[:12]],
-                "source_file": best_path,
+                "ranked": ranked_ops,
+                "source_file": source_file,
+                "ranking_basis": "expected_value+difficulty+capability+recency",
             },
         }
 
@@ -153,15 +589,33 @@ def _builtin_operator_tool_result(guardian: Any, tool_name: str, payload: Dict[s
         from .self_task_output_contracts import build_revenue_shortlist_from_summary
 
         if st in ("execute_best_opportunity",):
-            plan = {
-                "steps": [
-                    "Open latest ranked brief under data/revenue_briefs",
-                    "Confirm required_capability is wired",
-                    "Queue one bounded self-task for the next concrete verification",
-                ],
-                "income_snapshot_keys": list(base_summary.keys())[:20],
+            artifacts = _iter_operator_artifact_entries(guardian)
+            ranked_ops, source_file = _rank_revenue_opportunities(artifacts)
+            artifact_backed = bool(ranked_ops)
+            if not ranked_ops:
+                fallback_shortlist = build_revenue_shortlist_from_summary(base_summary)
+                fallback_artifacts = [
+                    {
+                        "contract_id": "revenue_shortlist",
+                        "payload": fallback_shortlist,
+                        "path": "income_generator.get_income_summary",
+                        "mtime": 0.0,
+                    }
+                ]
+                ranked_ops, source_file = _rank_revenue_opportunities(fallback_artifacts)
+            selected = ranked_ops[0] if ranked_ops else {}
+            plan = _execution_plan_for_opportunity(selected, source_file)
+            plan["income_snapshot_keys"] = list(base_summary.keys())[:20]
+            return {
+                "success": True,
+                "result": {
+                    "selected_opportunity": selected,
+                    "ranked": ranked_ops[:5],
+                    "source_file": source_file,
+                    "artifact_backed": artifact_backed,
+                    "execution_plan": plan,
+                },
             }
-            return {"success": True, "result": {"execution_plan": plan, "opportunities": base_summary}}
         if st in ("generate_execution_plan",):
             return {
                 "success": True,
@@ -200,6 +654,27 @@ def _builtin_operator_tool_result(guardian: Any, tool_name: str, payload: Dict[s
         except Exception as e:
             logger.debug("elysia_social_intel: %s", e)
             return {"success": False, "error": str(e)}
+
+    if tname == "elysia_builtin_web":
+        return _safe_builtin_web_fetch(payload)
+
+    if tname == "elysia_builtin_exec":
+        return {
+            "success": False,
+            "error": "elysia_builtin_exec is gated; explicit operator approval is required before running local commands",
+            "requires_approval": True,
+            "status": "deferred",
+        }
+
+    if tname == "elysia_builtin_llm":
+        bridged = _builtin_elysia_builtin_llm_via_unified(guardian, payload)
+        if bridged is not None:
+            return bridged
+
+    if tname == "elysia_mcp_tool":
+        from .mcp_capability import run_builtin_mcp_tool
+
+        return run_builtin_mcp_tool(guardian, payload)
 
     return None
 
@@ -292,6 +767,13 @@ def resolve_exec_target(
 def infer_chat_capability_input(user_text: str, entry: Dict[str, Any]) -> Dict[str, Any]:
     """Lightweight kwargs for tool/module calls from chat."""
     text = (user_text or "").strip()
+    if str(entry.get("name") or "").strip().lower() == "elysia_mcp_tool":
+        from .mcp_capability import infer_elysia_mcp_tool_chat_input
+
+        out = infer_elysia_mcp_tool_chat_input(text)
+        out.setdefault("query", text[:800])
+        out.setdefault("task", text[:1200])
+        return out
     desc = (entry.get("description") or "").lower()
     out: Dict[str, Any] = {"task": text[:1200], "query": text[:800], "prompt": text[:800]}
     blob = f"{desc} {entry.get('name', '')}".lower()
@@ -345,6 +827,9 @@ def execute_capability_kind(
             if hasattr(tr, "call_tool"):
                 result = tr.call_tool(nm, method, **payload)
             else:
+                builtin_fallback = _builtin_operator_tool_result(guardian, nm, {**payload, "method": method})
+                if builtin_fallback is not None:
+                    return builtin_fallback
                 return {"success": False, "error": "tool_registry has no call_tool"}
             ok = bool(result.get("success")) if isinstance(result, dict) else bool(result)
             if not ok:
@@ -422,10 +907,12 @@ def execute_capability_kind(
             if nm == "task_router" and hasattr(mod, "route_task"):
                 st = payload.get("structured_task")
                 is_health_probe = False
+                route_payload: Dict[str, Any] = dict(payload)
                 if isinstance(st, dict):
                     tt = str(st.get("task_type") or "routing_probe")
                     is_health_probe = bool(st.get("_guardian_router_health_probe"))
                     r = mod.route_task(tt, st)
+                    route_payload = _task_router_gate_payload(payload, st)
                 else:
                     tt = "routing_probe"
                     ctx = {
@@ -436,16 +923,12 @@ def execute_capability_kind(
                         "payload": {"source": "execute_capability", "format_version": 1},
                     }
                     r = mod.route_task(ctx["task_type"], ctx)
+                    route_payload = _task_router_gate_payload(payload, ctx)
                 success_source = "none"
+                route_gate_reason = "not_evaluated"
                 if isinstance(r, dict):
                     ok_payload = bool(r.get("data") or r.get("tasks") or r.get("result"))
-                    rt_raw = r.get("routed_to")
-                    sc = r.get("score")
-                    ok_route = (
-                        rt_raw is not None
-                        and bool(str(rt_raw).strip())
-                        and sc is not None
-                    )
+                    ok_route, route_gate_reason = _task_router_route_metadata_gate(r, route_payload)
                     # Health probe: only payload counts as success (diagnostic; route metadata alone is not "work").
                     if is_health_probe:
                         ok = ok_payload
@@ -468,32 +951,35 @@ def execute_capability_kind(
                 if is_health_probe:
                     logger.debug(
                         "[CapabilityExec] task_router health_probe task_type=%s routed_to=%s score=%s "
-                        "ok_gate=%s success_source=%s (route_metadata_ignored_for_ok)",
+                        "ok_gate=%s success_source=%s route_gate_reason=%s (route_metadata_ignored_for_ok)",
                         tt,
                         rt,
                         rs,
                         ok,
                         success_source,
+                        route_gate_reason,
                     )
                 elif tt == "routing_probe":
                     logger.debug(
                         "[CapabilityExec] task_router probe_like task_type=%s routed_to=%s score=%s "
-                        "ok_gate=%s success_source=%s",
+                        "ok_gate=%s success_source=%s route_gate_reason=%s",
                         tt,
                         rt,
                         rs,
                         ok,
                         success_source,
+                        route_gate_reason,
                     )
                 else:
                     logger.info(
                         "[CapabilityExec] task_router real_task task_type=%s routed_to=%s route_score=%s "
-                        "ok_gate=%s success_source=%s abandoned_as_empty=%s",
+                        "ok_gate=%s success_source=%s route_gate_reason=%s abandoned_as_empty=%s",
                         tt,
                         rt,
                         rs,
                         ok,
                         success_source,
+                        route_gate_reason,
                         not ok,
                     )
                     _bump_task_router_gate_metrics(tt, rt, success_source, ok)
@@ -501,7 +987,11 @@ def execute_capability_kind(
                     return {
                         "success": False,
                         "error": "task_router_no_matching_tool",
-                        "result": {"use_fallback": "execute_self_task", "route_empty": True},
+                        "result": {
+                            "use_fallback": "execute_self_task",
+                            "route_empty": True,
+                            "route_blocked_reason": route_gate_reason,
+                        },
                     }
                 return {"success": ok, "result": r}
             if nm == "harvest_engine" and hasattr(mod, "generate_income_report"):

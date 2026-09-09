@@ -5,19 +5,33 @@
       "modes": {
         "observe": true,
         "draft": true,
-        "speak": false
+        "speak": true
       },
-      "description": "Default: read + summarize + drafts only; no outbound posts."
+      "description": "Read, summarize, draft, and speak via bounded MoltBook comments."
     }
   },
   "default_environment": "moltbook",
   "sponsored_risk_threshold": 0.42,
   "speak": {
-    "enabled": false,
+    "enabled": true,
     "max_posts_per_hour": 2,
     "allowlisted_host_suffixes": ["moltbook.com"],
-    "queue_outbound_to_disk": true,
-    "note": "When enabled, outbound text is queued to data/social_intelligence/outbound_queue.jsonl — no browser posting in this pass."
+    "queue_outbound_to_disk": false,
+    "delivery_mode": "api_comment",
+    "auto_comment_after_draft": true,
+    "max_comment_chars": 900,
+    "note": "When enabled, Elysia may publish bounded comment replies through the MoltBook API and records them in data/social_intelligence/outbound_sent.jsonl."
+  },
+  "browse": {
+    "max_pages": 10,
+    "max_scrolls_per_page": 4,
+    "max_depth": 3,
+    "max_links_per_page": 3,
+    "force_link_follow": true
+  },
+  "api_home": {
+    "enabled": true,
+    "update_state": true
   },
   "campaign_ids": {
     "observe": ["cmp_social_intel", "cmp_learning_loop"],

@@ -56,7 +56,9 @@ def test_accept_requires_live_owner_and_records_decision(tmp_path):
         ledger.claim_verification("write-1", "verifier-a", lease_seconds=60, now=NOW)
         assert not ledger.accept_verification("write-1", "verifier-b", ["review:wrong"], now=NOW)
         assert not ledger.accept_verification("write-1", "verifier-a", ["review:stale"], now=NOW + timedelta(seconds=61))
-        assert ledger.accept_verification("write-1", "verifier-a", ["review:ok"], now=NOW + timedelta(seconds=30))
+        assert ledger.reap_expired_verification(now=NOW + timedelta(seconds=61)) == ["write-1"]
+        assert ledger.claim_verification("write-1", "verifier-b", lease_seconds=60, now=NOW + timedelta(seconds=62)).claimed
+        assert ledger.accept_verification("write-1", "verifier-b", ["review:ok"], now=NOW + timedelta(seconds=63))
         row = ledger.conn.execute("SELECT * FROM tasks WHERE task_id='write-1'").fetchone()
         assert row["status"] == "completed"
         assert row["verification_claimed_by"] is None
@@ -84,14 +86,7 @@ def test_rejection_preserves_evidence_and_attempt_and_bounds_retry(tmp_path):
 
 
 def test_rejected_retry_can_be_rerouted_without_losing_producer_provenance(tmp_path):
-    """A rejected write may be rerouted, but the new attempt must own its submission.
-
-    AUTOPILOT-004 explicitly requires failed workers to be reroutable.  This test
-    prevents the task-level ``produced_by`` field from permanently binding every
-    future attempt to the first producer.  Historical producer evidence must remain
-    reconstructable in the event stream while the new worker becomes the producer
-    of the retry it actually performed.
-    """
+    """A rejected write may be rerouted, but the new attempt must own its submission."""
     ledger = TaskLedger(tmp_path / "ledger.sqlite3")
     try:
         _claimed_writer(ledger)
@@ -100,14 +95,10 @@ def test_rejected_retry_can_be_rerouted_without_losing_producer_provenance(tmp_p
         assert ledger.reject_verification(
             "write-1", "verifier-a", "needs revision", ["review:first-fail"], max_rejections=3, now=NOW
         )
-
         retry_time = NOW + timedelta(minutes=1)
         retry = ledger.claim("write-1", "writer-b", now=retry_time)
         assert retry.claimed
-        assert ledger.submit_for_verification(
-            "write-1", "writer-b", "packet-2", ["evidence:retry"], now=retry_time
-        )
-
+        assert ledger.submit_for_verification("write-1", "writer-b", "packet-2", ["evidence:retry"], now=retry_time)
         row = ledger.conn.execute("SELECT * FROM tasks WHERE task_id='write-1'").fetchone()
         assert row["status"] == "verifying"
         assert row["produced_by"] == "writer-b"

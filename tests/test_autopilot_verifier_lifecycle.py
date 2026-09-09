@@ -83,6 +83,46 @@ def test_rejection_preserves_evidence_and_attempt_and_bounds_retry(tmp_path):
         ledger.close()
 
 
+def test_rejected_retry_can_be_rerouted_without_losing_producer_provenance(tmp_path):
+    """A rejected write may be rerouted, but the new attempt must own its submission.
+
+    AUTOPILOT-004 explicitly requires failed workers to be reroutable.  This test
+    prevents the task-level ``produced_by`` field from permanently binding every
+    future attempt to the first producer.  Historical producer evidence must remain
+    reconstructable in the event stream while the new worker becomes the producer
+    of the retry it actually performed.
+    """
+    ledger = TaskLedger(tmp_path / "ledger.sqlite3")
+    try:
+        _claimed_writer(ledger)
+        assert ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:first"], now=NOW)
+        assert ledger.claim_verification("write-1", "verifier-a", now=NOW).claimed
+        assert ledger.reject_verification(
+            "write-1", "verifier-a", "needs revision", ["review:first-fail"], max_rejections=3, now=NOW
+        )
+
+        retry_time = NOW + timedelta(minutes=1)
+        retry = ledger.claim("write-1", "writer-b", now=retry_time)
+        assert retry.claimed
+        assert ledger.submit_for_verification(
+            "write-1", "writer-b", "packet-2", ["evidence:retry"], now=retry_time
+        )
+
+        row = ledger.conn.execute("SELECT * FROM tasks WHERE task_id='write-1'").fetchone()
+        assert row["status"] == "verifying"
+        assert row["produced_by"] == "writer-b"
+        assert row["completion_packet_id"] == "packet-2"
+        events = ledger.events("write-1")
+        first_submission = next(e for e in events if e["event_type"] == "producer_completion_submitted")
+        assert first_submission["actor"] == "writer"
+        assert first_submission["detail"]["packet_id"] == "packet-1"
+        assert events[-1]["event_type"] == "producer_completion_submitted"
+        assert events[-1]["actor"] == "writer-b"
+        assert events[-1]["detail"]["packet_id"] == "packet-2"
+    finally:
+        ledger.close()
+
+
 def test_expired_verifier_lease_reaps_without_touching_producer_evidence(tmp_path):
     ledger = TaskLedger(tmp_path / "ledger.sqlite3")
     try:

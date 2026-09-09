@@ -110,9 +110,10 @@ class TaskLedger:
     def submit_for_verification(self, task_id: str, producer_worker_id: str, packet_id: str, evidence_refs: list[str], now: datetime|None=None) -> bool:
         now=now or _utcnow(); now_s=_iso(now); evidence_json=json.dumps(list(evidence_refs),sort_keys=True)
         with self.conn:
-            row=self.conn.execute("SELECT produced_by FROM tasks WHERE task_id=?",(task_id,)).fetchone()
-            if not row or (row["produced_by"] is not None and row["produced_by"]!=producer_worker_id): return False
-            cursor=self.conn.execute("UPDATE tasks SET status='verifying',produced_by=COALESCE(produced_by,?),completion_packet_id=?,completion_evidence_json=?,claimed_by=NULL,lease_expires_at=NULL,verification_claimed_by=NULL,verification_lease_expires_at=NULL,updated_at=? WHERE task_id=? AND claimed_by=? AND status IN ('claimed','running') AND lease_expires_at IS NOT NULL AND lease_expires_at>?",(producer_worker_id,packet_id,evidence_json,now_s,task_id,producer_worker_id,now_s))
+            # The current live execution lease is the authority to submit this attempt.
+            # `produced_by` is therefore attempt-local current state, while the append-only
+            # producer_completion_submitted events retain provenance for prior attempts.
+            cursor=self.conn.execute("UPDATE tasks SET status='verifying',produced_by=?,completion_packet_id=?,completion_evidence_json=?,claimed_by=NULL,lease_expires_at=NULL,verification_claimed_by=NULL,verification_lease_expires_at=NULL,updated_at=? WHERE task_id=? AND claimed_by=? AND status IN ('claimed','running') AND lease_expires_at IS NOT NULL AND lease_expires_at>?",(producer_worker_id,packet_id,evidence_json,now_s,task_id,producer_worker_id,now_s))
             if cursor.rowcount!=1: return False
             self._event(task_id,"producer_completion_submitted",producer_worker_id,{"packet_id":packet_id,"evidence_refs":list(evidence_refs)},now_s); return True
 

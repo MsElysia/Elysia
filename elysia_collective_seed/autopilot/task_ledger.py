@@ -63,7 +63,13 @@ class TaskLedger:
                 attempt INTEGER NOT NULL DEFAULT 0,
                 claimed_by TEXT,
                 lease_expires_at TEXT,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                produced_by TEXT,
+                completion_packet_id TEXT,
+                completion_evidence_json TEXT,
+                verification_claimed_by TEXT,
+                verification_lease_expires_at TEXT,
+                verification_rejections INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS events (
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +82,21 @@ class TaskLedger:
             );
             """
         )
+        # Existing ledgers predate verifier lifecycle columns. CREATE TABLE IF NOT
+        # EXISTS does not upgrade them, so migrate additively and idempotently.
+        # Never drop/recreate tasks: historical task/event state is evidence.
+        existing = {row["name"] for row in self.conn.execute("PRAGMA table_info(tasks)")}
+        verifier_columns = (
+            ("produced_by", "TEXT"),
+            ("completion_packet_id", "TEXT"),
+            ("completion_evidence_json", "TEXT"),
+            ("verification_claimed_by", "TEXT"),
+            ("verification_lease_expires_at", "TEXT"),
+            ("verification_rejections", "INTEGER NOT NULL DEFAULT 0"),
+        )
+        for name, definition in verifier_columns:
+            if name not in existing:
+                self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
         self.conn.commit()
 
     def put_task(self, task: Mapping) -> None:

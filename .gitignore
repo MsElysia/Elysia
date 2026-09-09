@@ -64,6 +64,11 @@ config/*api*.json
 config/*secret*.json
 !config/*template*.json
 
+# Local OpenClaw worker wiring (machine-specific); commit config/openclaw.example.json only
+config/openclaw.json
+!config/openclaw.example.json
+!config/openclaw_provider_elysia.example.json
+
 # Logs
 logs/
 *.log
@@ -158,4 +163,8 @@ guardian_backups/
 
 
 extracted_zip/
+
+
+# Local git worktrees (reconciliation / experiments)
+.worktrees/
 

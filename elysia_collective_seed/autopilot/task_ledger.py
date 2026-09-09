@@ -11,9 +11,10 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Mapping
+from typing import Iterable, Mapping
 
-from .verifier import VerificationDecision
+from .dispatcher import Worker
+from .verifier import select_verifier
 
 ACTIVE_LEASE_STATES = {"claimed", "running"}
 TERMINAL_STATES = {"completed", "rejected", "archived"}
@@ -44,8 +45,18 @@ class ClaimResult:
 class TaskLedger:
     """Small auditable SQLite ledger suitable for deterministic orchestration tests."""
 
-    def __init__(self, path: str | Path):
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        verification_workers: Iterable[Worker] = (),
+        independence_groups: Mapping[str, str] | None = None,
+    ):
         self.path = str(path)
+        self.verification_workers = {
+            worker.worker_id: worker for worker in verification_workers
+        }
+        self.independence_groups = dict(independence_groups or {})
         self.conn = sqlite3.connect(self.path, timeout=5.0)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
@@ -128,20 +139,31 @@ class TaskLedger:
         verifier_worker_id: str,
         lease_seconds: int = 900,
         now: datetime | None = None,
-        *,
-        decision: VerificationDecision | None = None,
     ) -> ClaimResult:
         if lease_seconds<=0: raise ValueError("lease_seconds must be positive")
         now=now or _utcnow(); now_s=_iso(now); expires=_iso(now+timedelta(seconds=lease_seconds))
         with self.conn:
-            row=self.conn.execute("SELECT produced_by,verification_claimed_by,verification_lease_expires_at,status FROM tasks WHERE task_id=?",(task_id,)).fetchone()
+            row=self.conn.execute("SELECT payload_json,produced_by,completion_packet_id,attempt,verification_claimed_by,verification_lease_expires_at,status FROM tasks WHERE task_id=?",(task_id,)).fetchone()
             if not row: return ClaimResult(False,task_id,verifier_worker_id,"task_not_found")
             if row["status"]!="verifying": return ClaimResult(False,task_id,verifier_worker_id,"state_not_verifiable")
             if row["produced_by"]==verifier_worker_id: return ClaimResult(False,task_id,verifier_worker_id,"self_verification_forbidden")
-            if decision is None: return ClaimResult(False,task_id,verifier_worker_id,"verification_decision_required")
-            if decision.state != "verification_claim": return ClaimResult(False,task_id,verifier_worker_id,"verifier_not_independent")
-            if decision.worker_id != verifier_worker_id: return ClaimResult(False,task_id,verifier_worker_id,"verification_decision_mismatch")
-            if decision.producer_worker_id != row["produced_by"]: return ClaimResult(False,task_id,verifier_worker_id,"verification_decision_mismatch")
+            candidate = self.verification_workers.get(verifier_worker_id)
+            producer_group = self.independence_groups.get(row["produced_by"])
+            if candidate is None or producer_group is None:
+                return ClaimResult(False,task_id,verifier_worker_id,"verification_registry_missing")
+            task = json.loads(row["payload_json"])
+            required_capabilities = frozenset(task.get("required_capabilities", [])) | {"verification"}
+            risk_class = str(task.get("risk_class", "repo_write"))
+            decision = select_verifier(
+                producer_worker_id=row["produced_by"],
+                producer_independence_group=producer_group,
+                workers=self.verification_workers.values(),
+                independence_groups=self.independence_groups,
+                required_capabilities=frozenset(required_capabilities),
+                risk_class=risk_class,
+            )
+            if decision.state != "verification_claim" or decision.worker_id != verifier_worker_id:
+                return ClaimResult(False,task_id,verifier_worker_id,"verifier_not_independent")
             owner=row["verification_claimed_by"]; expiry=_parse(row["verification_lease_expires_at"])
             if owner==verifier_worker_id and expiry and expiry>now:
                 self.conn.execute("UPDATE tasks SET verification_lease_expires_at=?,updated_at=? WHERE task_id=?",(expires,now_s,task_id)); self._event(task_id,"verification_lease_renewed",verifier_worker_id,{"expires":expires},now_s); return ClaimResult(True,task_id,verifier_worker_id,"renewed",expires)

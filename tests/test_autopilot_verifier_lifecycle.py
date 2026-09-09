@@ -9,48 +9,44 @@ from datetime import datetime, timedelta, timezone
 
 from elysia_collective_seed.autopilot.dispatcher import Worker
 from elysia_collective_seed.autopilot.task_ledger import TaskLedger
-from elysia_collective_seed.autopilot.verifier import select_verifier
 
 NOW = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
 
 
 def _claimed_writer(ledger: TaskLedger, task_id: str = "write-1") -> None:
-    ledger.put_task({"task_id": task_id, "status": "queued", "title": "bounded local write"})
+    if not ledger.verification_workers:
+        ledger.verification_workers = {
+            worker_id: Worker(
+                worker_id,
+                "test",
+                frozenset({"verification"}),
+                frozenset({"repo_write"}),
+                quality=1.0 if worker_id == "verifier-a" else 0.9,
+            )
+            for worker_id in ("verifier-a", "verifier-b")
+        }
+        ledger.independence_groups = {
+            "writer": "producer-group",
+            "writer-b": "producer-b-group",
+            "verifier-a": "verifier-group-a",
+            "verifier-b": "verifier-group-b",
+        }
+    ledger.put_task({
+        "task_id": task_id,
+        "status": "queued",
+        "title": "bounded local write",
+        "objective": "change only the approved local repository scope",
+        "risk_class": "repo_write",
+        "required_capabilities": ["verification"],
+        "human_approval_required": False,
+        "source_refs": ["issue:#17"],
+        "acceptance_criteria": ["tests pass"],
+    })
     assert ledger.claim(task_id, "writer", now=NOW).claimed
 
 
-def _verification_decision(
-    verifier_worker_id: str,
-    *,
-    producer_worker_id: str = "writer",
-    producer_group: str = "producer-group",
-    verifier_group: str | None = "verifier-group",
-):
-    verifier = Worker(
-        worker_id=verifier_worker_id,
-        provider="test",
-        capabilities=frozenset({"verification"}),
-        risk_classes=frozenset({"repo_write"}),
-        quality=1.0,
-    )
-    groups = {producer_worker_id: producer_group}
-    if verifier_group is not None:
-        groups[verifier_worker_id] = verifier_group
-    return select_verifier(
-        producer_worker_id=producer_worker_id,
-        producer_independence_group=producer_group,
-        workers=[verifier],
-        independence_groups=groups,
-    )
-
-
 def _claim_verification(ledger: TaskLedger, verifier_worker_id: str, **kwargs):
-    return ledger.claim_verification(
-        "write-1",
-        verifier_worker_id,
-        decision=_verification_decision(verifier_worker_id),
-        **kwargs,
-    )
+    return ledger.claim_verification("write-1", verifier_worker_id, **kwargs)
 
 
 def test_writer_submission_enters_verifying_and_releases_execution_lease(tmp_path):
@@ -74,9 +70,7 @@ def test_self_verification_forbidden_and_distinct_verifier_claims(tmp_path):
     try:
         _claimed_writer(ledger)
         ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:test"], now=NOW)
-        denied = ledger.claim_verification(
-            "write-1", "writer", decision=_verification_decision("writer"), now=NOW
-        )
+        denied = ledger.claim_verification("write-1", "writer", now=NOW)
         assert not denied.claimed and denied.reason == "self_verification_forbidden"
         claimed = _claim_verification(ledger, "verifier-a", now=NOW)
         assert claimed.claimed
@@ -95,6 +89,10 @@ def test_accept_requires_live_owner_and_records_decision(tmp_path):
         assert not ledger.accept_verification("write-1", "verifier-b", ["review:wrong"], now=NOW)
         assert not ledger.accept_verification("write-1", "verifier-a", ["review:stale"], now=NOW + timedelta(seconds=61))
         assert ledger.reap_expired_verification(now=NOW + timedelta(seconds=61)) == ["write-1"]
+        ledger.verification_workers["verifier-a"] = Worker(
+            "verifier-a", "test", frozenset({"verification"}), frozenset({"repo_write"}),
+            available=False, quality=1.0,
+        )
         assert _claim_verification(ledger, "verifier-b", lease_seconds=60, now=NOW + timedelta(seconds=62)).claimed
         assert ledger.accept_verification("write-1", "verifier-b", ["review:ok"], now=NOW + timedelta(seconds=63))
         row = ledger.conn.execute("SELECT * FROM tasks WHERE task_id='write-1'").fetchone()
@@ -165,6 +163,14 @@ def test_expired_verifier_lease_reaps_without_touching_producer_evidence(tmp_pat
         assert row["attempt"] == attempt
         assert row["produced_by"] == "writer"
         assert row["completion_packet_id"] == "packet-1"
+        ledger.verification_workers["verifier-a"] = Worker(
+            "verifier-a",
+            "test",
+            frozenset({"verification"}),
+            frozenset({"repo_write"}),
+            available=False,
+            quality=1.0,
+        )
         assert _claim_verification(ledger, "verifier-b", now=NOW + timedelta(seconds=62)).claimed
     finally:
         ledger.close()
@@ -176,25 +182,97 @@ def test_verification_claim_requires_atomic_independence_decision(tmp_path):
         _claimed_writer(ledger)
         ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:test"], now=NOW)
 
-        missing = ledger.claim_verification("write-1", "verifier-a", now=NOW)
-        assert not missing.claimed and missing.reason == "verification_decision_required"
-
-        same_group = _verification_decision("verifier-a", verifier_group="producer-group")
-        denied = ledger.claim_verification("write-1", "verifier-a", decision=same_group, now=NOW)
+        ledger.independence_groups["verifier-a"] = "producer-group"
+        denied = ledger.claim_verification("write-1", "verifier-a", now=NOW)
         assert not denied.claimed and denied.reason == "verifier_not_independent"
 
-        missing_group = _verification_decision("verifier-a", verifier_group=None)
-        denied = ledger.claim_verification("write-1", "verifier-a", decision=missing_group, now=NOW)
+        del ledger.independence_groups["verifier-a"]
+        denied = ledger.claim_verification("write-1", "verifier-a", now=NOW)
         assert not denied.claimed and denied.reason == "verifier_not_independent"
 
-        selected_other = _verification_decision("verifier-b")
-        denied = ledger.claim_verification("write-1", "verifier-a", decision=selected_other, now=NOW)
-        assert not denied.claimed and denied.reason == "verification_decision_mismatch"
-
-        wrong_producer = _verification_decision("verifier-a", producer_worker_id="other-writer")
-        denied = ledger.claim_verification("write-1", "verifier-a", decision=wrong_producer, now=NOW)
-        assert not denied.claimed and denied.reason == "verification_decision_mismatch"
-
+        ledger.independence_groups["verifier-a"] = "verifier-group-a"
         assert _claim_verification(ledger, "verifier-a", now=NOW).claimed
     finally:
         ledger.close()
+
+
+def test_claim_rechecks_current_registry_eligibility(tmp_path):
+    ledger = TaskLedger(tmp_path / "ledger.sqlite3")
+    try:
+        _claimed_writer(ledger)
+        ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:first"], now=NOW)
+        ledger.verification_workers["verifier-a"] = Worker(
+            "verifier-a",
+            "test",
+            frozenset({"verification"}),
+            frozenset({"repo_write"}),
+            available=False,
+        )
+        denied = ledger.claim_verification("write-1", "verifier-a", now=NOW)
+        assert not denied.claimed and denied.reason == "verifier_not_independent"
+    finally:
+        ledger.close()
+
+
+def test_claim_enforces_task_specific_capability_and_risk(tmp_path):
+    worker = Worker(
+        "verifier-a", "test", frozenset({"verification"}), frozenset({"repo_write"}), quality=1.0
+    )
+    ledger = TaskLedger(
+        tmp_path / "ledger.sqlite3",
+        verification_workers=[worker],
+        independence_groups={"writer": "producer-group", "verifier-a": "verifier-group"},
+    )
+    try:
+        ledger.put_task({
+            "task_id": "write-1",
+            "status": "queued",
+            "title": "specialized write",
+            "risk_class": "sandbox_write",
+            "required_capabilities": ["specialized_review"],
+        })
+        assert ledger.claim("write-1", "writer", now=NOW).claimed
+        assert ledger.submit_for_verification("write-1", "writer", "packet-1", [], now=NOW)
+        denied = ledger.claim_verification("write-1", "verifier-a", now=NOW)
+        assert not denied.claimed and denied.reason == "verifier_not_independent"
+    finally:
+        ledger.close()
+
+
+def test_exhausted_retries_route_to_human_review_without_expanding_authority(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger = TaskLedger(path)
+    try:
+        _claimed_writer(ledger)
+        original_payload = dict(ledger.get("write-1"))
+        assert ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:one"], now=NOW)
+        assert _claim_verification(ledger, "verifier-a", now=NOW).claimed
+        assert ledger.reject_verification("write-1", "verifier-a", "retry", ["review:one"], max_rejections=2, now=NOW)
+
+        retry_time = NOW + timedelta(minutes=1)
+        assert ledger.claim("write-1", "writer-b", now=retry_time).claimed
+        assert ledger.submit_for_verification("write-1", "writer-b", "packet-2", ["evidence:two"], now=retry_time)
+        assert _claim_verification(ledger, "verifier-a", now=retry_time).claimed
+        assert ledger.reject_verification("write-1", "verifier-a", "still unsafe", ["review:two"], max_rejections=2, now=retry_time)
+
+        final = ledger.get("write-1")
+        assert final["status"] == "human_review"
+        for protected_field in ("title", "risk_class", "human_approval_required", "source_refs"):
+            assert final.get(protected_field) == original_payload.get(protected_field)
+        assert [event["event_type"] for event in ledger.events("write-1")].count("verification_rejected") == 2
+    finally:
+        ledger.close()
+
+    reopened = TaskLedger(path)
+    try:
+        assert reopened.get("write-1")["status"] == "human_review"
+        submissions = [
+            event for event in reopened.events("write-1")
+            if event["event_type"] == "producer_completion_submitted"
+        ]
+        assert [(event["actor"], event["detail"]["packet_id"]) for event in submissions] == [
+            ("writer", "packet-1"),
+            ("writer-b", "packet-2"),
+        ]
+    finally:
+        reopened.close()

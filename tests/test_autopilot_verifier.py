@@ -63,3 +63,16 @@ def test_missing_group_metadata_fails_closed():
         independence_groups={"producer": group},
     )
     assert decision.state == "blocked"
+
+
+def test_spoofed_producer_group_fails_closed():
+    producer, _ = worker("producer", "real-group")
+    verifier, _ = worker("verifier", "real-group")
+    decision = select_verifier(
+        producer_worker_id="producer",
+        producer_independence_group="spoofed-group",
+        workers=[producer, verifier],
+        independence_groups={"producer": "real-group", "verifier": "real-group"},
+    )
+    assert decision.state == "blocked"
+    assert decision.reasons == ("producer_independence_metadata_invalid",)

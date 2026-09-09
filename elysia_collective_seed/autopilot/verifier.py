@@ -33,6 +33,12 @@ def select_verifier(
     Fail closed when no independent verifier exists. The producer is excluded
     even if group metadata is absent or malformed.
     """
+    registered_producer_group = independence_groups.get(producer_worker_id)
+    if not registered_producer_group or registered_producer_group != producer_independence_group:
+        return VerificationDecision(
+            "blocked", None, producer_worker_id, ("producer_independence_metadata_invalid",)
+        )
+
     eligible: list[Worker] = []
     for worker in workers:
         if not worker.available or worker.worker_id == producer_worker_id:

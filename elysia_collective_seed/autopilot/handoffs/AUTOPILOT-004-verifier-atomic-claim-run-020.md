@@ -32,6 +32,9 @@
 - CI-equivalent `python -m pytest -q elysia_collective_seed`: 43 passed.
 - Python compileall for changed implementation/test surfaces: passed.
 - `git diff --check`: passed (Git emitted only line-ending conversion warnings).
+- Implementation commit: `e6a2fa5df9fc51a5c991d7fd74e1c4bcb9e2ac34`.
+- Exact implementation-head GitHub Actions run: `34411704839`, Elysia
+  Autopilot CI run 144, `seed-validation` passed in 17 seconds.
 
 The local runner used pytest 8.3.5 directly from temporary wheel paths and an
 explicit worktree-local `--basetemp` because the host's default pytest temp

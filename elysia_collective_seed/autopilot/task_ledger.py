@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping
 
+from .verifier import VerificationDecision
+
 ACTIVE_LEASE_STATES = {"claimed", "running"}
 TERMINAL_STATES = {"completed", "rejected", "archived"}
 NON_DISPATCHABLE_STATES = ACTIVE_LEASE_STATES | {"verifying", "review", "blocked", "human_review"} | TERMINAL_STATES
@@ -104,6 +106,9 @@ class TaskLedger:
             row=self.conn.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
             if not row: return ClaimResult(False,task_id,worker_id,"task_not_found")
             if row["status"] in TERMINAL_STATES: return ClaimResult(False,task_id,worker_id,"terminal_task")
+            lease_expiry = _parse(row["lease_expires_at"])
+            if row["status"] in ACTIVE_LEASE_STATES and lease_expiry and lease_expiry > now:
+                return ClaimResult(False,task_id,worker_id,"active_lease",row["lease_expires_at"])
             if row["status"]!="queued": return ClaimResult(False,task_id,worker_id,"state_not_claimable",row["lease_expires_at"])
             return ClaimResult(False,task_id,worker_id,"active_lease",row["lease_expires_at"])
 
@@ -117,7 +122,15 @@ class TaskLedger:
             if cursor.rowcount!=1: return False
             self._event(task_id,"producer_completion_submitted",producer_worker_id,{"packet_id":packet_id,"evidence_refs":list(evidence_refs)},now_s); return True
 
-    def claim_verification(self, task_id: str, verifier_worker_id: str, lease_seconds: int=900, now: datetime|None=None) -> ClaimResult:
+    def claim_verification(
+        self,
+        task_id: str,
+        verifier_worker_id: str,
+        lease_seconds: int = 900,
+        now: datetime | None = None,
+        *,
+        decision: VerificationDecision | None = None,
+    ) -> ClaimResult:
         if lease_seconds<=0: raise ValueError("lease_seconds must be positive")
         now=now or _utcnow(); now_s=_iso(now); expires=_iso(now+timedelta(seconds=lease_seconds))
         with self.conn:
@@ -125,6 +138,10 @@ class TaskLedger:
             if not row: return ClaimResult(False,task_id,verifier_worker_id,"task_not_found")
             if row["status"]!="verifying": return ClaimResult(False,task_id,verifier_worker_id,"state_not_verifiable")
             if row["produced_by"]==verifier_worker_id: return ClaimResult(False,task_id,verifier_worker_id,"self_verification_forbidden")
+            if decision is None: return ClaimResult(False,task_id,verifier_worker_id,"verification_decision_required")
+            if decision.state != "verification_claim": return ClaimResult(False,task_id,verifier_worker_id,"verifier_not_independent")
+            if decision.worker_id != verifier_worker_id: return ClaimResult(False,task_id,verifier_worker_id,"verification_decision_mismatch")
+            if decision.producer_worker_id != row["produced_by"]: return ClaimResult(False,task_id,verifier_worker_id,"verification_decision_mismatch")
             owner=row["verification_claimed_by"]; expiry=_parse(row["verification_lease_expires_at"])
             if owner==verifier_worker_id and expiry and expiry>now:
                 self.conn.execute("UPDATE tasks SET verification_lease_expires_at=?,updated_at=? WHERE task_id=?",(expires,now_s,task_id)); self._event(task_id,"verification_lease_renewed",verifier_worker_id,{"expires":expires},now_s); return ClaimResult(True,task_id,verifier_worker_id,"renewed",expires)

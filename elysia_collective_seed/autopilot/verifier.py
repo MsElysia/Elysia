@@ -15,6 +15,7 @@ from .dispatcher import Worker
 class VerificationDecision:
     state: str
     worker_id: str | None
+    producer_worker_id: str
     reasons: tuple[str, ...]
 
 
@@ -46,10 +47,17 @@ def select_verifier(
         eligible.append(worker)
 
     if not eligible:
-        return VerificationDecision("blocked", None, ("no_independent_verifier",))
+        return VerificationDecision(
+            "blocked", None, producer_worker_id, ("no_independent_verifier",)
+        )
 
     chosen = max(
         eligible,
         key=lambda worker: (worker.quality - 0.25 * worker.cost, worker.worker_id),
     )
-    return VerificationDecision("verification_claim", chosen.worker_id, ("independent_verifier",))
+    return VerificationDecision(
+        "verification_claim",
+        chosen.worker_id,
+        producer_worker_id,
+        ("independent_verifier",),
+    )

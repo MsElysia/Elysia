@@ -41,6 +41,20 @@ def validate_completion(
     check names, required-check presence, and no failed required checks.
     """
     reasons: list[str] = []
+    if "packet_id" in packet and not _nonempty_string(packet["packet_id"]):
+        reasons.append("invalid_packet_id")
+    for field in ("evidence_refs", "commits", "pull_requests"):
+        if field in packet and (not isinstance(packet[field], list) or any(not _nonempty_string(ref) for ref in packet[field])):
+            reasons.append(f"invalid_{field}")
+    if "claims" in packet:
+        claims = packet["claims"]
+        if not isinstance(claims, list) or any(
+            not isinstance(claim, Mapping)
+            or not isinstance(claim.get("evidence"), list)
+            or any(not _nonempty_string(ref) for ref in claim["evidence"])
+            for claim in claims
+        ):
+            reasons.append("invalid_claim_evidence")
     task_id = packet.get("task_id")
     outcome = packet.get("outcome")
 

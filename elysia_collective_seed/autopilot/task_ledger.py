@@ -6,12 +6,14 @@ use the network, merge branches, or deploy anything.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from .dispatcher import Worker
 from .verifier import select_verifier
@@ -59,8 +61,10 @@ class TaskLedger:
         *,
         verification_workers: Iterable[Worker] = (),
         independence_groups: Mapping[str, str] | None = None,
+        evidence_validator: Callable[[dict], bool] | None = None,
     ):
         self.path = str(path)
+        self.evidence_validator = evidence_validator
         self.verification_workers = {
             worker.worker_id: worker for worker in verification_workers
         }
@@ -94,6 +98,9 @@ class TaskLedger:
         for name, definition in (("produced_by","TEXT"),("completion_packet_id","TEXT"),("completion_evidence_json","TEXT"),("verification_claimed_by","TEXT"),("verification_lease_expires_at","TEXT"),("verification_rejections","INTEGER NOT NULL DEFAULT 0")):
             if name not in existing:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+        for name in ("completion_submission_json", "completion_submission_digest", "verification_supplemental_evidence_json", "verification_submission_digest"):
+            if name not in existing:
+                self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} TEXT")
         for name in ("execution_max_attempts", "verification_max_rejections"):
             if name not in existing:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} INTEGER")
@@ -128,6 +135,9 @@ class TaskLedger:
         result["max_attempts"] = row["execution_max_attempts"]
         result["max_verification_rejections"] = row["verification_max_rejections"]
         result.update({"status":row["status"],"attempt":row["attempt"],"claimed_by":row["claimed_by"],"lease_expires_at":row["lease_expires_at"],"produced_by":row["produced_by"],"completion_packet_id":row["completion_packet_id"],"completion_evidence":json.loads(row["completion_evidence_json"] or "[]"),"verification_claimed_by":row["verification_claimed_by"],"verification_lease_expires_at":row["verification_lease_expires_at"],"verification_rejections":row["verification_rejections"]})
+        result["completion_submission"] = json.loads(row["completion_submission_json"] or "null")
+        result["completion_submission_digest"] = row["completion_submission_digest"]
+        result["verification_supplemental_evidence"] = json.loads(row["verification_supplemental_evidence_json"] or "[]")
         return result
 
     def claim(self, task_id: str, worker_id: str, lease_seconds: int=900, now: datetime|None=None) -> ClaimResult:
@@ -156,7 +166,17 @@ class TaskLedger:
             if row["status"]!="queued": return ClaimResult(False,task_id,worker_id,"state_not_claimable",row["lease_expires_at"])
             return ClaimResult(False,task_id,worker_id,"active_lease",row["lease_expires_at"])
 
-    def submit_for_verification(self, task_id: str, producer_worker_id: str, packet_id: str, evidence_refs: list[str], now: datetime|None=None, *, completion_checks: list[dict]|None=None) -> bool:
+    @staticmethod
+    def _evidence_sources(evidence_refs, packet):
+        if packet is None:
+            return [{"kind": "artifact", "ref": ref} for ref in evidence_refs]
+        sources = [{"kind": "artifact", "ref": ref} for ref in packet.get("evidence_refs", [])]
+        sources.extend({"kind": "claim", "ref": ref} for claim in packet.get("claims", []) for ref in claim.get("evidence", []))
+        sources.extend({"kind": "commit", "ref": ref} for ref in packet.get("commits", []))
+        sources.extend({"kind": "pull_request", "ref": ref} for ref in packet.get("pull_requests", []))
+        return sources
+
+    def submit_for_verification(self, task_id: str, producer_worker_id: str, packet_id: str, evidence_refs: list[str], now: datetime|None=None, *, completion_checks: list[dict]|None=None, completion_packet: Mapping|None=None) -> bool:
         if not isinstance(packet_id, str) or not packet_id.strip():
             return False
         if not isinstance(evidence_refs, list) or any(not isinstance(ref, str) or not ref.strip() for ref in evidence_refs):
@@ -164,12 +184,30 @@ class TaskLedger:
         now=now or _utcnow(); now_s=_iso(now); evidence_json=json.dumps(list(evidence_refs),sort_keys=True)
         with self.conn:
             self.conn.execute("BEGIN IMMEDIATE")
-            lease = self.conn.execute("SELECT attempt,lease_expires_at FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            lease = self.conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if lease is None:
+                return False
+            submission = {
+                "version": 1, "task_id": task_id, "producer": producer_worker_id,
+                "attempt": lease["attempt"], "producer_lease_expires_at": lease["lease_expires_at"],
+                "packet_id": packet_id, "evidence_refs": list(evidence_refs),
+                "checks": completion_checks or [], "packet": dict(completion_packet) if completion_packet is not None else None,
+                "evidence_sources": self._evidence_sources(evidence_refs, completion_packet),
+                "policy": json.loads(lease["payload_json"]),
+                "execution_max_attempts": lease["execution_max_attempts"],
+                "verification_max_rejections": lease["verification_max_rejections"],
+            }
+            try:
+                submission_json = json.dumps(submission, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            except (TypeError, ValueError):
+                return False
+            submission_digest = "sha256:" + hashlib.sha256(submission_json.encode()).hexdigest()
             # The current live execution lease is the authority to submit this attempt.
             # `produced_by` is therefore attempt-local current state, while the append-only
             # producer_completion_submitted events retain provenance for prior attempts.
             cursor=self.conn.execute("UPDATE tasks SET status='verifying',produced_by=?,completion_packet_id=?,completion_evidence_json=?,claimed_by=NULL,lease_expires_at=NULL,verification_claimed_by=NULL,verification_lease_expires_at=NULL,updated_at=? WHERE task_id=? AND claimed_by=? AND status IN ('claimed','running') AND lease_expires_at IS NOT NULL AND lease_expires_at>?",(producer_worker_id,packet_id,evidence_json,now_s,task_id,producer_worker_id,now_s))
             if cursor.rowcount!=1: return False
+            self.conn.execute("UPDATE tasks SET completion_submission_json=?,completion_submission_digest=?,verification_supplemental_evidence_json=NULL,verification_submission_digest=NULL WHERE task_id=?", (submission_json,submission_digest,task_id))
             self._event(task_id,"producer_completion_submitted",producer_worker_id,{"packet_id":packet_id,"evidence_refs":list(evidence_refs),"attempt":lease["attempt"],"producer_lease_expires_at":lease["lease_expires_at"],"checks":completion_checks or []},now_s); return True
 
     def claim_verification(
@@ -182,7 +220,8 @@ class TaskLedger:
         if lease_seconds<=0: raise ValueError("lease_seconds must be positive")
         now=now or _utcnow(); now_s=_iso(now); expires=_iso(now+timedelta(seconds=lease_seconds))
         with self.conn:
-            row=self.conn.execute("SELECT payload_json,produced_by,completion_packet_id,attempt,verification_claimed_by,verification_lease_expires_at,status FROM tasks WHERE task_id=?",(task_id,)).fetchone()
+            self.conn.execute("BEGIN IMMEDIATE")
+            row=self.conn.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
             if not row: return ClaimResult(False,task_id,verifier_worker_id,"task_not_found")
             if row["status"]!="verifying": return ClaimResult(False,task_id,verifier_worker_id,"state_not_verifiable")
             if row["produced_by"]==verifier_worker_id: return ClaimResult(False,task_id,verifier_worker_id,"self_verification_forbidden")
@@ -207,14 +246,66 @@ class TaskLedger:
             if owner==verifier_worker_id and expiry and expiry>now:
                 self.conn.execute("UPDATE tasks SET verification_lease_expires_at=?,updated_at=? WHERE task_id=?",(expires,now_s,task_id)); self._event(task_id,"verification_lease_renewed",verifier_worker_id,{"expires":expires},now_s); return ClaimResult(True,task_id,verifier_worker_id,"renewed",expires)
             if owner and expiry and expiry>now: return ClaimResult(False,task_id,verifier_worker_id,"active_verification_lease",row["verification_lease_expires_at"])
-            self.conn.execute("UPDATE tasks SET verification_claimed_by=?,verification_lease_expires_at=?,updated_at=? WHERE task_id=? AND status='verifying'",(verifier_worker_id,expires,now_s,task_id)); self._event(task_id,"verification_claimed",verifier_worker_id,{"expires":expires},now_s); return ClaimResult(True,task_id,verifier_worker_id,"claimed",expires)
+            self.conn.execute("UPDATE tasks SET verification_claimed_by=?,verification_lease_expires_at=?,verification_submission_digest=?,updated_at=? WHERE task_id=? AND status='verifying'",(verifier_worker_id,expires,row["completion_submission_digest"],now_s,task_id)); self._event(task_id,"verification_claimed",verifier_worker_id,{"expires":expires},now_s); return ClaimResult(True,task_id,verifier_worker_id,"claimed",expires)
 
-    def accept_verification(self, task_id: str, verifier_worker_id: str, evidence_refs: list[str], now: datetime|None=None) -> bool:
+    def accept_verification(self, task_id: str, verifier_worker_id: str, evidence_refs: list[str], now: datetime|None=None, *, expected_submission_digest: str|None=None) -> bool:
+        """Accept only the explicitly reviewed, intact submission under a live lease.
+
+        The configured validator is a trusted local evidence authority, not a
+        packet-supplied assertion. Missing or unavailable validators fail closed.
+        Supplemental verifier references never substitute for producer evidence.
+        """
+        if not isinstance(evidence_refs, list) or any(not isinstance(ref, str) or not ref.strip() for ref in evidence_refs):
+            return False
         now=now or _utcnow(); now_s=_iso(now)
         with self.conn:
-            cursor=self.conn.execute("UPDATE tasks SET status='completed',verification_claimed_by=NULL,verification_lease_expires_at=NULL,updated_at=? WHERE task_id=? AND status='verifying' AND verification_claimed_by=? AND verification_lease_expires_at IS NOT NULL AND verification_lease_expires_at>?",(now_s,task_id,verifier_worker_id,now_s))
+            self.conn.execute("BEGIN IMMEDIATE")
+            row = self.conn.execute("SELECT * FROM tasks WHERE task_id=? AND status='verifying' AND verification_claimed_by=? AND verification_lease_expires_at>?", (task_id,verifier_worker_id,now_s)).fetchone()
+            if row is None or not expected_submission_digest or expected_submission_digest != row["completion_submission_digest"] or expected_submission_digest != row["verification_submission_digest"]:
+                return False
+            try:
+                raw = row["completion_submission_json"]
+                if "sha256:" + hashlib.sha256(raw.encode()).hexdigest() != expected_submission_digest:
+                    return False
+                submission = json.loads(raw)
+                if any(submission[key] != row[column] for key,column in (("task_id","task_id"),("producer","produced_by"),("attempt","attempt"),("packet_id","completion_packet_id"),("execution_max_attempts","execution_max_attempts"),("verification_max_rejections","verification_max_rejections"))):
+                    return False
+                if submission["policy"] != json.loads(row["payload_json"]) or submission["evidence_refs"] != json.loads(row["completion_evidence_json"]):
+                    return False
+                checks = submission["checks"]
+                names = [check["name"] for check in checks]
+                if len(names) != len(set(names)) or any(check["result"] not in {"pass", "skip", "not_run"} for check in checks):
+                    return False
+                if any(not any(check["name"] == name and check["result"] == "pass" for check in checks) for name in submission["policy"].get("required_checks", [])):
+                    return False
+                risk = submission["policy"].get("risk_class")
+                if risk not in {"read_only", "repo_write", "sandbox_write"} or submission["policy"].get("human_approval_required", False) or submission["policy"].get("required_review_roles"):
+                    return False
+                producer_group = self.independence_groups.get(row["produced_by"])
+                decision = select_verifier(producer_worker_id=row["produced_by"], producer_independence_group=producer_group, workers=self.verification_workers.values(), independence_groups=self.independence_groups, required_capabilities=frozenset(submission["policy"].get("required_capabilities", [])) | {"verification"}, risk_class=risk)
+                if producer_group is None or decision.state != "verification_claim" or decision.worker_id != verifier_worker_id:
+                    return False
+                # Content identifiers and packet self-hashes are identity only.
+                # Source class constrains what the trusted resolver must prove;
+                # a class label or a reference spelling alone never proves it.
+                substantive = [source for source in submission["evidence_sources"]
+                    if source["kind"] in {"artifact", "claim", "commit", "pull_request"}
+                    and source["ref"] != submission["packet_id"]
+                    and not re.fullmatch(r"(?:sha256:)?[0-9a-fA-F]{64}", source["ref"])
+                    and source["ref"] in submission["evidence_refs"]]
+                if not substantive or self.evidence_validator is None:
+                    return False
+                try:
+                    verified = self.evidence_validator(json.loads(raw))
+                except Exception:
+                    return False
+                if verified is not True:
+                    return False
+            except (KeyError, TypeError, ValueError, AttributeError, OSError):
+                return False
+            cursor=self.conn.execute("UPDATE tasks SET status='completed',verification_claimed_by=NULL,verification_lease_expires_at=NULL,verification_supplemental_evidence_json=?,updated_at=? WHERE task_id=? AND status='verifying' AND completion_submission_digest=? AND verification_claimed_by=? AND verification_lease_expires_at>?",(json.dumps(evidence_refs),now_s,task_id,expected_submission_digest,verifier_worker_id,now_s))
             if cursor.rowcount!=1: return False
-            self._event(task_id,"verification_accepted",verifier_worker_id,{"evidence_refs":list(evidence_refs)},now_s); return True
+            self._event(task_id,"verification_accepted",verifier_worker_id,{"submission_digest":expected_submission_digest,"packet_id":submission["packet_id"],"attempt":submission["attempt"],"evidence_refs":submission["evidence_refs"],"supplemental_evidence_refs":list(evidence_refs)},now_s); return True
 
     def reject_verification(self, task_id: str, verifier_worker_id: str, reason: str, evidence_refs: list[str], max_rejections: int=2, now: datetime|None=None) -> bool:
         # Retained only for source compatibility. Callers cannot set policy.

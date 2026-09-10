@@ -59,6 +59,10 @@ jobs:
           tests/test_autopilot_verifier_lifecycle.py
           tests/test_vega_verifier_boundaries.py
           tests/test_autopilot_lifecycle_repairs.py
+          tests/test_vega_evidence_binding.py
+          tests/test_autopilot_evidence_binding.py
+          tests/test_autopilot_evidence_binding_regressions.py
+          tests/test_vega_evidence_binding_adversarial.py
 
       - name: Enforce no runtime-enable flag in seed prompt pack
         shell: python

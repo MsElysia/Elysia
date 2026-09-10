@@ -109,7 +109,9 @@ def test_stale_payload_cannot_reopen_completed_task(tmp_path: Path):
         assert ledger.claim(task["task_id"], "worker-a", lease_seconds=60).claimed
         assert ledger.submit_for_verification(task["task_id"], "worker-a", "packet:test", ["test:evidence"])
         assert ledger.claim_verification(task["task_id"], "verifier").claimed
-        assert ledger.accept_verification(task["task_id"], "verifier", ["test:review"])
+        from tests.evidence_fixture import attest_local_submission
+        digest = attest_local_submission(ledger, task["task_id"], tmp_path)
+        assert ledger.accept_verification(task["task_id"], "verifier", ["test:review"], expected_submission_digest=digest)
         result = dispatch_and_claim(ledger, task, {}, _workers())
         assert result.state == "not_dispatchable"
         assert result.reasons == ("terminal_task",)
@@ -124,7 +126,7 @@ def test_completed_worker_report_moves_to_verifying_not_completed(tmp_path: Path
     ledger = TaskLedger(tmp_path / "ledger.db")
     try:
         dispatch_and_claim(ledger, _task(), {}, _workers(), lease_seconds=60)
-        result = validate_and_apply_completion(ledger, _completion(), worker_id="worker-a", required_checks=("unit",))
+        result = validate_and_apply_completion(ledger, _completion(evidence_refs=["local:artifact"]), worker_id="worker-a", required_checks=("unit",))
         assert result.applied and result.state == "verifying"
         persisted = ledger.get("ELY-TASK-DRY-001")
         assert persisted["status"] == "verifying"

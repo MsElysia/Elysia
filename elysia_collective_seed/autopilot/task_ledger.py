@@ -6,13 +6,16 @@ use the network, merge branches, or deploy anything.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping, Sequence
 
+from .completion_validator import validate_completion
 from .dispatcher import Worker
 from .verifier import select_verifier
 
@@ -21,6 +24,9 @@ TERMINAL_STATES = {"completed", "rejected", "archived"}
 NON_DISPATCHABLE_STATES = ACTIVE_LEASE_STATES | {"verifying", "review", "blocked", "human_review"} | TERMINAL_STATES
 DEFAULT_MAX_ATTEMPTS = 3
 SYSTEM_MAX_REJECTIONS = 2
+# Soft risks may enter verifying without substantive provenance; everything else is fail-closed.
+_SOFT_EVIDENCE_RISKS = frozenset({"sandbox_write", "read_only"})
+_SUBSTANTIVE_PREFIXES = ("artifact:", "commit:", "pr:", "pull_request:")
 
 
 def _positive_limit(value: object) -> int:
@@ -41,6 +47,67 @@ def _parse(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
+def is_substantive_write_ref(ref: str, *, packet_digest: str | None = None) -> bool:
+    """Deterministic repository provenance only; packet self-hash is identity, not proof."""
+    text = ref.strip()
+    if not text:
+        return False
+    if packet_digest and text == packet_digest:
+        return False
+    lowered = text.lower()
+    for prefix in _SUBSTANTIVE_PREFIXES:
+        if lowered.startswith(prefix) and text[len(prefix):].strip():
+            return True
+    return False
+
+
+def substantive_write_refs(refs: Sequence[str], *, packet_digest: str | None = None) -> list[str]:
+    return [ref.strip() for ref in refs if is_substantive_write_ref(ref, packet_digest=packet_digest)]
+
+
+def _risk_requires_substantive_evidence(risk_class: object) -> bool:
+    if risk_class is None:
+        return True
+    return str(risk_class) not in _SOFT_EVIDENCE_RISKS
+
+
+def _packet_identity_digest(packet_id: object) -> str | None:
+    text = str(packet_id or "")
+    return text if text.startswith("sha256:") else None
+
+
+def _submission_evidence_pool(submission: Mapping) -> list[str]:
+    pool: list[str] = list(submission.get("evidence_refs") or [])
+    for source in submission.get("evidence_sources") or []:
+        if isinstance(source, Mapping) and isinstance(source.get("ref"), str):
+            pool.append(source["ref"])
+    packet = submission.get("packet")
+    if isinstance(packet, Mapping):
+        pool.extend(str(ref) for ref in packet.get("commits") or [])
+        pool.extend(str(ref) for ref in packet.get("pull_requests") or [])
+        for claim in packet.get("claims") or []:
+            if isinstance(claim, Mapping):
+                pool.extend(str(ref) for ref in claim.get("evidence") or [])
+    return pool
+
+
+def _review_binds_producer(
+    submission: Mapping,
+    review_evidence: Sequence[str],
+    *,
+    packet_digest: str | None = None,
+) -> bool:
+    if not isinstance(review_evidence, list) or any(
+        not isinstance(ref, str) or not ref.strip() for ref in review_evidence
+    ):
+        return False
+    if not review_evidence:
+        return False
+    required = substantive_write_refs(_submission_evidence_pool(submission), packet_digest=packet_digest)
+    review_set = {ref.strip() for ref in review_evidence}
+    return all(ref in review_set for ref in dict.fromkeys(required))
+
+
 @dataclass(frozen=True)
 class ClaimResult:
     claimed: bool
@@ -59,8 +126,10 @@ class TaskLedger:
         *,
         verification_workers: Iterable[Worker] = (),
         independence_groups: Mapping[str, str] | None = None,
+        evidence_validator: Callable[[dict], bool] | None = None,
     ):
         self.path = str(path)
+        self.evidence_validator = evidence_validator
         self.verification_workers = {
             worker.worker_id: worker for worker in verification_workers
         }
@@ -94,6 +163,9 @@ class TaskLedger:
         for name, definition in (("produced_by","TEXT"),("completion_packet_id","TEXT"),("completion_evidence_json","TEXT"),("verification_claimed_by","TEXT"),("verification_lease_expires_at","TEXT"),("verification_rejections","INTEGER NOT NULL DEFAULT 0")):
             if name not in existing:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+        for name in ("completion_submission_json", "completion_submission_digest", "verification_supplemental_evidence_json", "verification_submission_digest"):
+            if name not in existing:
+                self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} TEXT")
         for name in ("execution_max_attempts", "verification_max_rejections"):
             if name not in existing:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} INTEGER")
@@ -128,6 +200,9 @@ class TaskLedger:
         result["max_attempts"] = row["execution_max_attempts"]
         result["max_verification_rejections"] = row["verification_max_rejections"]
         result.update({"status":row["status"],"attempt":row["attempt"],"claimed_by":row["claimed_by"],"lease_expires_at":row["lease_expires_at"],"produced_by":row["produced_by"],"completion_packet_id":row["completion_packet_id"],"completion_evidence":json.loads(row["completion_evidence_json"] or "[]"),"verification_claimed_by":row["verification_claimed_by"],"verification_lease_expires_at":row["verification_lease_expires_at"],"verification_rejections":row["verification_rejections"]})
+        result["completion_submission"] = json.loads(row["completion_submission_json"] or "null")
+        result["completion_submission_digest"] = row["completion_submission_digest"]
+        result["verification_supplemental_evidence"] = json.loads(row["verification_supplemental_evidence_json"] or "[]")
         return result
 
     def claim(self, task_id: str, worker_id: str, lease_seconds: int=900, now: datetime|None=None) -> ClaimResult:
@@ -156,7 +231,46 @@ class TaskLedger:
             if row["status"]!="queued": return ClaimResult(False,task_id,worker_id,"state_not_claimable",row["lease_expires_at"])
             return ClaimResult(False,task_id,worker_id,"active_lease",row["lease_expires_at"])
 
-    def submit_for_verification(self, task_id: str, producer_worker_id: str, packet_id: str, evidence_refs: list[str], now: datetime|None=None, *, completion_checks: list[dict]|None=None) -> bool:
+    @staticmethod
+    def _evidence_sources(evidence_refs, packet):
+        if packet is None:
+            return [{"kind": "artifact", "ref": ref} for ref in evidence_refs]
+        sources = [{"kind": "artifact", "ref": ref} for ref in packet.get("evidence_refs", [])]
+        sources.extend({"kind": "claim", "ref": ref} for claim in packet.get("claims", []) for ref in claim.get("evidence", []))
+        sources.extend({"kind": "commit", "ref": ref} for ref in packet.get("commits", []))
+        sources.extend({"kind": "pull_request", "ref": ref} for ref in packet.get("pull_requests", []))
+        return sources
+
+    @staticmethod
+    def _consistent_packet(submission: Mapping) -> bool:
+        """A supplied full packet cannot contradict the ledger envelope.
+
+        Legacy direct submissions may omit the packet; they still undergo all
+        check, policy, reference, and trusted proof gates at acceptance.
+        """
+        packet = submission["packet"]
+        if packet is None:
+            return True
+        try:
+            if not isinstance(packet, Mapping):
+                return False
+            validation = validate_completion(packet, expected_task_id=submission["task_id"],
+                required_checks=submission["policy"].get("required_checks", []))
+            if not validation.valid or validation.outcome != "completed":
+                return False
+            canonical = json.dumps(dict(packet), sort_keys=True, separators=(",", ":"), allow_nan=False)
+            packet_id = packet.get("packet_id", "sha256:" + hashlib.sha256(canonical.encode()).hexdigest())
+            sources = TaskLedger._evidence_sources([], packet)
+            refs = list(dict.fromkeys(source["ref"] for source in sources))
+            return (packet_id == submission["packet_id"]
+                and packet["checks"] == submission["checks"]
+                and sources == submission["evidence_sources"]
+                and refs == submission["evidence_refs"]
+                and packet.get("attempt", submission["attempt"]) == submission["attempt"])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False
+
+    def submit_for_verification(self, task_id: str, producer_worker_id: str, packet_id: str, evidence_refs: list[str], now: datetime|None=None, *, completion_checks: list[dict]|None=None, completion_packet: Mapping|None=None) -> bool:
         if not isinstance(packet_id, str) or not packet_id.strip():
             return False
         if not isinstance(evidence_refs, list) or any(not isinstance(ref, str) or not ref.strip() for ref in evidence_refs):
@@ -164,13 +278,50 @@ class TaskLedger:
         now=now or _utcnow(); now_s=_iso(now); evidence_json=json.dumps(list(evidence_refs),sort_keys=True)
         with self.conn:
             self.conn.execute("BEGIN IMMEDIATE")
-            lease = self.conn.execute("SELECT attempt,lease_expires_at FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            lease = self.conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if lease is None:
+                return False
+            try:
+                evidence_sources = self._evidence_sources(evidence_refs, completion_packet)
+            except (TypeError, ValueError, AttributeError):
+                return False
+            submission = {
+                "version": 1, "task_id": task_id, "producer": producer_worker_id,
+                "attempt": lease["attempt"], "producer_lease_expires_at": lease["lease_expires_at"],
+                "packet_id": packet_id, "evidence_refs": list(evidence_refs),
+                "checks": completion_checks or [], "packet": dict(completion_packet) if completion_packet is not None else None,
+                "evidence_sources": evidence_sources,
+                "policy": json.loads(lease["payload_json"]),
+                "execution_max_attempts": lease["execution_max_attempts"],
+                "verification_max_rejections": lease["verification_max_rejections"],
+            }
+            if not self._consistent_packet(submission):
+                return False
+            try:
+                submission_json = json.dumps(submission, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            except (TypeError, ValueError):
+                return False
+            submission_digest = "sha256:" + hashlib.sha256(submission_json.encode()).hexdigest()
+            packet_digest = _packet_identity_digest(packet_id)
+            sufficient = True
+            if _risk_requires_substantive_evidence(submission["policy"].get("risk_class")):
+                if not substantive_write_refs(
+                    _submission_evidence_pool(submission), packet_digest=packet_digest
+                ):
+                    sufficient = False
+            next_status = "verifying" if sufficient else "human_review"
             # The current live execution lease is the authority to submit this attempt.
             # `produced_by` is therefore attempt-local current state, while the append-only
             # producer_completion_submitted events retain provenance for prior attempts.
-            cursor=self.conn.execute("UPDATE tasks SET status='verifying',produced_by=?,completion_packet_id=?,completion_evidence_json=?,claimed_by=NULL,lease_expires_at=NULL,verification_claimed_by=NULL,verification_lease_expires_at=NULL,updated_at=? WHERE task_id=? AND claimed_by=? AND status IN ('claimed','running') AND lease_expires_at IS NOT NULL AND lease_expires_at>?",(producer_worker_id,packet_id,evidence_json,now_s,task_id,producer_worker_id,now_s))
+            # Non-soft submissions lacking substantive provenance persist the snapshot for
+            # audit and fail closed to human_review instead of completable verifying.
+            cursor=self.conn.execute("UPDATE tasks SET status=?,produced_by=?,completion_packet_id=?,completion_evidence_json=?,claimed_by=NULL,lease_expires_at=NULL,verification_claimed_by=NULL,verification_lease_expires_at=NULL,updated_at=? WHERE task_id=? AND claimed_by=? AND status IN ('claimed','running') AND lease_expires_at IS NOT NULL AND lease_expires_at>?",(next_status,producer_worker_id,packet_id,evidence_json,now_s,task_id,producer_worker_id,now_s))
             if cursor.rowcount!=1: return False
-            self._event(task_id,"producer_completion_submitted",producer_worker_id,{"packet_id":packet_id,"evidence_refs":list(evidence_refs),"attempt":lease["attempt"],"producer_lease_expires_at":lease["lease_expires_at"],"checks":completion_checks or []},now_s); return True
+            self.conn.execute("UPDATE tasks SET completion_submission_json=?,completion_submission_digest=?,verification_supplemental_evidence_json=?,verification_submission_digest=NULL WHERE task_id=?", (submission_json,submission_digest,"[]",task_id))
+            self._event(task_id,"producer_completion_submitted",producer_worker_id,{"packet_id":packet_id,"evidence_refs":list(evidence_refs),"attempt":lease["attempt"],"producer_lease_expires_at":lease["lease_expires_at"],"checks":completion_checks or [],"submission_digest":submission_digest,"status":next_status},now_s)
+            if not sufficient:
+                self._event(task_id,"evidence_binding_rejected",producer_worker_id,{"reason":"insufficient_substantive_evidence","status":next_status,"packet_id":packet_id},now_s)
+            return True
 
     def claim_verification(
         self,
@@ -182,7 +333,8 @@ class TaskLedger:
         if lease_seconds<=0: raise ValueError("lease_seconds must be positive")
         now=now or _utcnow(); now_s=_iso(now); expires=_iso(now+timedelta(seconds=lease_seconds))
         with self.conn:
-            row=self.conn.execute("SELECT payload_json,produced_by,completion_packet_id,attempt,verification_claimed_by,verification_lease_expires_at,status FROM tasks WHERE task_id=?",(task_id,)).fetchone()
+            self.conn.execute("BEGIN IMMEDIATE")
+            row=self.conn.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
             if not row: return ClaimResult(False,task_id,verifier_worker_id,"task_not_found")
             if row["status"]!="verifying": return ClaimResult(False,task_id,verifier_worker_id,"state_not_verifiable")
             if row["produced_by"]==verifier_worker_id: return ClaimResult(False,task_id,verifier_worker_id,"self_verification_forbidden")
@@ -207,14 +359,78 @@ class TaskLedger:
             if owner==verifier_worker_id and expiry and expiry>now:
                 self.conn.execute("UPDATE tasks SET verification_lease_expires_at=?,updated_at=? WHERE task_id=?",(expires,now_s,task_id)); self._event(task_id,"verification_lease_renewed",verifier_worker_id,{"expires":expires},now_s); return ClaimResult(True,task_id,verifier_worker_id,"renewed",expires)
             if owner and expiry and expiry>now: return ClaimResult(False,task_id,verifier_worker_id,"active_verification_lease",row["verification_lease_expires_at"])
-            self.conn.execute("UPDATE tasks SET verification_claimed_by=?,verification_lease_expires_at=?,updated_at=? WHERE task_id=? AND status='verifying'",(verifier_worker_id,expires,now_s,task_id)); self._event(task_id,"verification_claimed",verifier_worker_id,{"expires":expires},now_s); return ClaimResult(True,task_id,verifier_worker_id,"claimed",expires)
+            self.conn.execute("UPDATE tasks SET verification_claimed_by=?,verification_lease_expires_at=?,verification_submission_digest=?,updated_at=? WHERE task_id=? AND status='verifying'",(verifier_worker_id,expires,row["completion_submission_digest"],now_s,task_id)); self._event(task_id,"verification_claimed",verifier_worker_id,{"expires":expires},now_s); return ClaimResult(True,task_id,verifier_worker_id,"claimed",expires)
 
-    def accept_verification(self, task_id: str, verifier_worker_id: str, evidence_refs: list[str], now: datetime|None=None) -> bool:
+    def accept_verification(self, task_id: str, verifier_worker_id: str, evidence_refs: list[str], now: datetime|None=None, *, expected_submission_digest: str|None=None) -> bool:
+        """Accept only the explicitly reviewed, intact submission under a live lease.
+
+        The configured validator is a trusted local evidence authority, not a
+        packet-supplied assertion. Missing or unavailable validators fail closed.
+        Supplemental verifier references never substitute for producer evidence.
+        """
+        if not isinstance(evidence_refs, list) or any(not isinstance(ref, str) or not ref.strip() for ref in evidence_refs):
+            return False
         now=now or _utcnow(); now_s=_iso(now)
         with self.conn:
-            cursor=self.conn.execute("UPDATE tasks SET status='completed',verification_claimed_by=NULL,verification_lease_expires_at=NULL,updated_at=? WHERE task_id=? AND status='verifying' AND verification_claimed_by=? AND verification_lease_expires_at IS NOT NULL AND verification_lease_expires_at>?",(now_s,task_id,verifier_worker_id,now_s))
+            self.conn.execute("BEGIN IMMEDIATE")
+            row = self.conn.execute("SELECT * FROM tasks WHERE task_id=? AND status='verifying' AND verification_claimed_by=? AND verification_lease_expires_at>?", (task_id,verifier_worker_id,now_s)).fetchone()
+            if row is None or not expected_submission_digest or expected_submission_digest != row["completion_submission_digest"] or expected_submission_digest != row["verification_submission_digest"]:
+                return False
+            try:
+                raw = row["completion_submission_json"]
+                if "sha256:" + hashlib.sha256(raw.encode()).hexdigest() != expected_submission_digest:
+                    return False
+                submission = json.loads(raw)
+                if not self._consistent_packet(submission):
+                    return False
+                if any(submission[key] != row[column] for key,column in (("task_id","task_id"),("producer","produced_by"),("attempt","attempt"),("packet_id","completion_packet_id"),("execution_max_attempts","execution_max_attempts"),("verification_max_rejections","verification_max_rejections"))):
+                    return False
+                if submission["policy"] != json.loads(row["payload_json"]) or submission["evidence_refs"] != json.loads(row["completion_evidence_json"]):
+                    return False
+                checks = submission["checks"]
+                names = [check["name"] for check in checks]
+                if len(names) != len(set(names)) or any(check["result"] not in {"pass", "skip", "not_run"} for check in checks):
+                    return False
+                if any(not any(check["name"] == name and check["result"] == "pass" for check in checks) for name in submission["policy"].get("required_checks", [])):
+                    return False
+                risk = submission["policy"].get("risk_class")
+                if risk not in {"read_only", "repo_write", "sandbox_write"} or submission["policy"].get("human_approval_required", False) or submission["policy"].get("required_review_roles"):
+                    return False
+                producer_group = self.independence_groups.get(row["produced_by"])
+                decision = select_verifier(producer_worker_id=row["produced_by"], producer_independence_group=producer_group, workers=self.verification_workers.values(), independence_groups=self.independence_groups, required_capabilities=frozenset(submission["policy"].get("required_capabilities", [])) | {"verification"}, risk_class=risk)
+                if producer_group is None or decision.state != "verification_claim" or decision.worker_id != verifier_worker_id:
+                    return False
+                packet_digest = _packet_identity_digest(submission.get("packet_id"))
+                if not _review_binds_producer(submission, evidence_refs, packet_digest=packet_digest):
+                    return False
+                # Soft risks may skip substantive-prefix and trusted write-proof
+                # requirements, but still need digest/lease/packet/check gates above.
+                if _risk_requires_substantive_evidence(risk):
+                    # Content identifiers and packet self-hashes are identity only.
+                    # Source class constrains what the trusted resolver must prove;
+                    # a class label or a reference spelling alone never proves it.
+                    substantive = [source for source in submission["evidence_sources"]
+                        if source["kind"] in {"artifact", "claim", "commit", "pull_request"}
+                        and source["ref"] != submission["packet_id"]
+                        and not re.fullmatch(r"(?:sha256:)?[0-9a-fA-F]{64}", source["ref"])
+                        and source["ref"] in submission["evidence_refs"]]
+                    if not substantive or self.evidence_validator is None:
+                        return False
+                    try:
+                        verified = self.evidence_validator(json.loads(raw))
+                    except Exception:
+                        return False
+                    if verified is not True:
+                        return False
+                producer_refs = {ref.strip() for ref in submission["evidence_refs"]}
+                prior_supplemental = json.loads(row["verification_supplemental_evidence_json"] or "[]")
+                added = [ref for ref in evidence_refs if ref not in producer_refs and ref not in prior_supplemental]
+                supplemental = list(prior_supplemental) + added
+            except (KeyError, TypeError, ValueError, AttributeError, OSError):
+                return False
+            cursor=self.conn.execute("UPDATE tasks SET status='completed',verification_claimed_by=NULL,verification_lease_expires_at=NULL,verification_supplemental_evidence_json=?,updated_at=? WHERE task_id=? AND status='verifying' AND completion_submission_digest=? AND verification_claimed_by=? AND verification_lease_expires_at>?",(json.dumps(supplemental, sort_keys=True),now_s,task_id,expected_submission_digest,verifier_worker_id,now_s))
             if cursor.rowcount!=1: return False
-            self._event(task_id,"verification_accepted",verifier_worker_id,{"evidence_refs":list(evidence_refs)},now_s); return True
+            self._event(task_id,"verification_accepted",verifier_worker_id,{"submission_digest":expected_submission_digest,"packet_id":submission["packet_id"],"attempt":submission["attempt"],"evidence_refs":submission["evidence_refs"],"supplemental_evidence_refs":added},now_s); return True
 
     def reject_verification(self, task_id: str, verifier_worker_id: str, reason: str, evidence_refs: list[str], max_rejections: int=2, now: datetime|None=None) -> bool:
         # Retained only for source compatibility. Callers cannot set policy.

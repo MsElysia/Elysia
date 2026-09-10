@@ -128,3 +128,8 @@ check report bound to the exact submission digest.
 Legacy direct submissions with unverified references may enter `verifying` for
 inspection/rejection, but this does not certify evidence. The bridge rejects
 completed packets lacking evidence instead of treating their self-hash as proof.
+
+A supplied full packet is semantically validated again by the ledger, including
+its task/packet identity, completed outcome, exact checks and evidence sources.
+It cannot contradict separate direct-submit arguments. The same consistency
+gate runs on acceptance so previously stored conflicting packets fail closed.

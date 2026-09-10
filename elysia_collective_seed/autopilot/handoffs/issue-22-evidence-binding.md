@@ -45,3 +45,18 @@ repair; acceptance itself preserves those human/protected-risk boundaries.
 
 Next role: Agent C independently reproduce/falsify exact committed candidate;
 Agent D only after breaker PASS. Do not push/merge from implementer.
+
+## Independent breaker repair (candidate 7c2a51a rejected)
+
+Agent C found that direct submit could store a full packet contradicting the
+separate envelope checks; an actual local proof resolver then validated only
+the envelope. Task ID, packet ID and outcome conflicts were also reproduced.
+The ledger now semantically validates every supplied full packet and requires
+exact task/packet/attempt identity, completed outcome, complete check equality,
+and source/evidence equality at both submit and accept. No-packet legacy direct
+submission remains audit-compatible. Preexisting inconsistent snapshots fail
+closed after reopen even with a valid digest and actual local attestation.
+
+Validation after repair: 142 seed/lifecycle/evidence tests passed, including 12
+additional consistency cases. No prior tests weakened. Next: independent breaker
+re-run against the new exact commit, then reviewer only upon PASS.

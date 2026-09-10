@@ -231,3 +231,67 @@ def test_claim_is_bound_to_original_submission_digest(tmp_path):
         assert not accept(ledger, digest)
     finally:
         ledger.close()
+
+
+@pytest.mark.parametrize("changes", [
+    {"task_id": "different"}, {"packet_id": "different"}, {"outcome": "failed"},
+    {"checks": [{"name":"unit", "result":"fail"}]},
+    {"checks": [{"name":"unit", "result":"pass", "evidence":["different"]}]},
+    {"evidence_refs": ["different"]}, {"commits": ["unmatched-commit"]},
+    {"claims": [{"claim":"other", "evidence":["different"]}]},
+    {"attempt": 999}, {"checks": []},
+])
+def test_direct_full_packet_cannot_conflict_with_submission_envelope(tmp_path, changes):
+    from tests.test_autopilot_lifecycle_repairs import completion
+    ledger = open_ledger(tmp_path / "ledger.db")
+    try:
+        ledger.put_task(task(required_checks=["unit"]))
+        assert ledger.claim("vega", "writer", now=NOW).claimed
+        packet = completion(packet_id="packet:A", evidence_refs=["artifact:A"])
+        packet.update(changes)
+        before = ledger.events("vega")
+        assert not ledger.submit_for_verification("vega", "writer", "packet:A", ["artifact:A"],
+            now=NOW, completion_checks=[{"name":"unit", "result":"pass"}], completion_packet=packet)
+        assert ledger.get("vega")["status"] == "claimed"
+        assert ledger.events("vega") == before
+    finally:
+        ledger.close()
+
+
+def test_consistent_full_packet_with_actual_local_proof_completes(tmp_path):
+    from tests.test_autopilot_lifecycle_repairs import completion
+    ledger = open_ledger(tmp_path / "ledger.db")
+    try:
+        ledger.put_task(task(required_checks=["unit"]))
+        assert ledger.claim("vega", "writer", now=NOW).claimed
+        packet = completion(packet_id="packet:A", evidence_refs=["artifact:A"])
+        assert ledger.submit_for_verification("vega", "writer", "packet:A", ["artifact:A"],
+            now=NOW, completion_checks=packet["checks"], completion_packet=packet)
+        assert ledger.claim_verification("vega", "reviewer", now=NOW).claimed
+        digest = attest_local_submission(ledger, "vega", tmp_path)
+        assert accept(ledger, digest)
+    finally:
+        ledger.close()
+
+
+def test_accept_rechecks_preexisting_inconsistent_packet_after_reopen(tmp_path):
+    import hashlib
+    from tests.test_autopilot_lifecycle_repairs import completion
+    ledger = submitted(tmp_path)
+    # Simulate the durable snapshot admitted by the prior implementation. Both
+    # integrity/claim digests match; the full packet still contradicts its checks.
+    snapshot = ledger.get("vega")["completion_submission"]
+    snapshot["packet"] = completion(packet_id="packet:A", evidence_refs=["artifact:A"],
+        checks=[{"name":"unit", "result":"fail"}])
+    raw = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    digest = "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
+    with ledger.conn:
+        ledger.conn.execute("UPDATE tasks SET completion_submission_json=?,completion_submission_digest=?,verification_submission_digest=? WHERE task_id='vega'", (raw,digest,digest))
+    ledger.close()
+    ledger = open_ledger(tmp_path / "ledger.db")
+    try:
+        attest_local_submission(ledger, "vega", tmp_path)
+        assert not accept(ledger, digest)
+        assert ledger.get("vega")["status"] == "verifying"
+    finally:
+        ledger.close()

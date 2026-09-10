@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
+from .completion_validator import validate_completion
 from .dispatcher import Worker
 from .verifier import select_verifier
 
@@ -176,6 +177,35 @@ class TaskLedger:
         sources.extend({"kind": "pull_request", "ref": ref} for ref in packet.get("pull_requests", []))
         return sources
 
+    @staticmethod
+    def _consistent_packet(submission: Mapping) -> bool:
+        """A supplied full packet cannot contradict the ledger envelope.
+
+        Legacy direct submissions may omit the packet; they still undergo all
+        check, policy, reference, and trusted proof gates at acceptance.
+        """
+        packet = submission["packet"]
+        if packet is None:
+            return True
+        try:
+            if not isinstance(packet, Mapping):
+                return False
+            validation = validate_completion(packet, expected_task_id=submission["task_id"],
+                required_checks=submission["policy"].get("required_checks", []))
+            if not validation.valid or validation.outcome != "completed":
+                return False
+            canonical = json.dumps(dict(packet), sort_keys=True, separators=(",", ":"), allow_nan=False)
+            packet_id = packet.get("packet_id", "sha256:" + hashlib.sha256(canonical.encode()).hexdigest())
+            sources = TaskLedger._evidence_sources([], packet)
+            refs = list(dict.fromkeys(source["ref"] for source in sources))
+            return (packet_id == submission["packet_id"]
+                and packet["checks"] == submission["checks"]
+                and sources == submission["evidence_sources"]
+                and refs == submission["evidence_refs"]
+                and packet.get("attempt", submission["attempt"]) == submission["attempt"])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False
+
     def submit_for_verification(self, task_id: str, producer_worker_id: str, packet_id: str, evidence_refs: list[str], now: datetime|None=None, *, completion_checks: list[dict]|None=None, completion_packet: Mapping|None=None) -> bool:
         if not isinstance(packet_id, str) or not packet_id.strip():
             return False
@@ -187,16 +217,22 @@ class TaskLedger:
             lease = self.conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if lease is None:
                 return False
+            try:
+                evidence_sources = self._evidence_sources(evidence_refs, completion_packet)
+            except (TypeError, ValueError, AttributeError):
+                return False
             submission = {
                 "version": 1, "task_id": task_id, "producer": producer_worker_id,
                 "attempt": lease["attempt"], "producer_lease_expires_at": lease["lease_expires_at"],
                 "packet_id": packet_id, "evidence_refs": list(evidence_refs),
                 "checks": completion_checks or [], "packet": dict(completion_packet) if completion_packet is not None else None,
-                "evidence_sources": self._evidence_sources(evidence_refs, completion_packet),
+                "evidence_sources": evidence_sources,
                 "policy": json.loads(lease["payload_json"]),
                 "execution_max_attempts": lease["execution_max_attempts"],
                 "verification_max_rejections": lease["verification_max_rejections"],
             }
+            if not self._consistent_packet(submission):
+                return False
             try:
                 submission_json = json.dumps(submission, sort_keys=True, separators=(",", ":"), allow_nan=False)
             except (TypeError, ValueError):
@@ -268,6 +304,8 @@ class TaskLedger:
                 if "sha256:" + hashlib.sha256(raw.encode()).hexdigest() != expected_submission_digest:
                     return False
                 submission = json.loads(raw)
+                if not self._consistent_packet(submission):
+                    return False
                 if any(submission[key] != row[column] for key,column in (("task_id","task_id"),("producer","produced_by"),("attempt","attempt"),("packet_id","completion_packet_id"),("execution_max_attempts","execution_max_attempts"),("verification_max_rejections","verification_max_rejections"))):
                     return False
                 if submission["policy"] != json.loads(row["payload_json"]) or submission["evidence_refs"] != json.loads(row["completion_evidence_json"]):

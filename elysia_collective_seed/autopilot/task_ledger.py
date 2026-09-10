@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
 from .completion_validator import validate_completion
-from .dispatcher import Worker
+from .dispatcher import Worker, eligible_workers, execution_policy_error
 from .verifier import select_verifier
 
 ACTIVE_LEASE_STATES = {"claimed", "running"}
@@ -63,8 +63,11 @@ class TaskLedger:
         verification_workers: Iterable[Worker] = (),
         independence_groups: Mapping[str, str] | None = None,
         evidence_validator: Callable[[dict], bool] | None = None,
+        execution_workers: Iterable[Worker] = (),
     ):
         self.path = str(path)
+        # Trusted coordinator configuration, never populated from claim callers.
+        self.execution_workers = {worker.worker_id: worker for worker in execution_workers}
         self.evidence_validator = evidence_validator
         self.verification_workers = {
             worker.worker_id: worker for worker in verification_workers
@@ -141,11 +144,43 @@ class TaskLedger:
         result["verification_supplemental_evidence"] = json.loads(row["verification_supplemental_evidence_json"] or "[]")
         return result
 
+    def dependency_states(self, task: Mapping) -> dict[str, str]:
+        """Read durable dependency states; a missing row never implies completion."""
+        dependencies = task.get("dependencies", [])
+        if not isinstance(dependencies, list) or any(not isinstance(dep, str) for dep in dependencies):
+            return {}
+        states = {}
+        for dependency in dependencies:
+            row = self.conn.execute("SELECT status FROM tasks WHERE task_id=?", (dependency,)).fetchone()
+            if row is not None:
+                states[dependency] = row["status"]
+        return states
+
     def claim(self, task_id: str, worker_id: str, lease_seconds: int=900, now: datetime|None=None) -> ClaimResult:
         if lease_seconds<=0: raise ValueError("lease_seconds must be positive")
         now=now or _utcnow(); now_s=_iso(now); expires=_iso(now+timedelta(seconds=lease_seconds))
         with self.conn:
             self.conn.execute("BEGIN IMMEDIATE")
+            row = self.conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if row is None:
+                return ClaimResult(False, task_id, worker_id, "task_not_found")
+            if row["status"] in TERMINAL_STATES:
+                return ClaimResult(False, task_id, worker_id, "terminal_task")
+            try:
+                task = json.loads(row["payload_json"])
+                policy_error = execution_policy_error(task)
+            except (ValueError, TypeError, AttributeError):
+                policy_error = "invalid_execution_policy"
+            if policy_error:
+                return ClaimResult(False, task_id, worker_id, policy_error)
+            candidate = self.execution_workers.get(worker_id)
+            if candidate is None:
+                return ClaimResult(False, task_id, worker_id, "execution_registry_missing")
+            if not eligible_workers(task, [candidate]):
+                return ClaimResult(False, task_id, worker_id, "worker_not_eligible")
+            states = self.dependency_states(task)
+            if any(dep == task_id or states.get(dep) != "completed" for dep in task.get("dependencies", [])):
+                return ClaimResult(False, task_id, worker_id, "dependencies_incomplete")
             renewed=self.conn.execute("UPDATE tasks SET status='claimed',lease_expires_at=?,updated_at=? WHERE task_id=? AND claimed_by=? AND lease_expires_at IS NOT NULL AND lease_expires_at>? AND status IN ('claimed','running')",(expires,now_s,task_id,worker_id,now_s))
             if renewed.rowcount==1:
                 self._event(task_id,"lease_renewed",worker_id,{"expires":expires},now_s); return ClaimResult(True,task_id,worker_id,"renewed",expires)

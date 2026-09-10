@@ -38,3 +38,11 @@ def attest_local_submission(ledger, task_id, directory):
 
     ledger.evidence_validator = verify
     return row["completion_submission_digest"]
+
+
+def seed_legacy_execution_lease(ledger, task_id, worker, now):
+    """Test-only historical lease predating execution policy enforcement."""
+    from datetime import timedelta
+    with ledger.conn:
+        ledger.conn.execute("UPDATE tasks SET status='claimed',claimed_by=?,lease_expires_at=?,attempt=attempt+1 WHERE task_id=?",
+                            (worker, (now + timedelta(minutes=15)).isoformat(), task_id))

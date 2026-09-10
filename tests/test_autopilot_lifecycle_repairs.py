@@ -1,5 +1,7 @@
 """Regression tests for issues #19, #20 and #21; local SQLite only."""
 from datetime import timedelta
+import json
+from tests.evidence_fixture import seed_legacy_execution_lease
 
 import pytest
 
@@ -12,7 +14,8 @@ def test_release_cannot_complete_write_or_unknown_risk(tmp_path, risk):
     ledger = open_ledger(tmp_path / "ledger.db")
     try:
         ledger.put_task(task(risk_class=risk))
-        assert ledger.claim("vega", "writer", now=NOW).claimed
+        # A historical active lease must not bypass the release gate.
+        seed_legacy_execution_lease(ledger, "vega", "writer", NOW)
         assert not ledger.release("vega", "writer", "completed", now=NOW)
         assert ledger.get("vega")["status"] == "claimed"
         assert not any(e["event_type"] == "verification_accepted" for e in ledger.events("vega"))
@@ -93,7 +96,7 @@ def test_concurrent_expired_reclaims_cannot_exceed_budget(tmp_path):
             other.close()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        assert list(pool.map(reclaim, ("worker-a", "worker-b"))) == [False, False]
+        assert list(pool.map(reclaim, ("writer", "writer-b"))) == [False, False]
     ledger = open_ledger(path)
     try:
         assert ledger.get("vega")["attempt"] == 1
@@ -210,6 +213,12 @@ def test_legacy_policy_migration_is_durable_and_preserves_events(tmp_path):
 
     path = tmp_path / "legacy.db"
     _legacy_ledger(path)
+    # This budget-migration scenario has explicitly admitted execution policy.
+    import sqlite3
+    with sqlite3.connect(path) as conn:
+        row = conn.execute("SELECT payload_json FROM tasks WHERE task_id='legacy-task'").fetchone()
+        payload = json.loads(row[0]); payload["risk_class"] = "repo_write"
+        conn.execute("UPDATE tasks SET payload_json=? WHERE task_id='legacy-task'", (json.dumps(payload),))
     ledger = open_ledger(path)
     try:
         assert ledger.get("legacy-task")["max_attempts"] == 3

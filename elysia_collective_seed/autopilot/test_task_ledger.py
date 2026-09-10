@@ -1,14 +1,18 @@
 from datetime import datetime, timedelta, timezone
 
 from elysia_collective_seed.autopilot.task_ledger import TaskLedger
+from elysia_collective_seed.autopilot.dispatcher import Worker
+
+def _ledger(path):
+    return TaskLedger(path, execution_workers=[Worker(w, "test", frozenset(), frozenset({"read_only"})) for w in ("worker-a", "worker-b")])
 
 
 def _task(task_id="ELY-TASK-1", status="queued"):
-    return {"task_id": task_id, "title": "bounded test", "status": status, "attempt": 0}
+    return {"task_id": task_id, "title": "bounded test", "status": status, "attempt": 0, "risk_class": "read_only"}
 
 
 def test_claim_prevents_second_worker(tmp_path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = _ledger(tmp_path / "ledger.db")
     now = datetime(2026, 9, 7, tzinfo=timezone.utc)
     ledger.put_task(_task())
     first = ledger.claim("ELY-TASK-1", "worker-a", 60, now)
@@ -22,8 +26,8 @@ def test_claim_prevents_second_worker(tmp_path):
 
 def test_independent_connections_observe_single_lease_owner(tmp_path):
     path = tmp_path / "ledger.db"
-    first_ledger = TaskLedger(path)
-    second_ledger = TaskLedger(path)
+    first_ledger = _ledger(path)
+    second_ledger = _ledger(path)
     now = datetime(2026, 9, 7, tzinfo=timezone.utc)
     first_ledger.put_task(_task())
     first = first_ledger.claim("ELY-TASK-1", "worker-a", 60, now)
@@ -38,7 +42,7 @@ def test_independent_connections_observe_single_lease_owner(tmp_path):
 
 
 def test_same_worker_renews_without_incrementing_attempt(tmp_path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = _ledger(tmp_path / "ledger.db")
     now = datetime(2026, 9, 7, tzinfo=timezone.utc)
     ledger.put_task(_task())
     ledger.claim("ELY-TASK-1", "worker-a", 60, now)
@@ -49,7 +53,7 @@ def test_same_worker_renews_without_incrementing_attempt(tmp_path):
 
 
 def test_same_worker_reacquires_expired_lease_as_new_attempt(tmp_path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = _ledger(tmp_path / "ledger.db")
     now = datetime(2026, 9, 7, tzinfo=timezone.utc)
     ledger.put_task(_task())
     ledger.claim("ELY-TASK-1", "worker-a", 10, now)
@@ -60,7 +64,7 @@ def test_same_worker_reacquires_expired_lease_as_new_attempt(tmp_path):
 
 
 def test_expired_lease_can_be_reaped_and_reclaimed(tmp_path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = _ledger(tmp_path / "ledger.db")
     now = datetime(2026, 9, 7, tzinfo=timezone.utc)
     ledger.put_task(_task())
     ledger.claim("ELY-TASK-1", "worker-a", 10, now)
@@ -72,7 +76,7 @@ def test_expired_lease_can_be_reaped_and_reclaimed(tmp_path):
 
 
 def test_release_requires_current_owner(tmp_path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = _ledger(tmp_path / "ledger.db")
     now = datetime(2026, 9, 7, tzinfo=timezone.utc)
     ledger.put_task(_task())
     ledger.claim("ELY-TASK-1", "worker-a", 60, now)
@@ -83,7 +87,7 @@ def test_release_requires_current_owner(tmp_path):
 
 
 def test_terminal_task_cannot_be_claimed(tmp_path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = _ledger(tmp_path / "ledger.db")
     ledger.put_task(_task(status="completed"))
     result = ledger.claim("ELY-TASK-1", "worker-a")
     assert result.claimed is False
@@ -92,7 +96,7 @@ def test_terminal_task_cannot_be_claimed(tmp_path):
 
 
 def test_stale_upsert_cannot_reopen_terminal_task(tmp_path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = _ledger(tmp_path / "ledger.db")
     ledger.put_task(_task(status="completed"))
     ledger.put_task(_task(status="queued"))
     assert ledger.get("ELY-TASK-1")["status"] == "completed"
@@ -101,7 +105,7 @@ def test_stale_upsert_cannot_reopen_terminal_task(tmp_path):
 
 
 def test_events_are_auditable(tmp_path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = _ledger(tmp_path / "ledger.db")
     now = datetime(2026, 9, 7, tzinfo=timezone.utc)
     ledger.put_task(_task())
     ledger.claim("ELY-TASK-1", "worker-a", 60, now)

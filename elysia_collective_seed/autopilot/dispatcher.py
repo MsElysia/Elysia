@@ -44,6 +44,24 @@ def _required_capabilities(task: Mapping) -> set[str]:
     return caps
 
 
+def execution_policy_error(task: Mapping) -> str | None:
+    """Validate admitted execution policy before using it as authority."""
+    for field in ("dependencies", "allowed_workers", "required_capabilities"):
+        values = task.get(field, [])
+        if not isinstance(values, list) or any(not isinstance(value, str) or not value.strip() for value in values):
+            return "invalid_execution_policy"
+    if type(task.get("human_approval_required", False)) is not bool:
+        return "invalid_execution_policy"
+    if "task_class" in task and (not isinstance(task["task_class"], str) or not task["task_class"].strip()):
+        return "invalid_execution_policy"
+    risk = task.get("risk_class")
+    if not isinstance(risk, str) or risk not in AUTO_RISKS | PROTECTED_RISKS:
+        return "unknown_risk_class"
+    if task.get("human_approval_required", False) or risk in PROTECTED_RISKS:
+        return "authority_gate"
+    return None
+
+
 def eligible_workers(task: Mapping, workers: Iterable[Worker]) -> list[Worker]:
     required = _required_capabilities(task)
     risk = task["risk_class"]
@@ -72,14 +90,11 @@ def _score(worker: Worker, preferred: str | None) -> tuple[float, str]:
 def dispatch(task: Mapping, states: Mapping[str, str], workers: Sequence[Worker]) -> DispatchDecision:
     task_id = task["task_id"]
     status = task.get("status", "queued")
-    risk = task["risk_class"]
-
     if status in TERMINAL:
         return DispatchDecision(task_id, "not_dispatchable", None, ("terminal_task",))
-    if task.get("human_approval_required", False) or risk in PROTECTED_RISKS:
-        return DispatchDecision(task_id, "human_gate", None, ("authority_gate",))
-    if risk not in AUTO_RISKS:
-        return DispatchDecision(task_id, "blocked", None, ("unknown_risk_class",))
+    policy_error = execution_policy_error(task)
+    if policy_error:
+        return DispatchDecision(task_id, "human_gate" if policy_error == "authority_gate" else "blocked", None, (policy_error,))
     if not _deps_satisfied(task, states):
         return DispatchDecision(task_id, "blocked", None, ("dependencies_incomplete",))
     if int(task.get("attempt", 0)) >= int(task.get("max_attempts", 3)):

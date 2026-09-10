@@ -85,7 +85,9 @@ def test_validated_completion_reaches_independent_verifier(tmp_path):
         claim = ledger.claim_verification("vega", "reviewer")
         assert claim.claimed, f"Completion cannot reach verifier: {claim}; row={ledger.get('vega')}"
         assert ledger.get("vega")["produced_by"] == "writer"
-        assert ledger.accept_verification("vega", "reviewer", ["synthetic:review"])
+        from tests.evidence_fixture import attest_local_submission
+        digest = attest_local_submission(ledger, "vega", tmp_path)
+        assert ledger.accept_verification("vega", "reviewer", ["synthetic:review"], expected_submission_digest=digest)
     finally:
         ledger.close()
 

@@ -90,3 +90,46 @@ The implementation is not acceptance-complete until tests prove:
 ## Safety boundary
 
 This contract authorizes no provider calls, GitHub writes, Guardian runtime wiring, subprocess/network execution, deployment, merge, external posting, credential access, or private-chatlog access. Implementation must remain deterministic/local-only until the canonical Guardian runtime and governance gates permit broader integration.
+
+
+## Issue #22 persisted submission binding
+
+The SQLite implementation stores additive `completion_submission_json`,
+`completion_submission_digest`, `verification_submission_digest`, and
+`verification_supplemental_evidence_json` columns. The canonical submission
+includes the full supplied completion packet and check records, evidence source
+classes, packet identity, producer, attempt, execution lease expiry, admitted task
+policy, and retry limits. Its SHA-256 digest identifies and detects modification
+of the snapshot; it is not proof of work or an authenticated signature.
+
+Acceptance requires `expected_submission_digest` matching both the persisted
+submission and the verifier claim, intact current identity/policy, unique passing
+required checks, current trusted registry eligibility, and a live independent
+verifier lease. Snapshot validation, the completion transition, and its event
+occur in one SQLite immediate transaction. Supplemental verifier references may
+be empty and cannot replace the submitted evidence. Missing snapshots on legacy
+rows remain readable/rejectable but cannot be accepted; migration does not invent
+proof or rewrite historical events.
+
+The trusted ledger constructor's `evidence_validator` is an explicit authority
+boundary. It receives a detached JSON snapshot, must return exactly `True` after
+resolving substantive artifact/claim/commit/PR evidence and independently recorded
+checks against the same submission, and must be local/deterministic. Packet IDs
+and bare SHA-256 values never count as substantive evidence. Reference classes
+and spellings alone prove nothing. The default is no resolver and acceptance is
+denied. Unknown/protected risk, human approval, or required review roles without
+an implemented role authority remain denied even with a successful resolver.
+No production resolver, network proof fetch, provider invocation, or runtime
+integration is introduced. A constructor-installed resolver is trusted code;
+installing one that returns True without checking evidence violates this API
+contract. Tests use actual local artifact bytes and an independently controlled
+check report bound to the exact submission digest.
+
+Legacy direct submissions with unverified references may enter `verifying` for
+inspection/rejection, but this does not certify evidence. The bridge rejects
+completed packets lacking evidence instead of treating their self-hash as proof.
+
+A supplied full packet is semantically validated again by the ledger, including
+its task/packet identity, completed outcome, exact checks and evidence sources.
+It cannot contradict separate direct-submit arguments. The same consistency
+gate runs on acceptance so previously stored conflicting packets fail closed.

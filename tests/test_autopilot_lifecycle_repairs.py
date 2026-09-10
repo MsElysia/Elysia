@@ -149,7 +149,9 @@ def test_bridge_persists_identity_evidence_and_lease_provenance_across_reopen(tm
         assert event["detail"]["attempt"] == 1
         assert event["detail"]["producer_lease_expires_at"] == lease
         assert ledger.claim_verification("vega", "reviewer").claimed
-        assert ledger.accept_verification("vega", "reviewer", ["ref:review"])
+        from tests.evidence_fixture import attest_local_submission
+        digest = attest_local_submission(ledger, "vega", tmp_path)
+        assert ledger.accept_verification("vega", "reviewer", ["ref:review"], expected_submission_digest=digest)
     finally:
         ledger.close()
 
@@ -158,7 +160,7 @@ def test_legacy_packet_gets_stable_content_identity(tmp_path):
     import hashlib
     import json
 
-    packet = completion()
+    packet = completion(evidence_refs=["local:artifact"])
     expected = "sha256:" + hashlib.sha256(json.dumps(packet, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
     ledger = open_ledger(tmp_path / "ledger.db")
     try:
@@ -166,7 +168,8 @@ def test_legacy_packet_gets_stable_content_identity(tmp_path):
         assert ledger.claim("vega", "writer").claimed
         assert validate_and_apply_completion(ledger, packet, worker_id="writer").applied
         assert ledger.get("vega")["completion_packet_id"] == expected
-        assert expected in ledger.get("vega")["completion_evidence"]
+        assert expected not in ledger.get("vega")["completion_evidence"]
+        assert ledger.get("vega")["completion_evidence"] == ["local:artifact"]
     finally:
         ledger.close()
 

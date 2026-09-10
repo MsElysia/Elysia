@@ -94,7 +94,9 @@ def test_accept_requires_live_owner_and_records_decision(tmp_path):
             available=False, quality=1.0,
         )
         assert _claim_verification(ledger, "verifier-b", lease_seconds=60, now=NOW + timedelta(seconds=62)).claimed
-        assert ledger.accept_verification("write-1", "verifier-b", ["review:ok"], now=NOW + timedelta(seconds=63))
+        from tests.evidence_fixture import attest_local_submission
+        digest = attest_local_submission(ledger, "write-1", tmp_path)
+        assert ledger.accept_verification("write-1", "verifier-b", ["review:ok"], now=NOW + timedelta(seconds=63), expected_submission_digest=digest)
         row = ledger.conn.execute("SELECT * FROM tasks WHERE task_id='write-1'").fetchone()
         assert row["status"] == "completed"
         assert row["verification_claimed_by"] is None

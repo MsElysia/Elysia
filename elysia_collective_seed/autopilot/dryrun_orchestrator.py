@@ -157,10 +157,11 @@ def validate_and_apply_completion(
         evidence.extend(ref for claim in packet.get("claims", []) for ref in claim.get("evidence", []))
         evidence.extend(packet.get("commits", []))
         evidence.extend(packet.get("pull_requests", []))
-        evidence.append(digest)
+        if not evidence:
+            return CompletionResult(validation.task_id, "completion_rejected", worker_id, validation, False, ("missing_substantive_evidence",))
         applied = ledger.submit_for_verification(
             validation.task_id, worker_id, packet_id, list(dict.fromkeys(evidence)),
-            completion_checks=[{"name": check["name"], "result": check["result"]} for check in packet["checks"]],
+            completion_checks=list(packet["checks"]), completion_packet=packet,
         )
     else:
         applied = ledger.release(validation.task_id, worker_id, next_status=next_state)

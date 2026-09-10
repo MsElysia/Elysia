@@ -98,12 +98,18 @@ def test_existing_active_lease_is_not_stolen(tmp_path: Path):
 
 
 def test_stale_payload_cannot_reopen_completed_task(tmp_path: Path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = TaskLedger(
+        tmp_path / "ledger.db",
+        verification_workers=[Worker("verifier", "dryrun", frozenset({"verification"}), frozenset({"sandbox_write"}))],
+        independence_groups={"worker-a": "producer", "verifier": "independent"},
+    )
     try:
         task = _task()
         ledger.put_task(task)
         assert ledger.claim(task["task_id"], "worker-a", lease_seconds=60).claimed
-        assert ledger.release(task["task_id"], "worker-a", next_status="completed")
+        assert ledger.submit_for_verification(task["task_id"], "worker-a", "packet:test", ["test:evidence"])
+        assert ledger.claim_verification(task["task_id"], "verifier").claimed
+        assert ledger.accept_verification(task["task_id"], "verifier", ["test:review"])
         result = dispatch_and_claim(ledger, task, {}, _workers())
         assert result.state == "not_dispatchable"
         assert result.reasons == ("terminal_task",)

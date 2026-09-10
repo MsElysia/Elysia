@@ -8,6 +8,8 @@ and persists bounded local SQLite state transitions.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 from typing import Mapping, Sequence
 
 from .completion_validator import CompletionValidation, validate_completion
@@ -101,6 +103,8 @@ def validate_and_apply_completion(
     or unrelated completion cannot mutate another worker's task.
     """
     task_id = str(packet.get("task_id", ""))
+    persisted = ledger.get(task_id)
+    required_checks = tuple(dict.fromkeys((*required_checks, *(persisted or {}).get("required_checks", []))))
     validation = validate_completion(
         packet,
         expected_task_id=task_id or None,
@@ -143,7 +147,23 @@ def validate_and_apply_completion(
         "failed": "queued",
         "rejected": "rejected",
     }[validation.outcome]
-    applied = ledger.release(validation.task_id, worker_id, next_status=next_state)
+    if validation.outcome == "completed":
+        # Schema-compatible older packets have no ID: bind them to a canonical
+        # digest instead of inventing a successful artifact or dropping evidence.
+        canonical = json.dumps(dict(packet), sort_keys=True, separators=(",", ":"), allow_nan=False)
+        digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        packet_id = packet.get("packet_id", digest)
+        evidence = list(packet.get("evidence_refs", []))
+        evidence.extend(ref for claim in packet.get("claims", []) for ref in claim.get("evidence", []))
+        evidence.extend(packet.get("commits", []))
+        evidence.extend(packet.get("pull_requests", []))
+        evidence.append(digest)
+        applied = ledger.submit_for_verification(
+            validation.task_id, worker_id, packet_id, list(dict.fromkeys(evidence)),
+            completion_checks=[{"name": check["name"], "result": check["result"]} for check in packet["checks"]],
+        )
+    else:
+        applied = ledger.release(validation.task_id, worker_id, next_status=next_state)
     if not applied:
         return CompletionResult(
             task_id=validation.task_id,
@@ -155,7 +175,7 @@ def validate_and_apply_completion(
         )
     return CompletionResult(
         task_id=validation.task_id,
-        state=next_state,
+        state=ledger.get(validation.task_id)["status"],
         worker_id=worker_id,
         validation=validation,
         applied=True,

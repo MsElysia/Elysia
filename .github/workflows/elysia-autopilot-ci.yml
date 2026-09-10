@@ -9,6 +9,7 @@ on:
     branches:
       - main
       - 'elysia-collective-*'
+      - 'autopilot-*'
   workflow_dispatch:
 
 permissions:
@@ -21,6 +22,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -49,7 +52,13 @@ jobs:
           print('All JSON artifacts parsed successfully.')
 
       - name: Run Elysia Collective seed tests
-        run: python -m pytest -q elysia_collective_seed
+        run: >-
+          python -m pytest -q elysia_collective_seed
+          tests/test_autopilot_verifier.py
+          tests/test_autopilot_verifier_ledger_migration.py
+          tests/test_autopilot_verifier_lifecycle.py
+          tests/test_vega_verifier_boundaries.py
+          tests/test_autopilot_lifecycle_repairs.py
 
       - name: Enforce no runtime-enable flag in seed prompt pack
         shell: python

@@ -5,6 +5,8 @@
   "required": ["task_id", "worker", "outcome", "summary", "checks", "next_recommendation"],
   "properties": {
     "task_id": {"type": "string"},
+    "packet_id": {"type": "string", "minLength": 1},
+    "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
     "worker": {
       "type": "object",
       "required": ["provider", "role"],

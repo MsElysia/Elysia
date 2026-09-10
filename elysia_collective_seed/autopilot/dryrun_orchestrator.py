@@ -149,7 +149,7 @@ def validate_and_apply_completion(
     }[validation.outcome]
     if validation.outcome == "completed":
         # Schema-compatible older packets have no ID: bind them to a canonical
-        # digest instead of inventing a successful artifact or dropping evidence.
+        # digest for identity. The digest identifies the packet; it is not write proof.
         canonical = json.dumps(dict(packet), sort_keys=True, separators=(",", ":"), allow_nan=False)
         digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         packet_id = packet.get("packet_id", digest)
@@ -159,8 +159,15 @@ def validate_and_apply_completion(
         evidence.extend(packet.get("pull_requests", []))
         evidence.append(digest)
         applied = ledger.submit_for_verification(
-            validation.task_id, worker_id, packet_id, list(dict.fromkeys(evidence)),
+            validation.task_id,
+            worker_id,
+            packet_id,
+            list(dict.fromkeys(evidence)),
             completion_checks=[{"name": check["name"], "result": check["result"]} for check in packet["checks"]],
+            commits=list(packet.get("commits", [])),
+            pull_requests=list(packet.get("pull_requests", [])),
+            claims=[dict(claim) for claim in packet.get("claims", [])],
+            packet_digest=digest,
         )
     else:
         applied = ledger.release(validation.task_id, worker_id, next_status=next_state)

@@ -110,7 +110,7 @@ def test_rejection_uses_system_policy_regardless_of_caller(tmp_path, caller_limi
         ledger.put_task(task(max_attempts=3))
         for index in range(2):
             assert ledger.claim("vega", "writer", now=NOW).claimed
-            assert ledger.submit_for_verification("vega", "writer", str(index), [], now=NOW)
+            assert ledger.submit_for_verification("vega", "writer", str(index), ["artifact:retry"], now=NOW)
             assert ledger.claim_verification("vega", "reviewer", now=NOW).claimed
             assert ledger.reject_verification("vega", "reviewer", "failure", [], max_rejections=caller_limit, now=NOW)
             assert ledger.get("vega")["status"] == ("queued" if index == 0 else "human_review")
@@ -134,8 +134,8 @@ def test_bridge_persists_identity_evidence_and_lease_provenance_across_reopen(tm
     ledger.put_task(task(required_checks=["unit"]))
     assert ledger.claim("vega", "writer").claimed
     lease = ledger.get("vega")["lease_expires_at"]
-    packet = completion(packet_id="packet-explicit", evidence_refs=["ref:direct"],
-                        claims=[{"claim": "tested", "evidence": ["ref:claim"]}])
+    packet = completion(packet_id="packet-explicit", evidence_refs=["artifact:direct"],
+                        claims=[{"claim": "tested", "evidence": ["artifact:claim"]}])
     assert validate_and_apply_completion(ledger, packet, worker_id="writer").applied
     ledger.close()
     ledger = open_ledger(path)
@@ -143,13 +143,15 @@ def test_bridge_persists_identity_evidence_and_lease_provenance_across_reopen(tm
         row = ledger.get("vega")
         assert row["produced_by"] == "writer"
         assert row["completion_packet_id"] == "packet-explicit"
-        assert {"ref:direct", "ref:claim"}.issubset(row["completion_evidence"])
+        assert {"artifact:direct", "artifact:claim"}.issubset(row["completion_evidence"])
         event = ledger.events("vega")[-1]
         assert event["detail"]["checks"] == [{"name": "unit", "result": "pass"}]
         assert event["detail"]["attempt"] == 1
         assert event["detail"]["producer_lease_expires_at"] == lease
         assert ledger.claim_verification("vega", "reviewer").claimed
-        assert ledger.accept_verification("vega", "reviewer", ["ref:review"])
+        assert ledger.accept_verification(
+            "vega", "reviewer", ["artifact:direct", "artifact:claim", "ref:review"]
+        )
     finally:
         ledger.close()
 

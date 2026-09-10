@@ -49,7 +49,7 @@ def test_rejection_ceiling_cannot_be_raised_after_reopen(tmp_path):
     try:
         for index, ceiling in enumerate((2, 9999)):
             assert ledger.claim("vega", "writer", now=NOW).claimed
-            assert ledger.submit_for_verification("vega", "writer", f"packet-{index}", ["synthetic:evidence"], now=NOW)
+            assert ledger.submit_for_verification("vega", "writer", f"packet-{index}", ["artifact:synthetic"], now=NOW)
             assert ledger.claim_verification("vega", "reviewer", now=NOW).claimed
             ledger.reject_verification("vega", "reviewer", "failure", [], max_rejections=ceiling, now=NOW)
             ledger.close()
@@ -76,7 +76,7 @@ def test_validated_completion_reaches_independent_verifier(tmp_path):
     try:
         ledger.put_task(task())
         assert ledger.claim("vega", "writer").claimed
-        packet = dict(task_id="vega", packet_id="packet-1", evidence_refs=["synthetic:evidence"],
+        packet = dict(task_id="vega", packet_id="packet-1", evidence_refs=["artifact:synthetic"],
                       worker={"provider": "synthetic", "role": "engineer"}, outcome="completed",
                       summary="Synthetic result", checks=[{"name": "unit", "result": "pass"}],
                       next_recommendation={"action": "verify"})
@@ -85,7 +85,7 @@ def test_validated_completion_reaches_independent_verifier(tmp_path):
         claim = ledger.claim_verification("vega", "reviewer")
         assert claim.claimed, f"Completion cannot reach verifier: {claim}; row={ledger.get('vega')}"
         assert ledger.get("vega")["produced_by"] == "writer"
-        assert ledger.accept_verification("vega", "reviewer", ["synthetic:review"])
+        assert ledger.accept_verification("vega", "reviewer", ["artifact:synthetic", "synthetic:review"])
     finally:
         ledger.close()
 
@@ -95,14 +95,14 @@ def test_rerouted_retry_refuses_old_producer_and_current_self_review(tmp_path):
     try:
         ledger.put_task(task(max_attempts=2))
         assert ledger.claim("vega", "writer", now=NOW).claimed
-        assert ledger.submit_for_verification("vega", "writer", "packet-1", ["first"], now=NOW)
+        assert ledger.submit_for_verification("vega", "writer", "packet-1", ["artifact:first"], now=NOW)
         assert ledger.claim_verification("vega", "reviewer", now=NOW).claimed
         assert ledger.reject_verification("vega", "reviewer", "retry", [], now=NOW)
         assert ledger.claim("vega", "writer-b", now=NOW).claimed
         assert not ledger.submit_for_verification("vega", "writer", "stale", [], now=NOW)
-        assert ledger.submit_for_verification("vega", "writer-b", "packet-2", ["second"], now=NOW)
+        assert ledger.submit_for_verification("vega", "writer-b", "packet-2", ["artifact:second"], now=NOW)
         assert ledger.claim_verification("vega", "writer-b", now=NOW).reason == "self_verification_forbidden"
         submissions = [e for e in ledger.events("vega") if e["event_type"] == "producer_completion_submitted"]
-        assert [(e["actor"], e["detail"]["evidence_refs"]) for e in submissions] == [("writer", ["first"]), ("writer-b", ["second"])]
+        assert [(e["actor"], e["detail"]["evidence_refs"]) for e in submissions] == [("writer", ["artifact:first"]), ("writer-b", ["artifact:second"])]
     finally:
         ledger.close()

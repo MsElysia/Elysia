@@ -53,7 +53,7 @@ def test_writer_submission_enters_verifying_and_releases_execution_lease(tmp_pat
     ledger = TaskLedger(tmp_path / "ledger.sqlite3")
     try:
         _claimed_writer(ledger)
-        assert ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:test"], now=NOW)
+        assert ledger.submit_for_verification("write-1", "writer", "packet-1", ["artifact:test"], now=NOW)
         row = ledger.conn.execute("SELECT * FROM tasks WHERE task_id='write-1'").fetchone()
         assert row["status"] == "verifying"
         assert row["claimed_by"] is None and row["lease_expires_at"] is None
@@ -69,7 +69,7 @@ def test_self_verification_forbidden_and_distinct_verifier_claims(tmp_path):
     ledger = TaskLedger(tmp_path / "ledger.sqlite3")
     try:
         _claimed_writer(ledger)
-        ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:test"], now=NOW)
+        ledger.submit_for_verification("write-1", "writer", "packet-1", ["artifact:test"], now=NOW)
         denied = ledger.claim_verification("write-1", "writer", now=NOW)
         assert not denied.claimed and denied.reason == "self_verification_forbidden"
         claimed = _claim_verification(ledger, "verifier-a", now=NOW)
@@ -84,7 +84,7 @@ def test_accept_requires_live_owner_and_records_decision(tmp_path):
     ledger = TaskLedger(tmp_path / "ledger.sqlite3")
     try:
         _claimed_writer(ledger)
-        ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:test"], now=NOW)
+        ledger.submit_for_verification("write-1", "writer", "packet-1", ["artifact:test"], now=NOW)
         _claim_verification(ledger, "verifier-a", lease_seconds=60, now=NOW)
         assert not ledger.accept_verification("write-1", "verifier-b", ["review:wrong"], now=NOW)
         assert not ledger.accept_verification("write-1", "verifier-a", ["review:stale"], now=NOW + timedelta(seconds=61))
@@ -96,7 +96,7 @@ def test_accept_requires_live_owner_and_records_decision(tmp_path):
         assert _claim_verification(ledger, "verifier-b", lease_seconds=60, now=NOW + timedelta(seconds=62)).claimed
         from tests.evidence_fixture import attest_local_submission
         digest = attest_local_submission(ledger, "write-1", tmp_path)
-        assert ledger.accept_verification("write-1", "verifier-b", ["review:ok"], now=NOW + timedelta(seconds=63), expected_submission_digest=digest)
+        assert ledger.accept_verification("write-1", "verifier-b", ["artifact:test", "review:ok"], now=NOW + timedelta(seconds=63), expected_submission_digest=digest)
         row = ledger.conn.execute("SELECT * FROM tasks WHERE task_id='write-1'").fetchone()
         assert row["status"] == "completed"
         assert row["verification_claimed_by"] is None
@@ -110,14 +110,14 @@ def test_rejection_preserves_evidence_and_attempt_and_bounds_retry(tmp_path):
     try:
         _claimed_writer(ledger)
         attempt = ledger.get("write-1")["attempt"]
-        ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:test"], now=NOW)
+        ledger.submit_for_verification("write-1", "writer", "packet-1", ["artifact:test"], now=NOW)
         _claim_verification(ledger, "verifier-a", now=NOW)
         assert ledger.reject_verification("write-1", "verifier-a", "test failure", ["review:fail"], max_rejections=2, now=NOW)
         row = ledger.conn.execute("SELECT * FROM tasks WHERE task_id='write-1'").fetchone()
         assert row["status"] == "queued"
         assert row["attempt"] == attempt
         assert row["completion_packet_id"] == "packet-1"
-        assert "evidence:test" in row["completion_evidence_json"]
+        assert "artifact:test" in row["completion_evidence_json"]
         assert row["verification_rejections"] == 1
     finally:
         ledger.close()
@@ -128,7 +128,7 @@ def test_rejected_retry_can_be_rerouted_without_losing_producer_provenance(tmp_p
     ledger = TaskLedger(tmp_path / "ledger.sqlite3")
     try:
         _claimed_writer(ledger)
-        assert ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:first"], now=NOW)
+        assert ledger.submit_for_verification("write-1", "writer", "packet-1", ["artifact:first"], now=NOW)
         assert _claim_verification(ledger, "verifier-a", now=NOW).claimed
         assert ledger.reject_verification(
             "write-1", "verifier-a", "needs revision", ["review:first-fail"], max_rejections=3, now=NOW
@@ -136,7 +136,7 @@ def test_rejected_retry_can_be_rerouted_without_losing_producer_provenance(tmp_p
         retry_time = NOW + timedelta(minutes=1)
         retry = ledger.claim("write-1", "writer-b", now=retry_time)
         assert retry.claimed
-        assert ledger.submit_for_verification("write-1", "writer-b", "packet-2", ["evidence:retry"], now=retry_time)
+        assert ledger.submit_for_verification("write-1", "writer-b", "packet-2", ["artifact:retry"], now=retry_time)
         row = ledger.conn.execute("SELECT * FROM tasks WHERE task_id='write-1'").fetchone()
         assert row["status"] == "verifying"
         assert row["produced_by"] == "writer-b"
@@ -157,7 +157,7 @@ def test_expired_verifier_lease_reaps_without_touching_producer_evidence(tmp_pat
     try:
         _claimed_writer(ledger)
         attempt = ledger.get("write-1")["attempt"]
-        ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:test"], now=NOW)
+        ledger.submit_for_verification("write-1", "writer", "packet-1", ["artifact:test"], now=NOW)
         _claim_verification(ledger, "verifier-a", lease_seconds=60, now=NOW)
         assert ledger.reap_expired_verification(now=NOW + timedelta(seconds=61)) == ["write-1"]
         row = ledger.conn.execute("SELECT * FROM tasks WHERE task_id='write-1'").fetchone()
@@ -182,7 +182,7 @@ def test_verification_claim_requires_atomic_independence_decision(tmp_path):
     ledger = TaskLedger(tmp_path / "ledger.sqlite3")
     try:
         _claimed_writer(ledger)
-        ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:test"], now=NOW)
+        ledger.submit_for_verification("write-1", "writer", "packet-1", ["artifact:test"], now=NOW)
 
         ledger.independence_groups["verifier-a"] = "producer-group"
         denied = ledger.claim_verification("write-1", "verifier-a", now=NOW)
@@ -202,7 +202,7 @@ def test_claim_rechecks_current_registry_eligibility(tmp_path):
     ledger = TaskLedger(tmp_path / "ledger.sqlite3")
     try:
         _claimed_writer(ledger)
-        ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:first"], now=NOW)
+        ledger.submit_for_verification("write-1", "writer", "packet-1", ["artifact:first"], now=NOW)
         ledger.verification_workers["verifier-a"] = Worker(
             "verifier-a",
             "test",
@@ -247,13 +247,13 @@ def test_exhausted_retries_route_to_human_review_without_expanding_authority(tmp
     try:
         _claimed_writer(ledger)
         original_payload = dict(ledger.get("write-1"))
-        assert ledger.submit_for_verification("write-1", "writer", "packet-1", ["evidence:one"], now=NOW)
+        assert ledger.submit_for_verification("write-1", "writer", "packet-1", ["artifact:one"], now=NOW)
         assert _claim_verification(ledger, "verifier-a", now=NOW).claimed
         assert ledger.reject_verification("write-1", "verifier-a", "retry", ["review:one"], max_rejections=2, now=NOW)
 
         retry_time = NOW + timedelta(minutes=1)
         assert ledger.claim("write-1", "writer-b", now=retry_time).claimed
-        assert ledger.submit_for_verification("write-1", "writer-b", "packet-2", ["evidence:two"], now=retry_time)
+        assert ledger.submit_for_verification("write-1", "writer-b", "packet-2", ["artifact:two"], now=retry_time)
         assert _claim_verification(ledger, "verifier-a", now=retry_time).claimed
         assert ledger.reject_verification("write-1", "verifier-a", "still unsafe", ["review:two"], max_rejections=2, now=retry_time)
 

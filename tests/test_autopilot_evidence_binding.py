@@ -19,7 +19,7 @@ def submitted(tmp_path, **policy):
 
 
 def accept(ledger, digest, **kwargs):
-    return ledger.accept_verification("vega", "reviewer", ["review:notes"], now=NOW,
+    return ledger.accept_verification("vega", "reviewer", ["artifact:A", "review:notes"], now=NOW,
                                       expected_submission_digest=digest, **kwargs)
 
 
@@ -113,8 +113,14 @@ def test_arbitrary_evidence_without_trusted_resolver_denied(tmp_path, evidence):
         ledger.put_task(task())
         assert ledger.claim("vega", "writer", now=NOW).claimed
         assert ledger.submit_for_verification("vega", "writer", "packet", evidence, now=NOW)
-        assert ledger.claim_verification("vega", "reviewer", now=NOW).claimed
-        assert not accept(ledger, ledger.get("vega")["completion_submission_digest"])
+        row = ledger.get("vega")
+        if row["status"] == "verifying":
+            assert ledger.claim_verification("vega", "reviewer", now=NOW).claimed
+            assert not accept(ledger, row["completion_submission_digest"])
+            assert ledger.get("vega")["status"] != "completed"
+        else:
+            assert row["status"] == "human_review"
+            assert not ledger.claim_verification("vega", "reviewer", now=NOW).claimed
     finally:
         ledger.close()
 
@@ -215,9 +221,15 @@ def test_packet_hash_only_is_not_substantive_even_with_local_attestation(tmp_pat
         assert ledger.claim("vega", "writer", now=NOW).claimed
         identity = "sha256:" + "1" * 64
         assert ledger.submit_for_verification("vega", "writer", identity, [identity], now=NOW)
-        assert ledger.claim_verification("vega", "reviewer", now=NOW).claimed
-        digest = attest_local_submission(ledger, "vega", tmp_path)
-        assert not accept(ledger, digest)
+        row = ledger.get("vega")
+        if row["status"] == "verifying":
+            assert ledger.claim_verification("vega", "reviewer", now=NOW).claimed
+            digest = attest_local_submission(ledger, "vega", tmp_path)
+            assert not accept(ledger, digest)
+            assert ledger.get("vega")["status"] != "completed"
+        else:
+            assert row["status"] == "human_review"
+            assert any(e["event_type"] == "evidence_binding_rejected" for e in ledger.events("vega"))
     finally:
         ledger.close()
 

@@ -22,8 +22,8 @@ TERMINAL_STATES = {"completed", "rejected", "archived"}
 NON_DISPATCHABLE_STATES = ACTIVE_LEASE_STATES | {"verifying", "review", "blocked", "human_review"} | TERMINAL_STATES
 DEFAULT_MAX_ATTEMPTS = 3
 SYSTEM_MAX_REJECTIONS = 2
-# Consequential writes need repository provenance; sandbox_write stays soft for local dry-runs.
-CONSEQUENTIAL_WRITE_RISKS = frozenset({"repo_write", "deployment"})
+# Soft risks may complete with identity-only packets; everything else is fail-closed.
+_SOFT_EVIDENCE_RISKS = frozenset({"sandbox_write", "read_only"})
 _SUBSTANTIVE_PREFIXES = ("artifact:", "commit:", "pr:", "pull_request:")
 
 
@@ -78,7 +78,7 @@ def substantive_write_refs(refs: Sequence[str], *, packet_digest: str | None = N
 def _risk_requires_substantive_evidence(risk_class: object) -> bool:
     if risk_class is None:
         return True
-    return str(risk_class) in CONSEQUENTIAL_WRITE_RISKS
+    return str(risk_class) not in _SOFT_EVIDENCE_RISKS
 
 
 def _checks_satisfy_required(required_checks: Sequence[str], checks: Sequence[Mapping] | None) -> bool:

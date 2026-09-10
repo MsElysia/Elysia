@@ -27,6 +27,9 @@ Repository-backed bounded tranches may be added when sufficiently strong primary
 ## Bounded tranches
 
 - `tranches/2025-05_dream_mutation_loop.md` — repository-backed reconstruction of the May 2025 DreamEngine → MutationEngine loop, early self-improvement controls, recorded mutation events, later Guardian formalization, failure modes, and unresolved provenance questions.
+- `tranches/2024-12_to_2026-09_identity_governance_collective_turn.md` — recovered and repository-backed reconstruction of the identity/governance concepts that later became the Elysia Collective, including adversarial review and unresolved continuity questions.
+- `tranches/2026-04_to_2026-09_memory_continuity_provenance_lineage.md` — reconstruction of Guardian memory/persona continuity evolving toward immutable Genesis provenance, lineage, contradiction preservation, and layered Collective memory.
+- `tranches/2026-04_to_2026-09_capability_realism_bounded_tools.md` — repository-backed reconstruction of tool discovery evolving into operational capability awareness, bounded browser/execution surfaces, and staged capability adoption with explicit governance.
 
 ## Highest-priority primary-source recovery
 

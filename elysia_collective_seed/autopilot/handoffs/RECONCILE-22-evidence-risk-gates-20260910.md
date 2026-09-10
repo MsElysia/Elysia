@@ -52,7 +52,8 @@ def _risk_requires_substantive_evidence(risk_class: object) -> bool:
 
 ## Final SHA
 
-`9d94f98007aa39cc51b2a7f38c446ee777483d86`
+Reconcile implementation commit: `057e657add59355e61ff1372f2fe26b8b37b133d`  
+Branch tip after push: use `git rev-parse origin/cursor/reconcile-22-evidence-risk-gates` (may include this handoff SHA note).
 
 ## Test commands / results
 

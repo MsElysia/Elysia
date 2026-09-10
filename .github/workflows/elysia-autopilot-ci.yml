@@ -10,6 +10,7 @@ on:
       - main
       - 'elysia-collective-*'
       - 'autopilot-*'
+      - 'codex/remote-fix-*'
   workflow_dispatch:
 
 permissions:

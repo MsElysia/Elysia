@@ -35,6 +35,18 @@ Transitions not shown above are invalid unless a versioned migration explicitly 
 
 ## Claim / lease protocol
 
+The local SQLite ledger enforces execution eligibility itself. Its trusted
+constructor `execution_workers` registry must explicitly authorize the requesting
+worker; an absent registry denies execution. The bridge's legacy worker/state
+arguments cannot supply authority. Dependencies are read from authoritative task
+rows, and missing or non-completed dependencies deny the lease. Human approval,
+protected/unknown risk and malformed authorization policy fail closed.
+
+These checks run in the same immediate transaction as acquisition, renewal or
+expired recovery. Renewal of an eligible live lease does not consume another
+attempt; recovery does. Initial task admission/import and process-owned registry
+configuration remain trusted coordinator operations, not worker APIs.
+
 A claim operation must atomically verify:
 - task status is `queued`;
 - all dependencies are `completed`;

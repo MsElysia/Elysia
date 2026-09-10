@@ -5,13 +5,16 @@ from datetime import timedelta
 import pytest
 
 from tests.test_vega_verifier_boundaries import NOW, open_ledger, task
-from tests.evidence_fixture import attest_local_submission
+from tests.evidence_fixture import attest_local_submission, seed_legacy_execution_lease
 
 
 def submitted(tmp_path, **policy):
     ledger = open_ledger(tmp_path / "ledger.db")
     ledger.put_task(task(max_attempts=3, required_checks=["unit"], **policy))
-    assert ledger.claim("vega", "writer", now=NOW).claimed
+    if policy.get("human_approval_required"):
+        seed_legacy_execution_lease(ledger, "vega", "writer", NOW)
+    else:
+        assert ledger.claim("vega", "writer", now=NOW).claimed
     assert ledger.submit_for_verification("vega", "writer", "packet:A", ["artifact:A"], now=NOW,
         completion_checks=[{"name": "unit", "result": "pass", "evidence": ["artifact:A"]}])
     assert ledger.claim_verification("vega", "reviewer", now=NOW).claimed

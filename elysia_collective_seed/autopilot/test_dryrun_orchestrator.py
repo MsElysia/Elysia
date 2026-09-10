@@ -44,7 +44,7 @@ def _completion(outcome="completed", **overrides):
 
 
 def test_dispatch_and_claim_happy_path(tmp_path: Path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = TaskLedger(tmp_path / "ledger.db", execution_workers=_workers())
     try:
         result = dispatch_and_claim(ledger, _task(), {}, _workers(), lease_seconds=60)
         assert result.state == "claimed"
@@ -59,7 +59,7 @@ def test_dispatch_and_claim_happy_path(tmp_path: Path):
 
 
 def test_human_gate_never_claims(tmp_path: Path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = TaskLedger(tmp_path / "ledger.db", execution_workers=_workers())
     try:
         result = dispatch_and_claim(ledger, _task(human_approval_required=True), {}, _workers())
         assert result.state == "human_gate"
@@ -70,7 +70,7 @@ def test_human_gate_never_claims(tmp_path: Path):
 
 
 def test_incomplete_dependency_never_claims(tmp_path: Path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = TaskLedger(tmp_path / "ledger.db", execution_workers=_workers())
     try:
         result = dispatch_and_claim(ledger, _task(dependencies=["ELY-DEP-1"]), {"ELY-DEP-1": "queued"}, _workers())
         assert result.state == "blocked"
@@ -81,9 +81,10 @@ def test_incomplete_dependency_never_claims(tmp_path: Path):
 
 
 def test_existing_active_lease_is_not_stolen(tmp_path: Path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = TaskLedger(tmp_path / "ledger.db", execution_workers=_workers())
     try:
-        task = _task()
+        task = _task(allowed_workers=["worker-a", "other-worker"])
+        ledger.execution_workers["other-worker"] = Worker("other-worker", "test", frozenset({"code"}), frozenset({"sandbox_write"}), quality=0.1)
         ledger.put_task(task)
         first = ledger.claim(task["task_id"], "other-worker", lease_seconds=60)
         assert first.claimed
@@ -100,6 +101,7 @@ def test_existing_active_lease_is_not_stolen(tmp_path: Path):
 def test_stale_payload_cannot_reopen_completed_task(tmp_path: Path):
     ledger = TaskLedger(
         tmp_path / "ledger.db",
+        execution_workers=_workers(),
         verification_workers=[Worker("verifier", "dryrun", frozenset({"verification"}), frozenset({"sandbox_write"}))],
         independence_groups={"worker-a": "producer", "verifier": "independent"},
     )
@@ -123,7 +125,7 @@ def test_stale_payload_cannot_reopen_completed_task(tmp_path: Path):
 
 
 def test_completed_worker_report_moves_to_verifying_not_completed(tmp_path: Path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = TaskLedger(tmp_path / "ledger.db", execution_workers=_workers())
     try:
         dispatch_and_claim(ledger, _task(), {}, _workers(), lease_seconds=60)
         result = validate_and_apply_completion(ledger, _completion(evidence_refs=["local:artifact"]), worker_id="worker-a", required_checks=("unit",))
@@ -136,7 +138,7 @@ def test_completed_worker_report_moves_to_verifying_not_completed(tmp_path: Path
 
 
 def test_completion_from_non_owner_cannot_mutate_task(tmp_path: Path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = TaskLedger(tmp_path / "ledger.db", execution_workers=_workers())
     try:
         dispatch_and_claim(ledger, _task(), {}, _workers(), lease_seconds=60)
         result = validate_and_apply_completion(ledger, _completion(), worker_id="worker-b")
@@ -148,7 +150,7 @@ def test_completion_from_non_owner_cannot_mutate_task(tmp_path: Path):
 
 
 def test_invalid_completion_cannot_mutate_task(tmp_path: Path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = TaskLedger(tmp_path / "ledger.db", execution_workers=_workers())
     try:
         dispatch_and_claim(ledger, _task(), {}, _workers(), lease_seconds=60)
         result = validate_and_apply_completion(ledger, _completion(checks=[{"name": "unit", "result": "fail"}]), worker_id="worker-a")
@@ -161,7 +163,7 @@ def test_invalid_completion_cannot_mutate_task(tmp_path: Path):
 
 def test_partial_and_failed_work_return_to_queue(tmp_path: Path):
     for outcome in ("partial", "failed"):
-        ledger = TaskLedger(tmp_path / f"{outcome}.db")
+        ledger = TaskLedger(tmp_path / f"{outcome}.db", execution_workers=_workers())
         try:
             dispatch_and_claim(ledger, _task(), {}, _workers(), lease_seconds=60)
             result = validate_and_apply_completion(ledger, _completion(outcome=outcome), worker_id="worker-a")

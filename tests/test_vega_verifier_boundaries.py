@@ -11,7 +11,9 @@ NOW = datetime(2026, 9, 10, tzinfo=timezone.utc)
 
 
 def open_ledger(path):
-    return TaskLedger(path, verification_workers=[
+    return TaskLedger(path, execution_workers=[
+        Worker(w, "synthetic", frozenset({"verification"}), frozenset({"repo_write", "read_only"})) for w in ("writer", "writer-b")
+    ], verification_workers=[
         Worker("reviewer", "synthetic", frozenset({"verification"}), frozenset({"repo_write"}))
     ], independence_groups={"writer": "a", "writer-b": "b", "reviewer": "c"})
 

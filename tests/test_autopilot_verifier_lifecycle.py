@@ -14,6 +14,7 @@ NOW = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
 
 
 def _claimed_writer(ledger: TaskLedger, task_id: str = "write-1") -> None:
+    ledger.execution_workers = {w: Worker(w, "test", frozenset({"verification"}), frozenset({"repo_write"})) for w in ("writer", "writer-b")}
     if not ledger.verification_workers:
         ledger.verification_workers = {
             worker_id: Worker(
@@ -222,6 +223,7 @@ def test_claim_enforces_task_specific_capability_and_risk(tmp_path):
     )
     ledger = TaskLedger(
         tmp_path / "ledger.sqlite3",
+        execution_workers=[Worker("writer", "test", frozenset({"specialized_review"}), frozenset({"sandbox_write"}))],
         verification_workers=[worker],
         independence_groups={"writer": "producer-group", "verifier-a": "verifier-group"},
     )

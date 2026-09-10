@@ -48,14 +48,16 @@ def dispatch_and_claim(
 
     The ledger's persisted status is authoritative when the task already exists,
     preventing stale caller payloads from reopening terminal or actively leased
-    work. No provider is invoked after a successful claim.
+    work. Legacy states/workers arguments are advisory only: selection uses the
+    ledger's trusted execution registry and durable dependency rows. The final
+    claim atomically rechecks policy. No provider is invoked.
     """
     ledger.put_task(task)
     persisted = ledger.get(str(task["task_id"]))
     if persisted is None:
         raise RuntimeError("task disappeared after ledger upsert")
 
-    decision = dispatch(persisted, states, workers)
+    decision = dispatch(persisted, ledger.dependency_states(persisted), list(ledger.execution_workers.values()))
     if decision.state != "dispatch" or decision.worker_id is None:
         return DryRunResult(
             task_id=decision.task_id,

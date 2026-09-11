@@ -29,7 +29,7 @@ def machine_state():
             "release": None,
         }],
         "entities": [{
-            "entity_id": "root", "parent_refs": [],
+            "entity_id": "root", "ancestry_kind": "root", "parent_refs": [],
             "objective_refs": ["github:MsElysia/Elysia:issue:23"],
             "lineage_refs": ["autopilot-003-issue23-restack"],
             "governance_gate_refs": [],
@@ -43,7 +43,7 @@ def inspect(state, entity="root", action="semantic_write", checkpoint=None, pin=
 
 
 def child(name, parents):
-    return {"entity_id": name, "parent_refs": parents,
+    return {"entity_id": name, "ancestry_kind": "derived" if parents else "root", "parent_refs": parents,
             "objective_refs": [f"objective:{name}"], "lineage_refs": [f"branch:{name}"],
             "governance_gate_refs": []}
 

@@ -146,3 +146,19 @@ Legend relative to **official tip C (`d791084`)**.
 ## Map artifact path
 `docs/ISSUE-23-CWA-RECONCILIATION-MAP-20260911.md`  
 Worktree: `C:\Users\Owner\Project guardian\.worktrees\autopilot-003-issue23-cwa-reconciled`
+
+## Post-implementation (Phase 2 applied)
+
+| Field | Value |
+|-------|--------|
+| Product SHA | `0a2d135990e8acd3b2a5bbf7539f082ec448de73` |
+| Docs tip (inspection) | `d0e1905ca542843c3641efaa633af2fcdcceb076` |
+| Helpers resolution | B’s CWA-aware helpers kept (preserves C “helpers exist” intent) |
+| Issue #23 tests | **20/20** |
+| Control-plane spot | **113 passed**; 4 `test_review_queue_smoke` `approver` fails — same on `7374820` (not regression) |
+| Dynamic inspection | Both cycles `_activated=False` / `_running=False`; zero socket/subprocess/thread traps |
+| GuardianLayer | `UNCHANGED_BOUNDED_RESIDUAL` (8s hang timeout) |
+| `ensure_monitoring_started` | `UNCHANGED_BOUNDED_RESIDUAL` (public; not on construct path) |
+| EAI construct | Inert (`_activated=False` / `_running=False`) |
+| PR #25 | `NOT_INHERITED` |
+| Prior PASS transfer | **Forbidden / not claimed** |

@@ -89,38 +89,63 @@ def _normalize_config(config: Optional[Dict[str, Any]], *, use_environment: bool
 
 
 def describe_guardian_bootstrap(config: Optional[Dict[str, Any]] = None) -> GuardianBootstrapAudit:
-    """Public audit/inspection entrypoint: configuration descriptor only."""
+    """Public audit/inspection entrypoint: configuration descriptor only.
+
+    Equivalent to ``init_guardian_core(..., mode=\"audit\")``. Prefer this name
+    when the caller intends inspection rather than activation.
+    """
     return init_guardian_core(config, mode="audit")
 
 
 def init_guardian_core(config: Optional[Dict[str, Any]] = None, *, mode: Literal["audit", "operational"]) -> Any:
     """Authoritative Guardian bootstrap boundary (Issue #23).
 
-    Audit returns a pure descriptor and does not construct GuardianCore.
-    Operational preserves the active bootstrap path and may start background
-    services when explicitly configured. Direct GuardianCore construction is
-    still outside this bounded repair and remains a #23 verification blocker.
+    ``mode`` is required and keyword-only — callers must choose explicitly:
+
+    * ``audit`` — pure config descriptor (`GuardianBootstrapAudit`). Never
+      imports/constructs GuardianCore, never starts monitoring/loop/UI/probes,
+      never reads activation-related env overrides. Does **not** prove live
+      runtime wiring.
+    * ``operational`` — construct via singleton, then explicit
+      ``activate_guardian_core`` when ``enable_background_services`` allows.
+      Opt out with ``enable_background_services=False`` (forces monitoring/
+      probes/UI auto-start off at normalize time; construct-only).
+
+    Lower-level ``get_guardian_core`` / ``GuardianCore.__init__`` are
+    construct-only (Issue #23). Operational start requires ``activate()`` /
+    ``activate_guardian_core``. Audit path is unchanged (PR #27 descriptor).
     """
     if mode not in ("audit", "operational"):
         raise ValueError("mode must be 'audit' or 'operational'")
     if mode == "audit":
+        # No project_guardian imports: keep audit free of construction side effects.
         return GuardianBootstrapAudit(_normalize_config(config, use_environment=False))
 
     logger.info("[1/5] Initializing Guardian Core...")
     try:
-        from project_guardian.guardian_singleton import get_guardian_core, ensure_monitoring_started
+        from project_guardian.guardian_singleton import (
+            get_guardian_core,
+            activate_guardian_core,
+        )
         guardian_config = _normalize_config(config, use_environment=True)
         memory_limit = guardian_config["resource_limits"]["memory_limit"]
         guardian = get_guardian_core(config=guardian_config)
         if guardian:
             if guardian_config["enable_background_services"]:
-                ensure_monitoring_started(guardian)
+                activate_guardian_core(guardian)
             logger.info("  [OK] Guardian Core initialized (singleton)")
             if memory_limit != 0.8:
                 logger.info(f"  [Config] Memory limit: {memory_limit:.0%} (set via config or ELYSIA_MEMORY_LIMIT)")
-            if guardian_config["enable_upstream_routing_live_probes"]:
+            # Probes only after activate / when flag true
+            if (
+                guardian_config["enable_background_services"]
+                and guardian_config["enable_upstream_routing_live_probes"]
+            ):
                 try:
-                    from project_guardian.diagnostics.upstream_routing_live_probe import schedule_upstream_routing_live_probes
+                    from project_guardian.diagnostics.upstream_routing_live_probe import (
+                        schedule_upstream_routing_live_probes,
+                    )
+
                     schedule_upstream_routing_live_probes(guardian)
                 except Exception as _diag_e:
                     logger.debug("upstream_routing_live_probe schedule: %s", _diag_e)

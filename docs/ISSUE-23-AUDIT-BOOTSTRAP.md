@@ -24,18 +24,17 @@ Treated as unfinished/unverified; completed with docs, public `describe_guardian
 
 ```
 elysia.py UnifiedElysiaSystem
-  → init_guardian_core(..., mode="operational")   # only production caller
+  → init_guardian_core(..., mode="operational")
       → _normalize_config(use_environment=True)
-      → get_guardian_core(config)                 # GuardianCore.__init__ (SIDE EFFECTS)
-      → ensure_monitoring_started (if bg on)      # monitor / ElysiaLoop / prompt evolver
-      → schedule_upstream_routing_live_probes     # conditional Timer
+      → get_guardian_core(config)              # construct only
+      → activate_guardian_core (if bg on)      # monitors / loop / UI / health / probe
+      → schedule_upstream_routing_live_probes  # conditional; after activate
 
 init_guardian_core(..., mode="audit")
-  → GuardianBootstrapAudit(normalized config)     # NO core, NO activation
+  → GuardianBootstrapAudit(normalized config)  # NO core, NO activation
 
-BYPASS (still active; remaining #23 work):
-  get_guardian_core / direct GuardianCore(...)
-    → __init__ may start UI, monitor, health, planner probe
+get_guardian_core / GuardianCore(...)
+  → construct only; call activate() for operational start
 ```
 
 ## IMPLEMENTATION
@@ -53,11 +52,15 @@ BYPASS (still active; remaining #23 work):
 - No env-driven limit overrides
 - No socket/subprocess/thread activation from the audit path itself
 
-## REMAINING LIMITATIONS (do not close #23 fully)
-True construct-without-activate is **not** delivered: `GuardianCore.__init__` /
-`get_guardian_core` can still auto-start when used directly. Next bounded task:
-move activation out of `__init__` behind an explicit activate API and default
-`get_guardian_core` to non-activating construction.
+## REMAINING LIMITATIONS
+Construct-without-activate is delivered on this branch (see
+`docs/ISSUE-23-CONSTRUCT-WITHOUT-ACTIVATE.md`): `__init__` /
+`get_guardian_core` construct only; operational start requires
+`activate()` / `activate_guardian_core`. Audit descriptor (this doc / PR #27)
+remains authoritative for `mode="audit"`.
+
+Residual: some legacy scripts still call `GuardianCore(...)` without
+`activate()` and will no longer get auto-started monitors/UI until updated.
 
 ## TESTS
 See commit message / CI local run.

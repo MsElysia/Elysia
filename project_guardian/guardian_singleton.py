@@ -38,7 +38,10 @@ def get_guardian_core(
     force_new: bool = False
 ) -> Optional[Any]:
     """
-    Get or create the GuardianCore singleton instance.
+    Get or create the GuardianCore singleton instance (construct/retrieve only).
+
+    Does **not** call ``activate()`` / ``ensure_monitoring_started``. Operational
+    start requires ``activate_guardian_core`` or ``GuardianCore.activate``.
     
     Args:
         config: Configuration dictionary (only used if creating new instance)
@@ -54,6 +57,18 @@ def get_guardian_core(
     
     with _guardian_core_lock:
         if _guardian_core_instance is not None and not force_new:
+            # Disabling a service cannot retroactively change a running singleton.
+            # Reject instead of silently returning an instance with weaker policy.
+            existing = getattr(_guardian_core_instance, "config", {})
+            requested = config or {}
+            for key in ("enable_background_services", "enable_resource_monitoring",
+                        "enable_runtime_health_monitoring", "enable_upstream_routing_live_probes"):
+                if requested.get(key) is False and existing.get(key, True) is not False:
+                    raise ValueError(f"Existing GuardianCore conflicts with disabled {key}")
+            for key in ("enabled", "auto_start"):
+                if (requested.get("ui_config", {}).get(key) is False
+                        and existing.get("ui_config", {}).get(key, True) is not False):
+                    raise ValueError(f"Existing GuardianCore conflicts with disabled ui_config.{key}")
             logger.debug("Returning existing GuardianCore instance")
             return _guardian_core_instance
         
@@ -96,6 +111,33 @@ def get_guardian_core(
             return None
 
 
+def get_existing_guardian_core() -> Optional[Any]:
+    """
+    Return the existing GuardianCore singleton without creating one.
+
+    Lightweight components can use this to borrow an already-constructed
+    GuardianCore without triggering construction or activation.
+    """
+    with _guardian_core_lock:
+        return _guardian_core_instance
+
+
+def activate_guardian_core(guardian_core: Any, *, start_ui: bool | None = None) -> bool:
+    """Explicit operational activation wrapper (Issue #23).
+
+    ``get_guardian_core`` constructs/retrieves only; call this to start
+    authorized monitors/loop/UI. Idempotent; returns True if newly activated
+    or already active.
+    """
+    if guardian_core is None:
+        return False
+    activate = getattr(guardian_core, "activate", None)
+    if not callable(activate):
+        logger.error("guardian_core has no activate() method")
+        return False
+    return bool(activate(start_ui=start_ui))
+
+
 def reset_singleton() -> None:
     """
     Reset the singleton instance (for testing only).
@@ -111,11 +153,17 @@ def reset_singleton() -> None:
                         _guardian_core_instance.monitor.stop()
             except Exception:
                 pass
+            # Clear activation flags so a later construct does not leak state
+            try:
+                setattr(_guardian_core_instance, "_activated", False)
+                setattr(_guardian_core_instance, "_running", False)
+            except Exception:
+                pass
             
-            # Reset class-level flag in GuardianCore
-            _guardian_core_class()._any_instance_initialized = False
-        
         _guardian_core_instance = None
+        # Reset class-level flag even when GuardianCore was constructed directly
+        # and never stored in this module's singleton slot.
+        _guardian_core_class()._any_instance_initialized = False
 
     with _monitoring_lock:
         _monitoring_started = False
@@ -136,6 +184,8 @@ def ensure_monitoring_started(guardian_core: Any) -> bool:
     global _monitoring_started
     
     with _monitoring_lock:
+        if not getattr(guardian_core, "config", {}).get("enable_background_services", True):
+            return False
         if _monitoring_started:
             logger.debug("Monitoring already started, skipping")
             return True

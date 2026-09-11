@@ -13,6 +13,8 @@ def minimal_config(tmp_path):
     """Minimal config - UI disabled for most tests."""
     mem_path = tmp_path / "guardian_memory.json"
     mem_path.write_text("[]", encoding="utf-8")
+    eai_cfg = tmp_path / "eai_safety.json"
+    eai_cfg.write_text('{"enabled": false}', encoding="utf-8")
     return {
         "memory_filepath": str(mem_path),
         "storage_path": str(tmp_path),
@@ -21,6 +23,9 @@ def minimal_config(tmp_path):
         "_test_skip_external_storage": True,
         "enable_resource_monitoring": False,
         "enable_vector_memory": False,
+        "enable_guardian_layer": False,
+        "eai_safety_config_path": str(eai_cfg),
+        "prompt_evolver_path": str(tmp_path / "prompt_evolver.json"),
     }
 
 
@@ -138,6 +143,8 @@ class TestDashboardReadiness:
 
         mem_path = tmp_path / "guardian_memory.json"
         mem_path.write_text("[]", encoding="utf-8")
+        eai_cfg = tmp_path / "eai_safety.json"
+        eai_cfg.write_text('{"enabled": false}', encoding="utf-8")
         config = {
             "memory_filepath": str(mem_path),
             "storage_path": str(tmp_path),
@@ -146,12 +153,21 @@ class TestDashboardReadiness:
             "_test_skip_external_storage": True,
             "enable_resource_monitoring": False,
             "enable_vector_memory": False,
+            "enable_guardian_layer": False,
+            "eai_safety_config_path": str(eai_cfg),
+            "prompt_evolver_path": str(tmp_path / "prompt_evolver.json"),
         }
 
         core = GuardianCore(config, allow_multiple=True)
         try:
+            # Construct must not auto-start UI (Issue #23)
+            assert len(start_calls) == 0, (
+                "Construct path must not invoke panel.start(); "
+                f"got {len(start_calls)}"
+            )
+            core.activate(start_ui=True)
             assert len(start_calls) == 1, (
-                "Unified path must invoke panel.start() exactly once during init; "
+                "activate(start_ui=True) must invoke panel.start() exactly once; "
                 f"got {len(start_calls)}"
             )
             core.start_ui_panel()

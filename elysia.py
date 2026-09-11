@@ -385,7 +385,7 @@ class UnifiedElysiaSystem:
         logger.info("Unified Elysia System initialized successfully")
 
         # [1/5] Guardian Core first (Architect's WebScout needs web_reader from Guardian)
-        self.guardian = init_guardian_core(config=self.config)
+        self.guardian = init_guardian_core(config=self.config, mode="operational")
 
         # [2/5] Architect-Core
         self.architect = init_architect_core()

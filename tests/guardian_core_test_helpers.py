@@ -32,11 +32,17 @@ def write_task_contract_file(path: Path, body: str) -> None:
 def repo_relative_mutation_workspace(
     initial_content: str = "CURRENT_TASK: NONE\n",
 ) -> Iterator[Tuple[str, Path]]:
-    """Create a repo-relative CONTROL.md workspace for mutation tests."""
+    """
+    Create CONTROL.md under the repo root for MutationEngine path validation.
+
+    Yields (repo_relative_path, absolute_control_path). Caller must pass only the
+    relative path to propose_mutation / apply — absolute paths are rejected.
+    """
     run_dir = _CORE_SMOKE_WS_ROOT / uuid.uuid4().hex
     run_dir.mkdir(parents=True, exist_ok=True)
     control = run_dir / "CONTROL.md"
     control.write_text(initial_content, encoding="utf-8")
+    # Match MutationEngine._validate_and_resolve_path normalized_rel_path (OS separators).
     rel_str = str(control.relative_to(_REPO_ROOT))
     try:
         yield rel_str, control
@@ -46,8 +52,12 @@ def repo_relative_mutation_workspace(
 
 def reset_guardian_core_test_state() -> None:
     """Clear module singleton slot and class-level init flag (tests only)."""
-    from project_guardian.core import GuardianCore
-    from project_guardian.guardian_singleton import reset_singleton
+    try:
+        from project_guardian.core import GuardianCore
+        from project_guardian.guardian_singleton import reset_singleton
+    except ImportError:
+        # Lineage/control-plane suites may run without optional Guardian deps.
+        return
 
     reset_singleton()
     GuardianCore._any_instance_initialized = False
@@ -68,7 +78,10 @@ def minimal_unified_elysia_system(
     config: Optional[Dict[str, Any]] = None,
     guardian: Any = None,
 ) -> Iterator[Any]:
-    """Construct UnifiedElysiaSystem with heavy startup paths mocked."""
+    """
+    Construct UnifiedElysiaSystem with heavy startup paths mocked.
+    Yields the system instance.
+    """
     from project_guardian.guardian_singleton import get_guardian_core
 
     spec = importlib.util.spec_from_file_location("elysia_unified_app", _REPO_ROOT / "elysia.py")
@@ -80,20 +93,35 @@ def minimal_unified_elysia_system(
 
     g = guardian if guardian is not None else get_guardian_core(config=config or {})
 
-    with patch.object(mod, "load_api_keys"), patch(
-        "project_guardian.startup_health.run_startup_health_check",
-        return_value=(True, [], {"passed": True, "issues": [], "critical": False}),
-    ), patch(
-        "project_guardian.external_storage.log_startup_external_volume_hints",
-        return_value={},
-    ), patch.object(mod, "init_guardian_core", return_value=g), patch.object(
-        mod, "init_architect_core", return_value=MagicMock()
-    ), patch.object(mod, "init_runtime_loop", return_value=MagicMock()), patch.object(
-        mod, "init_integrated_modules", return_value={}
-    ), patch.object(mod, "init_income_modules"), patch.object(
-        mod, "register_all_modules"
-    ), patch.object(
-        mod, "OpenClawAdapter", return_value=MagicMock(is_available=lambda: False)
-    ):
+    patches = [
+        patch.object(mod, "load_api_keys"),
+        patch(
+            "project_guardian.startup_health.run_startup_health_check",
+            return_value=(True, [], {"passed": True, "issues": [], "critical": False}),
+        ),
+        patch(
+            "project_guardian.external_storage.log_startup_external_volume_hints",
+            return_value={},
+        ),
+        patch.object(mod, "init_guardian_core", return_value=g),
+        patch.object(mod, "init_architect_core", return_value=MagicMock()),
+        patch.object(mod, "init_runtime_loop", return_value=MagicMock()),
+        patch.object(mod, "init_integrated_modules", return_value={}),
+        patch.object(mod, "init_income_modules"),
+        patch.object(mod, "register_all_modules"),
+    ]
+    # OpenClawAdapter is obsolete on AUTOPILOT-003 tip; patch only if present.
+    if hasattr(mod, "OpenClawAdapter"):
+        patches.append(
+            patch.object(
+                mod, "OpenClawAdapter", return_value=MagicMock(is_available=lambda: False)
+            )
+        )
+
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
         system = UnifiedElysiaSystem(config=config or {})
         yield system

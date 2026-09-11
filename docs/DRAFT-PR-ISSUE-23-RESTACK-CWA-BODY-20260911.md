@@ -13,7 +13,7 @@ gh pr create --repo MsElysia/Elysia --draft \
   --body-file docs/DRAFT-PR-ISSUE-23-RESTACK-CWA-BODY-20260911.md
 ```
 
-Note: this file lives on docs branch `codex/handoff-23-restack-cwa-pr`. For `--body-file`, either checkout this branch, copy the body section below into a temp file, or paste the markdown from “### SOURCE VERIFIED PRODUCT” through “### NEXT BOUNDED TASK”.
+Note: this file lives on docs branch `codex/handoff-23-restack-cwa-pr`. For `--body-file`, either checkout this branch, copy the body section below into a temp file, or paste the markdown from “### SOURCE VERIFIED PRODUCT” through “### NEXT BOUNDED TASK”. Prefer `docs/DRAFT-PR-ISSUE-23-RESTACK-CWA-BODY-ONLY-20260911.md` for a body-only file.
 
 ---
 
@@ -32,7 +32,7 @@ Note: this file lives on docs branch `codex/handoff-23-restack-cwa-pr`. For `--b
 ### TARGET PRODUCT
 
 - Branch: `cursor/autopilot-003-issue23-restack-cwa`
-- SHA: `7374820642fad52a6264c86df8632c3a630df592` (**confirmed on origin**)
+- SHA: `7374820642fad52a6264c86df8632c3a630df592` (**confirmed on origin**; docs tip `881608c` = inspection report only)
 - Single product commit: `fix(guardian): restack construct-without-activate onto AUTOPILOT-003 (#23)`
 - Worktree (implementation): `.worktrees/autopilot-003-issue23-restack`
 
@@ -64,10 +64,11 @@ Relative to target base `4ff2dc9` → product `7374820` (20 files, +1468 / −10
 
 ### DYNAMIC INSPECTION
 
-- **PENDING for restack product `7374820`**
-- Existing report `docs/AUTOPILOT-003-DYNAMIC-INSPECTION-CWA-20260911.md` @ `d6c5ad3` is for **source** SHA `776647f` on `cursor/guardian-23-construct-without-activate` only
-- No `docs/AUTOPILOT-003-DYNAMIC-INSPECTION-RESTACK-20260911.md` (or equivalent) found on product / vega / arch review branches
-- Does **not** block draft PR given Vega PASS + Architecture READY_FOR_INTEGRATION_REVIEW, but must be recorded honestly
+- **DONE for restack product `7374820`**
+- Report: `docs/AUTOPILOT-003-DYNAMIC-INSPECTION-RESTACK-20260911.md` on `cursor/autopilot-003-issue23-restack-cwa` @ `881608c`
+- Method: construct / `get_guardian_core` only (no `activate()`, probes, or loop starts); double cycle + supplemental EAI pass
+- Key results: both primary cycles `_activated=False`, `_running=False`; zero socket/subprocess/Thread/provider/probe trap hits during construct/inspect/teardown; fresh component classifications in report
+- Source-only report `docs/AUTOPILOT-003-DYNAMIC-INSPECTION-CWA-20260911.md` @ `d6c5ad3` remains reference for SHA `776647f` only
 
 ### VEGA
 
@@ -95,13 +96,13 @@ Relative to target base `4ff2dc9` → product `7374820` (20 files, +1468 / −10
 2. Stale `docs/boot_memory_map.md` still claims `_initialize_system` starts monitoring — false on `7374820`.
 3. Phase B deferred ops after `activate` (operational nuance; not construct collapse).
 4. Official `autopilot-003-issue23-restack` tip moved to `d791084` after port base `4ff2dc9` — reconcile before merge if required.
-5. Dynamic inspection on restack SHA: **PENDING**.
+5. **NEW (bounded follow-up):** `GuardianLayer` construct can hang when `enable_guardian_layer=True` (0 `Thread.start` hits — construct stall in fingerprint path, not an activate leak). Tip CWA tests already set `enable_guardian_layer=False`. Not gate FAIL; do not reopen full CWA repair unless construct-time operational activation is proven.
 6. Cosmetic: CWA doc branch header may still name source branch.
 
 ### NEXT BOUNDED TASK
 
 1. Human/governance: `gh auth login` (or `GH_TOKEN`) → open/update this **draft** PR; post CURRENT ENGINEERING CHECKPOINT on #11 and status on #23.
-2. Optional bounded follow-up: run dynamic inspection against `7374820` and attach restack-specific report.
+2. Optional bounded follow-up: investigate/fix `GuardianLayer` construct hang when enabled (Windows fingerprint / `platform.processor()` path) — keep out of default CWA inspect config until fixed.
 3. Integration: reconcile product onto current `autopilot-003-issue23-restack` tip (`d791084`) if required; do **not** FF-overwrite product blindly.
 4. Leave #23 open with `IMPLEMENTATION_COMPLETE_ON_RESTACK_PENDING_INTEGRATION` until policy + verifier support close.
 

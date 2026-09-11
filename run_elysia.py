@@ -31,10 +31,12 @@ def main():
         "enable_runtime_health_monitoring": True,
     }
     
-    # Initialize core system
-    print("\n[1/3] Initializing Guardian Core...")
+    # Construct then explicit activate (Issue #23)
+    print("\n[1/3] Constructing Guardian Core...")
     core = GuardianCore(config=config)
-    print("  [OK] Core system initialized")
+    print("  [OK] Core constructed")
+    core.activate()
+    print("  [OK] Core activated")
     
     # Initialize API server
     print("\n[2/3] Starting API Server...")

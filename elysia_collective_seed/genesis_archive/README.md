@@ -30,6 +30,7 @@ Repository-backed bounded tranches may be added when sufficiently strong primary
 - `tranches/2024-12_to_2026-09_identity_governance_collective_turn.md` — recovered and repository-backed reconstruction of the identity/governance concepts that later became the Elysia Collective, including adversarial review and unresolved continuity questions.
 - `tranches/2026-04_to_2026-09_memory_continuity_provenance_lineage.md` — reconstruction of Guardian memory/persona continuity evolving toward immutable Genesis provenance, lineage, contradiction preservation, and layered Collective memory.
 - `tranches/2026-04_to_2026-09_capability_realism_bounded_tools.md` — repository-backed reconstruction of tool discovery evolving into operational capability awareness, bounded browser/execution surfaces, and staged capability adoption with explicit governance.
+- `tranches/2026-04_to_2026-05_governance_review_replay_preflight.md` — repository-backed reconstruction of Guardian governance evolving from trust decisions into durable review, context-bound approval replay, atomic control-plane state, mutation preflight, and the May 2026 evolvable-AI safety extension.
 
 ## Highest-priority primary-source recovery
 

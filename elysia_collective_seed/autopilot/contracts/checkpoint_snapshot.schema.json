@@ -65,14 +65,22 @@
     },
     "entity": {
       "type": "object", "additionalProperties": false,
-      "required": ["entity_id", "parent_refs", "objective_refs", "lineage_refs", "governance_gate_refs"],
+      "required": ["entity_id", "ancestry_kind", "parent_refs", "objective_refs", "lineage_refs", "governance_gate_refs"],
       "properties": {
         "entity_id": {"$ref": "#/$defs/id"},
+        "ancestry_kind": {"enum": ["root", "derived"]},
         "parent_refs": {"$ref": "#/$defs/refs"},
         "objective_refs": {"$ref": "#/$defs/nonempty_refs"},
         "lineage_refs": {"$ref": "#/$defs/nonempty_refs"},
         "governance_gate_refs": {"$ref": "#/$defs/refs"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"ancestry_kind": {"const": "root"}}},
+          "then": {"properties": {"parent_refs": {"maxItems": 0}}},
+          "else": {"properties": {"parent_refs": {"minItems": 1}}}
+        }
+      ]
     }
   }
 }

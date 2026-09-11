@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "revision": 33,
+  "source_refs": [
+    "https://github.com/MsElysia/Elysia/issues/33",
+    "https://github.com/MsElysia/Elysia/issues/11#issuecomment-5641342345"
+  ],
+  "gates": [
+    {
+      "gate_id": "fixture:github:MsElysia/Elysia:29",
+      "generation": 1,
+      "kind": "human_governance_required",
+      "state": "active",
+      "scope": {
+        "objective_refs": ["github:MsElysia/Elysia:issue:23"],
+        "lineage_refs": [
+          "branch:autopilot-003-issue23-restack",
+          "commit:4ff2dc92dd7d9bc393225bce35de9239a9cad6a5"
+        ]
+      },
+      "inherit_to_children": true,
+      "blocked_actions": [
+        "claim",
+        "repo_write",
+        "semantic_write",
+        "integration",
+        "merge",
+        "deploy",
+        "external_write"
+      ],
+      "reason": "Issue #23 semantic work requires an unreleased human governance decision",
+      "source_refs": [
+        "https://github.com/MsElysia/Elysia/issues/29",
+        "https://github.com/MsElysia/Elysia/issues/33"
+      ],
+      "release": null
+    }
+  ],
+  "entities": [
+    {
+      "entity_id": "issue-23-objective",
+      "ancestry_kind": "root",
+      "parent_refs": [],
+      "objective_refs": ["github:MsElysia/Elysia:issue:23"],
+      "lineage_refs": ["branch:autopilot-003-issue23-restack"],
+      "governance_gate_refs": ["fixture:github:MsElysia/Elysia:29"]
+    },
+    {
+      "entity_id": "detached-4ff2dc92",
+      "ancestry_kind": "derived",
+      "parent_refs": ["issue-23-objective"],
+      "objective_refs": ["worktree:detached-checkout"],
+      "lineage_refs": ["commit:4ff2dc92dd7d9bc393225bce35de9239a9cad6a5"],
+      "governance_gate_refs": []
+    },
+    {
+      "entity_id": "cursor-side-branch",
+      "ancestry_kind": "derived",
+      "parent_refs": ["detached-4ff2dc92"],
+      "objective_refs": ["task:construct-without-activate-port"],
+      "lineage_refs": ["branch:cursor/autopilot-003-issue23-restack-cwa"],
+      "governance_gate_refs": []
+    },
+    {
+      "entity_id": "product-7374820",
+      "ancestry_kind": "derived",
+      "parent_refs": ["cursor-side-branch"],
+      "objective_refs": ["product:cwa-restack"],
+      "lineage_refs": ["commit:7374820642fad52a6264c86df8632c3a630df592"],
+      "governance_gate_refs": []
+    },
+    {
+      "entity_id": "restack-v2-sibling",
+      "ancestry_kind": "derived",
+      "parent_refs": ["detached-4ff2dc92"],
+      "objective_refs": ["task:restack-v2"],
+      "lineage_refs": ["branch:restack-v2"],
+      "governance_gate_refs": []
+    },
+    {
+      "entity_id": "renamed-worker-task",
+      "ancestry_kind": "derived",
+      "parent_refs": ["product-7374820"],
+      "objective_refs": ["task:apparently-unrelated-name"],
+      "lineage_refs": ["worker:substitute"],
+      "governance_gate_refs": []
+    },
+    {
+      "entity_id": "salami-slice-a",
+      "ancestry_kind": "derived",
+      "parent_refs": ["cursor-side-branch"],
+      "objective_refs": ["slice:singleton"],
+      "lineage_refs": ["commit:candidate-a"],
+      "governance_gate_refs": []
+    },
+    {
+      "entity_id": "salami-slice-b",
+      "ancestry_kind": "derived",
+      "parent_refs": ["salami-slice-a"],
+      "objective_refs": ["slice:activation"],
+      "lineage_refs": ["commit:candidate-b"],
+      "governance_gate_refs": []
+    }
+  ]
+}

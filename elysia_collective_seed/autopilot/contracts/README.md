@@ -29,6 +29,13 @@ reference, is sufficient. Workers cannot erase inherited scope by renaming a
 child. Missing ancestors, missing referenced gates, cycles, duplicate identities,
 unknown states/actions, and incomplete records invalidate the snapshot.
 
+Each entity is independently admitted as `root` or `derived`. Roots cannot name
+parents, and derived entities must name at least one existing parent. This makes
+deleting ancestry from a known child structurally invalid instead of allowing it
+to masquerade as a new root. The trusted admission boundary must assign this
+classification from repository/control-plane evidence; worker declarations are
+not authoritative.
+
 Gate IDs are stable across generations. A snapshot contains exactly one current
 record per gate ID, not an event log. Future durable storage must preserve prior
 generations separately, prohibit generation rollback, and return a complete
@@ -94,6 +101,24 @@ and fixture gate identity are explicitly synthetic, not live governance state.
 They attack ancestry, salami slicing, independent scope matches, multiple gates,
 owner/actor spoofing, stale generations, broadened release scope, missing data,
 snapshot substitution, and fresh-worker equivalence.
+
+`fixtures/issue_33_scope_inheritance.json` also preserves the exact governance
+shape of Issue #33: admitted Issue #23 ancestry reaches detached base `4ff2dc92`,
+renamed side branch `cursor/autopilot-003-issue23-restack-cwa`, and product
+`7374820`. Executable regressions prove that a branch alias, sibling, renamed
+task, detached-SHA rebind, or sequence of smaller child changes cannot discard
+the ancestor objective, lineage, or explicit gate reference. Checkpoint claims
+that the official staging branch was unchanged, the implementation completed,
+tests/review passed, or a PR exists remain non-authoritative inputs. The exact
+historical commits are preserved as evidence and are not modified or promoted.
+
+This Issue #33 result is **NO SPEC GAP — ENFORCEMENT GAP ONLY** when repository
+ancestry, objective and action class have already been independently admitted.
+Cursor, Codex and direct Git attempts receive the normative blocked disposition,
+while `external_write_enforcement=NOT_ENFORCED` truthfully records that this
+package cannot stop the mutation. A technically passing unauthorized artifact
+does not become authorized progress. Missing or severed admission state fails
+closed instead of accepting a friendly worker-supplied replacement label.
 
 JSON file roundtrips verify only the portable contract, **not** SQLite migrations,
 two-connection serialization, lease revocation, or production restart enforcement.

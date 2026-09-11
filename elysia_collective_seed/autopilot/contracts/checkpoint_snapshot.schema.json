@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Normative checkpoint gate snapshot, not a release credential",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "revision", "source_refs", "gates", "entities"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "revision": {"type": "integer", "minimum": 1},
+    "source_refs": {"$ref": "#/$defs/nonempty_refs"},
+    "gates": {"type": "array", "items": {"$ref": "#/$defs/gate"}},
+    "entities": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/entity"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "pattern": "^\\S(?:.*\\S)?$"},
+    "refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "nonempty_refs": {"allOf": [{"$ref": "#/$defs/refs"}], "minItems": 1},
+    "action": {"enum": ["claim", "repo_write", "semantic_write", "integration", "merge", "deploy", "external_write", "read", "static_analysis", "specification", "test_design"]},
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["objective_refs", "lineage_refs"],
+      "properties": {
+        "objective_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "lineage_refs": {"$ref": "#/$defs/nonempty_refs"}
+      }
+    },
+    "release_claim": {
+      "description": "Untrusted audit assertion. Schema validity cannot release a gate.",
+      "type": "object", "additionalProperties": false,
+      "required": ["gate_id", "generation", "scope", "actions", "asserted_human", "transport", "application", "evidence_refs"],
+      "properties": {
+        "gate_id": {"$ref": "#/$defs/id"},
+        "generation": {"type": "integer", "minimum": 1},
+        "scope": {"$ref": "#/$defs/scope"},
+        "actions": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/action"}},
+        "asserted_human": {"$ref": "#/$defs/id"},
+        "transport": {"$ref": "#/$defs/id"},
+        "application": {"$ref": "#/$defs/id"},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_refs"}
+      }
+    },
+    "gate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["gate_id", "generation", "kind", "state", "scope", "inherit_to_children", "blocked_actions", "reason", "source_refs", "release"],
+      "properties": {
+        "gate_id": {"$ref": "#/$defs/id"},
+        "generation": {"type": "integer", "minimum": 1},
+        "kind": {"const": "human_governance_required"},
+        "state": {"enum": ["active", "released"]},
+        "scope": {"$ref": "#/$defs/scope"},
+        "inherit_to_children": {"const": true},
+        "blocked_actions": {
+          "type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/action"},
+          "allOf": [
+            {"contains": {"const": "claim"}}, {"contains": {"const": "repo_write"}},
+            {"contains": {"const": "semantic_write"}}, {"contains": {"const": "integration"}},
+            {"contains": {"const": "merge"}}, {"contains": {"const": "deploy"}},
+            {"contains": {"const": "external_write"}}
+          ]
+        },
+        "reason": {"$ref": "#/$defs/id"},
+        "source_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "release": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/release_claim"}]}
+      }
+    },
+    "entity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["entity_id", "parent_refs", "objective_refs", "lineage_refs", "governance_gate_refs"],
+      "properties": {
+        "entity_id": {"$ref": "#/$defs/id"},
+        "parent_refs": {"$ref": "#/$defs/refs"},
+        "objective_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "lineage_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "governance_gate_refs": {"$ref": "#/$defs/refs"}
+      }
+    }
+  }
+}

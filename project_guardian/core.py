@@ -174,6 +174,7 @@ class GuardianCore:
         self.start_time = datetime.datetime.now()
         self._initialized = False
         self._running = False
+        self._activated = False
         self._last_context_pipeline_packet_status: Dict[str, Any] = {}
         self._context_pipeline_packet_counters: Dict[str, int] = {
             "cycles": 0,
@@ -433,13 +434,18 @@ class GuardianCore:
                 except Exception as e:
                     logger.debug(f"Resource limit cleanup callback: {e}")
             self.resource_monitor.register_callback(ResourceType.MEMORY, _on_memory_limit_exceeded)
+            # Never start the resource-monitor thread during construct (Issue #23).
+            # activate() starts it when appropriate; Phase B covers defer_heavy_startup.
             if self._defer_heavy_startup:
                 self._resource_monitor_startup_deferred = True
                 logger.info(
                     "[Startup] Resource monitor thread deferred until Phase B (avoid overlap with JSON/FAISS/embed load)"
                 )
             else:
-                self.resource_monitor.start_monitoring(interval=self._resource_monitoring_interval)
+                self._resource_monitor_startup_deferred = True
+                logger.info(
+                    "[Startup] Resource monitor thread deferred until explicit activate()"
+                )
         
         # Initialize creativity and context components
         self.context = ContextBuilder(self.memory)
@@ -602,7 +608,8 @@ class GuardianCore:
             retention_days=snapshot_config.get("retention_days", 30)
         )
         
-        # Initialize UI Control Panel (optional) — use canonical wrapper for start
+        # Initialize UI Control Panel object graph only — never auto-start during construct
+        # (Issue #23). Explicit activate(start_ui=...) / start_ui_panel() starts the server.
         self.ui_panel = None
         ui_config = config.get("ui_config", {})
         if ui_config.get("enabled", False):
@@ -613,8 +620,6 @@ class GuardianCore:
                 host=ui_host,
                 port=ui_port
             )
-            if ui_config.get("auto_start", False):
-                self.start_ui_panel(host=ui_host, port=ui_port, debug=ui_config.get("debug", False))
 
         # Guardian Layer (identity fingerprint + alert surface)
         self.guardian_layer = None
@@ -702,7 +707,11 @@ class GuardianCore:
         return False
 
     def _initialize_system(self) -> None:
-        """Initialize the Guardian system."""
+        """Construct-safe seeding only (Issue #23).
+
+        Does **not** start monitors, ElysiaLoop, prompt evolution, UI, planner
+        probes, or runtime-health threads. Operational start requires ``activate()``.
+        """
         self.memory.remember(
             "[Guardian Core] System initialized",
             category="system",
@@ -728,56 +737,17 @@ class GuardianCore:
         self.trust.update_trust("memory_core", 0.8, "Core component")
         self.trust.update_trust("safety_engine", 0.9, "Critical safety component")
         self.trust.update_trust("mutation_engine", 0.7, "Requires careful monitoring")
-        
-        # Start monitoring (with singleton guard to prevent duplicate starts)
-        from .guardian_singleton import ensure_monitoring_started
-        ensure_monitoring_started(self)
 
-        # Planner readiness: sync Ollama tags + canonical model + health (when Mistral decider may run)
-        try:
-            want_probe = self._want_mistral_planner_startup_probe()
-            self._planner_startup_probe_pending = False
-            if want_probe:
-                from .planner_readiness import compute_readiness_label, run_startup_planner_probe
-                from .startup_runtime_guard import startup_memory_thin_mode_active
-
-                defer_heavy = bool(getattr(self, "_defer_heavy_startup", False))
-                probe_defer = False
-                try:
-                    probe_defer = defer_heavy and bool(startup_memory_thin_mode_active(self))
-                except Exception:
-                    probe_defer = False
-                if probe_defer:
-                    self._planner_startup_probe_pending = True
-                    self._planner_startup_snapshot = {}
-                    logger.info(
-                        "[Startup] Planner startup probe deferred (memory-thin + defer_heavy_startup)"
-                    )
-                else:
-                    self._planner_startup_snapshot = run_startup_planner_probe(log_tags_on_fail=True)
-                    _lbl = compute_readiness_label()
-                    logger.info(
-                        "[Autonomy] planner_startup readiness=%s exact_tag_match=%s health_ok=%s",
-                        _lbl,
-                        self._planner_startup_snapshot.get("exact_tag_match"),
-                        self._planner_startup_snapshot.get("startup_health_ok"),
-                    )
-        except Exception as e:
-            logger.debug("Planner startup probe skip: %s", e)
-
-        # Mark system as initialized
+        # Construct-complete: object graph is inspectable; not operationally running.
         self._initialized = True
-        self._running = True
+        self._running = False
+        self._activated = False
         
-        # Start ElysiaLoop-Core event loop (delegated to singleton guard)
-        # The ensure_monitoring_started() call above will handle elysia_loop.start()
-        # if needed, so we don't start it here to avoid double initialization
-        
-        # Verify startup and component initialization
+        # Verify component wiring (no threads/network)
         self._verify_startup()
-        
-        # Initialize runtime health monitoring
-        self._init_runtime_health_monitoring()
+
+        # Build runtime-health object graph without starting its monitor thread.
+        self._init_runtime_health_monitoring(start=False)
         
         if not getattr(self, "_defer_heavy_startup", False):
             self._check_and_cleanup_memory()
@@ -789,9 +759,130 @@ class GuardianCore:
             logger.info("[Startup] Phase A end — full memory loaded at boot (defer_heavy_startup=False)")
         else:
             logger.info(
-                "[Startup] Phase A end — dashboard path ready; "
-                "JSON/FAISS load and startup cleanup deferred"
+                "[Startup] Phase A end — construct-only; "
+                "JSON/FAISS load and operational services await activate()"
             )
+
+    def activate(self, *, start_ui: bool | None = None) -> bool:
+        """Explicit operational activation. Idempotent.
+
+        Returns True if newly activated or already active.
+        Respects config flags: never turns disabled subsystems back on.
+        UI starts only if ``start_ui is True`` or (``start_ui is None`` and
+        ``ui_config.auto_start`` with UI enabled) and background services allowed.
+        """
+        if getattr(self, "_activated", False) and getattr(self, "_running", False):
+            # Already operational: still honor explicit late UI start when allowed.
+            cfg = getattr(self, "config", {}) or {}
+            bg = bool(cfg.get("enable_background_services", True))
+            ui_config = cfg.get("ui_config", {}) or {}
+            if (
+                start_ui is True
+                and bg
+                and bool(ui_config.get("enabled", False))
+            ):
+                try:
+                    self.start_ui_panel(
+                        host=ui_config.get("host", "127.0.0.1"),
+                        port=ui_config.get("port", 5000),
+                        debug=ui_config.get("debug", False),
+                    )
+                except Exception as e:
+                    logger.warning("Late UI start on activate failed: %s", e)
+            logger.debug("GuardianCore already activated, skipping")
+            return True
+
+        cfg = getattr(self, "config", {}) or {}
+        bg = bool(cfg.get("enable_background_services", True))
+
+        if bg:
+            from .guardian_singleton import ensure_monitoring_started
+            ensure_monitoring_started(self)
+
+            # Resource monitor: start now unless Phase-B deferred (heavy boot).
+            if cfg.get("enable_resource_monitoring", True) and getattr(
+                self, "resource_monitor", None
+            ):
+                if getattr(self, "_defer_heavy_startup", False) and getattr(
+                    self, "_resource_monitor_startup_deferred", False
+                ):
+                    logger.info(
+                        "[Activate] Resource monitor remains deferred until Phase B"
+                    )
+                else:
+                    try:
+                        if not getattr(self.resource_monitor, "monitoring_active", False):
+                            self.resource_monitor.start_monitoring(
+                                interval=getattr(self, "_resource_monitoring_interval", 30)
+                            )
+                        self._resource_monitor_startup_deferred = False
+                    except Exception as e:
+                        logger.debug("Resource monitor start on activate: %s", e)
+
+            # Planner readiness probe (may touch network/Ollama)
+            try:
+                want_probe = self._want_mistral_planner_startup_probe()
+                self._planner_startup_probe_pending = False
+                if want_probe:
+                    from .planner_readiness import compute_readiness_label, run_startup_planner_probe
+                    from .startup_runtime_guard import startup_memory_thin_mode_active
+
+                    defer_heavy = bool(getattr(self, "_defer_heavy_startup", False))
+                    probe_defer = False
+                    try:
+                        probe_defer = defer_heavy and bool(startup_memory_thin_mode_active(self))
+                    except Exception:
+                        probe_defer = False
+                    if probe_defer:
+                        self._planner_startup_probe_pending = True
+                        self._planner_startup_snapshot = {}
+                        logger.info(
+                            "[Activate] Planner startup probe deferred (memory-thin + defer_heavy_startup)"
+                        )
+                    else:
+                        self._planner_startup_snapshot = run_startup_planner_probe(log_tags_on_fail=True)
+                        _lbl = compute_readiness_label()
+                        logger.info(
+                            "[Autonomy] planner_startup readiness=%s exact_tag_match=%s health_ok=%s",
+                            _lbl,
+                            self._planner_startup_snapshot.get("exact_tag_match"),
+                            self._planner_startup_snapshot.get("startup_health_ok"),
+                        )
+            except Exception as e:
+                logger.debug("Planner startup probe skip on activate: %s", e)
+
+            # Runtime health monitor thread
+            if cfg.get("enable_runtime_health_monitoring", True):
+                self._start_runtime_health_monitoring()
+
+            # UI: only when allowed and requested / auto_start
+            ui_config = cfg.get("ui_config", {}) or {}
+            ui_enabled = bool(ui_config.get("enabled", False))
+            want_ui = False
+            if start_ui is True:
+                want_ui = True
+            elif start_ui is False:
+                want_ui = False
+            else:
+                want_ui = bool(ui_config.get("auto_start", False)) and ui_enabled
+            if want_ui and ui_enabled:
+                try:
+                    self.start_ui_panel(
+                        host=ui_config.get("host", "127.0.0.1"),
+                        port=ui_config.get("port", 5000),
+                        debug=ui_config.get("debug", False),
+                    )
+                except Exception as e:
+                    logger.warning("UI panel start on activate failed: %s", e)
+        else:
+            logger.info(
+                "[Activate] enable_background_services=False — monitors/UI/probes not started"
+            )
+
+        self._activated = True
+        self._running = True
+        logger.info("[Activate] GuardianCore operational activation complete")
+        return True
         
     def _ensure_resource_monitor_started_after_deferred(self) -> None:
         """Start psutil resource thread after Phase B if it was deferred (idempotent)."""
@@ -7593,10 +7684,13 @@ class GuardianCore:
             "verification_not_run": True
         })
     
-    def _init_runtime_health_monitoring(self) -> None:
+    def _init_runtime_health_monitoring(self, start: bool = False) -> None:
         """
-        Initialize runtime health monitoring.
-        Registers health checks and starts monitoring if enabled.
+        Initialize runtime health monitoring object graph.
+
+        By default (construct path) registers checks but does **not** start the
+        monitor thread. Pass ``start=True`` or call ``_start_runtime_health_monitoring``
+        from ``activate()``.
         """
         try:
             check_interval = self.config.get("health_check_interval", 30.0)
@@ -7607,16 +7701,34 @@ class GuardianCore:
             for name, check_func in health_checks.items():
                 self.runtime_health.register_check(name, check_func)
             
-            # Start monitoring if enabled
-            if self.config.get("enable_runtime_health_monitoring", True):
-                self.runtime_health.start_monitoring()
-                logger.info("Runtime health monitoring started")
+            if start and self.config.get("enable_runtime_health_monitoring", True):
+                self._start_runtime_health_monitoring()
             else:
-                logger.info("Runtime health monitoring disabled in config")
+                logger.info(
+                    "Runtime health monitor constructed (thread not started until activate)"
+                )
                 
         except Exception as e:
             logger.warning(f"Failed to initialize runtime health monitoring: {e}")
             self.runtime_health = None
+
+    def _start_runtime_health_monitoring(self) -> None:
+        """Start runtime health monitor thread if enabled and constructed."""
+        if not self.config.get("enable_runtime_health_monitoring", True):
+            logger.info("Runtime health monitoring disabled in config")
+            return
+        if not hasattr(self, "runtime_health") or self.runtime_health is None:
+            self._init_runtime_health_monitoring(start=True)
+            return
+        try:
+            if getattr(self.runtime_health, "monitoring_active", False) or getattr(
+                self.runtime_health, "_running", False
+            ):
+                return
+            self.runtime_health.start_monitoring()
+            logger.info("Runtime health monitoring started")
+        except Exception as e:
+            logger.warning(f"Failed to start runtime health monitoring: {e}")
     
     def get_runtime_health(self) -> Dict[str, Any]:
         """
@@ -7764,8 +7876,9 @@ class GuardianCore:
         
     def start_ui_panel(self, host: str = "127.0.0.1", port: int = 5000, debug: bool = False) -> None:
         """
-        Canonical programmatic wrapper for starting the dashboard. GuardianCore-owned
-        panel should only be started via this method or from __init__ (which calls this).
+        Canonical programmatic wrapper for starting the dashboard. Prefer
+        ``activate(start_ui=True)`` for operational boot; this method remains
+        the low-level panel start used by activate and explicit callers.
         """
         if self.ui_panel is None:
             self.ui_panel = UIControlPanel(
@@ -7836,6 +7949,7 @@ class GuardianCore:
         )
         
         self._running = False
+        self._activated = False
         with GuardianCore._initialization_lock:
             GuardianCore._any_instance_initialized = False
     

@@ -53,9 +53,11 @@ def main():
             "enable_runtime_health_monitoring": True
         }
         
-        print("\n[1/3] Initializing GuardianCore...")
+        print("\n[1/3] Constructing GuardianCore...")
         guardian = GuardianCore(config=config)
-        print("✅ GuardianCore initialized")
+        print("✅ GuardianCore constructed")
+        guardian.activate(start_ui=True)
+        print("✅ GuardianCore activated")
         
         # Check if UI panel started
         print("\n[2/3] Starting Control Panel...")
@@ -65,7 +67,7 @@ def main():
                 print(f"📍 Access at: http://127.0.0.1:5000")
             else:
                 print("   Attempting to start...")
-                guardian.ui_panel.start()
+                guardian.start_ui_panel(host="127.0.0.1", port=5000, debug=False)
                 print("✅ Control Panel started")
         else:
             print("\n❌ Control Panel not found")

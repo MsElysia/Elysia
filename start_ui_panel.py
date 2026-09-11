@@ -42,10 +42,12 @@ def main():
     }
     
     try:
-        # Initialize GuardianCore with UI
+        # Construct then explicit activate (Issue #23 — no construct-time UI/monitors)
         print("Initializing GuardianCore...")
         guardian = GuardianCore(config)
-        print("✅ GuardianCore initialized")
+        print("✅ GuardianCore constructed")
+        guardian.activate(start_ui=True)
+        print("✅ GuardianCore activated (UI)")
         
         # Show status
         print("\n📊 System Status:")
@@ -59,6 +61,9 @@ def main():
             print(f"  - Event loop: {'Running' if loop_status.get('running') else 'Stopped'}")
             print(f"  - Queue size: {loop_status.get('queue_size', 0)}")
         
+        # Ensure UI panel if activate did not start it
+        if not (hasattr(guardian, "ui_panel") and guardian.ui_panel and getattr(guardian.ui_panel, "running", False)):
+            guardian.start_ui_panel(host="127.0.0.1", port=5000, debug=False)
         print("\n" + "=" * 60)
         print("  🌐 UI Control Panel is starting...")
         print("  📍 Access at: http://127.0.0.1:5000")

@@ -111,13 +111,14 @@ def init_guardian_core(config: Optional[Dict[str, Any]] = None, *, mode: Literal
       imports/constructs GuardianCore, never starts monitoring/loop/UI/probes,
       never reads activation-related env overrides. Does **not** prove live
       runtime wiring.
-    * ``operational`` — existing active bootstrap via singleton. May start
-      background services when config allows. Opt out with
-      ``enable_background_services=False`` (forces monitoring/probes/UI
-      auto-start off at normalize time).
+    * ``operational`` — construct via singleton, then explicit
+      ``activate_guardian_core`` when ``enable_background_services`` allows.
+      Opt out with ``enable_background_services=False`` (forces monitoring/
+      probes/UI auto-start off at normalize time; construct-only).
 
-    Lower-level ``get_guardian_core`` / ``GuardianCore.__init__`` remain capable
-    of activation when called directly; they are **not** the audit path.
+    Lower-level ``get_guardian_core`` / ``GuardianCore.__init__`` are
+    construct-only (Issue #23). Operational start requires ``activate()`` /
+    ``activate_guardian_core``. Audit path is unchanged (PR #27 descriptor).
     """
     if mode not in ("audit", "operational"):
         raise ValueError("mode must be 'audit' or 'operational'")
@@ -127,17 +128,24 @@ def init_guardian_core(config: Optional[Dict[str, Any]] = None, *, mode: Literal
 
     logger.info("[1/5] Initializing Guardian Core...")
     try:
-        from project_guardian.guardian_singleton import get_guardian_core, ensure_monitoring_started
+        from project_guardian.guardian_singleton import (
+            get_guardian_core,
+            activate_guardian_core,
+        )
         guardian_config = _normalize_config(config, use_environment=True)
         memory_limit = guardian_config["resource_limits"]["memory_limit"]
         guardian = get_guardian_core(config=guardian_config)
         if guardian:
             if guardian_config["enable_background_services"]:
-                ensure_monitoring_started(guardian)
+                activate_guardian_core(guardian)
             logger.info("  [OK] Guardian Core initialized (singleton)")
             if memory_limit != 0.8:
                 logger.info(f"  [Config] Memory limit: {memory_limit:.0%} (set via config or ELYSIA_MEMORY_LIMIT)")
-            if guardian_config["enable_upstream_routing_live_probes"]:
+            # Probes only after activate / when flag true
+            if (
+                guardian_config["enable_background_services"]
+                and guardian_config["enable_upstream_routing_live_probes"]
+            ):
                 try:
                     from project_guardian.diagnostics.upstream_routing_live_probe import (
                         schedule_upstream_routing_live_probes,

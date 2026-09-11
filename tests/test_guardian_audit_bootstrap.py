@@ -38,13 +38,14 @@ def _purge_project_guardian_modules() -> None:
             del sys.modules[name]
 
 
-def _install_fake_singleton(*, get_core, ensure=None, schedule=None):
+def _install_fake_singleton(*, get_core, ensure=None, schedule=None, activate=None):
     """Install lightweight stubs so operational tests never import real GuardianCore."""
     pg = types.ModuleType("project_guardian")
     pg.__path__ = []  # mark as package
     singleton = types.ModuleType("project_guardian.guardian_singleton")
     singleton.get_guardian_core = get_core
     singleton.ensure_monitoring_started = ensure or MagicMock(side_effect=_fail)
+    singleton.activate_guardian_core = activate or MagicMock(side_effect=_fail)
     diagnostics = types.ModuleType("project_guardian.diagnostics")
     diagnostics.__path__ = []
     probe = types.ModuleType("project_guardian.diagnostics.upstream_routing_live_probe")
@@ -146,8 +147,11 @@ def test_operational_disable_flags_skip_ensure_monitoring():
     fake.config = {"enable_background_services": False}
     get_core = MagicMock(return_value=fake)
     ensure = MagicMock(side_effect=_fail)
+    activate = MagicMock(side_effect=_fail)
     schedule = MagicMock(side_effect=_fail)
-    stubs = _install_fake_singleton(get_core=get_core, ensure=ensure, schedule=schedule)
+    stubs = _install_fake_singleton(
+        get_core=get_core, ensure=ensure, activate=activate, schedule=schedule
+    )
     _purge_project_guardian_modules()
     with patch.dict(sys.modules, stubs):
         result = init_guardian_core(
@@ -155,5 +159,28 @@ def test_operational_disable_flags_skip_ensure_monitoring():
         )
     assert result is fake
     get_core.assert_called_once()
+    activate.assert_not_called()
     ensure.assert_not_called()
     schedule.assert_not_called()
+
+
+def test_operational_enable_calls_activate_not_ensure_directly():
+    """Operational path with bg services uses activate_guardian_core."""
+    fake = MagicMock()
+    fake.config = {"enable_background_services": True}
+    get_core = MagicMock(return_value=fake)
+    activate = MagicMock(return_value=True)
+    ensure = MagicMock(side_effect=_fail)
+    schedule = MagicMock()
+    stubs = _install_fake_singleton(
+        get_core=get_core, ensure=ensure, activate=activate, schedule=schedule
+    )
+    _purge_project_guardian_modules()
+    with patch.dict(sys.modules, stubs):
+        result = init_guardian_core(
+            {"enable_background_services": True}, mode="operational"
+        )
+    assert result is fake
+    activate.assert_called_once()
+    ensure.assert_not_called()
+    schedule.assert_called_once()

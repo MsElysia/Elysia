@@ -641,7 +641,7 @@ class ElysiaInterface:
                 print(f"[DEBUG] Attempting to get GuardianCore from singleton")
                 print(f"[DEBUG] Singleton module path: {singleton_module}")
                 
-                # Use config with UI enabled
+                # Use config with UI enabled (construct only — activate starts UI)
                 config = {
                     "ui_config": {
                         "enabled": True,
@@ -651,6 +651,12 @@ class ElysiaInterface:
                     }
                 }
                 guardian = get_guardian_core(config=config)
+                if guardian:
+                    try:
+                        from project_guardian.guardian_singleton import activate_guardian_core
+                        activate_guardian_core(guardian, start_ui=True)
+                    except Exception as act_e:
+                        print(f"[WARN] activate_guardian_core: {act_e}")
                 guardian_source = "singleton"
                 print(f"[DEBUG] GuardianCore from singleton: {guardian is not None}")
                 if guardian:

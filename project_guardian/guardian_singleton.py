@@ -38,7 +38,10 @@ def get_guardian_core(
     force_new: bool = False
 ) -> Optional[Any]:
     """
-    Get or create the GuardianCore singleton instance.
+    Get or create the GuardianCore singleton instance (construct/retrieve only).
+
+    Does **not** call ``activate()`` / ``ensure_monitoring_started``. Operational
+    start requires ``activate_guardian_core`` or ``GuardianCore.activate``.
     
     Args:
         config: Configuration dictionary (only used if creating new instance)
@@ -112,11 +115,27 @@ def get_existing_guardian_core() -> Optional[Any]:
     """
     Return the existing GuardianCore singleton without creating one.
 
-    Lightweight components can use this to borrow already-initialized services
-    without accidentally triggering a full GuardianCore startup.
+    Lightweight components can use this to borrow an already-constructed
+    GuardianCore without triggering construction or activation.
     """
     with _guardian_core_lock:
         return _guardian_core_instance
+
+
+def activate_guardian_core(guardian_core: Any, *, start_ui: bool | None = None) -> bool:
+    """Explicit operational activation wrapper (Issue #23).
+
+    ``get_guardian_core`` constructs/retrieves only; call this to start
+    authorized monitors/loop/UI. Idempotent; returns True if newly activated
+    or already active.
+    """
+    if guardian_core is None:
+        return False
+    activate = getattr(guardian_core, "activate", None)
+    if not callable(activate):
+        logger.error("guardian_core has no activate() method")
+        return False
+    return bool(activate(start_ui=start_ui))
 
 
 def reset_singleton() -> None:
@@ -132,6 +151,12 @@ def reset_singleton() -> None:
                 if hasattr(_guardian_core_instance, 'monitor') and _guardian_core_instance.monitor:
                     if hasattr(_guardian_core_instance.monitor, 'stop'):
                         _guardian_core_instance.monitor.stop()
+            except Exception:
+                pass
+            # Clear activation flags so a later construct does not leak state
+            try:
+                setattr(_guardian_core_instance, "_activated", False)
+                setattr(_guardian_core_instance, "_running", False)
             except Exception:
                 pass
             

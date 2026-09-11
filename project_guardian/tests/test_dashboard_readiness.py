@@ -150,8 +150,14 @@ class TestDashboardReadiness:
 
         core = GuardianCore(config, allow_multiple=True)
         try:
+            # Construct must not auto-start UI (Issue #23)
+            assert len(start_calls) == 0, (
+                "Construct path must not invoke panel.start(); "
+                f"got {len(start_calls)}"
+            )
+            core.activate(start_ui=True)
             assert len(start_calls) == 1, (
-                "Unified path must invoke panel.start() exactly once during init; "
+                "activate(start_ui=True) must invoke panel.start() exactly once; "
                 f"got {len(start_calls)}"
             )
             core.start_ui_panel()

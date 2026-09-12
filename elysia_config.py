@@ -369,6 +369,72 @@ def release_backend_lock() -> None:
         pass
 
 
+def takeover_backend_lock() -> Tuple[bool, str]:
+    """
+    Recover from a wedged backend: terminate PID recorded in BACKEND_LOCK_PATH (if alive)
+    and remove the lock file. Call before full boot when the operator explicitly requests
+    a forced restart (--takeover or ELYSIA_TAKEOVER).
+    """
+    import signal
+    import subprocess
+    import time
+
+    lock = BACKEND_LOCK_PATH
+    if not lock.is_file():
+        return True, "No backend lock file."
+
+    pid = -1
+    try:
+        raw = lock.read_text(encoding="utf-8", errors="replace").strip().split("\n")
+        if raw and raw[0].strip().isdigit():
+            pid = int(raw[0].strip())
+    except Exception:
+        pid = -1
+
+    if pid <= 0:
+        try:
+            lock.unlink(missing_ok=True)
+            return True, "Removed malformed backend lock file."
+        except OSError as e:
+            return False, f"Cannot remove malformed lock file: {e}"
+
+    terminated = ""
+    if _pid_is_running(pid):
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                    check=False,
+                )
+                terminated = f"Terminated prior backend PID {pid}."
+            else:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                time.sleep(1.5)
+                if _pid_is_running(pid):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                terminated = f"Sent stop signals to PID {pid}."
+        except Exception as e:
+            return False, f"Could not terminate backend PID {pid}: {e}"
+    else:
+        terminated = f"Stale lock (PID {pid} not running)."
+
+    try:
+        lock.unlink(missing_ok=True)
+    except OSError as e:
+        return False, f"Removed process but lock file persists: {e}"
+
+    return True, terminated + " Lock cleared."
+
+
 def launch_attach_interface_standalone() -> None:
     """Run elysia_interface.py in attach-only mode (same interpreter)."""
     import runpy

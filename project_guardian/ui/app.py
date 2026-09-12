@@ -13,7 +13,13 @@ from datetime import datetime
 
 try:
     from fastapi import FastAPI, Request, Form, HTTPException
-    from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+    from fastapi.responses import (
+        FileResponse,
+        HTMLResponse,
+        JSONResponse,
+        PlainTextResponse,
+        RedirectResponse,
+    )
     from fastapi.templating import Jinja2Templates
     FASTAPI_AVAILABLE = True
     FASTAPI_IMPORT_ERROR = None
@@ -75,6 +81,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from project_guardian.review_queue import ReviewQueue, ReviewRequest
 from project_guardian.approval_store import ApprovalStore
 from project_guardian.eai_safety import EAISafetyFramework, load_eai_safety_config
+from project_guardian.local_ingestion.memory_dashboard_route_contract import (
+    resolve_static_memory_page,
+)
+
+MEMORY_HUB_STATIC_PAGE = "memory_hub.html"
 
 # Initialize FastAPI app
 try:
@@ -140,8 +151,14 @@ def is_loopback(host: str) -> bool:
     """
     if not host:
         return False
-    # Normalize host (remove port if present)
-    host = host.split(':')[0].strip()
+    host = host.strip()
+    # Bracketed IPv6 with port, e.g. [::1]:8000
+    if host.startswith("["):
+        end = host.find("]")
+        host = host[1:end] if end != -1 else host.lstrip("[")
+    # IPv4 (or hostname) with port, e.g. 127.0.0.1:8000
+    elif host.count(":") == 1:
+        host = host.split(":", 1)[0]
     return host in ('127.0.0.1', '::1', 'localhost')
 
 
@@ -617,6 +634,34 @@ def _create_eai_review_request(data: Dict[str, Any]) -> Dict[str, Any]:
         "audit_id": audit_event.get("audit_id"),
         "assessment": assessment_result,
     }
+
+
+def _serve_static_memory_page(page_name: str):
+    """Serve allowlisted static Memory HTML only; no memory import/review/search/diagnostics actions."""
+    if not FASTAPI_AVAILABLE:
+        return HTMLResponse("<h1>FastAPI not available</h1>", status_code=503)
+    resolved = resolve_static_memory_page(page_name)
+    if resolved is None or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Memory page not found")
+    return FileResponse(resolved, media_type="text/html")
+
+
+@app.get("/memory", response_class=HTMLResponse)
+async def memory_hub_static_entry():
+    """Static-only Memory Hub entry; does not execute memory pipeline commands."""
+    return _serve_static_memory_page(MEMORY_HUB_STATIC_PAGE)
+
+
+@app.get("/memory/", response_class=HTMLResponse)
+async def memory_hub_static_entry_slash():
+    """Static-only Memory Hub entry with trailing slash."""
+    return _serve_static_memory_page(MEMORY_HUB_STATIC_PAGE)
+
+
+@app.get("/memory/{page_name}", response_class=HTMLResponse)
+async def memory_static_page(page_name: str):
+    """Serve one allowlisted Memory prototype page from project_guardian/ui/static/."""
+    return _serve_static_memory_page(page_name)
 
 
 @app.get("/", response_class=HTMLResponse)

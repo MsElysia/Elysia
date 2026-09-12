@@ -195,6 +195,8 @@ def _finding_dedup_key(f: "AdversarialFinding") -> str:
     # For degraded_vector/startup, use type+source only
     if f.type == FINDING_TYPE_DEGRADED_VECTOR or f.type == FINDING_TYPE_STARTUP_WEAKNESS:
         return f"{f.type}:{f.source}"
+    if f.type == FINDING_TYPE_CLEANUP_ANOMALY:
+        return f"{f.type}:{f.source}:{f.recommended_action or 'cleanup'}"
     return f"{f.type}:{f.source}:{sample}:{skip}:{count}:{low}"
 
 
@@ -261,14 +263,65 @@ def _analyze_repeated_failures(memories: List[Dict]) -> List[AdversarialFinding]
 
 
 def _analyze_cleanup_anomalies(memories: List[Dict]) -> List[AdversarialFinding]:
-    cleanup = [m for m in memories if "cleanup" in (m.get("thought") or "").lower() or "consolidat" in (m.get("thought") or "").lower() or m.get("category") == "monitoring"]
-    skips = [m for m in cleanup if "skip" in (m.get("thought") or "").lower()]
+    def is_cleanup_signal(memory: Dict) -> bool:
+        thought = (memory.get("thought") or "").lower()
+        if "cleanup" in thought or "consolidat" in thought:
+            return True
+        if memory.get("category") != "monitoring":
+            return False
+        return any(
+            token in thought
+            for token in (
+                "outcome=skipped_below_threshold",
+                "outcome=skipped_small_delta",
+                "pressure emergency",
+                "garbage collection triggered",
+                "no-op",
+            )
+        )
+
+    cleanup = [
+        m for m in memories
+        if is_cleanup_signal(m)
+    ]
+    if not cleanup:
+        return []
+
+    cleanup = sorted(
+        cleanup,
+        key=lambda m: str(m.get("time") or m.get("created") or m.get("created_at") or ""),
+        reverse=True,
+    )
+    latest = (cleanup[0].get("thought") or "").lower()
+    if (
+        "outcome=consolidated" in latest
+        or "outcome=partial_reclaim" in latest
+        or "outcome=skipped_quiet_zone" in latest
+        or "garbage collection triggered" in latest
+    ):
+        return []
+
+    skips = []
+    for m in cleanup:
+        thought = (m.get("thought") or "").lower()
+        if "skip" not in thought and "no-op" not in thought:
+            continue
+        if "skipped_quiet_zone" in thought or "skipped_cooldown" in thought:
+            continue
+        if (
+            "outcome=skipped_below_threshold" in thought
+            or "outcome=skipped_small_delta" in thought
+            or "emergency cleanup skipped" in thought
+            or "no-op" in thought
+            or "below threshold" in thought
+        ):
+            skips.append(m)
     if len(skips) >= 3:
         return [_make_finding(
             type=FINDING_TYPE_CLEANUP_ANOMALY,
             severity="medium",
             source="memory",
-            evidence={"skip_count": len(skips)},
+            evidence={"skip_count": len(skips), "latest": cleanup[0].get("thought", "")[:200]},
             recommended_action="review_cleanup_threshold",
             auto_actionable=True,
             summary=f"Multiple cleanup skips ({len(skips)}); memory pressure or threshold mismatch",
@@ -385,7 +438,20 @@ def trigger_adversarial_on_event(
         fetched = ctx.get("fetched", 0)
         rejected = ctx.get("rejected", 0)
         admitted = ctx.get("admitted", 0)
-        if fetched > 0 and rejected > 0:
+        # Mostly cross-session duplicates means the corpus is duplicate-saturated / low-yield, not a new weakness.
+        dup_ratio = 0.0
+        bd = ctx.get("rejection_breakdown")
+        if isinstance(bd, dict) and rejected > 0:
+            dup_ratio = int(bd.get("cross_session_duplicate") or 0) / rejected
+        csd = int(ctx.get("cross_session_duplicates") or 0)
+        duplicate_saturated = (
+            rejected > 0
+            and (
+                dup_ratio >= 0.65
+                or csd >= max(4, int(0.55 * rejected))
+            )
+        )
+        if fetched > 0 and rejected > 0 and not duplicate_saturated:
             ratio = rejected / fetched
             if ratio >= 0.7 or (admitted == 0 and fetched >= 3):
                 findings = [_make_finding(
@@ -443,6 +509,10 @@ def _apply_findings(guardian, findings: List[AdversarialFinding], triggered_by: 
                 # Update existing: bump recurrence, escalate if needed
                 ex["recurrence_count"] = ex.get("recurrence_count", 1) + 1
                 ex["last_seen_at"] = datetime.datetime.now().isoformat()
+                ex["evidence"] = f.evidence
+                ex["summary"] = f.summary
+                ex["recommended_action"] = f.recommended_action or ex.get("recommended_action", "")
+                ex["triggered_by"] = triggered_by or ex.get("triggered_by", "")
                 if ex["recurrence_count"] >= 3:
                     ex["severity"] = _escalate_severity(ex.get("severity", "medium"))
                     ex["state"] = FINDING_STATE_REPEATED_UNRESOLVED
@@ -523,7 +593,11 @@ def _apply_findings(guardian, findings: List[AdversarialFinding], triggered_by: 
             except Exception as e:
                 logger.debug("Adversarial memory write: %s", e)
 
-        if auto and sev in ("high", "critical", "medium") and tasks_engine and not created_tasks:
+        duplicate_task = _active_adversarial_task_exists(tasks_engine, rec, ftype)
+        if auto and duplicate_task and not created_tasks:
+            reg["findings_by_id"][fid]["state"] = FINDING_STATE_REMEDIATION_IN_PROGRESS
+            reg["findings_by_id"][fid]["state_changed_at"] = datetime.datetime.now().isoformat()
+        if auto and sev in ("high", "critical", "medium") and tasks_engine and not created_tasks and not duplicate_task:
             try:
                 t = tasks_engine.create_task(
                     name=f"Adversarial: {rec}",
@@ -555,6 +629,35 @@ def _apply_findings(guardian, findings: List[AdversarialFinding], triggered_by: 
     return result
 
 
+def _active_adversarial_task_exists(tasks_engine, recommended_action: str, finding_type: str = "") -> bool:
+    if not tasks_engine or not hasattr(tasks_engine, "get_active_tasks"):
+        return False
+    try:
+        active = tasks_engine.get_active_tasks(category="adversarial")
+    except TypeError:
+        try:
+            active = tasks_engine.get_active_tasks()
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+    rec = (recommended_action or "").lower()
+    ftype = (finding_type or "").lower()
+    for task in active or []:
+        if task.get("completed"):
+            continue
+        status = str(task.get("status") or "").lower()
+        if status in ("completed", "cancelled", "canceled", "failed"):
+            continue
+        haystack = f"{task.get('name', '')} {task.get('description', '')}".lower()
+        if rec and rec in haystack:
+            return True
+        if ftype and ftype in haystack:
+            return True
+    return False
+
+
 def _write_policy_recommendation(f: AdversarialFinding) -> None:
     try:
         _OPERATIONAL_POLICY_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -565,16 +668,37 @@ def _write_policy_recommendation(f: AdversarialFinding) -> None:
                     data = json.load(fp)
             except Exception:
                 pass
-        data.append({
+        entry = {
             "finding_id": f.finding_id,
             "type": f.type,
             "severity": f.severity,
             "recommended_action": f.recommended_action,
             "summary": f.summary,
             "created_at": f.created_at,
-        })
+        }
+        if not isinstance(data, list):
+            data = []
+
+        def key(item: Dict[str, Any]) -> str:
+            return str(item.get("finding_id") or "|".join([
+                str(item.get("type", "")),
+                str(item.get("recommended_action", "")),
+                str(item.get("summary", "")),
+            ]))
+
+        compacted: List[Dict[str, Any]] = []
+        seen: Dict[str, int] = {}
+        for item in data + [entry]:
+            if not isinstance(item, dict):
+                continue
+            k = key(item)
+            if k in seen:
+                compacted[seen[k]].update(item)
+            else:
+                seen[k] = len(compacted)
+                compacted.append(item)
         with open(_OPERATIONAL_POLICY_PATH, "w") as fp:
-            json.dump(data[-100:], fp, indent=2)
+            json.dump(compacted[-100:], fp, indent=2)
     except Exception as e:
         logger.debug("Policy recommendation write: %s", e)
 

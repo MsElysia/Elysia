@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Static local Memory UI entry page for Project Guardian.">
+  <title>Elysia Memory Static UI</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --primary: #6366f1;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 24px;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 1.75rem; margin-bottom: 8px; }
+    .subtitle { color: var(--muted); margin-bottom: 24px; font-size: 0.95rem; }
+    .identity {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+    .identity > span,
+    .identity nav > span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: 8px;
+      z-index: 1000;
+      padding: 8px 12px;
+      background: #ffffff;
+      color: #0f172a;
+      border: 2px solid currentColor;
+      border-radius: 8px;
+    }
+    .skip-link:focus { left: 8px; }
+    a:focus,
+    button:focus {
+      outline: 2px solid currentColor;
+      outline-offset: 2px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .card h2 { font-size: 1.15rem; color: #c4b5fd; margin-bottom: 8px; }
+    .card p { color: var(--muted); font-size: 0.9rem; margin-bottom: 12px; }
+    .card a {
+      display: inline-block;
+      background: var(--primary);
+      color: white;
+      text-decoration: none;
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-size: 0.95rem;
+    }
+    .card a.secondary {
+      background: #475569;
+      margin-left: 8px;
+    }
+    .note { font-size: 0.82rem; color: #f59e0b; margin-top: 16px; }
+    .links { margin-top: 10px; }
+
+    @media (max-width: 720px) {
+      body { padding: 16px; }
+      .wrap { max-width: 100%; }
+      h1 { font-size: 1.5rem; }
+      .identity { align-items: flex-start; }
+      .identity > span,
+      .identity nav > span { border-radius: 8px; }
+      .links { display: flex; flex-direction: column; gap: 10px; }
+      .card { padding: 16px; }
+      .card a { width: 100%; text-align: center; }
+      .card a.secondary { margin-left: 0; }
+    }
+
+    @media print {
+      .skip-link { display: none; }
+      body { background: #ffffff; color: #000000; padding: 0; }
+      .wrap { max-width: 100%; }
+      .card {
+        background: #ffffff;
+        border-color: #000000;
+        color: #000000;
+      }
+      h1,
+      h2,
+      p,
+      span,
+      a,
+      .subtitle,
+      .note { color: #000000; }
+      a::after { content: " (" attr(href) ")"; font-size: 0.85em; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto;
+        transition-duration: 0.01ms;
+        animation-duration: 0.01ms;
+      }
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root { color-scheme: dark; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <main class="wrap" id="main-content">
+    <h1>Elysia Memory Static UI</h1>
+    <p class="subtitle">Local prototype pages served through allowlisted /memory routes — no backend calls.</p>
+    <div class="identity" aria-label="Page identity">
+      <nav aria-label="Memory breadcrumb">
+        <span>Memory Hub / <span aria-current="page">Static UI</span></span>
+      </nav>
+      <span>Local route: /memory/index.html</span>
+    </div>
+
+    <nav aria-label="Memory page navigation">
+      <article class="card" id="memory-nav-card">
+        <h2>Memory</h2>
+        <p>Import, review, and search local memories.</p>
+        <p>Uses local files only. No account connection required.</p>
+        <div class="links">
+          <a href="/memory/memory_hub.html">Open Memory Hub</a>
+          <a href="/memory/memory_first_run_setup.html" class="secondary">First-Run Setup</a>
+          <a href="/memory/memory_safety.html" class="secondary">Memory Safety</a>
+          <a href="/memory/memory_diagnostics.html" class="secondary">Diagnostics</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Direct links</h2>
+        <p>Skip the hub and open a prototype directly.</p>
+        <div class="links">
+          <a href="/memory/memory_import_screen.html" class="secondary">Import Memory</a>
+          <a href="/memory/memory_review_search.html" class="secondary">Review &amp; Search</a>
+          <a href="/memory/memory_diagnostics.html" class="secondary">Diagnostics</a>
+        </div>
+      </article>
+    </nav>
+
+    <p class="note">Static prototypes only. Open this folder in a browser or run: start project_guardian/ui/static/index.html</p>
+  </main>
+</body>
+</html>

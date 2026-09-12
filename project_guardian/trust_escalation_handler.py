@@ -7,7 +7,7 @@ import json
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 from enum import Enum
 from dataclasses import dataclass, field, asdict
 import uuid
@@ -125,7 +125,7 @@ class TrustEscalationHandler:
         self.auto_expire = auto_expire
         
         # Thread-safe operations
-        self._lock = Lock()
+        self._lock = RLock()
         
         # Escalation queue
         self.escalations: Dict[str, EscalationRequest] = {}
@@ -213,6 +213,34 @@ class TrustEscalationHandler:
         
         logger.info(f"Action escalated: {escalation_id} (priority: {priority.value})")
         return escalation_id
+
+    def flag_for_review(
+        self,
+        user_id: str = "system",
+        action: Optional[Dict[str, Any]] = None,
+        severity: int = 75,
+        reason: Optional[str] = None,
+        **_: Any,
+    ) -> str:
+        """Compatibility wrapper used by TrustEval action/content guards."""
+        if severity >= 80:
+            severity_label = "critical"
+        elif severity >= 70:
+            severity_label = "high"
+        elif severity >= 50:
+            severity_label = "medium"
+        else:
+            severity_label = "low"
+        return self.escalate_action(
+            action_data=action or {},
+            evaluation_result={
+                "decision": "review",
+                "severity": severity_label,
+                "severity_score": severity,
+                "reason": reason or "Flagged for review",
+            },
+            actor=user_id,
+        )
     
     def get_pending_reviews(
         self,

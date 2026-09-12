@@ -1,0 +1,103 @@
+# Memory Review Approved Promotion Tamper Evidence Smoke
+
+This dry-run/local smoke proves that approved-promotion bundle manifests fail
+closed when tampered. It builds a clean approved-promotion bundle from local
+fixtures, verifies the clean `promotion_manifest.json`, then writes corrupted
+manifest copies and checks that each one returns `verdict=FAIL` with a specific
+error token.
+
+Run:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_tamper_evidence_smoke.py --json
+```
+
+The smoke uses the approved-promotion bundle flow as its source of truth. It
+does not promote memory into any live runtime store and does not write vector DB
+data.
+
+## Tamper cases
+
+- `malformed_json`
+- `missing_required_manifest_field`
+- `missing_required_promotion_item_field`
+- `promoted_text_hash_mismatch`
+- `candidate_hash_mismatch`
+- `rejected_candidate_included`
+- `promotion_item_count_mismatch`
+- `unsafe_metadata`
+- `manifest_hash_mismatch`
+
+The clean manifest must continue to pass after the tampered copies are checked.
+
+## Why it is safe
+
+- Uses local fixtures and temporary workspaces only.
+- Writes tampered manifests only inside the temp workspace.
+- Does not write live runtime memory or vector DB data.
+- Does not use live accounts.
+- Does not call models.
+- Does not call embeddings.
+- Does not add UI actions, browser calls, POST forms, or routes.
+- Leaves `elysia/api/server.py`, `project_guardian/core.py`, and
+  `config/autonomy.json` untouched.
+
+Expected safety fields:
+
+- `model_called: false`
+- `embeddings_used: false`
+- `live_memory_written: false`
+- `live_vector_db_written: false`
+- `account_api_network_accessed: false`
+- `autonomy_enabled: false`
+- `dry_run: true`
+- `local_only: true`
+- `operator_required: true`
+
+To inspect artifacts after a run:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_tamper_evidence_smoke.py --json --base-dir .\tmp\approved-promotion-tamper --keep-temp
+```
+
+The JSON report includes paths to the clean manifest, clean bundle artifacts,
+and each tampered manifest under the supplied base directory.
+
+## Operator handoff
+
+Approved-promotion operator handoff coverage is available through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_operator_handoff_smoke.py --json
+```
+
+That smoke runs only after a clean promotion bundle and tamper-evidence `PASS`.
+It writes an operator handoff package with approved and edited promotion items,
+rejected items excluded, the promotion manifest path and hash, the
+tamper-evidence result, and an operator checklist. The handoff is ready for
+operator review only, is not ready for live memory write, and requires explicit
+operator approval for any future live promotion. It does not implement live
+memory writes, write vector DB data, call models or embeddings, use live
+accounts, add UI actions, or add routes. `elysia/api/server.py`,
+`project_guardian/core.py`, and `config/autonomy.json` remain untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md`](MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_HANDOFF.md).
+
+## Operator approval gate
+
+Approved-promotion explicit operator approval gate coverage is available
+through:
+
+```powershell
+python scripts/run_memory_review_approved_promotion_operator_approval_gate_smoke.py --json
+```
+
+That smoke runs after the handoff package exists and proves the default state is
+blocked until a local approval artifact uses the documented
+`APPROVE_DRY_RUN_MEMORY_PROMOTION_STAGING_ONLY` token and references the current
+handoff hash. Missing approval, invalid tokens, mismatched hashes, and stale
+handoff ids fail closed. A valid approval allows dry-run staging only and still
+keeps live runtime memory writes and vector DB writes blocked. It does not call
+models or embeddings, does not use live accounts, does not add UI actions or
+routes, and leaves `elysia/api/server.py`, `project_guardian/core.py`, and
+`config/autonomy.json` untouched. See
+[`MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVAL_GATE.md`](MEMORY_REVIEW_APPROVED_PROMOTION_OPERATOR_APPROVAL_GATE.md).

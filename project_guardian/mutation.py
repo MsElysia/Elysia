@@ -6,6 +6,7 @@ import re
 import json
 import datetime
 import logging
+import time
 import openai
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -492,55 +493,70 @@ class MutationEngine:
             logger.warning("[Mutation OpenAI] read failed %s: %s", rel_path, e)
             return None
         current = current[:max_input_chars]
-        from .llm.prompted_call import log_prompted_call, prepare_prompted_bundle, require_prompt_profile
+        from .llm.prompted_call import log_prompted_call, require_prompt_profile
+        from .module_prompt_registry import structured_messages_for_llm_call, validate_module_llm_output
 
         mod, ag, _ = require_prompt_profile(
             module_name, agent_name, caller="MutationEngine.generate_mutation_with_openai", allow_legacy=False
         )
 
-        _mut_bundle = prepare_prompted_bundle(
-            module_name=mod,
-            agent_name=ag,
-            task_text="Apply the task to the file at the given path; output only the complete updated source.",
-            extra_rules=[
-                "Output ONLY the complete updated file source code; no markdown fences or commentary before/after.",
-                "Do not use os.system, subprocess, eval, exec, __import__ tricks, or network I/O.",
-                "Preserve existing behavior unless the task asks for a small documentation or clarity improvement.",
-            ],
-            caller="MutationEngine.generate_mutation_with_openai",
+        pe = {
+            "task_id": f"mut_{int(time.time())}",
+            "task": {
+                "relative_path": normalized_rel_path,
+                "instruction": instruction,
+                "current_file": current,
+            },
+        }
+        msgs, triple = structured_messages_for_llm_call(
+            [{"role": "user", "content": "mutation_openai: see JSON task packet."}],
+            pe,
+            "mutation_engine:openai_file_rewrite",
         )
-        sys_prompt = _mut_bundle["prompt_text"]
+        if not triple[0]:
+            logger.warning("[Mutation OpenAI] structured role parse failed")
+            return None
+        prompt_len = sum(len(str(m.get("content") or "")) for m in msgs)
         log_prompted_call(
             module_name=mod,
             agent_name=ag,
             task_type="mutation_openai",
             provider="openai",
             model=model,
-            bundle_meta=_mut_bundle["meta"],
-            prompt_length=len(sys_prompt),
+            bundle_meta=None,
+            prompt_length=prompt_len,
             legacy_prompt_path=False,
         )
-        user_prompt = (
-            f"Relative path: {normalized_rel_path}\n\n--- CURRENT FILE ---\n{current}\n\n--- TASK ---\n{instruction}"
-        )
         try:
+            from .llm.cloud_openai_chat import openai_chat_completion
+
             client = openai.OpenAI(api_key=api_key)
-            resp = client.chat.completions.create(
+            out_raw, api_err = openai_chat_completion(
+                client,
                 model=model,
-                messages=[
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                messages=msgs,
                 max_tokens=max_output_tokens,
                 temperature=0.2,
             )
-            out = (resp.choices[0].message.content or "").strip()
+            if api_err:
+                logger.warning("[Mutation OpenAI] API error: %s", api_err)
+                return None
         except Exception as e:
             logger.warning("[Mutation OpenAI] API error: %s", e)
             return None
-        if out.startswith("```"):
-            out = re.sub(r"^```\w*\n?", "", out)
-            out = re.sub(r"\n?```\s*$", "", out).strip()
+
+        vd = validate_module_llm_output(triple[0], triple[1], triple[2], out_raw)
+        if vd.get("valid"):
+            out = str((vd.get("data") or {}).get("proposed_source") or "").strip()
+        else:
+            logger.debug(
+                "[Mutation OpenAI] structured parse failed; legacy body fallback errors=%s",
+                (vd.get("errors") or [])[:3],
+            )
+            out = out_raw
+            if out.startswith("```"):
+                out = re.sub(r"^```\w*\n?", "", out)
+                out = re.sub(r"\n?```\s*$", "", out).strip()
         if len(out) < 10:
             return None
         return out

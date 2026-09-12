@@ -22,6 +22,9 @@ DEFAULT_PATH = PROJECT_ROOT / "data" / "self_task_queue.json"
 USEFUL_NONADV_SUPPRESSION_ARCHETYPES = frozenset({
     "summarize_monetizable_directions_from_learning",
     "create_small_dry_run_offer_ideas",
+    "generate_revenue_shortlist",
+    "package_operator_offer_pack",
+    "identify_idle_capabilities_with_market_value",
     "generate_execution_plan",
     "rank_top_opportunities",
 })

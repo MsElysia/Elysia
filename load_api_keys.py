@@ -26,6 +26,9 @@ def load_api_keys():
         "replicate API key.txt": "REPLICATE_API_KEY",
         "alpha vantage API.txt": "ALPHA_VANTAGE_API_KEY",
         "brave search api key.txt": "BRAVE_SEARCH_API_KEY",
+        "gumroad access token.txt": "GUMROAD_ACCESS_TOKEN",
+        "stripe secret key.txt": "STRIPE_SECRET_KEY",
+        "stripe publishable key.txt": "STRIPE_PUBLISHABLE_KEY",
     }
     
     for filename, env_var in key_mapping.items():

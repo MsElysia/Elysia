@@ -63,6 +63,16 @@ def infer_canonical_routing_task_type(
 
     # Social-intelligence Moltbook (before plain moltbook browse)
     social_molt_patterns = (
+        r"\bfull interaction\b.*\bmoltbook\b",
+        r"\bmoltbook\b.*\bfull interaction\b",
+        r"\binteract\b.*\bmoltbook\b",
+        r"\bmoltbook\b.*\binteract\b",
+        r"\breply\b.*\bmoltbook\b",
+        r"\bmoltbook\b.*\breply\b",
+        r"\bcomment\b.*\bmoltbook\b",
+        r"\bmoltbook\b.*\bcomment\b",
+        r"\bpost\b.*\bmoltbook\b",
+        r"\bmoltbook\b.*\bpost\b",
         r"\bsocial\b.*\bmoltbook\b",
         r"\bmoltbook\b.*\bsocial\b",
         r"\bobserve\b.*\bmoltbook\b",

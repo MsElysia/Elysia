@@ -30,7 +30,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if str(ORG) not in sys.path:
-        sys.path.insert(0, str(ORG))
+        sys.path.append(str(ORG))
     from launcher.elysia_wallet import ElysiaWallet
 
     w = ElysiaWallet(api_manager=None)

@@ -237,6 +237,12 @@ class TestIntrospectionAPIIntegration:
             patterns = data['patterns']
             if isinstance(patterns, dict) and patterns.get("note"):
                 assert "not" in patterns["note"].lower() or "implement" in patterns["note"].lower()
+            elif patterns.get("source") == "recent_memory_categories":
+                assert isinstance(patterns.get("categories"), dict)
+                assert isinstance(patterns.get("sample_count"), int)
+                assert patterns["sample_count"] >= 0
+                assert patterns["categories"].get("category1", 0) >= 1
+                assert patterns["categories"].get("category2", 0) >= 1
             else:
                 assert 'total_memories' in patterns
                 assert 'categories' in patterns

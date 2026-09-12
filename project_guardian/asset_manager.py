@@ -334,6 +334,56 @@ class AssetManager:
         
         logger.info(f"Recorded transaction: {transaction_type} {quantity} {asset.unit} of {asset.name}")
         return transaction.transaction_id
+
+    def add_transaction(
+        self,
+        amount: float,
+        transaction_type: str,
+        description: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        asset_id: str = "master_income",
+        asset_name: str = "Master Income",
+        unit: str = "USD",
+    ) -> Optional[str]:
+        """
+        Compatibility wrapper for legacy callers that record simple cash transactions
+        without explicitly creating or choosing an asset first.
+        """
+        quantity = abs(float(amount or 0.0))
+        if quantity == 0.0:
+            logger.warning("Ignoring zero-amount transaction for asset %s", asset_id)
+            return None
+
+        with self._lock:
+            asset = self.assets.get(asset_id)
+            if not asset:
+                self.add_asset(
+                    name=asset_name,
+                    asset_type=AssetType.CURRENCY,
+                    quantity=0.0,
+                    unit=unit,
+                    value_per_unit=1.0,
+                    asset_id=asset_id,
+                    metadata={"created_by": "legacy_add_transaction"},
+                )
+
+        normalized_type = str(transaction_type or "").strip().lower()
+        if normalized_type in {"income", "transfer_in"}:
+            record_type = "transfer_in"
+        elif normalized_type in {"expense", "transfer_out"}:
+            record_type = "transfer_out"
+        else:
+            record_type = normalized_type or "transfer_in"
+
+        return self.record_transaction(
+            asset_id=asset_id,
+            transaction_type=record_type,
+            quantity=quantity,
+            price_per_unit=1.0,
+            description=description,
+            metadata=metadata,
+        )
     
     def get_asset(self, asset_id: str) -> Optional[Asset]:
         """Get an asset by ID."""

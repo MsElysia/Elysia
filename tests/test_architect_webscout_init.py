@@ -6,7 +6,8 @@ Verifies graceful fallback when WebReader is unavailable.
 import pytest
 import sys
 from pathlib import Path
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -42,27 +43,25 @@ def test_webscout_init_with_web_reader():
     assert scout.web_reader is mock_web_reader
 
 
-def test_webscout_init_gets_web_reader_from_singleton():
-    """Test that ElysiaWebScout tries to get web_reader from GuardianCore singleton"""
+def test_webscout_init_gets_web_reader_from_existing_singleton(monkeypatch):
+    """Test that ElysiaWebScout reuses an existing GuardianCore web_reader."""
     try:
         from project_guardian.webscout_agent import ElysiaWebScout
-        from project_guardian.guardian_singleton import get_guardian_core, reset_singleton
+        from project_guardian.guardian_singleton import reset_singleton
     except ImportError:
         pytest.skip("Required modules not available")
-    
-    # Reset singleton first
+
     reset_singleton()
-    
-    # Create GuardianCore with web_reader
-    guardian = get_guardian_core()
-    assert guardian is not None
-    
-    # ElysiaWebScout should get web_reader from singleton
+
+    mock_web_reader = Mock()
+    monkeypatch.setattr(
+        "project_guardian.guardian_singleton.get_existing_guardian_core",
+        lambda: SimpleNamespace(web_reader=mock_web_reader),
+    )
+
     scout = ElysiaWebScout(web_reader=None)
-    assert scout is not None
-    # If guardian has web_reader, scout should have it too
-    if hasattr(guardian, 'web_reader') and guardian.web_reader:
-        assert scout.web_reader is not None
+
+    assert scout.web_reader is mock_web_reader
 
 
 def test_architect_core_init_without_web_reader():

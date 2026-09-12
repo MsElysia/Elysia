@@ -282,6 +282,10 @@ class TrustRegistry:
         """Get trust metrics for a node."""
         with self._lock:
             return self.nodes.get(node_id)
+
+    def get_node_trust(self, node_id: str) -> Optional[TrustMetrics]:
+        """Compatibility alias for older integrations that expect trust records by node id."""
+        return self.get_node(node_id)
     
     def list_nodes(
         self,
@@ -406,33 +410,69 @@ class TrustRegistry:
             logger.error(f"Error loading trust registry: {e}")
 
 
-# Example usage
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
+
+
+def configure_trust_registry(
+    *,
+    trust_registry: Optional["TrustRegistry"] = None,
+    guardian: Optional[Any] = None,
+    storage_path: str = "data/trust_registry.json",
+    trust_decay_rate: float = 0.01,
+    min_trust: float = 0.0,
+    max_trust: float = 1.0,
+) -> "TrustRegistry":
+    """
+    Return an existing ``TrustRegistry`` (explicit or from ``guardian``), or construct one.
+    """
+    if trust_registry is not None:
+        return trust_registry
+    existing = _guardian_component(guardian, "trust_registry")
+    if existing is not None:
+        return existing
+    return TrustRegistry(
+        storage_path=storage_path,
+        trust_decay_rate=trust_decay_rate,
+        min_trust=min_trust,
+        max_trust=max_trust,
+    )
+
+
 if __name__ == "__main__":
-    registry = TrustRegistry()
-    
-    # Register some nodes
-    registry.register_node("node_alpha", initial_trust=0.7)
-    registry.register_node("node_beta", initial_trust=0.5)
-    
-    # Update trust based on outcomes
-    registry.update_trust("node_alpha", success=True, category="general")
-    registry.update_trust("node_alpha", success=True, category="cognitive")
-    registry.update_trust("node_beta", success=False, category="general")
-    
-    # Get trust scores
-    trust_alpha = registry.get_trust("node_alpha", "general")
-    trust_beta = registry.get_trust("node_beta", "general")
-    
-    print(f"Node Alpha trust: {trust_alpha:.3f}")
-    print(f"Node Beta trust: {trust_beta:.3f}")
-    
-    # Get top nodes
-    top_nodes = registry.get_top_nodes("general", limit=5)
-    print(f"\nTop nodes:")
-    for node in top_nodes:
-        print(f"  {node.node_id}: {node.general_trust:.3f}")
-    
-    # Get statistics
-    stats = registry.get_statistics()
-    print(f"\nStatistics: {stats}")
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "trust_registry.json")
+        registry = configure_trust_registry(storage_path=path)
+
+        registry.register_node("node_alpha", initial_trust=0.7)
+        registry.register_node("node_beta", initial_trust=0.5)
+
+        registry.update_trust("node_alpha", success=True, category="general")
+        registry.update_trust("node_alpha", success=True, category="cognitive")
+        registry.update_trust("node_beta", success=False, category="general")
+
+        trust_alpha = registry.get_trust("node_alpha", "general")
+        trust_beta = registry.get_trust("node_beta", "general")
+
+        print(f"Node Alpha trust: {trust_alpha:.3f}")
+        print(f"Node Beta trust: {trust_beta:.3f}")
+
+        top_nodes = registry.get_top_nodes("general", limit=5)
+        print("\nTop nodes:")
+        for node in top_nodes:
+            print(f"  {node.node_id}: {node.general_trust:.3f}")
+
+        stats = registry.get_statistics()
+        print(f"\nStatistics: {stats}")
+    sys.exit(0)
 

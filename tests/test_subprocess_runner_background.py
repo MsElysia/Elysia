@@ -31,9 +31,9 @@ class TestSubprocessRunnerBackground:
         return MemoryCore()
     
     @pytest.fixture
-    def trust_matrix(self):
+    def trust_matrix(self, memory):
         """Create TrustMatrix that allows all actions"""
-        trust = TrustMatrix()
+        trust = TrustMatrix(memory)
         trust.validate_trust_for_action = Mock(return_value=TrustDecision(
             allowed=True,
             decision="allow",
@@ -49,9 +49,9 @@ class TestSubprocessRunnerBackground:
         return ReviewQueue()
     
     @pytest.fixture
-    def approval_store(self):
-        """Create ApprovalStore"""
-        return ApprovalStore()
+    def approval_store(self, tmp_path):
+        """Create isolated ApprovalStore"""
+        return ApprovalStore(store_file=tmp_path / "approval_store.json")
     
     @pytest.fixture
     def subprocess_runner(self, memory, trust_matrix, review_queue, approval_store):
@@ -103,9 +103,8 @@ class TestSubprocessRunnerBackground:
         assert len(pending) > 0
         assert any(r.request_id == exc_info.value.request_id for r in pending)
     
-    def test_background_replay_approval_bypasses_review(self, subprocess_runner, approval_store):
+    def test_background_replay_approval_bypasses_review(self, subprocess_runner, approval_store, review_queue):
         """Verify approved request_id bypasses review and proceeds"""
-        request_id = "test-request-123"
         context = {
             "component": "SubprocessRunner",
             "action": SUBPROCESS_EXECUTION,
@@ -113,11 +112,10 @@ class TestSubprocessRunnerBackground:
             "args": 1,
             "background": True,
             "caller_identity": "Test",
-            "task_id": "none"
+            "task_id": "unknown",
         }
-        
-        # Pre-approve the request
-        approval_store.approve(request_id, context, approver="test", notes="Test approval")
+        request_id = review_queue.enqueue("SubprocessRunner", SUBPROCESS_EXECUTION, context)
+        approval_store.approve(request_id, approver="test", notes="Test approval", context=context)
         
         # Mock subprocess.Popen to avoid real subprocess execution
         mock_process = MagicMock()

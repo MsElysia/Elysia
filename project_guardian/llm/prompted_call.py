@@ -6,6 +6,8 @@ This module does not choose providers or orchestrate pipelines — only prompt s
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,6 +20,19 @@ from ..prompts.prompt_builder import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def prompt_payload_fingerprint(payload: Any, *, length: int = 16) -> str:
+    """Stable short hash for prompt/log correlation without recording prompt bodies."""
+    try:
+        if isinstance(payload, str):
+            raw = payload
+        else:
+            raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        raw = str(payload)
+    digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
+    return digest[: max(4, int(length or 16))]
 
 
 def flatten_bundle_meta(bundle_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -78,6 +93,11 @@ def log_prompted_call(
     bundle_meta: Optional[Dict[str, Any]],
     prompt_length: Optional[int],
     legacy_prompt_path: bool = False,
+    call_id: Optional[str] = None,
+    route_task_type: Optional[str] = None,
+    attempt_index: Optional[int] = None,
+    fallback_from: Optional[str] = None,
+    prompt_hash: Optional[str] = None,
 ) -> None:
     """
     Single structured audit line for prompt-profile LLM usage (no full prompt bodies).
@@ -89,6 +109,11 @@ def log_prompted_call(
         f"task_type={task_type or '-'}",
         f"provider={provider or '-'}",
         f"model={model or '-'}",
+        f"call_id={call_id or '-'}",
+        f"route_task_type={route_task_type or '-'}",
+        f"attempt_index={attempt_index if attempt_index is not None else '-'}",
+        f"fallback_from={fallback_from or '-'}",
+        f"prompt_hash={prompt_hash or '-'}",
         f"prompt_core_name={flat['prompt_core_name'] or '-'}",
         f"prompt_core_version={flat['prompt_core_version'] or '-'}",
         f"prompt_module_name={flat['prompt_module_name'] or '-'}",
@@ -191,3 +216,20 @@ def prepare_prompted_messages(
         "module_name": prep["module_name"],
         "agent_name": prep["agent_name"],
     }
+
+
+def attach_prompt_packet_to_context(
+    context: Optional[Dict[str, Any]],
+    prompt_packet: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Merge a structured prompt packet into prompt `context` for downstream builders."""
+    ctx = dict(context or {})
+    if isinstance(prompt_packet, dict) and prompt_packet:
+        ctx["prompt_packet"] = prompt_packet
+        logger.info("[PromptPacket] attached keys=%s", list(prompt_packet.keys())[:12])
+    return ctx
+
+
+def log_prompt_packet_event(stage: str, detail: str) -> None:
+    """Concise audit line for context-pipeline prompt packets."""
+    logger.info("[PromptPacket] stage=%s %s", stage, detail[:500])

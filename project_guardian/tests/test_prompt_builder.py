@@ -53,6 +53,7 @@ def test_build_prompt_bundle_meta():
 
 def test_list_names_include_expected():
     assert "router" in prompt_registry.list_module_names()
+    assert "operator_chat" in prompt_registry.list_module_names()
     assert "orchestrator" in prompt_registry.list_agent_names()
 
 

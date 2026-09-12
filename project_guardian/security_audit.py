@@ -272,19 +272,60 @@ class SecurityAuditor:
                     pass
     
     def _audit_file_permissions(self):
-        """Audit file permissions."""
+        """Audit file permissions (POSIX modes); Windows gets a manual-review reminder."""
+        import stat
+
         sensitive_dirs = [
             "data/vault",
             "data/secrets",
-            "memory/snapshots"
+            "memory/snapshots",
         ]
-        
         for dir_path in sensitive_dirs:
             path = Path(dir_path)
-            if path.exists():
-                # Basic permission check
-                # On Windows, this is simplified
-                pass  # File permission checks are OS-specific
+            if not path.exists():
+                continue
+            if os.name == "nt":
+                self.issues.append(
+                    SecurityIssue(
+                        severity=SecurityIssueSeverity.LOW,
+                        category="file_permissions",
+                        title=f"Manual ACL review recommended: {path}",
+                        description=(
+                            "Automated POSIX permission checks do not apply. "
+                            "Confirm only trusted principals can read/write this directory."
+                        ),
+                        recommendation="Review folder Properties → Security on Windows",
+                        location=str(path),
+                    )
+                )
+                continue
+            try:
+                st = path.stat()
+                mode = stat.S_IMODE(st.st_mode)
+                if mode & stat.S_IROTH:
+                    self.issues.append(
+                        SecurityIssue(
+                            severity=SecurityIssueSeverity.MEDIUM,
+                            category="file_permissions",
+                            title=f"World-readable sensitive directory: {path}",
+                            description=f"Mode {oct(mode)} allows other users to read {path}",
+                            recommendation="chmod o-r or move data to a restricted location",
+                            location=str(path),
+                        )
+                    )
+                if mode & stat.S_IWOTH:
+                    self.issues.append(
+                        SecurityIssue(
+                            severity=SecurityIssueSeverity.HIGH,
+                            category="file_permissions",
+                            title=f"World-writable sensitive directory: {path}",
+                            description=f"Mode {oct(mode)} allows other users to write {path}",
+                            recommendation="chmod o-w immediately",
+                            location=str(path),
+                        )
+                    )
+            except OSError as e:
+                logger.debug("Permission stat failed for %s: %s", path, e)
     
     def _audit_secrets_management(self):
         """Audit secrets management implementation."""

@@ -13,6 +13,7 @@ from unittest.mock import patch, MagicMock
 try:
     from fastapi.testclient import TestClient
     from project_guardian.ui.app import app
+    from tests.ui_test_helpers import local_test_client
     FASTAPI_AVAILABLE = True
 except ImportError:
     FASTAPI_AVAILABLE = False
@@ -46,7 +47,7 @@ def client(temp_project):
         with patch('project_guardian.ui.app.review_queue') as mock_queue:
             mock_queue.list_pending.return_value = []
             with patch('project_guardian.ui.app.approval_store') as mock_store:
-                yield TestClient(app)
+                yield local_test_client(app)
 
 
 class TestDashboard:
@@ -65,7 +66,7 @@ class TestRunOnce:
     
     def test_run_once_creates_artifact(self, client, temp_project):
         """Verify run_once creates artifact and redirects"""
-        with patch('project_guardian.ui.app.GuardianCore') as mock_core_class:
+        with patch('project_guardian.core.GuardianCore') as mock_core_class:
             mock_core = MagicMock()
             mock_core.run_once.return_value = {
                 "status": "idle",
@@ -191,7 +192,7 @@ class TestMutationCreation:
             assert len(payload["changes"]) == 1
     
     def test_create_mutation_path_mismatch(self, client):
-        """Verify path mismatch returns 400"""
+        """Verify path/content count mismatch returns 400"""
         response = client.post("/mutations/create", data={
             "payload_name": "test.json",
             "summary": "Test mutation",
@@ -199,4 +200,4 @@ class TestMutationCreation:
             "file_contents": ["print('test')\n"]
         })
         assert response.status_code == 400
-        assert "touched_paths must match" in response.json()["detail"]
+        assert "Number of file paths must match number of file contents" in response.json()["detail"]

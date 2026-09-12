@@ -2,13 +2,17 @@
 """Stateful cooldown when OpenAI returns 429 / insufficient_quota — avoid hammering the API."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+_quota_disk_hydrated: bool = False
 
 _lock = threading.Lock()
 _until_ts: float = 0.0
@@ -25,6 +29,8 @@ _reasoning_429_times: list[float] = []
 
 # Hard block: insufficient_quota on chat/reasoning — immediate OpenAI skip for reasoning routes (stronger than short degraded)
 _quota_reasoning_until_ts: float = 0.0
+_quota_reasoning_written_at_ts: float = 0.0
+_last_quota_reprobe_log_ts: float = 0.0
 
 BASE_COOLDOWN_SEC = 120.0
 MAX_COOLDOWN_SEC = 1800.0  # 30m ceiling after repeated hits
@@ -60,14 +66,80 @@ def _insufficient_quota_reasoning_block_sec() -> float:
         return 7200.0
 
 
+def _insufficient_quota_reasoning_reprobe_sec() -> float:
+    try:
+        return float(os.environ.get("ELYSIA_OPENAI_QUOTA_REPROBE_SEC", "900"))
+    except ValueError:
+        return 900.0
+
+
+def _quota_block_cache_path() -> Path:
+    base = (os.environ.get("LOCALAPPDATA") or os.environ.get("TMP") or ".").strip()
+    return Path(base) / "ElysiaGuardian" / "openai_reasoning_quota_block.json"
+
+
+def _persist_quota_reasoning_block(until_epoch: float, *, written_at: Optional[float] = None) -> None:
+    """Survive process restarts so startup routing skips doomed OpenAI probes."""
+    try:
+        p = _quota_block_cache_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps(
+                {
+                    "until_epoch": float(until_epoch),
+                    "written_at": float(written_at if written_at is not None else time.time()),
+                },
+                indent=0,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        logger.debug("[OpenAI insufficient_quota] could not persist block file: %s", e)
+
+
+def _hydrate_quota_reasoning_block_from_disk() -> None:
+    """Load persisted insufficient_quota reasoning block if still in the future."""
+    global _quota_reasoning_until_ts, _quota_reasoning_written_at_ts, _quota_disk_hydrated
+    if _quota_disk_hydrated:
+        return
+    _quota_disk_hydrated = True
+    try:
+        p = _quota_block_cache_path()
+        if not p.is_file():
+            return
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        until = float(raw.get("until_epoch") or 0.0)
+        written_at = float(raw.get("written_at") or 0.0)
+        now = time.time()
+        if until > now:
+            with _lock:
+                _quota_reasoning_until_ts = max(_quota_reasoning_until_ts, until)
+                if written_at > 0:
+                    _quota_reasoning_written_at_ts = max(_quota_reasoning_written_at_ts, written_at)
+            logger.info(
+                "[OpenAI insufficient_quota] hydrated reasoning block from disk until_epoch=%.0f (%.0fs remaining)",
+                until,
+                until - now,
+            )
+        else:
+            try:
+                p.unlink(missing_ok=True)  # type: ignore[arg-type]
+            except OSError:
+                pass
+    except Exception as e:
+        logger.debug("[OpenAI insufficient_quota] disk hydrate skipped: %s", e)
+
+
 def _set_insufficient_quota_reasoning_block(source: str) -> None:
     """Immediately block OpenAI for reasoning/longform routes (prefer OpenRouter/local)."""
-    global _quota_reasoning_until_ts
+    global _quota_reasoning_until_ts, _quota_reasoning_written_at_ts
     now = time.time()
     sec = _insufficient_quota_reasoning_block_sec()
     with _lock:
         _quota_reasoning_until_ts = max(_quota_reasoning_until_ts, now + sec)
+        _quota_reasoning_written_at_ts = now
         until = _quota_reasoning_until_ts
+    _persist_quota_reasoning_block(until, written_at=now)
     logger.warning(
         "[OpenAI insufficient_quota] reasoning quota block SET for %.0fs source=%s active_until_epoch=%.0f "
         "(openai_usable_for_routing=False for reasoning until expiry)",
@@ -87,11 +159,13 @@ def openai_insufficient_quota_block_until_epoch() -> float:
         return float(_quota_reasoning_until_ts)
 
 
-def openai_insufficient_quota_reasoning_blocked() -> bool:
+def openai_insufficient_quota_reasoning_blocked(*, allow_reprobe: bool = False) -> bool:
     """True while insufficient_quota hard block is active for reasoning (independent of short degraded cooldown)."""
+    _hydrate_quota_reasoning_block_from_disk()
+    global _last_quota_reprobe_log_ts
     now = time.time()
     with _lock:
-        global _quota_reasoning_until_ts
+        global _quota_reasoning_until_ts, _quota_reasoning_written_at_ts
         if _quota_reasoning_until_ts <= 0:
             return False
         if now >= _quota_reasoning_until_ts:
@@ -100,7 +174,25 @@ def openai_insufficient_quota_reasoning_blocked() -> bool:
                 _quota_reasoning_until_ts,
             )
             _quota_reasoning_until_ts = 0.0
+            _quota_reasoning_written_at_ts = 0.0
+            try:
+                _quota_block_cache_path().unlink(missing_ok=True)  # type: ignore[arg-type]
+            except OSError:
+                pass
             return False
+        if allow_reprobe and _quota_reasoning_written_at_ts > 0:
+            reprobe_after = min(
+                _quota_reasoning_until_ts,
+                _quota_reasoning_written_at_ts + _insufficient_quota_reasoning_reprobe_sec(),
+            )
+            if now >= reprobe_after:
+                if now - _last_quota_reprobe_log_ts >= 60.0:
+                    _last_quota_reprobe_log_ts = now
+                    logger.info(
+                        "[OpenAI insufficient_quota] allowing reprobe after %.0fs block age",
+                        max(0.0, now - _quota_reasoning_written_at_ts),
+                    )
+                return False
         return True
 
 
@@ -263,12 +355,20 @@ def note_openai_reasoning_success_clear_streak(*, clear_insufficient_quota_block
     insufficient_quota hard block is only cleared when clear_insufficient_quota_block=True
     (e.g. verified long/reasoning completion succeeded — not a short/simple chat).
     """
+    clear_quota_block = False
     with _lock:
-        global _reasoning_429_times, _quota_reasoning_until_ts
+        global _reasoning_429_times, _quota_reasoning_until_ts, _quota_reasoning_written_at_ts
         if _reasoning_429_times:
             _reasoning_429_times.clear()
         if clear_insufficient_quota_block and _quota_reasoning_until_ts > 0:
             _quota_reasoning_until_ts = 0.0
+            _quota_reasoning_written_at_ts = 0.0
+            clear_quota_block = True
+    if clear_quota_block:
+        try:
+            _quota_block_cache_path().unlink(missing_ok=True)  # type: ignore[arg-type]
+        except OSError:
+            pass
 
 
 def openai_reasoning_long_cooldown_active() -> bool:

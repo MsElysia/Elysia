@@ -32,9 +32,9 @@ class TestMutationPathSafety:
         return MemoryCore()
     
     @pytest.fixture
-    def trust_matrix(self):
+    def trust_matrix(self, memory):
         """Create TrustMatrix that allows all actions"""
-        trust = TrustMatrix()
+        trust = TrustMatrix(memory)
         trust.validate_trust_for_action = Mock(return_value=TrustDecision(
             allowed=True,
             decision="allow",

@@ -14,6 +14,36 @@ from unittest.mock import Mock, patch
 from project_guardian.core import GuardianCore
 from project_guardian.mutation import MutationDeniedError, MutationReviewRequiredError, MutationApplyError, MutationResult
 from project_guardian.trust import TrustMatrix, TrustDecision, GOVERNANCE_MUTATION
+from project_guardian.review_queue import ReviewQueue
+from project_guardian.approval_store import ApprovalStore
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _isolated_core_config() -> dict:
+    return {
+        "enable_vector_memory": False,
+        "enable_resource_monitoring": False,
+        "_test_skip_external_storage": True,
+    }
+
+
+def _bind_mutation_repo_root(core: GuardianCore, tmp_path: Path) -> None:
+    core.mutation.repo_root = tmp_path
+
+
+def _bind_isolated_review_stores(core: GuardianCore, tmp_path: Path) -> None:
+    reports_dir = tmp_path / "REPORTS"
+    reports_dir.mkdir(exist_ok=True)
+    review_queue = ReviewQueue(
+        queue_file=reports_dir / "review_queue.jsonl",
+        memory=core.memory,
+    )
+    approval_store = ApprovalStore(store_file=reports_dir / "approval_store.json")
+    core.review_queue = review_queue
+    core.approval_store = approval_store
+    core.mutation.review_queue = review_queue
+    core.mutation.approval_store = approval_store
 
 
 class TestInvalidContract:
@@ -234,11 +264,14 @@ class TestApprovalReplay:
         test_file = tmp_path / "test.py"
         test_file.write_text("print('old')\n")
         
-        config = {
-            "enable_vector_memory": False,
-            "enable_resource_monitoring": False,
-        }
-        core = GuardianCore(config=config, control_path=control_file, tasks_dir=tasks_dir, mutations_dir=mutations_dir)
+        core = GuardianCore(
+            config=_isolated_core_config(),
+            control_path=control_file,
+            tasks_dir=tasks_dir,
+            mutations_dir=mutations_dir,
+        )
+        _bind_mutation_repo_root(core, tmp_path)
+        _bind_isolated_review_stores(core, tmp_path)
         
         # Create and approve a request
         context = {
@@ -260,11 +293,11 @@ class TestApprovalReplay:
         
         assert result["status"] == "ok", f"Status should be 'ok', got {result.get('status')}"
         assert result["outcome"] == "mutation_applied", f"Outcome should be 'mutation_applied', got {result.get('outcome')}"
-        assert len(result["changed_files"]) == 1, "Should have one changed file"
-        assert result["changed_files"][0].endswith("test.py"), "Changed file should be test.py"
+        assert "changed_files" not in result, "run_once wrapper should not surface changed_files"
         
-        # Verify file was modified
+        # Verify file was modified under isolated tmp workspace only
         assert test_file.read_text() == "print('new')\n", "File should be modified"
+        assert not (_REPO_ROOT / "test.py").exists(), "Real repo test.py must not be created"
 
 
 class TestPathSafety:

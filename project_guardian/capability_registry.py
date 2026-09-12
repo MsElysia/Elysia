@@ -6,10 +6,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from .external_storage import get_configured_external_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +205,15 @@ _PLUGIN_SUGGESTED_ACTION: Dict[str, str] = {
     "dreams": "consider_dream_cycle",
     "learning": "consider_learning",
 }
+
+_DIRECT_AUTONOMY_TOOL_DENYLIST = frozenset({
+    # Generic chat transport. It remains explicitly callable, but autonomy
+    # should do concrete module/tool work rather than selecting "ask an LLM".
+    "elysia_builtin_llm",
+    # Bare web fetch needs a URL-bearing payload. Payload-aware routes can
+    # still use it; direct autonomy should choose bounded/social browsing.
+    "elysia_builtin_web",
+})
 
 
 def _capability_intent_bonuses(text: str) -> Dict[str, float]:
@@ -417,12 +429,21 @@ class CapabilityRegistry:
             "latency_ms": round(float(latency_ms), 2),
             **(extra or {}),
         }
+        line = json.dumps(rec, ensure_ascii=False) + "\n"
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             with open(USAGE_LOG_PATH, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                f.write(line)
         except Exception as e:
             logger.debug("capability_usage_log: %s", e)
+        ext_data = get_configured_external_data_dir()
+        if ext_data is not None:
+            try:
+                ext_data.mkdir(parents=True, exist_ok=True)
+                with open(ext_data / "capability_usage_log.jsonl", "a", encoding="utf-8") as mf:
+                    mf.write(line)
+            except Exception as e2:
+                logger.debug("capability_usage_log mirror: %s", e2)
         self._usage_stats_cache.clear()
         self._merge_usage_stats_json(capability_id, success, latency_ms=latency_ms)
 
@@ -462,6 +483,12 @@ class CapabilityRegistry:
                 json.dump(data, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.debug("capability_usage_stats: %s", e)
+        ext_data = get_configured_external_data_dir()
+        if ext_data is not None and USAGE_STATS_PATH.exists():
+            try:
+                shutil.copy2(USAGE_STATS_PATH, ext_data / "capability_usage_stats.json")
+            except Exception as e2:
+                logger.debug("capability_usage_stats mirror: %s", e2)
 
     def _build_capability_entries(self, guardian: Any, snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
         entries: List[Dict[str, Any]] = []
@@ -562,6 +589,37 @@ class CapabilityRegistry:
                     }
                 )
 
+        try:
+            from .mcp_capability import is_mcp_stdio_capability_enabled
+
+            if is_mcp_stdio_capability_enabled():
+                tid = "tool:elysia_mcp_tool"
+                st = stats.get(tid) or {}
+                entries.append(
+                    {
+                        "name": "elysia_mcp_tool",
+                        "type": "tool",
+                        "description": (
+                            "Allowlisted Model Context Protocol (MCP) stdio tool: chat `mcp list <server>` "
+                            "or JSON {\"server\":\"...\",\"tool\":\"...\",\"arguments\":{}}. See config/mcp_capability_allowlist.json."
+                        )[:400],
+                        "interface": "mcp_stdio_bridge + mcp_capability",
+                        "health": "ok",
+                        "last_used": st.get("last_used"),
+                        "success_rate": float(st.get("success_rate", 0.55) or 0.55),
+                        "suggested_action": "tool_registry_pulse",
+                        "callable": "capability_execution.execute_capability_kind",
+                        "input_schema": {
+                            "method": "str",
+                            "mcp_list_tools": "bool",
+                            "mcp_call": "object",
+                            "name_format": "tool:elysia_mcp_tool",
+                        },
+                    }
+                )
+        except Exception:
+            pass
+
         api_flags = snapshot.get("api_keys_present") or {}
         for label, on in api_flags.items():
             if label == "mistral_ollama":
@@ -607,6 +665,8 @@ class CapabilityRegistry:
             type_bonus = 0.0
             if e["type"] == "tool" and any(k in text for k in ("tool", "call", "fetch", "api", "search", "run")):
                 type_bonus += 1.5
+            if e["type"] == "tool" and str(e.get("name") or "") == "elysia_mcp_tool" and "mcp" in text:
+                type_bonus += 5.0
             if e["type"] == "module" and any(k in text for k in ("plan", "task", "objective", "income", "harvest", "mutat")):
                 type_bonus += 1.0
             if e["type"] == "registered" and any(k in text for k in ("architect", "module", "registry", "interface", "plan")):
@@ -676,6 +736,8 @@ class CapabilityRegistry:
             return getattr(guardian, "elysia_loop", None) is not None
         if a == "consider_learning":
             return True
+        if a == "consider_moltbook_direction":
+            return True
         if a == "consider_dream_cycle":
             return getattr(guardian, "dreams", None) is not None
         if a == "consider_prompt_evolution":
@@ -703,6 +765,9 @@ class CapabilityRegistry:
         if a == "execute_self_task":
             return True
         if a.startswith("use_capability/tool/"):
+            sub = a.split("/", 2)[-1] if a.count("/") >= 2 else ""
+            if sub.strip().lower() in _DIRECT_AUTONOMY_TOOL_DENYLIST:
+                return False
             return bool(mods.get("tool_registry"))
         if a.startswith("use_capability/module/"):
             sub = a.split("/", 2)[-1] if a.count("/") >= 2 else ""
@@ -718,6 +783,8 @@ class CapabilityRegistry:
             return ""
         mods = getattr(guardian, "_modules", None) or {}
         if t == "tool":
+            if nm.lower() in _DIRECT_AUTONOMY_TOOL_DENYLIST:
+                return ""
             return capability_action_string("tool", nm)
         if t == "module" and nm in mods:
             return capability_action_string("module", nm)
@@ -993,9 +1060,11 @@ class CapabilityRegistry:
             from .multi_api_router import select_best_api
 
             self._snapshot["api_routing_hints"] = {
-                "embedding": select_best_api("embedding", registry=self, reserve_slot=False),
-                "reasoning": select_best_api("reasoning", quality_requirement="high", registry=self, reserve_slot=False),
-                "simple": select_best_api("simple", cost_sensitivity="high", registry=self, reserve_slot=False),
+                "embedding": select_best_api("embedding", registry=self, reserve_slot=False, record_meter=False),
+                "reasoning": select_best_api(
+                    "reasoning", quality_requirement="high", registry=self, reserve_slot=False, record_meter=False
+                ),
+                "simple": select_best_api("simple", cost_sensitivity="high", registry=self, reserve_slot=False, record_meter=False),
             }
         except Exception as e:
             logger.debug("api_routing_hints: %s", e)
@@ -1044,6 +1113,12 @@ class CapabilityRegistry:
                     tool_surface_reason,
                     "tool_registry" in plugin_names,
                     tool_diag,
+                )
+            elif tool_surface_reason == "no_tool_registry_module" and "tool_registry" not in plugin_names:
+                logger.debug(
+                    "[Orchestration] toolsurface pending: reason=%s plugin_has_key=%s",
+                    tool_surface_reason,
+                    False,
                 )
             else:
                 logger.warning(
@@ -1178,3 +1253,29 @@ class CapabilityRegistry:
                 json.dump(data, f, indent=2)
         except Exception as e:
             logger.debug("scoreboard: %s", e)
+
+
+def log_tool_registry_call_outcome(
+    *,
+    tool_name: str,
+    method: str,
+    success: bool,
+    latency_ms: float,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    """
+    Record ``tool_registry.call_tool`` into capability outcomes + scoreboard.
+
+    Uses a fresh ``CapabilityRegistry`` only to reuse ``log_outcome`` / file paths.
+    """
+    action = f"tool_registry:{tool_name}:{method or 'call'}"
+    try:
+        reg = CapabilityRegistry()
+        reg.log_outcome(
+            action=action,
+            success=bool(success),
+            latency_ms=float(latency_ms),
+            extra={"tool": tool_name, "method": method, **(extra or {})},
+        )
+    except Exception as e:
+        logger.debug("log_tool_registry_call_outcome: %s", e)

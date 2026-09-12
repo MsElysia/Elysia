@@ -8,7 +8,8 @@ import pytest
 try:
     from project_guardian.core import GuardianCore
     from project_guardian.trust import TrustDecision, GOVERNANCE_MUTATION
-    from project_guardian.memory import MemoryCore
+    from project_guardian.review_queue import ReviewQueue
+    from project_guardian.approval_store import ApprovalStore
     MODULES_AVAILABLE = True
 except ImportError:  # pragma: no cover - module not available in some environments
     MODULES_AVAILABLE = False
@@ -27,15 +28,39 @@ def tmp_project(tmp_path):
     return tmp_path
 
 
+def _isolated_core_config() -> dict:
+    return {
+        "enable_vector_memory": False,
+        "enable_resource_monitoring": False,
+        "_test_skip_external_storage": True,
+    }
+
+
+def _bind_isolated_reports(core: GuardianCore, tmp_project: Path) -> Path:
+    """Point mutation/review paths at tmp_project (not repo REPORTS/)."""
+    reports = tmp_project / "REPORTS"
+    review_queue = ReviewQueue(
+        queue_file=reports / "review_queue.jsonl",
+        memory=core.memory,
+    )
+    approval_store = ApprovalStore(store_file=reports / "approval_store.json")
+    core.review_queue = review_queue
+    core.approval_store = approval_store
+    core.mutation.review_queue = review_queue
+    core.mutation.approval_store = approval_store
+    core.mutation.repo_root = tmp_project
+    return reports
+
+
 def _make_core(tmp_project):
-    """Instantiate GuardianCore rooted at tmp_project."""
-    config = {"enable_vector_memory": False, "enable_resource_monitoring": False}
+    """Instantiate GuardianCore rooted at tmp_project with isolated stores."""
     core = GuardianCore(
-        config=config,
+        config=_isolated_core_config(),
         control_path=tmp_project / "CONTROL.md",
         tasks_dir=tmp_project / "TASKS",
         mutations_dir=tmp_project / "MUTATIONS",
     )
+    _bind_isolated_reports(core, tmp_project)
     return core
 
 
@@ -53,12 +78,24 @@ def _write_mutation_payload(tmp_project, touched_paths, changes):
     (tmp_project / "MUTATIONS" / "test.json").write_text(json.dumps(payload))
 
 
+def _assert_passive_run_once_result(result: dict) -> None:
+    """core.run_once() returns a passive dict; UI writes run_once_last.json separately."""
+    assert isinstance(result, dict)
+    assert "status" in result
+    assert "timestamp" in result
+
+
+def _assert_no_forbidden_artifacts(reports: Path) -> None:
+    assert not (reports / "acceptance_last.json").exists()
+    assert not (reports / "acceptance_last.log").exists()
+    assert not (reports / "subprocess_background.jsonl").exists()
+
+
 @pytest.mark.skipif(not MODULES_AVAILABLE, reason="Core not available")
 class TestArtifactPolicyRunOnce:
     def test_run_once_review_writes_only_run_once_artifacts_and_queue(self, tmp_project, monkeypatch):
-        """APPLY_MUTATION review: only run_once artifacts + review queue allowed."""
+        """APPLY_MUTATION review: passive result + review queue only (no apply)."""
         _write_apply_mutation_task(tmp_project, allow_gov=True)
-        # Protected path so we go through governance path
         _write_mutation_payload(
             tmp_project,
             ["CONTROL.md"],
@@ -67,7 +104,6 @@ class TestArtifactPolicyRunOnce:
 
         core = _make_core(tmp_project)
 
-        # Force TrustMatrix review for GOVERNANCE_MUTATION
         def fake_validate(component, action, context):
             if action == GOVERNANCE_MUTATION:
                 return TrustDecision(
@@ -83,38 +119,27 @@ class TestArtifactPolicyRunOnce:
 
         result = core.run_once()
         assert result.get("status") == "needs_review"
+        _assert_passive_run_once_result(result)
 
         reports = tmp_project / "REPORTS"
-        # Allowed run_once artifacts
-        assert (reports / "run_once_last.json").exists()
-        # history directory may or may not exist depending on retention config; if it exists, it should have at least one file
-        history_dir = reports / "run_once_history"
-        if history_dir.exists():
-            assert any(history_dir.iterdir())
+        # run_once_last.json is written by UI /control/run-once, not core.run_once()
+        assert not (reports / "run_once_last.json").exists()
 
-        # Review queue artifact allowed
         queue_path = reports / "review_queue.jsonl"
         assert queue_path.exists()
-        assert queue_path.read_text(encoding="utf-8").strip()  # at least one line
+        assert queue_path.read_text(encoding="utf-8").strip()
 
-        # Forbidden artifacts
-        assert not (reports / "acceptance_last.json").exists()
-        assert not (reports / "acceptance_last.log").exists()
-        assert not (reports / "subprocess_background.jsonl").exists()
+        _assert_no_forbidden_artifacts(reports)
 
         approval_store = reports / "approval_store.json"
-        # approval store must not be written as a result of a review-only run_once
         assert not approval_store.exists()
 
-        # No backups / file changes
         assert not (tmp_project / "guardian_backups").exists()
-        # CONTROL.md unchanged
         assert (tmp_project / "CONTROL.md").read_text() == "CURRENT_TASK: TASK-0001\n"
 
     def test_run_once_denied_writes_only_run_once_artifacts(self, tmp_project, monkeypatch):
-        """APPLY_MUTATION deny: only run_once artifacts allowed, nothing else."""
+        """APPLY_MUTATION path denial: passive error result, no queue or apply artifacts."""
         _write_apply_mutation_task(tmp_project, allow_gov=True)
-        # Use invalid path to trigger path denial early
         _write_mutation_payload(
             tmp_project,
             ["../evil.txt"],
@@ -124,32 +149,21 @@ class TestArtifactPolicyRunOnce:
         core = _make_core(tmp_project)
 
         result = core.run_once()
-        assert result.get("status") == "denied"
+        assert result.get("status") == "error"
+        assert result.get("code") == "MUTATION_PAYLOAD_INVALID"
+        _assert_passive_run_once_result(result)
 
         reports = tmp_project / "REPORTS"
-        assert (reports / "run_once_last.json").exists()
-        history_dir = reports / "run_once_history"
-        if history_dir.exists():
-            assert any(history_dir.iterdir())
+        assert not (reports / "run_once_last.json").exists()
+        assert not (reports / "review_queue.jsonl").exists()
 
-        # No review queue append expected for deny
-        queue_path = reports / "review_queue.jsonl"
-        if queue_path.exists():
-            # If file exists from previous runs, ensure it wasn't modified in this test by checking size is zero or content unchanged.
-            # For simplicity in isolated tmp, we expect it not to exist.
-            assert False, "review_queue.jsonl should not be created on deny"
-
-        # Forbidden artifacts
-        assert not (reports / "acceptance_last.json").exists()
-        assert not (reports / "acceptance_last.log").exists()
-        assert not (reports / "subprocess_background.jsonl").exists()
+        _assert_no_forbidden_artifacts(reports)
         assert not (reports / "approval_store.json").exists()
         assert not (tmp_project / "guardian_backups").exists()
 
     def test_run_once_allow_mutation_creates_backups_and_changes(self, tmp_project, monkeypatch):
-        """APPLY_MUTATION allow: backups + target changes + run_once artifacts allowed."""
+        """APPLY_MUTATION allow: backups + target changes under isolated tmp workspace."""
         _write_apply_mutation_task(tmp_project, allow_gov=False)
-        # Non-protected, safe file
         target = tmp_project / "safe.py"
         target.write_text("print('old')\n")
 
@@ -161,25 +175,20 @@ class TestArtifactPolicyRunOnce:
 
         core = _make_core(tmp_project)
 
-        # Ensure TrustMatrix allows (for non-governance this may not be used, but safe to stub)
         def fake_validate(component, action, context):
             return TrustDecision(True, "allow", "ALLOWED", "", 0.1)
 
         core.trust.validate_trust_for_action = fake_validate
 
         result = core.run_once()
-        assert result.get("status") == "success"
+        assert result.get("status") == "ok"
+        _assert_passive_run_once_result(result)
 
         reports = tmp_project / "REPORTS"
-        assert (reports / "run_once_last.json").exists()
-        history_dir = reports / "run_once_history"
-        if history_dir.exists():
-            assert any(history_dir.iterdir())
+        assert not (reports / "run_once_last.json").exists()
 
-        # Backups allowed
         backups_dir = tmp_project / "guardian_backups"
         assert backups_dir.exists()
         assert any(backups_dir.rglob("*.bak.*"))
 
-        # Target changed
         assert target.read_text() == "print('new')\n"

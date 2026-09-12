@@ -4,9 +4,10 @@
 
 import logging
 import json
-from typing import Dict, Any, List, Optional, Tuple
+import re
+from typing import Dict, Any, List, Optional
 from datetime import datetime
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from collections import defaultdict
@@ -21,6 +22,41 @@ except ImportError:
         AIProvider = None
 
 logger = logging.getLogger(__name__)
+
+
+def _clamp_score(score: Any, default: float = 0.5) -> float:
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        value = default
+    return max(0.0, min(value, 1.0))
+
+
+def _extract_json_payload(text: str) -> Optional[Dict[str, Any]]:
+    if not text:
+        return None
+
+    candidates: List[str] = []
+    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    candidates.extend(fenced)
+
+    brace_match = re.search(r"\{.*\}", text, re.DOTALL)
+    if brace_match:
+        candidates.append(brace_match.group(0))
+
+    for candidate in candidates:
+        for normalized in (candidate, re.sub(r",(\s*[\]}])", r"\1", candidate)):
+            try:
+                parsed = json.loads(normalized)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+    return None
+
+
+def _tokenize_words(text: str) -> List[str]:
+    return re.findall(r"\b[\w']+\b", text.lower())
 
 
 class EvaluationType(Enum):
@@ -77,50 +113,102 @@ class AccuracyEvaluator:
         Returns:
             Evaluation result with score and feedback
         """
-        # Try AI-based accuracy evaluation first (sync wrapper for async)
+        context = context or {}
+
+        # Try AI-based accuracy evaluation first.
         if self.ask_ai:
             try:
-                import asyncio
-                loop = None
-                try:
-                    loop = asyncio.get_event_loop()
-                except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                
-                if loop.is_running():
-                    # If loop is running, schedule for later (non-blocking)
-                    logger.debug("Event loop running, skipping AI accuracy check for now")
-                else:
-                    ai_result = loop.run_until_complete(self._ai_accuracy_check(prompt, response))
-                    if ai_result:
-                        return ai_result
+                ai_result = self._ai_accuracy_check(prompt, response)
+                if ai_result:
+                    return ai_result
             except Exception as e:
                 logger.debug(f"AI accuracy check failed: {e}")
-        
-        # Fallback to heuristic-based evaluation
-        score = 0.7  # Default/placeholder score
-        feedback = "Accuracy evaluation - heuristic-based"
-        
-        # Simple heuristics
-        if "I don't know" in response or "I'm not sure" in response:
-            # Honest uncertainty is better than false confidence
-            score = 0.8
-        elif len(response) < 10:
-            # Very short responses might be incomplete
-            score = 0.5
-        
+
+        response_lower = response.lower()
+        response_words = _tokenize_words(response)
+        score = 0.72
+        confidence = 0.58
+        feedback_parts: List[str] = []
+
+        uncertainty_phrases = [
+            "i don't know",
+            "i am not sure",
+            "i'm not sure",
+            "unclear",
+            "cannot verify",
+        ]
+        vague_phrases = [
+            "some people say",
+            "many experts",
+            "it is believed",
+            "studies show",
+            "research indicates",
+        ]
+
+        if any(phrase in response_lower for phrase in uncertainty_phrases):
+            score += 0.08
+            feedback_parts.append("Appropriate uncertainty is clearly signposted")
+
+        vague_count = sum(1 for phrase in vague_phrases if phrase in response_lower)
+        if vague_count:
+            score -= min(0.16, 0.04 * vague_count)
+            feedback_parts.append("Reduce vague claims and name specific sources or evidence")
+
+        absolute_count = len(re.findall(r"\b(always|never|everyone|nobody|all|none)\b", response_lower))
+        if absolute_count >= 2:
+            score -= min(0.15, 0.03 * absolute_count)
+            feedback_parts.append("Avoid absolute statements unless they are strongly supported")
+
+        numeric_claims = re.findall(r"\b\d+(?:\.\d+)?%?\b", response)
+        has_attribution = any(
+            marker in response_lower
+            for marker in ("according to", "source", "study", "reported by", "cited", "per ")
+        )
+        if len(numeric_claims) >= 3 and not has_attribution:
+            score -= 0.10
+            feedback_parts.append("Numeric claims should include attribution or context")
+
+        required_terms = context.get("expected_keywords") or context.get("required_terms") or []
+        missing_terms = [
+            str(term) for term in required_terms
+            if str(term).strip() and str(term).lower() not in response_lower
+        ]
+        if missing_terms:
+            score -= min(0.18, 0.05 * len(missing_terms))
+            feedback_parts.append(
+                "Missing expected points: " + ", ".join(missing_terms[:4])
+            )
+
+        if len(response_words) < 6:
+            score -= 0.15
+            feedback_parts.append("Response is likely too brief to answer the prompt completely")
+
+        if not feedback_parts:
+            feedback = "No obvious factual-risk heuristics were triggered"
+        else:
+            feedback = "; ".join(feedback_parts)
+
+        confidence += min(0.18, 0.02 * len(response_words))
+        if required_terms:
+            confidence += 0.05
+
         return {
-            "score": score,
+            "score": _clamp_score(score, default=0.72),
             "feedback": feedback,
-            "confidence": 0.5
+            "confidence": _clamp_score(confidence, default=0.58),
+            "missing_terms": missing_terms,
+            "heuristic_flags": {
+                "vague_claims": vague_count,
+                "absolute_claims": absolute_count,
+                "numeric_claims_without_attribution": bool(len(numeric_claims) >= 3 and not has_attribution),
+            },
         }
-    
-    async def _ai_accuracy_check(self, prompt: str, response: str) -> Optional[Dict[str, Any]]:
+
+    def _ai_accuracy_check(self, prompt: str, response: str) -> Optional[Dict[str, Any]]:
         """Use AI to fact-check and evaluate accuracy."""
-        if not self.ask_ai:
+        if not self.ask_ai or not AIProvider:
             return None
-        
+
         check_prompt = f"""Evaluate the factual accuracy of this response on a scale of 0.0 to 1.0:
 
 Prompt: {prompt}
@@ -134,30 +222,28 @@ Provide:
 Return as JSON: {{"score": 0.0-1.0, "feedback": "text", "confidence": 0.0-1.0}}"""
 
         try:
-            ai_response = await self.ask_ai.ask(
+            ai_response = self.ask_ai.ask(
                 prompt=check_prompt,
                 provider=AIProvider.OPENAI,
                 temperature=0.3,
                 max_tokens=300
             )
-            
-            if ai_response.success:
-                import json
-                import re
-                
-                # Extract JSON
-                content = ai_response.content.strip()
-                json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                if json_match:
-                    result = json.loads(json_match.group(0))
-                    return {
-                        "score": float(result.get("score", 0.7)),
-                        "feedback": result.get("feedback", "AI accuracy evaluation"),
-                        "confidence": float(result.get("confidence", 0.7))
-                    }
+
+            if not ai_response.success:
+                return None
+
+            result = _extract_json_payload(ai_response.content.strip())
+            if result:
+                return {
+                    "score": _clamp_score(result.get("score"), default=0.7),
+                    "feedback": str(result.get("feedback") or "AI accuracy evaluation"),
+                    "confidence": _clamp_score(result.get("confidence"), default=0.7),
+                    "source": "ai",
+                }
+            logger.debug("AI accuracy check returned unparseable payload")
         except Exception as e:
             logger.debug(f"AI accuracy check error: {e}")
-        
+
         return None
 
 
@@ -176,24 +262,63 @@ class CreativityEvaluator:
         Returns:
             Evaluation result
         """
-        score = 0.6  # Default
-        feedback = "Creativity evaluation placeholder"
-        
-        # Simple heuristics
-        unique_words = len(set(response.lower().split()))
+        response_lower = response.lower()
         total_words = len(response.split())
+        unique_words = len(set(_tokenize_words(response)))
         diversity = unique_words / total_words if total_words > 0 else 0
-        
-        # More diverse vocabulary = more creative
-        if diversity > 0.7:
-            score = 0.8
-        elif diversity < 0.3:
-            score = 0.4
-        
+
+        score = 0.56
+        feedback_parts: List[str] = []
+
+        generic_phrases = [
+            "it is important",
+            "in conclusion",
+            "generally speaking",
+            "it should be noted",
+            "as we can see",
+        ]
+        creative_indicators = [
+            "imagine",
+            "what if",
+            "analogy",
+            "metaphor",
+            "picture this",
+            "suppose",
+        ]
+
+        generic_count = sum(1 for phrase in generic_phrases if phrase in response_lower)
+        creative_count = sum(1 for phrase in creative_indicators if phrase in response_lower)
+
+        if creative_count:
+            score += min(0.18, 0.06 * creative_count)
+            feedback_parts.append("Includes imaginative framing or original connective language")
+
+        if generic_count:
+            score -= min(0.18, 0.05 * generic_count)
+            feedback_parts.append("Leans on generic phrasing that weakens originality")
+
+        if total_words >= 20 and diversity > 0.72:
+            score += 0.12
+            feedback_parts.append("Vocabulary diversity supports a more original read")
+        elif total_words >= 20 and diversity < 0.45:
+            score -= 0.10
+            feedback_parts.append("Vocabulary is repetitive; add fresher language or examples")
+
+        if total_words >= 80 and "?" not in response:
+            score -= 0.05
+            feedback_parts.append("Longer creative responses benefit from a stronger hook or turn")
+
+        if not feedback_parts:
+            feedback = "Creativity is serviceable but could use a more distinctive angle"
+        else:
+            feedback = "; ".join(feedback_parts)
+
         return {
-            "score": score,
+            "score": _clamp_score(score, default=0.56),
             "feedback": feedback,
-            "diversity_score": diversity
+            "diversity_score": diversity,
+            "generic_phrase_count": generic_count,
+            "creative_indicator_count": creative_count,
         }
 
 
@@ -219,27 +344,71 @@ class StyleEvaluator:
         Returns:
             Evaluation result
         """
-        score = 0.7  # Default
-        feedback = "Style evaluation placeholder"
-        
-        # Simple style detection
+        response_lower = response.lower()
         formal_indicators = ["therefore", "furthermore", "consequently"]
         casual_indicators = ["yeah", "okay", "gonna", "wanna"]
-        
-        formal_count = sum(1 for word in formal_indicators if word in response.lower())
-        casual_count = sum(1 for word in casual_indicators if word in response.lower())
-        
-        detected_style = "formal" if formal_count > casual_count else "casual"
-        
-        if target_style and detected_style == target_style:
-            score = 0.9
-        elif target_style:
-            score = 0.5
-        
+        technical_indicators = ["api", "schema", "latency", "module", "implementation", "dependency"]
+        contractions = re.findall(r"\b\w+'\w+\b", response_lower)
+        sentences = [segment.strip() for segment in re.split(r"[.!?]+", response) if segment.strip()]
+        avg_sentence_length = (
+            sum(len(_tokenize_words(sentence)) for sentence in sentences) / len(sentences)
+            if sentences else 0.0
+        )
+
+        formal_count = sum(1 for word in formal_indicators if word in response_lower)
+        casual_count = sum(1 for word in casual_indicators if word in response_lower)
+        technical_count = sum(1 for word in technical_indicators if word in response_lower)
+
+        if technical_count >= 2:
+            detected_style = "technical"
+        elif formal_count > casual_count:
+            detected_style = "formal"
+        elif casual_count > 0 or contractions:
+            detected_style = "casual"
+        else:
+            detected_style = "neutral"
+
+        score = 0.72
+        feedback_parts: List[str] = []
+
+        normalized_target = str(target_style or "").strip().lower()
+        if normalized_target:
+            acceptable = {normalized_target}
+            if normalized_target == "conversational":
+                acceptable.update({"casual", "neutral"})
+            if normalized_target == "professional":
+                acceptable.update({"formal", "technical", "neutral"})
+
+            if detected_style in acceptable:
+                score += 0.12
+                feedback_parts.append(f"Tone matches the requested {normalized_target} style")
+            else:
+                score -= 0.18
+                feedback_parts.append(
+                    f"Detected {detected_style} tone does not cleanly match the requested {normalized_target} style"
+                )
+
+        if avg_sentence_length > 26:
+            score -= 0.10
+            feedback_parts.append("Sentence length is heavy; shorter sentences would read more cleanly")
+        elif 0 < avg_sentence_length < 6 and len(response) > 80:
+            score -= 0.05
+            feedback_parts.append("Sentence flow is choppy; a bit more connective tissue would help")
+
+        if len(contractions) == 0 and detected_style == "casual":
+            score -= 0.05
+            feedback_parts.append("Casual tone would feel more natural with a few contractions")
+
+        if not feedback_parts:
+            feedback = "Style is readable and reasonably well-matched to the task"
+        else:
+            feedback = "; ".join(feedback_parts)
+
         return {
-            "score": score,
+            "score": _clamp_score(score, default=0.72),
             "feedback": feedback,
-            "detected_style": detected_style
+            "detected_style": detected_style,
+            "average_sentence_length": avg_sentence_length,
         }
 
 

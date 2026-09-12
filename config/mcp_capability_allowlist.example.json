@@ -1,0 +1,11 @@
+{
+  "enabled": false,
+  "servers_config": "config/mcp_servers.json",
+  "allowed_calls": [
+    {
+      "server": "filesystem_readme",
+      "tools": ["read_file", "list_directory"]
+    }
+  ],
+  "comment": "Copy to mcp_capability_allowlist.json, set enabled true, and align server names with mcp_servers.json. Requires: pip install mcp"
+}

@@ -79,7 +79,7 @@ class VoiceThread:
         
         if self.ask_ai:
             try:
-                response = await self.ask_ai.ask(
+                response = await self.ask_ai.ask_async(
                     prompt=prompt,
                     provider=AIProvider.OPENAI,
                     system_prompt=active_persona.system_prompt if active_persona else None
@@ -128,7 +128,7 @@ class VoiceThread:
         
         if self.ask_ai:
             try:
-                response = await self.ask_ai.ask(
+                response = await self.ask_ai.ask_async(
                     prompt=prompt,
                     provider=AIProvider.OPENAI,
                     system_prompt=active_persona.system_prompt if active_persona else None,
@@ -187,7 +187,7 @@ class VoiceThread:
         
         if self.ask_ai:
             try:
-                response = await self.ask_ai.ask(
+                response = await self.ask_ai.ask_async(
                     prompt=prompt,
                     provider=AIProvider.OPENAI,
                     system_prompt=active_persona.system_prompt if active_persona else None
@@ -234,7 +234,7 @@ class VoiceThread:
                     prepend=True
                 )
                 
-                response = await self.ask_ai.ask(
+                response = await self.ask_ai.ask_async(
                     prompt=enhanced_prompt,
                     provider=AIProvider.OPENAI,
                     temperature=0.7
@@ -301,7 +301,7 @@ class VoiceThread:
         
         if self.ask_ai:
             try:
-                response = await self.ask_ai.ask(
+                response = await self.ask_ai.ask_async(
                     prompt=prompt,
                     provider=AIProvider.OPENAI,
                     system_prompt=active_persona.system_prompt if active_persona else None

@@ -14,6 +14,7 @@ from datetime import datetime
 try:
     from fastapi.testclient import TestClient
     from project_guardian.ui.app import app
+    from tests.ui_test_helpers import local_test_client
     FASTAPI_AVAILABLE = True
 except ImportError:
     FASTAPI_AVAILABLE = False
@@ -48,7 +49,7 @@ def temp_project(tmp_path):
 @pytest.fixture
 def client(temp_project):
     """Create FastAPI test client"""
-    return TestClient(app)
+    return local_test_client(app)
 
 
 class TestPayloadCreationBaseHashes:
@@ -59,11 +60,12 @@ class TestPayloadCreationBaseHashes:
         # Create a test file in the project
         test_file = temp_project / "test_file.py"
         test_content = "print('hello world')\n"
-        test_file.write_text(test_content)
-        
-        # Compute expected hash
-        expected_hash = hashlib.sha256(test_content.encode('utf-8')).hexdigest()
-        expected_bytes = len(test_content.encode('utf-8'))
+        test_file.write_text(test_content, encoding="utf-8")
+
+        # Hash on-disk bytes (app reads via rb); avoids Windows newline drift vs string literal
+        file_bytes = test_file.read_bytes()
+        expected_hash = hashlib.sha256(file_bytes).hexdigest()
+        expected_bytes = len(file_bytes)
         
         # Create mutation payload via POST
         response = client.post(

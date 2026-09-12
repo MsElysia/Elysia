@@ -167,3 +167,43 @@ def test_allow_any_domain_skips_allowlist() -> None:
             },
         )
     assert captured.get("allowed_hosts") is None
+
+
+def test_capability_uses_urllib_fallback_when_playwright_missing() -> None:
+    class _FakeResponse:
+        url = "https://example.test/"
+        headers = {"Content-Type": "text/html; charset=utf-8"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def read(self, _limit: int = -1) -> bytes:
+            return (
+                b"<html><head><title>Fallback</title></head>"
+                b"<body><main>Fallback browser practical operator direction.</main></body></html>"
+            )
+
+    with patch(
+        "project_guardian.bounded_browser.backends.PlaywrightBrowserBackend",
+        side_effect=ImportError("playwright missing"),
+    ), patch(
+        "project_guardian.bounded_browser.backends.urllib.request.urlopen",
+        return_value=_FakeResponse(),
+    ):
+        out = run_bounded_browser_for_capability(
+            None,
+            {
+                "goal": "practical operator direction",
+                "start_url": "https://example.test/",
+                "max_pages": 1,
+                "max_scrolls_per_page": 1,
+                "allow_any_domain": True,
+            },
+        )
+
+    assert out["success"] is True
+    assert out["result"]["visited_urls"] == ["https://example.test/"]
+    assert out["result"]["pages_visited"] == 1

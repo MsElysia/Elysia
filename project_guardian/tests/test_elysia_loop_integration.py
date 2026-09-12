@@ -147,6 +147,29 @@ async def test_system_orchestrator_integration():
 
 
 @pytest.mark.asyncio
+async def test_system_orchestrator_auto_registers_modules():
+    """SystemOrchestrator should populate ModuleRegistry with live components."""
+    orchestrator = SystemOrchestrator(config={"ui_enabled": False})
+
+    success = await orchestrator.initialize(
+        initialize_components=True,
+        auto_register_modules=True,
+    )
+
+    assert success is True
+    assert orchestrator.module_registry is not None
+
+    registry_status = orchestrator.module_registry.get_registry_status()
+    module_names = set(registry_status["module_names"])
+
+    assert {"priority_registry", "timeline_memory", "task_queue", "elysia_loop", "runtime_loop"}.issubset(module_names)
+    assert {"memory", "persona", "voice", "conversation_manager", "heartbeat"}.issubset(module_names)
+    assert {"trust_registry", "mutation_engine", "master_slave_controller", "revenue_sharing", "franchise_manager"}.issubset(module_names)
+
+    await orchestrator.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_task_priority_ordering():
     """Test that task priorities are respected."""
     loop = ElysiaLoopCore()

@@ -13,10 +13,11 @@ import signal
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
+from urllib.parse import parse_qs, urlparse
 
 from elysia_config import (
     STATUS_HOST,
@@ -28,11 +29,13 @@ from elysia_config import (
     launch_attach_interface_standalone,
     probe_backend_alive,
     release_backend_lock,
+    takeover_backend_lock,
     try_acquire_backend_lock,
     LOG_FILE,
     LOG_MAX_BYTES,
     LOG_BACKUP_COUNT,
 )
+from elysia_entrypoint import env_flag_enabled, render_attach_only_banner, select_backend_launch_mode
 
 # Add paths before any local imports
 PROJECT_ROOT = Path(__file__).parent
@@ -61,6 +64,153 @@ logging.getLogger("werkzeug").setLevel(logging.WARNING)
 logging.getLogger("faiss.loader").setLevel(logging.WARNING)
 logging.getLogger("comtypes.client._code_cache").setLevel(logging.WARNING)
 
+OPENCLAW_ACTIVITY_PATH = PROJECT_ROOT / "data" / "runtime" / "openclaw_activity.json"
+_openclaw_activity_lock = threading.Lock()
+
+
+def _openclaw_now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _openclaw_preview_text(value: Any, limit: int = 320) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _load_openclaw_activity() -> Dict[str, Any]:
+    if not OPENCLAW_ACTIVITY_PATH.is_file():
+        return {"request_count": 0, "recent_requests": []}
+    try:
+        payload = json.loads(OPENCLAW_ACTIVITY_PATH.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            payload.setdefault("request_count", 0)
+            payload.setdefault("recent_requests", [])
+            return payload
+    except Exception as e:
+        logger.debug("OpenClaw activity load failed: %s", e)
+    return {"request_count": 0, "recent_requests": []}
+
+
+def _save_openclaw_activity(payload: Dict[str, Any]) -> None:
+    try:
+        OPENCLAW_ACTIVITY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        OPENCLAW_ACTIVITY_PATH.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.debug("OpenClaw activity save failed: %s", e)
+
+
+def _record_openclaw_activity(
+    message: str,
+    reply: str,
+    *,
+    model: str = "",
+    status: str = "ok",
+    error: str = "",
+    message_count: int = 0,
+) -> None:
+    now = _openclaw_now_iso()
+    request_preview = _openclaw_preview_text(message, 260)
+    reply_preview = _openclaw_preview_text(reply, 320)
+    error_preview = _openclaw_preview_text(error, 220)
+    with _openclaw_activity_lock:
+        payload = _load_openclaw_activity()
+        request_count = int(payload.get("request_count") or 0) + 1
+        recent = list(payload.get("recent_requests") or [])
+        recent.insert(
+            0,
+            {
+                "ts": now,
+                "status": status,
+                "model": model or None,
+                "message_preview": request_preview,
+                "reply_preview": reply_preview,
+                "error": error_preview or None,
+                "message_count": int(message_count or 0),
+            },
+        )
+        payload.update(
+            {
+                "updated_at": now,
+                "last_request_at": now,
+                "last_request_preview": request_preview,
+                "last_reply_at": now,
+                "last_reply_preview": reply_preview,
+                "last_status": status,
+                "last_error": error_preview,
+                "last_model": model or "",
+                "last_message_count": int(message_count or 0),
+                "request_count": request_count,
+                "recent_requests": recent[:10],
+            }
+        )
+        _save_openclaw_activity(payload)
+
+
+def _openclaw_message_content_to_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts: List[str] = []
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    parts.append(text)
+                continue
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type in {"text", "input_text", "output_text"}:
+                text = str(item.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+                    continue
+            fallback = str(item.get("content") or "").strip()
+            if fallback:
+                parts.append(fallback)
+        return " ".join(parts).strip()
+    if isinstance(value, dict):
+        text = str(value.get("text") or value.get("content") or "").strip()
+        if text:
+            return text
+    return str(value or "").strip()
+
+
+def _module_health_summary(module_obj: Any) -> str:
+    """Best-effort runtime health for integrated module inventory."""
+    if module_obj is None:
+        return "missing"
+    try:
+        instance_attrs = getattr(module_obj, "__dict__", {})
+        if not isinstance(instance_attrs, dict):
+            instance_attrs = {}
+        for attr_name, healthy, unhealthy in (
+            ("connected", "connected", "disconnected"),
+            ("is_connected", "connected", "disconnected"),
+            ("ready", "ready", "not_ready"),
+            ("is_ready", "ready", "not_ready"),
+            ("running", "running", "stopped"),
+            ("is_running", "running", "stopped"),
+        ):
+            if attr_name in instance_attrs:
+                value = instance_attrs[attr_name]
+                return healthy if bool(value) else unhealthy
+        for attr_name in ("status", "_status"):
+            if attr_name in instance_attrs:
+                value = instance_attrs[attr_name]
+                if isinstance(value, str) and value.strip():
+                    return value.strip().lower().replace(" ", "_")
+    except Exception:
+        return "unknown"
+    return "ok"
+
 
 def _parse_positive_int_env(name: str, default: int) -> int:
     """Parse a positive integer env var with fallback."""
@@ -84,6 +234,19 @@ for h in logging.root.handlers:
         h.addFilter(_AnsiStripFilter())
         break
 
+try:
+    from project_guardian.external_storage import attach_elysia_unified_log_mirror
+
+    attach_elysia_unified_log_mirror(
+        logging.root,
+        formatter=file_handler.formatter,
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
+        ansi_strip_filter=_AnsiStripFilter(),
+    )
+except Exception as _log_mirror_exc:
+    logging.getLogger("elysia").debug("external elysia_unified.log mirror: %s", _log_mirror_exc)
+
 # Import subroutines
 from elysia_sub_apikeys import load_api_keys
 from elysia_sub_architect import init_architect_core
@@ -92,6 +255,11 @@ from elysia_sub_runtime_loop import init_runtime_loop
 from elysia_sub_modules import init_integrated_modules
 from elysia_sub_income import init_income_modules
 from elysia_sub_registration import register_all_modules
+from project_guardian.openclaw_adapter import (
+    OpenClawAdapter,
+    append_openclaw_task_log,
+    score_openclaw_result,
+)
 
 # Reference for status server (set when system starts)
 _status_system: Optional["UnifiedElysiaSystem"] = None
@@ -122,7 +290,10 @@ def _make_status_handler():
             logger.debug(f"[Status] {self.address_string()} - {format % args}")
 
         def do_GET(self):
-            if self.path == "/":
+            parsed = urlparse(self.path)
+            path = parsed.path
+            query = parse_qs(parsed.query)
+            if path == "/":
                 # Browser-friendly root: show link to control panel
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -139,7 +310,7 @@ def _make_status_handler():
                     "</body></html>"
                 )
                 self.wfile.write(html.encode("utf-8"))
-            elif self.path == "/health":
+            elif path == "/health":
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -156,13 +327,15 @@ def _make_status_handler():
                     else:
                         body["checks"]["guardian"] = False
                 self.wfile.write(json.dumps(body).encode())
-            elif self.path == "/status":
+            elif path == "/status":
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 if _status_system:
                     try:
-                        body = _status_system.get_status()
+                        want_full = str((query.get("full") or [""])[0]).lower() in ("1", "true", "yes")
+                        fast_status = getattr(_status_system, "get_status_fast", None)
+                        body = _status_system.get_status() if want_full or not callable(fast_status) else fast_status()
                     except Exception as e:
                         body = {"error": str(e), "status": "degraded"}
                 else:
@@ -180,6 +353,14 @@ def _make_status_handler():
             if auth.startswith("Bearer ") and auth[7:].strip() == API_TOKEN:
                 return True, None
             return False, json.dumps({"error": "Unauthorized", "message": "Missing or invalid Authorization header"})
+
+        def _write_openai_sse_event(self, payload: Dict[str, Any]) -> None:
+            self.wfile.write(f"data: {json.dumps(payload, default=str)}\n\n".encode("utf-8"))
+            self.wfile.flush()
+
+        def _write_openai_sse_done(self) -> None:
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
 
         def do_POST(self):
             if self.path == "/shutdown":
@@ -226,13 +407,23 @@ def _make_status_handler():
                 self.end_headers()
                 self.wfile.write(err_body.encode())
                 return
+            model = ""
+            message_count = 0
+            stream = False
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(length).decode("utf-8", errors="replace")
                 data = json.loads(body) if body else {}
+                model = str(data.get("model") or "").strip()
+                stream = bool(data.get("stream"))
                 messages = data.get("messages") or []
-                # Use last user message (or concatenate user content)
-                user_parts = [m.get("content") or "" for m in messages if (m.get("role") or "").lower() == "user"]
+                message_count = len(messages) if isinstance(messages, list) else 0
+                # Use last user message (or concatenate user content), including OpenAI-style content arrays.
+                user_parts = [
+                    _openclaw_message_content_to_text(m.get("content"))
+                    for m in messages
+                    if (m.get("role") or "").lower() == "user"
+                ]
                 message = " ".join(user_parts).strip() if user_parts else ""
             except Exception as e:
                 self.send_response(200)
@@ -249,12 +440,74 @@ def _make_status_handler():
                     err = str(e)
             elif not _status_system:
                 err = "System not initialized"
+            content = reply if reply else (err or "No response")
+            try:
+                _record_openclaw_activity(
+                    message,
+                    content,
+                    model=model,
+                    status="ok" if reply else ("error" if err else "empty"),
+                    error=err,
+                    message_count=message_count,
+                )
+            except Exception as e:
+                logger.debug("OpenClaw activity record skipped: %s", e)
+            request_id = "elysia-%s" % datetime.now().strftime("%Y%m%d%H%M%S")
+            model_name = model or "elysia/main"
+            if stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "close")
+                self.send_header("X-Accel-Buffering", "no")
+                self.end_headers()
+                self._write_openai_sse_event(
+                    {
+                        "id": request_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": model_name,
+                        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                    }
+                )
+                if content:
+                    self._write_openai_sse_event(
+                        {
+                            "id": request_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": model_name,
+                            "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+                        }
+                    )
+                stream_options = data.get("stream_options") if isinstance(data, dict) else {}
+                if isinstance(stream_options, dict) and stream_options.get("include_usage"):
+                    self._write_openai_sse_event(
+                        {
+                            "id": request_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": model_name,
+                            "choices": [],
+                            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                        }
+                    )
+                self._write_openai_sse_event(
+                    {
+                        "id": request_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": model_name,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    }
+                )
+                self._write_openai_sse_done()
+                return
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            content = reply if reply else (err or "No response")
             out = {
-                "id": "elysia-%s" % datetime.now().strftime("%Y%m%d%H%M%S"),
+                "id": request_id,
                 "object": "chat.completion",
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
@@ -306,7 +559,8 @@ def _run_status_server(system: "UnifiedElysiaSystem"):
     _status_system = system
     try:
         handler = _make_status_handler()
-        server = HTTPServer((STATUS_HOST, STATUS_PORT), handler)
+        server = ThreadingHTTPServer((STATUS_HOST, STATUS_PORT), handler)
+        server.daemon_threads = True
         logger.info(f"Status endpoint: http://{STATUS_HOST}:{STATUS_PORT}/status")
         server.serve_forever()
     except OSError as e:
@@ -336,6 +590,8 @@ class UnifiedElysiaSystem:
         self.start_time = datetime.now()
         self.running = False
         self._last_autonomy_unified_meta: Optional[Dict[str, Any]] = None
+        self.last_openclaw_task: Optional[Dict[str, Any]] = None
+        self.last_openclaw_error: Optional[str] = None
 
         logger.info("=" * 70)
         logger.info("Initializing Unified Elysia System (elysia.py)")
@@ -381,11 +637,19 @@ class UnifiedElysiaSystem:
             self.startup_health_passed = True
             self.startup_health_issues = [f"Startup health check exception: {e}"]
             self.startup_health_details = {"passed": True, "issues": [], "critical": False}
-        
+
+        try:
+            from project_guardian.external_storage import log_startup_external_volume_hints
+
+            self._external_volume_snapshot = log_startup_external_volume_hints()
+        except Exception:
+            self._external_volume_snapshot = {}
+
         logger.info("Unified Elysia System initialized successfully")
 
         # [1/5] Guardian Core first (Architect's WebScout needs web_reader from Guardian)
         self.guardian = init_guardian_core(config=self.config)
+        self.openclaw = OpenClawAdapter(config_path=str(PROJECT_ROOT / "config" / "openclaw.json"))
 
         # [2/5] Architect-Core
         self.architect = init_architect_core()
@@ -403,6 +667,16 @@ class UnifiedElysiaSystem:
         init_income_modules(self.modules, PROJECT_ROOT)
         if self.guardian and hasattr(self.guardian, "wire_modules"):
             self.guardian.wire_modules(self.modules)
+        if (
+            self.guardian
+            and getattr(self.guardian, "module_registry", None) is not None
+            and getattr(self, "openclaw", None) is not None
+            and self.openclaw.is_available()
+        ):
+            try:
+                self.guardian.module_registry.register_simple("openclaw", self.openclaw, priority=5)
+            except Exception as e:
+                logger.debug("OpenClaw module registry wiring skipped: %s", e)
 
         # [5/5] Register with Architect
         register_all_modules(self.architect)
@@ -455,20 +729,100 @@ class UnifiedElysiaSystem:
             return "running"
         return "starting"
 
-    def get_status(self) -> Dict[str, Any]:
-        """Get comprehensive system status. operational_state is canonical; top-level copies for backward compat."""
+    def get_status_fast(self) -> Dict[str, Any]:
+        """Get a startup-safe status payload for HTTP polling.
+
+        This intentionally avoids heavyweight component status calls and network
+        probes, so /status stays responsive while autonomy, vectors, or external
+        tools are busy.
+        """
+        helper_module_names = {"task_router"}
+        modules = getattr(self, "modules", {}) or {}
+        integrated_helper_names = [
+            name for name in sorted(modules.keys()) if name in helper_module_names
+        ]
+        integrated_module_inventory = {
+            name: {
+                "available": module is not None,
+                "class": type(module).__name__ if module is not None else None,
+                "helper": name in helper_module_names,
+                "health": _module_health_summary(module),
+            }
+            for name, module in sorted(modules.items())
+        }
+        openclaw = getattr(self, "openclaw", None)
         status = {
             "system": "Unified Elysia System",
             "uptime": str(datetime.now() - self.start_time),
-            "running": self.running,
+            "running": bool(getattr(self, "running", False)),
             "start_time": str(self.start_time),
             "components": {
-                "architect_core": self.architect is not None,
-                "guardian_core": self.guardian is not None,
-                "runtime_loop": self.runtime_loop is not None,
-                "integrated_modules": len(self.modules),
+                "architect_core": getattr(self, "architect", None) is not None,
+                "guardian_core": getattr(self, "guardian", None) is not None,
+                "runtime_loop": getattr(self, "runtime_loop", None) is not None,
+                "integrated_modules": sum(1 for name in modules if name not in helper_module_names),
+                "integrated_helpers": len(integrated_helper_names),
             },
+            "integrated_module_inventory": integrated_module_inventory,
+            "integrated_helper_names": integrated_helper_names,
+            "openclaw_enabled": bool(getattr(openclaw, "enabled", False)) if openclaw else False,
+            "openclaw_available": None,
+            "openclaw_skills_count": len(getattr(openclaw, "default_skills", []) or []) if openclaw else 0,
+            "last_openclaw_task": getattr(self, "last_openclaw_task", None),
+            "last_openclaw_error": getattr(self, "last_openclaw_error", None),
         }
+        try:
+            from project_guardian.mission_autonomy import mission_purpose_state_snapshot
+
+            status["mission_purpose_state"] = mission_purpose_state_snapshot() or {}
+        except Exception:
+            status["mission_purpose_state"] = {}
+        guardian = getattr(self, "guardian", None)
+        if guardian:
+            op: Dict[str, Any] = {}
+            try:
+                op = guardian.get_startup_operational_state() if hasattr(guardian, "get_startup_operational_state") else {}
+            except Exception as e:
+                op = {"deferred_init_state": "unknown", "status_error": str(e)}
+            status["operational_state"] = op
+            try:
+                panel = getattr(guardian, "ui_panel", None)
+                if panel:
+                    port = getattr(panel, "port", 5000)
+                    status["dashboard_url"] = f"http://127.0.0.1:{port}"
+            except Exception:
+                pass
+        op = status.get("operational_state") or {}
+        status["dashboard_ready"] = bool(op.get("dashboard_ready", False))
+        status["deferred_init_running"] = op.get("deferred_init_running", False)
+        status["deferred_init_failed"] = op.get("deferred_init_failed", False)
+        status["deferred_init_error"] = op.get("deferred_init_error")
+        status["deferred_init_state"] = op.get("deferred_init_state", "not_started")
+        status["vector_rebuild_pending"] = op.get("vector_rebuild_pending", False)
+        status["vector_degraded"] = op.get("vector_degraded", False)
+        status["last_vector_rebuild_attempt_at"] = op.get("last_vector_rebuild_attempt_at")
+        status["last_vector_rebuild_result"] = op.get("last_vector_rebuild_result")
+        status["last_vector_rebuild_reason"] = op.get("last_vector_rebuild_reason")
+        status["last_vector_rebuild_error"] = op.get("last_vector_rebuild_error")
+        status["resolved_memory_filepath"] = op.get("resolved_memory_filepath")
+        status["startup_phase"] = self._compute_startup_phase_label(status)
+        ev = getattr(self, "_external_volume_snapshot", None)
+        status["external_storage"] = ev if isinstance(ev, dict) else {}
+        return status
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get comprehensive system status. operational_state is canonical; top-level copies for backward compat."""
+        status = self.get_status_fast()
+        if getattr(self, "openclaw", None):
+            try:
+                status["openclaw_available"] = bool(self.openclaw.is_available())
+            except Exception as e:
+                status["openclaw_available"] = False
+                status["last_openclaw_error"] = str(e)[:200]
+            try:
+                status["openclaw_skills_count"] = len(self.openclaw.list_skills())
+            except Exception:
+                pass
         if self.architect:
             try:
                 status["architect_status"] = self.architect.get_status_report()
@@ -574,6 +928,85 @@ class UnifiedElysiaSystem:
         status["startup_phase"] = self._compute_startup_phase_label(status)
         return status
 
+    def delegate_to_openclaw(self, goal: str, skill_name: str, args: dict | None = None) -> dict:
+        """
+        Sends a structured execution task to OpenClaw and records the result.
+        """
+        task_envelope = {
+            "goal": str(goal or "").strip(),
+            "skill": str(skill_name or "").strip(),
+            "args": dict(args or {}),
+            "requested_by": "elysia",
+            "created_at": _openclaw_now_iso(),
+        }
+        if not getattr(self, "openclaw", None):
+            response = {
+                "ok": False,
+                "task_id": "",
+                "skill": str(skill_name or ""),
+                "result": {},
+                "error": "openclaw_adapter_unavailable",
+                "timestamp": _openclaw_now_iso(),
+            }
+            self.last_openclaw_task = response
+            self.last_openclaw_error = response["error"]
+            return response
+
+        response = self.openclaw.run_skill(task_envelope["skill"], task_envelope)
+        score = score_openclaw_result(task_envelope["goal"], response)
+        result_payload = response.get("result") if isinstance(response.get("result"), dict) else {}
+        result_summary = _openclaw_preview_text(
+            result_payload.get("summary")
+            or result_payload.get("recommendation")
+            or result_payload.get("notes")
+            or result_payload,
+            360,
+        )
+        memory_entry = {
+            "type": "openclaw_task_result",
+            "goal": task_envelope["goal"],
+            "skill": task_envelope["skill"],
+            "ok": bool(response.get("ok")),
+            "result_summary": result_summary or "",
+            "success_score": score.get("success_score", 0.0),
+            "recommended_next_action": score.get("recommended_next_action", "refine_goal_and_retry"),
+            "timestamp": _openclaw_now_iso(),
+        }
+        try:
+            if getattr(self, "guardian", None) and getattr(self.guardian, "memory", None):
+                self.guardian.memory.remember(
+                    f"[OpenClaw] {memory_entry['skill']} ok={memory_entry['ok']} score={memory_entry['success_score']:.2f} :: "
+                    f"{memory_entry['result_summary'][:260]}",
+                    category="autonomy",
+                    priority=0.58 if memory_entry["ok"] else 0.45,
+                    metadata=memory_entry,
+                )
+        except Exception as e:
+            logger.debug("OpenClaw memory write skipped: %s", e)
+
+        append_openclaw_task_log(
+            goal=task_envelope["goal"],
+            skill=task_envelope["skill"],
+            args=task_envelope["args"],
+            response=response,
+            score=score,
+            log_path=str(PROJECT_ROOT / "data" / "openclaw_tasks.jsonl"),
+        )
+
+        self.last_openclaw_task = {
+            "goal": task_envelope["goal"],
+            "skill": task_envelope["skill"],
+            "task_id": response.get("task_id"),
+            "ok": bool(response.get("ok")),
+            "score": score,
+            "timestamp": response.get("timestamp") or _openclaw_now_iso(),
+        }
+        self.last_openclaw_error = response.get("error")
+        response["score"] = score
+        response["task_envelope"] = task_envelope
+        response["memory_feedback"] = memory_entry
+        return response
+
     def _unified_chat_llm_router_enabled(self) -> bool:
         try:
             p = PROJECT_ROOT / "config" / "mistral_decider.json"
@@ -662,8 +1095,143 @@ class UnifiedElysiaSystem:
             [{"role": "user", "content": message}],
             500,
             cloud_preferred=self._llm_completion_cloud_preferred,
+            module_name="operator_chat",
+            agent_name=None,
+            prompt_extra=self._build_operator_chat_prompt_extra(message),
             caller="UnifiedElysiaSystem._chat_with_llm_cloud_only",
         )
+
+    def _build_operator_chat_context(self, message: str) -> Dict[str, Any]:
+        """Compact runtime context so operator chat answers as Elysia, not a generic assistant."""
+        def _append_fact(target: List[str], key: str, value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, bool):
+                target.append(f"{key}={'true' if value else 'false'}")
+                return
+            text = str(value).strip()
+            if text:
+                target.append(f"{key}={text}")
+
+        ctx: Dict[str, Any] = {
+            "identity": "Elysia running inside the Project Guardian runtime.",
+            "chat_surface": "backend_chat_api",
+            "operator_expectation": (
+                "Answer questions about the live Elysia program, its modules, autonomy, Ollama routing, "
+                "and concrete improvement options. Propose changes, but do not claim they already happened."
+            ),
+        }
+        lower = (message or "").lower()
+        ctx["focus_hints"] = {
+            "self_improvement": any(token in lower for token in ("improve yourself", "improve", "self improve", "better")),
+            "ollama": any(token in lower for token in ("ollama", "mistral", "local model", "local llm")),
+            "autonomy": "autonom" in lower,
+        }
+        try:
+            status = self.get_status()
+            components = status.get("components") or {}
+            guardian_status = status.get("guardian_status") or {}
+            memory = guardian_status.get("memory") or {}
+            planner_runtime = guardian_status.get("planner_runtime_status") or {}
+            runtime_decision = planner_runtime.get("runtime_decision") or {}
+            warnings = status.get("warnings") or []
+            ctx["runtime"] = {
+                "status": status.get("status"),
+                "uptime": status.get("uptime"),
+                "startup_phase": status.get("startup_phase"),
+                "dashboard_ready": bool(status.get("dashboard_ready")),
+                "warnings": [str(w) for w in warnings[:6]],
+                "components": {str(k): bool(v) for k, v in list(components.items())[:10]},
+                "memory_total": memory.get("total_memories"),
+            }
+            if planner_runtime:
+                ctx["planner_runtime"] = {
+                    "canonical_ollama_model": planner_runtime.get("canonical_ollama_model"),
+                    "planner_readiness": planner_runtime.get("planner_readiness"),
+                    "ollama_reachable": planner_runtime.get("ollama_reachable"),
+                    "ollama_exact_tag_match": planner_runtime.get("ollama_exact_tag_match"),
+                    "planner_startup_stabilization_required": planner_runtime.get("planner_startup_stabilization_required"),
+                    "early_runtime_budget": planner_runtime.get("early_runtime_budget"),
+                    "ollama_model_pool": planner_runtime.get("ollama_model_pool"),
+                    "mistral_decider_last_ollama_model": planner_runtime.get("mistral_decider_last_ollama_model"),
+                    "mistral_decider_pool_failover_retries": planner_runtime.get(
+                        "mistral_decider_pool_failover_retries"
+                    ),
+                    "mistral_ollama_pool_failover": planner_runtime.get("mistral_ollama_pool_failover"),
+                    "use_capability_stale_fingerprint_modules": planner_runtime.get(
+                        "use_capability_stale_fingerprint_modules"
+                    ),
+                }
+            if runtime_decision:
+                ctx["routing"] = {
+                    "local_usable": runtime_decision.get("local_usable"),
+                    "local_block_reason": runtime_decision.get("local_block_reason"),
+                    "reasoning_provider_selected": runtime_decision.get("reasoning_provider_selected"),
+                    "reasoning_provider_autonomy_safe": runtime_decision.get("reasoning_provider_autonomy_safe"),
+                    "openai_usable": runtime_decision.get("openai_usable"),
+                    "openrouter_usable": runtime_decision.get("openrouter_usable"),
+                }
+            income_modules = status.get("income_modules") or {}
+            if income_modules:
+                ctx["income_summary"] = {
+                    "income_generator_total_earned": (income_modules.get("income_generator") or {}).get("total_earned"),
+                    "income_generator_active_projects": (income_modules.get("income_generator") or {}).get("active_projects"),
+                    "wallet_balance": (income_modules.get("wallet") or {}).get("balance"),
+                }
+        except Exception as e:
+            ctx["runtime_error"] = str(e)
+        try:
+            from project_guardian.ollama_model_config import get_canonical_ollama_model
+
+            ctx["providers"] = {
+                "unified_chat_llm_router": bool(self._unified_chat_llm_router_enabled()),
+                "canonical_ollama_model": (ctx.get("planner_runtime") or {}).get("canonical_ollama_model")
+                or get_canonical_ollama_model(log_once=False),
+                "configured_chat_model": self._mistral_model_for_chat(),
+            }
+        except Exception as e:
+            ctx["provider_error"] = str(e)
+        facts: List[str] = []
+        runtime = ctx.get("runtime") or {}
+        providers = ctx.get("providers") or {}
+        planner_runtime = ctx.get("planner_runtime") or {}
+        routing = ctx.get("routing") or {}
+        _append_fact(facts, "runtime_status", runtime.get("status"))
+        _append_fact(facts, "startup_phase", runtime.get("startup_phase"))
+        _append_fact(facts, "dashboard_ready", runtime.get("dashboard_ready"))
+        _append_fact(facts, "unified_chat_llm_router", providers.get("unified_chat_llm_router"))
+        _append_fact(facts, "canonical_ollama_model", providers.get("canonical_ollama_model"))
+        _append_fact(facts, "configured_chat_model", providers.get("configured_chat_model"))
+        _append_fact(facts, "planner_readiness", planner_runtime.get("planner_readiness"))
+        _append_fact(facts, "ollama_reachable", planner_runtime.get("ollama_reachable"))
+        _append_fact(facts, "ollama_exact_tag_match", planner_runtime.get("ollama_exact_tag_match"))
+        _append_fact(facts, "mistral_decider_last_ollama_model", planner_runtime.get("mistral_decider_last_ollama_model"))
+        _append_fact(facts, "mistral_decider_pool_failover_retries", planner_runtime.get("mistral_decider_pool_failover_retries"))
+        _append_fact(facts, "mistral_ollama_pool_failover", planner_runtime.get("mistral_ollama_pool_failover"))
+        _append_fact(facts, "local_usable", routing.get("local_usable"))
+        _append_fact(facts, "local_block_reason", routing.get("local_block_reason"))
+        _append_fact(facts, "reasoning_provider_selected", routing.get("reasoning_provider_selected"))
+        _append_fact(facts, "reasoning_provider_autonomy_safe", routing.get("reasoning_provider_autonomy_safe"))
+        warnings = runtime.get("warnings") or []
+        if warnings:
+            _append_fact(facts, "top_warning", warnings[0])
+        ctx["current_state_facts"] = facts
+        return ctx
+
+    def _build_operator_chat_prompt_extra(self, message: str) -> Dict[str, Any]:
+        return {
+            "task_type": "conversation",
+            "task_text": (
+                "Operator chat for the running Elysia program. Answer as Elysia about this live Project Guardian "
+                "instance using the structured runtime context when relevant. If the operator asks about "
+                "self-improvement, autonomy, or Ollama/local routing, give concrete and system-specific answers. "
+                "For runtime or configuration questions, mention the most relevant exact current_state_facts first "
+                "before giving recommendations. "
+                "Do not fall back to a generic assistant refusal unless the operator asks you to fabricate state "
+                "or pretend a change already happened."
+            ),
+            "context": self._build_operator_chat_context(message),
+        }
 
     def chat_with_llm(self, message: str):
         """
@@ -676,6 +1244,7 @@ class UnifiedElysiaSystem:
             from project_guardian.unified_llm_route import unified_chat_completion
 
             msgs = [{"role": "user", "content": message}]
+            prompt_extra = self._build_operator_chat_prompt_extra(message)
             reply, err, _meta = unified_chat_completion(
                 messages=msgs,
                 max_tokens=500,
@@ -683,8 +1252,9 @@ class UnifiedElysiaSystem:
                 cloud_openai_call=lambda m, mt: self._llm_completion_cloud_openai(m, mt),
                 cloud_openrouter_call=lambda m, mt: self._llm_completion_cloud_openrouter(m, mt),
                 mistral_model=self._mistral_model_for_chat(),
-                module_name="planner",
-                agent_name="orchestrator",
+                module_name="operator_chat",
+                agent_name=None,
+                prompt_extra=prompt_extra,
             )
             return reply, err
         except Exception as e:
@@ -695,6 +1265,9 @@ class UnifiedElysiaSystem:
                 [{"role": "user", "content": message}],
                 500,
                 cloud_preferred=self._llm_completion_cloud_preferred,
+                module_name="operator_chat",
+                agent_name=None,
+                prompt_extra=self._build_operator_chat_prompt_extra(message),
                 caller="UnifiedElysiaSystem.chat_with_llm.fallback",
             )
 
@@ -708,6 +1281,7 @@ class UnifiedElysiaSystem:
         prompt_extra: Optional[Dict[str, Any]] = None,
         skip_capability_preamble: bool = False,
         require_autonomy_safe_reasoning: bool = False,
+        structured_role: Optional[str] = None,
     ):
         """Call LLM with custom max_tokens. Returns (reply_text, error_string)."""
         if not isinstance(messages, list):
@@ -738,6 +1312,7 @@ class UnifiedElysiaSystem:
                 module_name=module_name,
                 agent_name=agent_name,
                 prompt_extra=prompt_extra,
+                structured_role=structured_role,
             )
         try:
             from project_guardian.unified_llm_route import unified_chat_completion
@@ -754,6 +1329,7 @@ class UnifiedElysiaSystem:
                 agent_name=agent_name,
                 prompt_extra=prompt_extra,
                 require_autonomy_safe_reasoning=require_autonomy_safe_reasoning,
+                structured_role=structured_role,
             )
             if require_autonomy_safe_reasoning:
                 self._last_autonomy_unified_meta = umeta
@@ -785,6 +1361,7 @@ class UnifiedElysiaSystem:
                 module_name=module_name,
                 agent_name=agent_name,
                 prompt_extra=prompt_extra,
+                structured_role=structured_role,
             )
 
     def _autonomy_llm_completion(
@@ -796,6 +1373,7 @@ class UnifiedElysiaSystem:
         agent_name: Optional[str] = "orchestrator",
         prompt_extra: Optional[Dict[str, Any]] = None,
         skip_capability_preamble: bool = False,
+        structured_role: Optional[str] = None,
         **_: Any,
     ) -> Tuple[str, str]:
         """Autonomy-safe internal LLM completion; routes via :func:`unified_autonomy_chat_completion` semantics."""
@@ -807,6 +1385,7 @@ class UnifiedElysiaSystem:
             prompt_extra=prompt_extra,
             skip_capability_preamble=skip_capability_preamble,
             require_autonomy_safe_reasoning=True,
+            structured_role=structured_role,
         )
 
     def condense_memory_with_ai(self, memory_threshold: int = 4000, chunk_size: int = 80, max_to_condense: int = 2000, max_workers: int = 4) -> bool:
@@ -865,6 +1444,7 @@ class UnifiedElysiaSystem:
                     agent_name=None,
                     prompt_extra=prompt_extra,
                     skip_capability_preamble=True,
+                    structured_role="memory:condensation",
                 )
 
             reply, err = _one_call()
@@ -1058,6 +1638,11 @@ class UnifiedElysiaSystem:
                 self.auto_learning.stop()
             except Exception:
                 pass
+        if getattr(self, "openclaw", None) is not None:
+            try:
+                self.openclaw.shutdown_autostart()
+            except Exception:
+                pass
         if self.guardian and hasattr(self.guardian, "shutdown"):
             try:
                 self.guardian.shutdown()
@@ -1068,15 +1653,23 @@ class UnifiedElysiaSystem:
 
 def main():
     """Main entry point."""
+    takeover_requested = "--takeover" in sys.argv or env_flag_enabled("ELYSIA_TAKEOVER")
+    if "--takeover" in sys.argv:
+        sys.argv = [arg for arg in sys.argv if arg != "--takeover"]
+    if takeover_requested:
+        ok_take, takeover_detail = takeover_backend_lock()
+        print(f"[Launcher] takeover: {takeover_detail}", flush=True)
+        if not ok_take:
+            print(f"[Launcher] takeover failed — {takeover_detail}", flush=True)
+            sys.exit(1)
+
     # Dedicated backend starter (Start_Elysia_Backend.cmd) must always run full boot;
     # a loose /status probe can otherwise match unrelated services and exit with no server.
-    _force_full = os.environ.get("ELYSIA_FORCE_FULL_BACKEND", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+    launch_mode = select_backend_launch_mode(
+        force_full_backend=env_flag_enabled("ELYSIA_FORCE_FULL_BACKEND"),
+        backend_alive=probe_backend_alive(),
     )
-    if _force_full:
+    if launch_mode.reason == "force_full_backend":
         print(
             "[Elysia] ELYSIA_FORCE_FULL_BACKEND is set — full backend boot "
             "(attach-only /status probe skipped).",
@@ -1084,24 +1677,10 @@ def main():
         )
         logger.info("[Launcher] ELYSIA_FORCE_FULL_BACKEND active — forcing full backend boot")
     # 1) Live /status → attach UI only (never a second heavy backend boot)
-    if not _force_full and probe_backend_alive():
+    if launch_mode.should_attach_only:
         su = get_status_url()
         logger.info("[Launcher] Existing backend detected; skipping backend start")
-        print("\n" + "=" * 70, flush=True)
-        print("ATTACH-ONLY MODE (/status already returned usable JSON)", flush=True)
-        print("=" * 70, flush=True)
-        print(
-            "Something on this machine already answered GET /status like Elysia. "
-            "Skipping GuardianCore / full backend boot.",
-            flush=True,
-        )
-        print(f"Status URL: {su}/status", flush=True)
-        print(
-            "If that is NOT Elysia, free the port or set ELYSIA_STATUS_PORT. "
-            "To force full boot anyway: set ELYSIA_FORCE_FULL_BACKEND=1 (see Start_Elysia_Backend.cmd).",
-            flush=True,
-        )
-        print("=" * 70 + "\n", flush=True)
+        print(render_attach_only_banner(su), flush=True)
         launch_attach_interface_standalone()
         sys.exit(0)
 
@@ -1114,7 +1693,10 @@ def main():
         print("=" * 70)
         print(lock_detail)
         print("Another elysia.py backend is already running or still starting.")
-        print("When /status is ready, re-run the launcher or: python elysia_interface.py --attach-only")
+        print("When /status is ready, re-run the launcher or:")
+        print("  python elysia_interface.py --attach-only")
+        print("Force restart (closes the old backend): run Start Project Guardian (Replace).bat")
+        print("  or: python elysia.py --takeover")
         print("=" * 70 + "\n")
         sys.exit(2)
 

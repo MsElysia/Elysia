@@ -5,9 +5,9 @@ Tests for WebReader.request_json() method (POST/PUT/JSON support).
 """
 
 import pytest
-import json
 from unittest.mock import Mock, patch, MagicMock
-from pathlib import Path
+
+from tests.gateway_test_helpers import make_urlopen_json_response, make_urlopen_text_response
 
 try:
     from project_guardian.external import WebReader, TrustDeniedError, TrustReviewRequiredError
@@ -30,9 +30,9 @@ class TestWebReaderRequestJson:
         return MemoryCore()
     
     @pytest.fixture
-    def trust_matrix(self):
+    def trust_matrix(self, memory):
         """Create TrustMatrix that allows all actions"""
-        trust = TrustMatrix()
+        trust = TrustMatrix(memory)
         # Mock to allow all actions by default
         trust.validate_trust_for_action = Mock(return_value=TrustDecision(
             allowed=True,
@@ -114,23 +114,19 @@ class TestWebReaderRequestJson:
             "component": "WebReader",
             "action": NETWORK_ACCESS,
             "target": "api.example.com",
+            "scheme": "https",
             "method": "POST",
             "has_body": True,
             "content_type": "json",
+            "allow_internal": False,
             "caller_identity": "Test",
-            "task_id": "none"
+            "task_id": "unknown",
         }
         
         # Pre-approve the request
-        approval_store.approve(request_id, context, approver="test", notes="Test approval")
+        approval_store.approve(request_id, approver="test", notes="Test approval", context=context)
         
-        # Mock urllib.request.urlopen to avoid real network call
-        mock_response = MagicMock()
-        mock_response.getcode.return_value = 200
-        mock_response.headers = {"Content-Type": "application/json"}
-        mock_response.read.return_value = b'{"success": true}'
-        
-        with patch('urllib.request.urlopen', return_value=mock_response):
+        with patch('urllib.request.urlopen', return_value=make_urlopen_json_response({"success": True})):
             result = web_reader.request_json(
                 method="POST",
                 url="https://api.example.com/test",
@@ -156,13 +152,7 @@ class TestWebReaderRequestJson:
         
         web_reader.trust_matrix.validate_trust_for_action = Mock(side_effect=capture_context)
         
-        # Mock urllib to avoid real network call
-        mock_response = MagicMock()
-        mock_response.getcode.return_value = 200
-        mock_response.headers = {}
-        mock_response.read.return_value = b'OK'
-        
-        with patch('urllib.request.urlopen', return_value=mock_response):
+        with patch('urllib.request.urlopen', return_value=make_urlopen_text_response("OK")):
             web_reader.request_json(
                 method="POST",
                 url="https://api.example.com/v1/data",
@@ -181,13 +171,7 @@ class TestWebReaderRequestJson:
     
     def test_request_json_parses_json_response(self, web_reader):
         """Verify JSON response is parsed correctly"""
-        # Mock urllib
-        mock_response = MagicMock()
-        mock_response.getcode.return_value = 200
-        mock_response.headers = {"Content-Type": "application/json"}
-        mock_response.read.return_value = b'{"result": "success", "data": [1, 2, 3]}'
-        
-        with patch('urllib.request.urlopen', return_value=mock_response):
+        with patch('urllib.request.urlopen', return_value=make_urlopen_json_response({"result": "success", "data": [1, 2, 3]})):
             result = web_reader.request_json(
                 method="GET",
                 url="https://api.example.com/data",

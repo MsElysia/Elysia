@@ -82,6 +82,92 @@ class ElysiaInterface:
         except Exception as e:
             return {"error": str(e)}
 
+    def _resolve_openclaw_base_url(self) -> tuple:
+        """
+        Same resolution order as project_guardian.openclaw_adapter (env overrides file).
+        Returns (base_url: str, source: str, enabled: bool, config_path_exists: bool).
+        """
+        cfg_path = project_root / "config" / "openclaw.json"
+        env_base = (os.environ.get("ELYSIA_OPENCLAW_BASE_URL") or os.environ.get("OPENCLAW_GATEWAY_URL") or "").strip()
+        if env_base:
+            return env_base.rstrip("/"), "ELYSIA_OPENCLAW_BASE_URL/OPENCLAW_GATEWAY_URL", True, cfg_path.is_file()
+        if not cfg_path.is_file():
+            # enabled False: do not imply OpenClaw is in use without a config file
+            return "http://127.0.0.1:18789", "default (no config file)", False, False
+        try:
+            raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            return "http://127.0.0.1:18789", "default (config read error)", True, True
+        if not isinstance(raw, dict):
+            return "http://127.0.0.1:18789", "default", True, True
+        raw.setdefault("base_url", "http://127.0.0.1:18789")
+        base = (raw.get("base_url") or "").strip().rstrip("/")
+        en = bool(raw.get("enabled", False))
+        return base, "config/openclaw.json", en, True
+
+    @staticmethod
+    def _http_get_ok(url: str, timeout: float = 2.5) -> tuple:
+        """Return (ok: bool, detail: str)."""
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                status = getattr(r, "status", 200)
+                r.read(256)
+            return True, f"HTTP {status}"
+        except Exception as e:
+            return False, str(e)
+
+    def _print_chat_verification_and_warnings(self) -> None:
+        """One-time and on-demand: connectivity + what this menu cannot do."""
+        print()
+        print("--- Verification ---")
+        if self.attach_only:
+            st = self._fetch_status_from_api()
+            if "error" in st:
+                print(f"  [FAIL] Backend {STATUS_URL}/status — {st.get('error')}")
+            else:
+                up = st.get("uptime", "ok")
+                print(f"  [OK]   Backend {STATUS_URL}/status (uptime: {up})")
+            h = self._fetch_health_from_api()
+            if "error" in h:
+                print(f"  [WARN] Backend {STATUS_URL}/health — {h.get('error')}")
+            else:
+                print(f"  [OK]   Backend {STATUS_URL}/health")
+        else:
+            if self.core:
+                print("  [INFO] Local core loaded (not attach mode).")
+            else:
+                print("  [WARN] No local core — start the full stack or use attach mode.")
+            print("  [WARN] This menu may not use the full LLM path unless the backend is wired;")
+            print("         prefer attach mode to the running elysia.py for real /chat.")
+
+        base, src, oc_enabled, cfg_exists = self._resolve_openclaw_base_url()
+        if not cfg_exists and not (os.environ.get("ELYSIA_OPENCLAW_BASE_URL") or os.environ.get("OPENCLAW_GATEWAY_URL")):
+            print(f"  [INFO] OpenClaw: no config/openclaw.json; default base {base} ({src})")
+        elif not oc_enabled and not (os.environ.get("ELYSIA_OPENCLAW_BASE_URL") or os.environ.get("OPENCLAW_GATEWAY_URL")):
+            print("  [INFO] OpenClaw: disabled in config (set enabled: true or set ELYSIA_OPENCLAW_BASE_URL to probe).")
+        else:
+            root_url = f"{base}/" if base else ""
+            if not root_url:
+                print("  [WARN] OpenClaw: no base_url set.")
+            else:
+                ok, det = self._http_get_ok(root_url, timeout=2.5)
+                if ok:
+                    print(f"  [OK]   OpenClaw gateway {root_url} ({src})")
+                else:
+                    print(f"  [WARN] OpenClaw gateway {root_url} not reachable — {det}")
+                    print("         (Channels/skills use the gateway; Elysia brain is separate.)")
+
+        print("--- This chat (limitations) ---")
+        print("  * Text-only LLM turn — registered tools (e.g. Moltbook) are not executed here.")
+        print("  * OpenClaw channels and delegate skills: configure the gateway; not driven from this menu.")
+        print("  * Module / autonomy toggles: Web Control Panel or system controls, not chat commands.")
+        print("  * Type 'verify' to re-run checks. Type 'help' for other commands.")
+        print("-" * 70)
+        print()
+
     def view_status(self):
         """View comprehensive system status."""
         print("\n" + "="*70)
@@ -174,7 +260,8 @@ class ElysiaInterface:
         _log.setLevel(__import__("logging").ERROR)
         try:
             if self.core or self.attach_only:
-                print("\nElysia: Hello! How can I help you today?\n")
+                self._print_chat_verification_and_warnings()
+                print("Elysia: Hello! How can I help you today?\n")
                 
                 while True:
                     try:
@@ -182,8 +269,12 @@ class ElysiaInterface:
                         
                         if user_input.lower() in ['back', 'exit', 'quit']:
                             break
+                        elif user_input.lower() == 'verify':
+                            self._print_chat_verification_and_warnings()
+                            continue
                         elif user_input.lower() == 'help':
                             print("\nCommands:")
+                            print("  'verify' - Re-run backend + OpenClaw checks and show limitations")
                             print("  'status' - Show system status")
                             print("  'memories' - View recent memories")
                             print("  'what are you thinking' - See what Elysia is focusing on")

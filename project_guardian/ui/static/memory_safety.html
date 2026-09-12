@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Static safety guide explaining local memory boundaries and disabled live execution.">
+  <title>Elysia Memory - Safety</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --border: #334155;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --primary: #6366f1;
+      --ok: #10b981;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 24px;
+    }
+    .wrap { max-width: 860px; margin: 0 auto; }
+    h1 { font-size: 1.8rem; margin-bottom: 8px; }
+    h2 { font-size: 1.08rem; margin-bottom: 10px; color: #c4b5fd; }
+    p { color: var(--muted); margin-bottom: 12px; }
+    .subtitle { margin-bottom: 22px; }
+    .identity {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+    .identity > span,
+    .identity nav > span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: 8px;
+      z-index: 1000;
+      padding: 8px 12px;
+      background: #ffffff;
+      color: #0f172a;
+      border: 2px solid currentColor;
+      border-radius: 8px;
+    }
+    .skip-link:focus { left: 8px; }
+    a:focus,
+    button:focus {
+      outline: 2px solid currentColor;
+      outline-offset: 2px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+    ul { margin-left: 20px; color: var(--muted); }
+    li { margin-bottom: 8px; }
+    .good { color: var(--ok); }
+    .note { color: var(--warn); font-size: 0.86rem; }
+    .links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    .button {
+      display: inline-block;
+      background: var(--primary);
+      color: white;
+      text-decoration: none;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 0.92rem;
+    }
+    .button.secondary { background: #475569; }
+
+    @media (max-width: 720px) {
+      body { padding: 16px; }
+      .wrap { max-width: 100%; }
+      h1 { font-size: 1.5rem; }
+      .identity { align-items: flex-start; }
+      .identity > span,
+      .identity nav > span { border-radius: 8px; }
+      .panel { padding: 16px; }
+      .links { flex-direction: column; align-items: stretch; }
+      .button { width: 100%; text-align: center; }
+    }
+
+    @media print {
+      .skip-link,
+      .page-navigation { display: none; }
+      body { background: #ffffff; color: #000000; padding: 0; }
+      .wrap { max-width: 100%; }
+      .panel {
+        background: #ffffff;
+        border-color: #000000;
+        color: #000000;
+      }
+      h1,
+      h2,
+      p,
+      li,
+      span,
+      a,
+      .subtitle,
+      .good,
+      .note { color: #000000; }
+      a::after { content: " (" attr(href) ")"; font-size: 0.85em; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto;
+        transition-duration: 0.01ms;
+        animation-duration: 0.01ms;
+      }
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root { color-scheme: dark; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <main class="wrap" id="main-content">
+    <h1>Memory Safety</h1>
+    <p class="subtitle">What the static Memory workflow does and does not do.</p>
+    <div class="identity" aria-label="Page identity">
+      <nav aria-label="Memory breadcrumb">
+        <span>Memory Hub / <span aria-current="page">Safety</span></span>
+      </nav>
+      <span>Local route: /memory/memory_safety.html</span>
+    </div>
+
+    <section class="panel">
+      <h2>Safe defaults</h2>
+      <ul>
+        <li>Local files only.</li>
+        <li>No account connection required.</li>
+        <li>No model calls during import, review, or search.</li>
+        <li>No embeddings.</li>
+        <li>No live runtime memory or vector DB writes.</li>
+        <li>No server route required.</li>
+        <li>No background watcher.</li>
+        <li>No autonomy.</li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>What is allowed</h2>
+      <p>Operators can preview local transcription files, local ChatGPT export files, and local email .eml files. Imports stay pending until the operator confirms and reviews them.</p>
+      <p class="good">Only approved memory is searchable.</p>
+    </section>
+
+    <section class="panel">
+      <h2>What is not connected</h2>
+      <ul>
+        <li>No live ChatGPT account.</li>
+        <li>No Gmail, Outlook, IMAP, SMTP, or mailbox login.</li>
+        <li>No automatic folder monitor.</li>
+        <li>No browser network call from this page.</li>
+        <li>No upload from static pages.</li>
+      </ul>
+      <p class="note">The static pages are for orientation and prototype navigation only.</p>
+    </section>
+
+    <nav class="panel" aria-label="Memory page navigation">
+      <h2>Continue safely</h2>
+      <p class="note">Return to the static local Memory Hub.</p>
+      <div class="links">
+        <a class="button" href="/memory/memory_hub.html">Back to Memory Hub</a>
+        <a class="button secondary" href="/memory/memory_first_run_setup.html">First-Run Setup</a>
+        <a class="button secondary" href="/memory/index.html">Back to Static UI</a>
+      </div>
+    </nav>
+  </main>
+</body>
+</html>

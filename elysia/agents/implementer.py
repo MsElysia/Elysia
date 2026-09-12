@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import re
@@ -29,8 +30,10 @@ class ImplementationStep:
         """Infer the type of step from title and content."""
         title_lower = title.lower()
         content_lower = content.lower()
+        combined_lower = f"{title}\n{content}".lower()
+        has_file_path = re.search(r"[a-zA-Z0-9_/\\-]+\.(py|yaml|yml|json|md|txt)", f"{title}\n{content}") is not None
 
-        if "create" in title_lower and "file" in title_lower:
+        if "create" in combined_lower and ("file" in combined_lower or has_file_path):
             return "create_file"
         elif "add" in title_lower and ("test" in title_lower or "config" in title_lower):
             if "test" in title_lower:
@@ -121,26 +124,28 @@ class ImplementerAgent:
 
         logger.info(f"Parsed {len(steps)} implementation steps")
 
-        # 4. Transition to in_implementation
-        success, error = self.proposal_system.transition_status(
-            proposal_id, "in_implementation", actor="Elysia-Implementer"
-        )
-        if not success:
-            logger.warning(f"Failed to transition status: {error}")
+        # 4. Transition to in_implementation unless this is a dry-run preview.
+        if not self.dry_run:
+            success, error = self.proposal_system.transition_status(
+                proposal_id, "in_implementation", actor="Elysia-Implementer"
+            )
+            if not success:
+                logger.warning(f"Failed to transition status: {error}")
 
-        # Update implementation_status
-        self._update_implementation_status(proposal_id, "in_progress")
+            # Update implementation_status
+            self._update_implementation_status(proposal_id, "in_progress")
 
         if self.event_bus:
             self.event_bus.emit(
                 "implementer",
                 "started",
-                {"proposal_id": proposal_id, "steps_total": len(steps)},
+                {"proposal_id": proposal_id, "steps_total": len(steps), "dry_run": self.dry_run},
             )
 
         # 5. Execute steps
         steps_completed = 0
         steps_failed = 0
+        steps_skipped = 0
         all_diffs: List[str] = []
         step_results: List[Dict[str, Any]] = []
 
@@ -157,7 +162,20 @@ class ImplementerAgent:
             step_result = self._execute_step(step, proposal_id)
             step_results.append(step_result)
 
-            if step_result["success"]:
+            if step_result.get("skipped"):
+                steps_skipped += 1
+                if self.event_bus:
+                    self.event_bus.emit(
+                        "implementer",
+                        "step_skipped",
+                        {
+                            "proposal_id": proposal_id,
+                            "step_number": step.step_number,
+                            "step_title": step.title,
+                            "reason": step_result.get("message", "Step was informational"),
+                        },
+                    )
+            elif step_result["success"]:
                 steps_completed += 1
                 if step_result.get("diff"):
                     all_diffs.append(step_result["diff"])
@@ -193,7 +211,30 @@ class ImplementerAgent:
                 break
 
         # 6. Finalize result
-        if steps_failed == 0 and steps_completed == len(steps):
+        if steps_failed == 0 and steps_completed > 0 and steps_completed + steps_skipped == len(steps):
+            if self.dry_run:
+                if self.event_bus:
+                    self.event_bus.emit(
+                        "implementer",
+                        "preview_completed",
+                        {
+                            "proposal_id": proposal_id,
+                            "steps_completed": steps_completed,
+                            "steps_skipped": steps_skipped,
+                            "steps_total": len(steps),
+                        },
+                    )
+
+                return {
+                    "success": True,
+                    "dry_run": True,
+                    "steps_completed": steps_completed,
+                    "steps_skipped": steps_skipped,
+                    "steps_total": len(steps),
+                    "diff_summary": "\n".join(all_diffs) if all_diffs else None,
+                    "step_results": step_results,
+                }
+
             # All steps succeeded
             self._update_implementation_status(proposal_id, "completed")
             success_transition, _ = self.proposal_system.transition_status(
@@ -209,6 +250,7 @@ class ImplementerAgent:
                 {
                     "tasks_completed": steps_completed,
                     "tasks_failed": steps_failed,
+                    "tasks_skipped": steps_skipped,
                     "tasks_total": len(steps),
                 },
             )
@@ -220,6 +262,7 @@ class ImplementerAgent:
                     {
                         "proposal_id": proposal_id,
                         "steps_completed": steps_completed,
+                        "steps_skipped": steps_skipped,
                         "steps_total": len(steps),
                     },
                 )
@@ -227,11 +270,42 @@ class ImplementerAgent:
             return {
                 "success": True,
                 "steps_completed": steps_completed,
+                "steps_skipped": steps_skipped,
                 "steps_total": len(steps),
                 "diff_summary": "\n".join(all_diffs) if all_diffs else None,
                 "step_results": step_results,
             }
         else:
+            if steps_failed == 0 and steps_completed == 0:
+                error_msg = "No executable implementation steps found in plan"
+            else:
+                failed_result = next((result for result in step_results if not result.get("success")), step_results[-1])
+                error_msg = f"Step {steps_completed + steps_skipped + 1} failed: {failed_result.get('error', 'Unknown error')}"
+
+            if self.dry_run:
+                if self.event_bus:
+                    self.event_bus.emit(
+                        "implementer",
+                        "preview_failed",
+                        {
+                            "proposal_id": proposal_id,
+                            "steps_completed": steps_completed,
+                            "steps_skipped": steps_skipped,
+                            "steps_total": len(steps),
+                            "error": error_msg,
+                        },
+                    )
+
+                return {
+                    "success": False,
+                    "dry_run": True,
+                    "steps_completed": steps_completed,
+                    "steps_skipped": steps_skipped,
+                    "steps_total": len(steps),
+                    "error": error_msg,
+                    "step_results": step_results,
+                }
+
             # Some steps failed
             self._update_implementation_status(proposal_id, "failed")
             success_transition, _ = self.proposal_system.transition_status(
@@ -240,12 +314,16 @@ class ImplementerAgent:
             if not success_transition:
                 logger.warning("Failed to transition to 'implementation_failed' status")
 
-            error_msg = f"Step {steps_completed + 1} failed: {step_results[-1].get('error', 'Unknown error')}"
             self._add_history_entry(
                 proposal_id,
                 "Elysia-Implementer",
                 f"Implementation failed: {error_msg}",
-                {"steps_completed": steps_completed, "steps_failed": steps_failed, "steps_total": len(steps)},
+                {
+                    "steps_completed": steps_completed,
+                    "steps_failed": steps_failed,
+                    "steps_skipped": steps_skipped,
+                    "steps_total": len(steps),
+                },
             )
 
             if self.event_bus:
@@ -255,6 +333,7 @@ class ImplementerAgent:
                     {
                         "proposal_id": proposal_id,
                         "steps_completed": steps_completed,
+                        "steps_skipped": steps_skipped,
                         "steps_total": len(steps),
                         "error": error_msg,
                     },
@@ -263,6 +342,7 @@ class ImplementerAgent:
             return {
                 "success": False,
                 "steps_completed": steps_completed,
+                "steps_skipped": steps_skipped,
                 "steps_total": len(steps),
                 "error": error_msg,
                 "step_results": step_results,
@@ -352,7 +432,7 @@ class ImplementerAgent:
 
         if self.dry_run:
             logger.info(f"[DRY RUN] Would execute: {step.title}")
-            return {"success": True, "dry_run": True, "step_type": step.step_type}
+            return self._preview_step(step, proposal_id)
 
         try:
             if step.step_type == "create_file":
@@ -366,53 +446,86 @@ class ImplementerAgent:
             elif step.step_type == "update_config":
                 return self._execute_update_config(step, proposal_id)
             else:
-                # Generic step - just log it
-                logger.info(f"Generic step: {step.title}")
-                return {"success": True, "step_type": "generic", "message": "Step logged but not executed"}
+                logger.info(f"Generic non-file step recorded: {step.title}")
+                return {
+                    "success": True,
+                    "skipped": True,
+                    "step_type": "generic",
+                    "message": "No file action required",
+                }
 
         except Exception as e:
             logger.exception(f"Error executing step {step.step_number}: {e}")
             return {"success": False, "error": str(e), "step_type": step.step_type}
 
+    def _preview_step(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:
+        """Preview a single implementation step without changing files or proposal metadata."""
+        try:
+            if step.step_type == "create_file":
+                return self._preview_create_file(step, proposal_id)
+            elif step.step_type == "modify_file":
+                return self._preview_modify_file(step, proposal_id)
+            elif step.step_type == "add_tests":
+                return self._preview_create_file(step, proposal_id)
+            elif step.step_type == "update_config":
+                return self._preview_modify_file(step, proposal_id)
+            elif step.step_type == "run_tests":
+                return {
+                    "success": True,
+                    "skipped": True,
+                    "dry_run": True,
+                    "step_type": "run_tests",
+                    "message": "Tests are not executed during dry-run preview",
+                }
+            else:
+                return {
+                    "success": True,
+                    "skipped": True,
+                    "dry_run": True,
+                    "step_type": "generic",
+                    "message": "No file action required",
+                }
+        except Exception as e:
+            logger.exception(f"Error previewing step {step.step_number}: {e}")
+            return {"success": False, "dry_run": True, "error": str(e), "step_type": step.step_type}
+
     def _execute_create_file(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:
         """Execute a create_file step."""
         # Extract file path from step content
         # Look for patterns like "elysia/agents/foo.py" or "config/foo.yaml"
-        file_pattern = re.search(r"([a-zA-Z0-9_/\\-]+\.(py|yaml|yml|json|md|txt))", step.content)
+        search_text = f"{step.title}\n{step.content}"
+        file_pattern = re.search(r"([a-zA-Z0-9_/\\-]+\.(py|yaml|yml|json|md|txt))", search_text)
         if not file_pattern:
             return {"success": False, "error": "Could not extract file path from step"}
 
         file_path_str = file_pattern.group(1)
-        file_path = self.repo_root / file_path_str
+        try:
+            file_path = self._resolve_repo_path(file_path_str)
+        except ValueError as e:
+            return {"success": False, "error": str(e), "step_type": "create_file"}
 
         # Check if file already exists
         if file_path.exists():
             logger.warning(f"File already exists: {file_path}, skipping creation")
             return {"success": True, "message": "File already exists", "file_path": str(file_path)}
 
-        # Extract content from step or create placeholder
-        # For now, create a minimal placeholder file
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+        content = self._extract_code_block(step.content)
+        if content is None:
+            return {
+                "success": False,
+                "error": "Create-file steps must include a fenced code block with the file content",
+                "file_path": str(file_path),
+                "step_type": "create_file",
+            }
 
-        # Try to extract code/content from step.content
-        code_block = re.search(r"```(?:python|yaml|json)?\n(.*?)```", step.content, re.DOTALL)
-        if code_block:
-            content = code_block.group(1)
-        else:
-            # Create minimal placeholder
-            if file_path.suffix == ".py":
-                content = f'"""Generated by Elysia-Implementer for proposal {proposal_id}."""\n\n'
-            elif file_path.suffix in (".yaml", ".yml"):
-                content = f"# Generated by Elysia-Implementer for proposal {proposal_id}\n"
-            else:
-                content = f"# Generated by Elysia-Implementer for proposal {proposal_id}\n"
+        file_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             file_path.write_text(content, encoding="utf-8")
             logger.info(f"Created file: {file_path}")
 
             # Generate diff summary
-            diff = f"+++ {file_path_str}\n+{content.replace(chr(10), chr(10) + '+')}"
+            diff = self._creation_diff(file_path_str, content)
 
             return {
                 "success": True,
@@ -423,28 +536,161 @@ class ImplementerAgent:
         except Exception as e:
             return {"success": False, "error": f"Failed to create file: {e}", "step_type": "create_file"}
 
+    def _preview_create_file(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:
+        """Preview a create-file step and return the diff without writing."""
+        search_text = f"{step.title}\n{step.content}"
+        file_pattern = re.search(r"([a-zA-Z0-9_/\\-]+\.(py|yaml|yml|json|md|txt))", search_text)
+        if not file_pattern:
+            return {"success": False, "dry_run": True, "error": "Could not extract file path from step"}
+
+        file_path_str = file_pattern.group(1)
+        try:
+            file_path = self._resolve_repo_path(file_path_str)
+        except ValueError as e:
+            return {"success": False, "dry_run": True, "error": str(e), "step_type": "create_file"}
+
+        content = self._extract_code_block(step.content)
+        if content is None:
+            return {
+                "success": False,
+                "dry_run": True,
+                "error": "Create-file steps must include a fenced code block with the file content",
+                "file_path": str(file_path),
+                "step_type": "create_file",
+            }
+
+        if file_path.exists():
+            return {
+                "success": True,
+                "dry_run": True,
+                "message": "File already exists",
+                "file_path": str(file_path),
+                "step_type": "create_file",
+            }
+
+        return {
+            "success": True,
+            "dry_run": True,
+            "message": "File would be created",
+            "file_path": str(file_path),
+            "diff": self._creation_diff(file_path_str, content),
+            "step_type": "create_file",
+        }
+
     def _execute_modify_file(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:
         """Execute a modify_file step."""
-        # Similar to create_file but modify existing file
-        file_pattern = re.search(r"([a-zA-Z0-9_/\\-]+\.(py|yaml|yml|json|md|txt))", step.content)
+        search_text = f"{step.title}\n{step.content}"
+        file_pattern = re.search(r"([a-zA-Z0-9_/\\-]+\.(py|yaml|yml|json|md|txt))", search_text)
         if not file_pattern:
             return {"success": False, "error": "Could not extract file path from step"}
 
         file_path_str = file_pattern.group(1)
-        file_path = self.repo_root / file_path_str
+        try:
+            file_path = self._resolve_repo_path(file_path_str)
+        except ValueError as e:
+            return {"success": False, "error": str(e), "step_type": "modify_file"}
 
         if not file_path.exists():
             return {"success": False, "error": f"File does not exist: {file_path}"}
 
-        # For now, log the modification intent
-        # In a full implementation, this would parse the step content to determine
-        # what changes to make and apply them as a diff
-        logger.info(f"Would modify file: {file_path} (modification logic not fully implemented)")
+        new_content = self._extract_code_block(step.content)
+        if new_content is None:
+            return {
+                "success": False,
+                "error": "Modify steps must include a fenced code block with the replacement file content",
+                "file_path": str(file_path),
+                "step_type": "modify_file",
+            }
+
+        try:
+            old_content = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return {
+                "success": False,
+                "error": f"Cannot safely modify non-UTF-8 file: {file_path}",
+                "file_path": str(file_path),
+                "step_type": "modify_file",
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Failed to read file: {e}", "step_type": "modify_file"}
+
+        diff = self._unified_diff(file_path_str, old_content, new_content)
+        if not diff:
+            return {
+                "success": True,
+                "message": "No changes needed",
+                "file_path": str(file_path),
+                "step_type": "modify_file",
+            }
+
+        try:
+            file_path.write_text(new_content, encoding="utf-8")
+        except Exception as e:
+            return {"success": False, "error": f"Failed to write file: {e}", "step_type": "modify_file"}
 
         return {
             "success": True,
-            "message": "File modification logged (not fully implemented)",
+            "message": "File modified",
             "file_path": str(file_path),
+            "diff": diff,
+            "step_type": "modify_file",
+        }
+
+    def _preview_modify_file(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:
+        """Preview a modify-file step and return the replacement diff without writing."""
+        search_text = f"{step.title}\n{step.content}"
+        file_pattern = re.search(r"([a-zA-Z0-9_/\\-]+\.(py|yaml|yml|json|md|txt))", search_text)
+        if not file_pattern:
+            return {"success": False, "dry_run": True, "error": "Could not extract file path from step"}
+
+        file_path_str = file_pattern.group(1)
+        try:
+            file_path = self._resolve_repo_path(file_path_str)
+        except ValueError as e:
+            return {"success": False, "dry_run": True, "error": str(e), "step_type": "modify_file"}
+
+        if not file_path.exists():
+            return {"success": False, "dry_run": True, "error": f"File does not exist: {file_path}"}
+
+        new_content = self._extract_code_block(step.content)
+        if new_content is None:
+            return {
+                "success": False,
+                "dry_run": True,
+                "error": "Modify steps must include a fenced code block with the replacement file content",
+                "file_path": str(file_path),
+                "step_type": "modify_file",
+            }
+
+        try:
+            old_content = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return {
+                "success": False,
+                "dry_run": True,
+                "error": f"Cannot safely modify non-UTF-8 file: {file_path}",
+                "file_path": str(file_path),
+                "step_type": "modify_file",
+            }
+        except Exception as e:
+            return {"success": False, "dry_run": True, "error": f"Failed to read file: {e}", "step_type": "modify_file"}
+
+        diff = self._unified_diff(file_path_str, old_content, new_content)
+        if not diff:
+            return {
+                "success": True,
+                "dry_run": True,
+                "message": "No changes needed",
+                "file_path": str(file_path),
+                "step_type": "modify_file",
+            }
+
+        return {
+            "success": True,
+            "dry_run": True,
+            "message": "File would be modified",
+            "file_path": str(file_path),
+            "diff": diff,
             "step_type": "modify_file",
         }
 
@@ -487,6 +733,40 @@ class ImplementerAgent:
         """Execute an update_config step."""
         # Similar to modify_file but for config files
         return self._execute_modify_file(step, proposal_id)
+
+    def _resolve_repo_path(self, file_path_str: str) -> Path:
+        """Resolve an implementation target and ensure it stays inside repo_root."""
+        candidate = (self.repo_root / file_path_str).resolve()
+        try:
+            candidate.relative_to(self.repo_root)
+        except ValueError as e:
+            raise ValueError(f"Refusing to write outside repo root: {file_path_str}") from e
+        return candidate
+
+    def _extract_code_block(self, content: str) -> Optional[str]:
+        """Return the first fenced code block, preserving its content exactly."""
+        match = re.search(r"```(?:[a-zA-Z0-9_-]+)?[ \t]*\r?\n(.*?)```", content, re.DOTALL)
+        if not match:
+            return None
+        return match.group(1)
+
+    def _unified_diff(self, file_path_str: str, old_content: str, new_content: str) -> str:
+        """Build a unified diff for result reporting."""
+        if old_content == new_content:
+            return ""
+        return "\n".join(
+            difflib.unified_diff(
+                old_content.splitlines(),
+                new_content.splitlines(),
+                fromfile=file_path_str,
+                tofile=file_path_str,
+                lineterm="",
+            )
+        )
+
+    def _creation_diff(self, file_path_str: str, content: str) -> str:
+        """Build a unified diff for creating a new file."""
+        return self._unified_diff(file_path_str, "", content)
 
     def _update_implementation_status(
         self, proposal_id: str, status: str, last_result: Optional[str] = None

@@ -147,9 +147,10 @@ ALLOW_GOVERNANCE_MUTATION: true
         # Execute run_once (should deny due to invalid path)
         result = core.run_once()
         
-        # Verify denial
-        assert result.get("status") == "denied"
-        assert result.get("reason_code") == "PATH_TRAVERSAL_BLOCKED"
+        # Verify blocked before any writes (preflight rejects traversal in payload)
+        assert result.get("status") == "error"
+        assert result.get("code") == "MUTATION_PAYLOAD_INVALID"
+        assert "../evil.txt" in result.get("detail", "")
         
         # Verify safe file unchanged
         assert safe_file.read_text() == original_content

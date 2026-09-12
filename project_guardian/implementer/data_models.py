@@ -132,3 +132,99 @@ class ImplementationResult:
     error: Optional[str] = None
     rollback_required: bool = False
 
+
+def _coerce_str_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def implementation_plan_from_proposal_dict(
+    proposal: Dict[str, Any],
+) -> Optional["ImplementationPlan"]:
+    """
+    Build an ImplementationPlan from JSON-ish proposal metadata when no in-memory
+    plan object was passed (e.g. disk-loaded proposals with nested ``plan`` / ``implementation_plan``,
+    or a top-level ``steps`` list of step dicts).
+    """
+    if not isinstance(proposal, dict):
+        return None
+
+    raw: Optional[Dict[str, Any]] = None
+    for key in ("implementation_plan", "plan"):
+        candidate = proposal.get(key)
+        if isinstance(candidate, dict) and isinstance(candidate.get("steps"), list):
+            raw = candidate
+            break
+
+    if raw is None:
+        top_steps = proposal.get("steps")
+        if isinstance(top_steps, list) and top_steps and all(
+            isinstance(x, dict) for x in top_steps
+        ):
+            raw = {"steps": top_steps}
+
+    if raw is None:
+        return None
+
+    steps_out: List[ImplementationStep] = []
+    for idx, item in enumerate(raw.get("steps") or []):
+        if not isinstance(item, dict):
+            continue
+        sid = str(item.get("id") or item.get("step_id") or f"step-{idx + 1}").strip()
+        if not sid:
+            sid = f"step-{idx + 1}"
+        desc = str(item.get("description") or "").strip() or sid
+        stype = str(item.get("type") or "code_modify").strip() or "code_modify"
+        targets = item.get("targets") or item.get("target_files") or []
+        if not isinstance(targets, list):
+            targets = []
+        targets = [str(t).strip() for t in targets if str(t).strip()]
+        ac = _coerce_str_list(item.get("acceptance_criteria"))
+        deps = item.get("dependencies") or []
+        if not isinstance(deps, list):
+            deps = []
+        deps = [str(d).strip() for d in deps if str(d).strip()]
+        effort = item.get("estimated_effort")
+        effort_s = str(effort).strip() if effort is not None else None
+        steps_out.append(
+            ImplementationStep(
+                id=sid,
+                description=desc,
+                type=stype,
+                targets=targets,
+                acceptance_criteria=ac,
+                estimated_effort=effort_s or None,
+                dependencies=deps,
+            )
+        )
+
+    if not steps_out:
+        return None
+
+    proposal_id = str(
+        raw.get("proposal_id")
+        or proposal.get("proposal_id")
+        or "unknown"
+    )
+    assumptions = _coerce_str_list(raw.get("assumptions") or proposal.get("assumptions"))
+    risks = _coerce_str_list(raw.get("risks") or proposal.get("risks"))
+    domain = raw.get("domain") or proposal.get("domain")
+    domain_s = str(domain).strip() if domain is not None else None
+
+    return ImplementationPlan(
+        proposal_id=proposal_id,
+        steps=steps_out,
+        assumptions=assumptions,
+        risks=risks,
+        estimated_total_effort=(
+            str(raw.get("estimated_total_effort")).strip()
+            if raw.get("estimated_total_effort") is not None
+            else None
+        ),
+        domain=domain_s,
+    )

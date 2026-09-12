@@ -10,7 +10,7 @@ from unittest.mock import patch, MagicMock
 
 try:
     from project_guardian.ui.app import is_loopback, app
-    from fastapi.testclient import TestClient
+    from tests.ui_test_helpers import LOCAL_TEST_CLIENT, REMOTE_TEST_CLIENT, local_test_client
     FASTAPI_AVAILABLE = True
 except ImportError:
     FASTAPI_AVAILABLE = False
@@ -53,8 +53,8 @@ class TestLocalOnlyMiddleware:
     
     @pytest.fixture
     def client(self):
-        """Create FastAPI test client"""
-        return TestClient(app)
+        """Create FastAPI test client simulating loopback client host."""
+        return local_test_client(app)
     
     def test_localhost_request_succeeds(self, client):
         """Verify localhost requests succeed (TestClient appears as local)"""
@@ -70,19 +70,16 @@ class TestLocalOnlyMiddleware:
         assert data["local_only_enforced"] == True
     
     def test_middleware_rejects_non_loopback(self):
-        """Test middleware rejects non-loopback hosts"""
-        # Note: TestClient always appears as localhost, so we can't easily
-        # simulate a remote host. Instead, we test the is_loopback function
-        # directly and document that middleware integration testing requires
-        # actual network setup or more complex mocking.
-        
-        # Verify the guard function works correctly
-        assert is_loopback("192.168.1.5") == False
-        assert is_loopback("10.0.0.2") == False
-        
-        # The middleware will use request.client.host, which TestClient
-        # always sets to a loopback address. Full integration testing
-        # would require running a real server or mocking the request object.
+        """Verify middleware returns 403 for non-loopback TestClient host."""
+        remote = local_test_client(app, client=REMOTE_TEST_CLIENT)
+        response = remote.get("/")
+        assert response.status_code == 403
+
+        local = local_test_client(app)
+        assert local.get("/").status_code == 200
+
+        assert is_loopback("192.168.1.5") is False
+        assert is_loopback("10.0.0.2") is False
 
 
 class TestBindHostWarning:
@@ -90,8 +87,8 @@ class TestBindHostWarning:
     
     @pytest.fixture
     def client(self):
-        """Create FastAPI test client"""
-        return TestClient(app)
+        """Create FastAPI test client simulating loopback client host."""
+        return local_test_client(app)
     
     def test_dashboard_shows_local_only_banner(self, client):
         """Verify dashboard shows local-only banner"""

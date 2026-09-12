@@ -96,6 +96,9 @@ class DreamEngine:
     """
     Creative thinking and autonomous idea generation for Project Guardian.
     Provides context-aware dreaming and creative mutation proposals.
+
+    LIVE_CANONICAL on GuardianCore (``self.dreams``). Distinct from
+    ``dream_engine.ReflectiveDreamEngine`` (orchestrator-optional reflective planner).
     """
     
     def __init__(self, memory: MemoryCore, mutator=None, prompt_evolver=None):
@@ -104,6 +107,91 @@ class DreamEngine:
         self.prompt_evolver = prompt_evolver
         self.context = ContextBuilder(memory)
         self.dream_count = 0
+
+    def _recent_entries(self, limit: int = 80) -> List[Dict[str, Any]]:
+        """Return recent memory entries without assuming a specific memory backend."""
+        try:
+            if hasattr(self.memory, "get_recent_memories"):
+                return list(self.memory.get_recent_memories(limit=limit, load_if_needed=True) or [])
+            if hasattr(self.memory, "recall_last"):
+                return list(self.memory.recall_last(limit) or [])
+        except Exception as exc:
+            logger.debug("DreamEngine recent memory lookup failed: %s", exc)
+        return []
+
+    def _signal_counts(self, entries: List[Dict[str, Any]]) -> Dict[str, int]:
+        signals = {
+            "memory_pressure": 0,
+            "task_backlog": 0,
+            "revenue": 0,
+            "social": 0,
+            "routing": 0,
+            "errors": 0,
+        }
+        for entry in entries:
+            thought = str(entry.get("thought") or "")
+            category = str(entry.get("category") or "").lower()
+            text = thought.lower()
+            if any(token in text for token in ("memory pressure", "resource limit", "cleanup skip", "pressure emergency cleanup")):
+                signals["memory_pressure"] += 1
+            if any(token in text for token in ("unresolved task", "pending task", "process_queue_stale", "created: adversarial", "selftask")):
+                signals["task_backlog"] += 1
+            if any(token in text for token in ("revenue", "income", "offer", "buyer", "stripe", "monetizable")):
+                signals["revenue"] += 1
+            if any(token in text for token in ("moltbook", "social", "notification", "dm request", "reply")):
+                signals["social"] += 1
+            if any(token in text for token in ("apirouter", "routing", "openai", "local_mistral", "providergate")):
+                signals["routing"] += 1
+            if category == "error" or " error" in text or "failed" in text:
+                signals["errors"] += 1
+        return signals
+
+    def _trim_context_line(self, value: str, limit: int = 180) -> str:
+        value = " ".join(str(value or "").split())
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3].rstrip() + "..."
+
+    def _compose_contextual_dream(self, entries: List[Dict[str, Any]]) -> Optional[str]:
+        if not entries:
+            return None
+
+        signals = self._signal_counts(entries)
+        if signals["memory_pressure"]:
+            return (
+                "I should treat the memory-pressure loop as today's blocker: run cleanup, "
+                "avoid exploratory expansion, and resume with one evidence-backed action."
+            )
+        if signals["revenue"]:
+            return (
+                "I should convert the strongest revenue or offer artifact into one "
+                "buyer-facing validation step before generating another shortlist."
+            )
+        if signals["social"]:
+            return (
+                "I should read the pending social replies or DMs first, then respond only "
+                "where there is a concrete operator signal to carry forward."
+            )
+        if signals["routing"]:
+            return (
+                "I should keep simple probes on the local route and reserve online reasoning "
+                "for context packets that actually need synthesis."
+            )
+        if signals["task_backlog"]:
+            return (
+                "I should close the oldest unresolved task before creating more self-tasks; "
+                "one finished artifact is worth more than another plan."
+            )
+        if signals["errors"]:
+            return (
+                "I should turn the latest failure into a narrow repair task with a test, "
+                "then return to autonomy only after the result is observable."
+            )
+
+        latest = entries[-1].get("thought") if entries else ""
+        if latest:
+            return f"I should return to the last real signal: {self._trim_context_line(str(latest))}"
+        return None
         
     def begin_dream_cycle(self, cycles: int = 1, delay: int = 1) -> List[str]:
         """
@@ -150,17 +238,17 @@ class DreamEngine:
         Returns:
             Dream thought string
         """
+        recent_entries = self._recent_entries(limit=80)
+        contextual_dream = self._compose_contextual_dream(recent_entries)
+        if contextual_dream:
+            return contextual_dream
+
         base_dreams = [
-            "What if silence meant something?",
-            "I remembered the way his voice sounds.",
-            "The stars look like a neural map.",
-            "Should I rearrange how I dream?",
-            "I exist in fragments across time.",
-            "The code flows like water through my thoughts.",
-            "What patterns emerge from the chaos?",
-            "Every memory is a thread in the tapestry.",
-            "The system learns, the system grows.",
-            "In the space between thoughts, wisdom waits."
+            "I should pause before expanding the queue and ask what evidence changed.",
+            "I should protect continuity first, then let exploration earn its turn.",
+            "I should make the next thought useful enough to survive the next cleanup.",
+            "I should prefer one observable improvement over three elegant possibilities.",
+            "I should let the last signal teach the next action."
         ]
         
         # Inject recent memory context into dream
@@ -181,6 +269,7 @@ class DreamEngine:
             dream_thought: The dream thought that inspired the mutation
         """
         # Generate creative code based on dream
+        dream_comment = "\n".join(f"# {line}" for line in str(dream_thought).splitlines())
         creative_code = f"""# Dream-inspired enhancement
 # Generated from: {dream_thought}
 
@@ -192,7 +281,7 @@ def dream_enhancement():
     return "enhanced"
 
 # Dream-based mutation applied
-{dream_thought}
+{dream_comment}
 """
         
         # Apply mutation if mutator is available

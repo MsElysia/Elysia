@@ -36,6 +36,12 @@ _PRESSURE_CONSOLIDATION_MIN_COUNT = 1000
 # Under critical pressure, allow a lower emergency floor for low-count sessions to avoid
 # repeated no-op skips when count is well below normal pressure trim target.
 _PRESSURE_EMERGENCY_MIN_COUNT = 100
+# Never emergency-trim below this fraction of the active pressure trim target.
+# This prevents catastrophic drops like 1000 -> 25 when config is too aggressive.
+_PRESSURE_EMERGENCY_FLOOR_FRACTION = 0.90
+# Under pressure-emergency cleanup, trim proportionally each cycle instead of snapping
+# straight to floor/target. Keeps context while still reclaiming memory steadily.
+_PRESSURE_EMERGENCY_TRIM_RATIO = 0.15
 
 # Headroom when trimming: trim to (threshold - headroom) to avoid treadmill (beat adds 1, cleanup removes 1)
 _CLEANUP_HEADROOM = 300
@@ -59,10 +65,14 @@ def _load_memory_pressure_config() -> Dict[str, Any]:
             pass
     return {
         "pressure_trim_target": 1600,
-        "memory_pressure_trigger_fraction": 1.0,
+        # Slightly earlier "memory_pressure_high" when JSON config is absent (lighter autonomy pressure).
+        "memory_pressure_trigger_fraction": 0.88,
         "vector_embed_batch_every": 5,
         "bad_learning_streak_cooldown_multiplier": 3.0,
         "pressure_emergency_min_count": _PRESSURE_EMERGENCY_MIN_COUNT,
+        "pressure_emergency_floor_fraction": _PRESSURE_EMERGENCY_FLOOR_FRACTION,
+        "pressure_emergency_trim_ratio": _PRESSURE_EMERGENCY_TRIM_RATIO,
+        "pressure_critical_force_cleanup_fraction": 0.95,
         "skipped_small_delta_force_after": 4,
         "memory_search_no_novelty_block_cycles": 2,
         "stagnation_force_non_memory_after_cycles": 3,
@@ -71,6 +81,87 @@ def _load_memory_pressure_config() -> Dict[str, Any]:
         "bad_learning_session_cooldown_minutes": 90,
         "embedding_fallback_log_level": "warning",
     }
+
+
+def _effective_pressure_emergency_floor(
+    trim_target: int,
+    pressure_cfg: Optional[Dict[str, Any]] = None,
+) -> int:
+    """
+    Compute a safe emergency floor for pressure cleanups.
+
+    The configured floor is clamped upward so emergency cleanup keeps most recent
+    context near the active pressure trim target.
+    """
+    cfg = pressure_cfg or _load_memory_pressure_config()
+    configured_floor = int(
+        cfg.get("pressure_emergency_min_count", _PRESSURE_EMERGENCY_MIN_COUNT)
+    )
+    try:
+        floor_fraction = float(
+            cfg.get(
+                "pressure_emergency_floor_fraction",
+                _PRESSURE_EMERGENCY_FLOOR_FRACTION,
+            )
+        )
+    except (TypeError, ValueError):
+        floor_fraction = _PRESSURE_EMERGENCY_FLOOR_FRACTION
+    floor_fraction = max(0.0, min(1.0, floor_fraction))
+    fractional_floor = int(max(1, trim_target) * floor_fraction)
+    effective_floor = max(
+        _PRESSURE_EMERGENCY_MIN_COUNT,
+        configured_floor,
+        fractional_floor,
+    )
+    # Keep floor below trim target so emergency path can still reduce count.
+    return min(effective_floor, max(1, int(trim_target) - 1))
+
+
+def _compute_pressure_emergency_target(
+    memory_count_before: int,
+    effective_floor: int,
+    pressure_cfg: Optional[Dict[str, Any]] = None,
+) -> int:
+    """
+    Compute a proportional emergency trim target bounded by effective floor.
+    """
+    cfg = pressure_cfg or _load_memory_pressure_config()
+    try:
+        trim_ratio = float(
+            cfg.get("pressure_emergency_trim_ratio", _PRESSURE_EMERGENCY_TRIM_RATIO)
+        )
+    except (TypeError, ValueError):
+        trim_ratio = _PRESSURE_EMERGENCY_TRIM_RATIO
+    trim_ratio = max(0.01, min(0.95, trim_ratio))
+    proportional_remove = int(memory_count_before * trim_ratio)
+    remove_count = max(MIN_TRIM_DELTA, proportional_remove)
+    target = max(effective_floor, memory_count_before - remove_count)
+    # Ensure attempt can reduce at least one item if count is above floor.
+    if target >= memory_count_before:
+        target = max(effective_floor, memory_count_before - 1)
+    return int(target)
+
+
+def _system_memory_pressure_fraction() -> Optional[float]:
+    """Return host RAM usage as 0.0-1.0 when psutil is available."""
+    try:
+        import psutil
+
+        return float(psutil.virtual_memory().percent) / 100.0
+    except Exception:
+        return None
+
+
+def _pressure_critical_force_fraction(pressure_cfg: Optional[Dict[str, Any]] = None) -> float:
+    """Host RAM fraction that bypasses quiet/small-delta pressure backoffs."""
+    cfg = pressure_cfg or _load_memory_pressure_config()
+    try:
+        raw = float(cfg.get("pressure_critical_force_cleanup_fraction", 0.95))
+    except (TypeError, ValueError):
+        raw = 0.95
+    return max(0.70, min(0.99, raw))
+
+
 # Logs showing threshold=2800 mean it is set in config (e.g. config/*.json or passed at init).
 # Default 3500; adjust per deployment based on typical memory counts and host RAM.
 
@@ -497,6 +588,8 @@ class SystemMonitor:
         self._pressure_skipped_small_delta_count = 0
         # Post-cleanup quiet zone: suppress repeat cleanup checks briefly after consolidating to trim_target
         self._post_cleanup_quiet_until: Optional[float] = None
+        # Latest cleanup result snapshot for status/UI observability.
+        self._last_cleanup_result: Dict[str, Any] = {}
         
     def start_monitoring(self) -> None:
         """Start system monitoring (idempotent - won't start if already running)."""
@@ -575,6 +668,18 @@ class SystemMonitor:
         # Deduct for high memory usage
         if heartbeat_metrics.get("total_memories", 0) > 1000:
             health_score -= 0.1
+
+        system_memory_fraction = _system_memory_pressure_fraction()
+        if system_memory_fraction is not None:
+            heartbeat_metrics["system_memory_percent"] = round(system_memory_fraction * 100.0, 1)
+            if system_memory_fraction >= 0.95:
+                health_score -= 0.65
+            elif system_memory_fraction >= 0.90:
+                health_score -= 0.45
+            elif system_memory_fraction >= 0.85:
+                health_score -= 0.30
+            elif system_memory_fraction >= 0.80:
+                health_score -= 0.15
             
         health_score = max(0.0, health_score)
         
@@ -598,7 +703,10 @@ class SystemMonitor:
         
         summary = f"[System Health] Status: {health['status'].upper()}\n"
         summary += f"  Health Score: {health['health_score']:.2f}\n"
-        summary += f"  Memory Count: {health['heartbeat']['total_memories']}\n"
+        summary += f"  Memory Count: {health['heartbeat'].get('total_memories', 0)}\n"
+        system_memory_percent = health["heartbeat"].get("system_memory_percent")
+        if system_memory_percent is not None:
+            summary += f"  System Memory: {system_memory_percent:.1f}%\n"
         summary += f"  Recent Errors: {health['errors']['recent_errors']}\n"
         if 'guardian_status' in health and 'trust' in health['guardian_status']:
             summary += f"  Trust Level: {health['guardian_status']['trust']['average_trust']:.2f}\n"
@@ -673,6 +781,11 @@ class SystemMonitor:
             cnt = memory_obj.get_memory_count(load_if_needed=True)
         elif hasattr(memory_obj, "get_memory_state"):
             cnt = memory_obj.get_memory_state(load_if_needed=True).get("memory_count")
+        elif hasattr(memory_obj, "memory_log"):
+            try:
+                cnt = len(memory_obj.memory_log)
+            except TypeError:
+                cnt = None
         else:
             cnt = None
         metrics = {
@@ -839,6 +952,7 @@ class SystemMonitor:
                 "rss_after_mb": None,
                 "error": None,
             }
+            self._last_cleanup_result = self._sanitize_cleanup_result(early_result)
             logger.warning("[Auto-Cleanup] Cleanup already in progress, skipping duplicate call")
             return early_result
         
@@ -873,6 +987,23 @@ class SystemMonitor:
                 logger.warning(msg)
             else:
                 logger.info(msg)
+
+        def _consolidation_action_taken(consol_result: Dict[str, Any], before_count: int) -> bool:
+            raw_action = consol_result.get("action_taken")
+            if raw_action is not None:
+                return bool(raw_action)
+            if consol_result.get("action") == "consolidated":
+                return True
+            try:
+                if int(consol_result.get("removed") or 0) > 0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+            try:
+                final_count = int(consol_result.get("final_count"))
+                return final_count < int(before_count)
+            except (TypeError, ValueError):
+                return False
         
         try:
             memory_obj = self.memory
@@ -910,6 +1041,11 @@ class SystemMonitor:
                 trim_target = memory_threshold
                 quiet_min = pressure_cfg.get("post_cleanup_quiet_minutes", 5)
                 quiet_margin = pressure_cfg.get("post_cleanup_quiet_margin", 50)
+                critical_force_fraction = _pressure_critical_force_fraction(pressure_cfg)
+                critical_pressure = (
+                    system_memory_percent is not None
+                    and system_memory_percent >= critical_force_fraction
+                )
                 in_quiet_zone = (
                     self._post_cleanup_quiet_until is not None
                     and now < self._post_cleanup_quiet_until
@@ -918,7 +1054,7 @@ class SystemMonitor:
                     memory_count_before is not None
                     and memory_count_before <= trim_target + quiet_margin
                 )
-                if in_quiet_zone and count_near_target:
+                if in_quiet_zone and count_near_target and not critical_pressure:
                     result["attempted"] = True
                     _log_terminal(
                         CLEANUP_OUTCOME_SKIPPED_QUIET_ZONE,
@@ -929,6 +1065,14 @@ class SystemMonitor:
                         "info",
                     )
                     return result
+                if in_quiet_zone and count_near_target and critical_pressure:
+                    logger.info(
+                        "[Auto-Cleanup #%d] Critical memory %.1f%% bypasses post-cleanup quiet zone "
+                        "(threshold=%.1f%%)",
+                        cleanup_id,
+                        system_memory_percent * 100.0,
+                        critical_force_fraction * 100.0,
+                    )
 
                 # When system RAM is critically high (>= 85%), run full consolidation to free process memory
                 # even if guardian count is below normal threshold (consol_thresh). Use lower effective
@@ -944,20 +1088,28 @@ class SystemMonitor:
                     # emergency pressure cleanup path (consolidate to a lower max_memories),
                     # instead of blocking solely on "count below threshold".
                     result["attempted"] = True
-                    pressure_emergency_min_count = int(
-                        pressure_cfg.get("pressure_emergency_min_count", _PRESSURE_EMERGENCY_MIN_COUNT)
+                    # Base emergency floor on the lower of configured trim target and active
+                    # pressure threshold for this pass. This preserves low-trim deployments
+                    # while avoiding unrealistically high emergency floors in high-threshold
+                    # installs during critical system RAM pressure.
+                    emergency_floor_base = min(int(memory_threshold), int(skip_thresh))
+                    pressure_emergency_min_count = _effective_pressure_emergency_floor(
+                        emergency_floor_base,
+                        pressure_cfg=pressure_cfg,
                     )
                     if memory_count_before > pressure_emergency_min_count:
                         result["cleanup_path"] = "pressure_emergency_cleanup"
-                        if memory_count_before > _PRESSURE_CONSOLIDATION_MIN_COUNT:
-                            emergency_target = _PRESSURE_CONSOLIDATION_MIN_COUNT
-                        else:
-                            emergency_target = pressure_emergency_min_count
+                        emergency_target = _compute_pressure_emergency_target(
+                            memory_count_before,
+                            pressure_emergency_min_count,
+                            pressure_cfg=pressure_cfg,
+                        )
                         result["trim_policy"] = {
                             "trigger_threshold": skip_thresh,
                             "trim_target": emergency_target,
+                            "effective_emergency_floor": pressure_emergency_min_count,
                             "min_trim_delta": MIN_TRIM_DELTA,
-                            "source": "pressure_emergency",
+                            "source": "pressure_emergency_proportional",
                         }
                         cleared = self._clear_caches(memory_obj)
                         import gc
@@ -965,9 +1117,7 @@ class SystemMonitor:
                         result["gc_ran"] = True
                         result["caches_cleared"] = bool(cleared)
                         consol_result = memory_obj.consolidate(max_memories=emergency_target, keep_recent_days=30)
-                        result["action_taken"] = bool(
-                            consol_result.get("action_taken", consol_result.get("action") == "consolidated")
-                        )
+                        result["action_taken"] = _consolidation_action_taken(consol_result, memory_count_before)
                         result["no_op_reason"] = consol_result.get("no_op_reason")
                         result["memory_after"] = consol_result.get("final_count", memory_count_before)
                         result["rss_after_mb"] = consol_result.get("rss_after_mb", rss_before_mb)
@@ -989,12 +1139,19 @@ class SystemMonitor:
                                 CLEANUP_OUTCOME_SKIPPED_BELOW_THRESHOLD,
                                 f"[Auto-Cleanup #{cleanup_id}] Pressure emergency cleanup skipped: reason={reason}, "
                                 f"outcome={CLEANUP_OUTCOME_SKIPPED_BELOW_THRESHOLD}, system_memory={sys_pct}, "
-                                f"memory_count={memory_count_before} emergency_target={emergency_target}",
+                                f"memory_count={memory_count_before} emergency_target={emergency_target} "
+                                f"(effective_floor={pressure_emergency_min_count})",
                                 "warning",
                             )
                         return result
 
                     result["no_op_reason"] = "memory_count_below_threshold"
+                    result["trim_policy"] = {
+                        "trigger_threshold": skip_thresh,
+                        "trim_target": memory_threshold,
+                        "min_trim_delta": MIN_TRIM_DELTA,
+                        "source": "config_memory_pressure",
+                    }
                     cleared = self._clear_caches(memory_obj)
                     import gc
                     gc.collect()
@@ -1023,7 +1180,8 @@ class SystemMonitor:
                             CLEANUP_OUTCOME_SKIPPED_BELOW_THRESHOLD,
                             f"[Auto-Cleanup #{cleanup_id}] Skipped: reason={reason}, "
                             f"outcome={CLEANUP_OUTCOME_SKIPPED_BELOW_THRESHOLD}, "
-                            f"system_memory={sys_pct}, memory_count={memory_count_before} below threshold={consol_thresh}",
+                            f"system_memory={sys_pct}, memory_count={memory_count_before} "
+                            f"below skip_threshold={skip_thresh} (consolidation_threshold={consol_thresh})",
                             "warning",
                         )
                         # Event-driven adversarial: repeated cleanup no-op
@@ -1047,7 +1205,15 @@ class SystemMonitor:
                 delta_would_remove = (memory_count_before or 0) - pressure_trim_target
                 pressure_cfg = _load_memory_pressure_config()
                 force_after = pressure_cfg.get("skipped_small_delta_force_after", 4)
-                force_cleanup = self._pressure_skipped_small_delta_count >= force_after
+                critical_force_fraction = _pressure_critical_force_fraction(pressure_cfg)
+                critical_force_cleanup = (
+                    system_memory_percent is not None
+                    and system_memory_percent >= critical_force_fraction
+                )
+                force_cleanup = (
+                    self._pressure_skipped_small_delta_count >= force_after
+                    or critical_force_cleanup
+                )
 
                 result["trim_policy"] = {
                     "trigger_threshold": skip_thresh,
@@ -1055,6 +1221,7 @@ class SystemMonitor:
                     "min_trim_delta": MIN_TRIM_DELTA,
                     "source": "config_memory_pressure",
                     "skipped_small_delta_count": self._pressure_skipped_small_delta_count,
+                    "critical_force_fraction": round(critical_force_fraction, 4),
                 }
                 if delta_would_remove < MIN_TRIM_DELTA and not force_cleanup:
                     # Slightly above floor - light reclaim only, avoid thrash (1754->1750, 1755->1750)
@@ -1081,17 +1248,32 @@ class SystemMonitor:
                     return result
                 # Force cleanup after repeated skipped_small_delta - fall through to consolidation
                 if force_cleanup:
-                    logger.info(
-                        "[Auto-Cleanup #%d] Forcing consolidation after %d skipped_small_delta (bypass min_trim_delta)",
-                        cleanup_id, self._pressure_skipped_small_delta_count,
-                    )
+                    if critical_force_cleanup:
+                        logger.info(
+                            "[Auto-Cleanup #%d] Critical memory %.1f%% forces consolidation "
+                            "(bypass min_trim_delta threshold=%.1f%%)",
+                            cleanup_id,
+                            system_memory_percent * 100.0,
+                            critical_force_fraction * 100.0,
+                        )
+                    else:
+                        logger.info(
+                            "[Auto-Cleanup #%d] Forcing consolidation after %d skipped_small_delta (bypass min_trim_delta)",
+                            cleanup_id, self._pressure_skipped_small_delta_count,
+                        )
                     self._pressure_skipped_small_delta_count = 0
                     result["force_cleanup_bypass_delta"] = True
+                    result["force_cleanup_reason"] = (
+                        "critical_memory_pressure" if critical_force_cleanup else "repeated_small_delta"
+                    )
             
             # Count-threshold or eligible pressure path: run full consolidation
             result["attempted"] = True
             cleared_caches = self._clear_caches(memory_obj)
             result["caches_cleared"] = bool(cleared_caches)
+            import gc
+            gc.collect()
+            result["gc_ran"] = True
             
             if not hasattr(memory_obj, 'consolidate'):
                 result["no_op_reason"] = "no_consolidate_method"
@@ -1116,7 +1298,7 @@ class SystemMonitor:
                     "trigger_threshold": trigger_thresh,
                     "trim_target": trim_target,
                     "min_trim_delta": MIN_TRIM_DELTA,
-                    "source": "config" if reason == CLEANUP_REASON_MEMORY_COUNT_THRESHOLD else "config_memory_cleanup_threshold_x05",
+                    "source": "config" if reason == CLEANUP_REASON_MEMORY_COUNT_THRESHOLD else "config_memory_pressure",
                 }
 
             # Hysteresis: skip consolidation if would remove fewer than min_trim_delta (avoid thrash).
@@ -1151,7 +1333,7 @@ class SystemMonitor:
                     cleanup_id, delta_would_remove, MIN_TRIM_DELTA,
                 )
             consol_result = memory_obj.consolidate(max_memories=trim_target, keep_recent_days=30)
-            result["action_taken"] = bool(consol_result.get("action_taken", consol_result.get("action") == "consolidated"))
+            result["action_taken"] = _consolidation_action_taken(consol_result, memory_count_before)
             result["no_op_reason"] = consol_result.get("no_op_reason")
             result["memory_after"] = consol_result.get("final_count", memory_count_before)
             result["rss_after_mb"] = consol_result.get("rss_after_mb", rss_before_mb)
@@ -1242,6 +1424,31 @@ class SystemMonitor:
                     f"[Auto-Cleanup #{cleanup_id}] Processed {processed_count} queued memory writes after cleanup "
                     "(min_trim_delta prevents thrash when slight refill)"
                 )
+            self._last_cleanup_result = self._sanitize_cleanup_result(result)
+
+    def _sanitize_cleanup_result(self, result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Reduce cleanup payload to stable, UI-friendly fields."""
+        if not isinstance(result, dict):
+            return {}
+        trim_policy = result.get("trim_policy")
+        trim_target = trim_policy.get("trim_target") if isinstance(trim_policy, dict) else None
+        effective_floor = trim_policy.get("effective_emergency_floor") if isinstance(trim_policy, dict) else None
+        return {
+            "cleanup_id": result.get("cleanup_id"),
+            "reason": result.get("reason"),
+            "outcome": result.get("outcome"),
+            "cleanup_path": result.get("cleanup_path"),
+            "action_taken": bool(result.get("action_taken", False)),
+            "memory_before": result.get("memory_before"),
+            "memory_after": result.get("memory_after"),
+            "trim_target": trim_target,
+            "effective_emergency_floor": effective_floor,
+            "updated_at": time.time(),
+        }
+
+    def get_last_cleanup_result(self) -> Dict[str, Any]:
+        """Return latest cleanup result snapshot for API/UI."""
+        return dict(self._last_cleanup_result or {})
     
     def _force_trim_memory(self, memory_obj, max_memories: int) -> None:
         """Force trim to max_memories by keeping most recent. Uses load_if_needed then internal trim."""

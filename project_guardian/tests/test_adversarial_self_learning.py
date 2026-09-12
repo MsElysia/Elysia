@@ -15,6 +15,10 @@ from project_guardian.adversarial_self_learning import (
     get_active_gates,
     apply_execution_policy_to_candidates,
     FINDING_TYPE_DEGRADED_VECTOR,
+    FINDING_TYPE_CLEANUP_ANOMALY,
+    _analyze_cleanup_anomalies,
+    _apply_findings,
+    _make_finding,
 )
 
 
@@ -158,3 +162,114 @@ class TestAdversarialGating:
         status = get_adversarial_status(g)
         assert "active_gates" in status
         assert status["active_gates"].get("consider_learning") == "rebuild_vector"
+
+
+def test_bad_learning_session_skips_finding_when_duplicate_saturated(tmp_path):
+    """Duplicate-heavy rejections should not open a noisy-learning adversarial finding."""
+    from project_guardian.memory import MemoryCore
+    from project_guardian.adversarial_self_learning import (
+        trigger_adversarial_on_event,
+        TRIGGER_BAD_LEARNING_SESSION,
+    )
+
+    mem_path = tmp_path / "m.json"
+    mem_path.write_text("[]", encoding="utf-8")
+    mem = MemoryCore(filepath=str(mem_path), lazy_load=False)
+
+    class G:
+        memory = mem
+
+    g = G()
+    ctx = {
+        "fetched": 10,
+        "rejected": 9,
+        "admitted": 0,
+        "cross_session_duplicates": 8,
+        "rejection_breakdown": {"cross_session_duplicate": 8, "too_short": 1},
+    }
+    assert trigger_adversarial_on_event(g, TRIGGER_BAD_LEARNING_SESSION, ctx) is None
+
+
+def test_bad_learning_session_still_triggers_when_not_duplicate_saturated(tmp_path):
+    from project_guardian.memory import MemoryCore
+    from project_guardian.adversarial_self_learning import (
+        trigger_adversarial_on_event,
+        TRIGGER_BAD_LEARNING_SESSION,
+    )
+
+    mem_path = tmp_path / "m2.json"
+    mem_path.write_text("[]", encoding="utf-8")
+    mem = MemoryCore(filepath=str(mem_path), lazy_load=False)
+
+    class G:
+        memory = mem
+
+    g = G()
+    ctx = {
+        "fetched": 6,
+        "rejected": 6,
+        "admitted": 0,
+        "cross_session_duplicates": 1,
+        "rejection_breakdown": {"too_short": 6},
+    }
+    out = trigger_adversarial_on_event(g, TRIGGER_BAD_LEARNING_SESSION, ctx)
+    assert out is not None
+
+
+def test_cleanup_anomaly_dedups_when_skip_count_changes(mock_guardian_with_tasks):
+    """A recurring cleanup pressure anomaly should update one finding/task."""
+    f1 = _make_finding(
+        type=FINDING_TYPE_CLEANUP_ANOMALY,
+        severity="medium",
+        source="memory",
+        evidence={"skip_count": 3},
+        recommended_action="review_cleanup_threshold",
+        auto_actionable=True,
+        summary="Multiple cleanup skips (3); memory pressure or threshold mismatch",
+    )
+    first = _apply_findings(mock_guardian_with_tasks, [f1], "periodic")
+    assert first["tasks_created"] == 1
+
+    f2 = _make_finding(
+        type=FINDING_TYPE_CLEANUP_ANOMALY,
+        severity="medium",
+        source="memory",
+        evidence={"skip_count": 4},
+        recommended_action="review_cleanup_threshold",
+        auto_actionable=True,
+        summary="Multiple cleanup skips (4); memory pressure or threshold mismatch",
+    )
+    second = _apply_findings(mock_guardian_with_tasks, [f2], "periodic")
+    assert second["tasks_created"] == 0
+
+    adv_tasks = mock_guardian_with_tasks.tasks.get_active_tasks(category="adversarial")
+    assert len(adv_tasks) == 1
+    assert "review_cleanup_threshold" in adv_tasks[0]["name"]
+
+
+def test_cleanup_anomaly_ignores_recent_successful_pressure_cleanup():
+    """Older skip lines should not reopen the anomaly after the latest cleanup succeeded."""
+    memories = [
+        {
+            "time": "2026-04-29T18:30:00",
+            "category": "monitoring",
+            "thought": "[Auto-Cleanup #302] Pressure emergency cleanup: reason=system_memory_pressure, outcome=consolidated, path=pressure_emergency_cleanup, memory=904->900",
+        },
+        {
+            "time": "2026-04-29T18:29:00",
+            "category": "monitoring",
+            "thought": "Skipped: reason=system_memory_pressure outcome=skipped_below_threshold system_memory=95.1% memory_count=900 below threshold=3500",
+        },
+        {
+            "time": "2026-04-29T18:28:00",
+            "category": "monitoring",
+            "thought": "Pressure emergency cleanup skipped: reason=system_memory_pressure outcome=skipped_small_delta memory=901 target=900",
+        },
+        {
+            "time": "2026-04-29T18:27:00",
+            "category": "monitoring",
+            "thought": "Cleanup no-op: memory pressure stayed high but no memory trim was available",
+        },
+    ]
+
+    assert _analyze_cleanup_anomalies(memories) == []

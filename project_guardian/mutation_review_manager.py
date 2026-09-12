@@ -18,6 +18,7 @@ try:
     from .mutation_engine import MutationEngine, MutationProposal, MutationStatus
     from .trust_audit_log import TrustAuditLog, AuditEventType, AuditSeverity
     from .recovery_vault import RecoveryVault
+    from .eai_safety import EAIDecision
 except ImportError:
     from trust_registry import TrustRegistry
     from trust_policy_manager import TrustPolicyManager
@@ -32,8 +33,91 @@ except ImportError:
         from recovery_vault import RecoveryVault
     except ImportError:
         RecoveryVault = None
+    try:
+        from eai_safety import EAIDecision
+    except ImportError:
+        EAIDecision = None
 
 logger = logging.getLogger(__name__)
+
+
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
+
+
+def configure_mutation_review_manager(
+    *,
+    trust_registry: Optional["TrustRegistry"] = None,
+    trust_policy: Optional["TrustPolicyManager"] = None,
+    mutation_engine: Optional["MutationEngine"] = None,
+    audit_log: Optional["TrustAuditLog"] = None,
+    recovery_vault: Optional["RecoveryVault"] = None,
+    eai_safety: Optional[Any] = None,
+    guardian: Optional[Any] = None,
+    storage_path: str = "data/mutation_reviews.json",
+    auto_approve_trust_threshold: float = 0.9,
+    require_human_review_risk: "RiskLevel" = None,
+) -> "MutationReviewManager":
+    """
+    Build a ``MutationReviewManager`` from explicit dependencies or a minimal guardian object.
+
+    Requires a ``MutationEngine``. Trust registry and policy are optional but recommended
+    for trust-based auto-approval behavior.
+    """
+    if require_human_review_risk is None:
+        require_human_review_risk = RiskLevel.HIGH
+
+    resolved_engine = mutation_engine or _guardian_component(
+        guardian,
+        "mutation_engine",
+        "mutation",
+    )
+    if resolved_engine is None:
+        raise ValueError("MutationReviewManager requires mutation_engine")
+
+    resolved_registry = trust_registry or _guardian_component(
+        guardian,
+        "trust_registry",
+    )
+    resolved_policy = trust_policy or _guardian_component(
+        guardian,
+        "trust_policy_manager",
+        "trust_policy",
+    )
+    resolved_audit = audit_log or _guardian_component(
+        guardian,
+        "trust_audit_log",
+        "audit_log",
+    )
+    resolved_vault = recovery_vault or _guardian_component(
+        guardian,
+        "recovery_vault",
+        "vault",
+    )
+    resolved_eai_safety = eai_safety or _guardian_component(
+        guardian,
+        "eai_safety_framework",
+        "eai_safety",
+        "evolvable_ai_safety",
+    )
+
+    return MutationReviewManager(
+        trust_registry=resolved_registry,
+        trust_policy=resolved_policy,
+        mutation_engine=resolved_engine,
+        audit_log=resolved_audit,
+        recovery_vault=resolved_vault,
+        eai_safety=resolved_eai_safety,
+        storage_path=storage_path,
+        auto_approve_trust_threshold=auto_approve_trust_threshold,
+        require_human_review_risk=require_human_review_risk,
+    )
 
 
 class ReviewDecision(Enum):
@@ -97,6 +181,7 @@ class MutationReviewManager:
         mutation_engine: Optional[MutationEngine] = None,
         audit_log: Optional[TrustAuditLog] = None,
         recovery_vault: Optional[RecoveryVault] = None,
+        eai_safety: Optional[Any] = None,
         storage_path: str = "data/mutation_reviews.json",
         auto_approve_trust_threshold: float = 0.9,
         require_human_review_risk: RiskLevel = RiskLevel.HIGH
@@ -119,6 +204,7 @@ class MutationReviewManager:
         self.mutation_engine = mutation_engine
         self.audit_log = audit_log
         self.recovery_vault = recovery_vault
+        self.eai_safety = eai_safety
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -175,6 +261,15 @@ class MutationReviewManager:
         
         # Assess risk level
         risk_level = self._assess_risk(proposal)
+
+        # Evolvable-AI safety review: reproduction/variation/selection controls.
+        eai_assessment = self._evaluate_eai_safety(proposal, author)
+        if eai_assessment is not None:
+            try:
+                proposal.metadata["eai_safety"] = eai_assessment.to_dict()
+            except Exception:
+                logger.debug("Unable to attach EAI safety metadata to proposal", exc_info=True)
+            risk_level = self._escalate_risk_for_eai(risk_level, eai_assessment)
         
         # Check trust-based evaluation
         trust_score = self._get_trust_score(author)
@@ -220,7 +315,8 @@ class MutationReviewManager:
             policy_decision=policy_decision,
             author=author,
             require_snapshot=require_snapshot,
-            ai_validation_result=ai_validation_result
+            ai_validation_result=ai_validation_result,
+            eai_assessment=eai_assessment
         )
         
         # Store review
@@ -334,6 +430,64 @@ class MutationReviewManager:
             logger.debug(f"Error getting trust score: {e}")
         
         return 0.5  # Default
+
+    def _evaluate_eai_safety(
+        self,
+        proposal: MutationProposal,
+        author: str,
+    ) -> Optional[Any]:
+        """Run the optional Evolvable-AI gate for a mutation proposal."""
+        if self.eai_safety is None:
+            return None
+
+        try:
+            metadata = dict(proposal.metadata or {})
+            metadata.update(
+                {
+                    "mutation_id": proposal.mutation_id,
+                    "mutation_type": proposal.mutation_type,
+                    "description": proposal.description,
+                    "confidence": proposal.confidence,
+                    "target_module": proposal.target_module,
+                    "autonomous": author.lower() in {"elysia-self", "autonomous", "self_task"},
+                    "controlled_evolution": bool(
+                        metadata.get("controlled_evolution")
+                        or metadata.get("sandboxed")
+                        or metadata.get("reviewed")
+                    ),
+                }
+            )
+            parent_ids = metadata.get("lineage_parent_ids") or metadata.get("parent_ids") or []
+            if isinstance(parent_ids, str):
+                parent_ids = [parent_ids]
+            return self.eai_safety.assess_action(
+                action_type="code_mutation",
+                actor=author,
+                target=proposal.target_module,
+                metadata=metadata,
+                lineage_parent_ids=parent_ids,
+                artifact_content=proposal.proposed_code,
+            )
+        except Exception as e:
+            logger.warning("EAI safety assessment failed for mutation %s: %s", proposal.mutation_id, e)
+            return None
+
+    def _escalate_risk_for_eai(
+        self,
+        risk_level: RiskLevel,
+        eai_assessment: Any,
+    ) -> RiskLevel:
+        """Escalate mutation risk when the EAI gate sees evolution-specific risk."""
+        decision_value = getattr(getattr(eai_assessment, "decision", None), "value", None)
+        decision_value = decision_value or str(getattr(eai_assessment, "decision", "")).lower()
+        risk_score = float(getattr(eai_assessment, "risk_score", 0.0) or 0.0)
+
+        if decision_value == "deny" or risk_score >= 0.85:
+            return RiskLevel.CRITICAL
+        if decision_value == "review" or risk_score >= 0.65:
+            if risk_level in (RiskLevel.LOW, RiskLevel.MEDIUM):
+                return RiskLevel.HIGH
+        return risk_level
     
     def _evaluate_policy(
         self,
@@ -374,7 +528,8 @@ class MutationReviewManager:
         policy_decision: Dict[str, Any],
         author: str,
         require_snapshot: bool,
-        ai_validation_result: Optional[Any] = None  # ValidationResult
+        ai_validation_result: Optional[Any] = None,  # ValidationResult
+        eai_assessment: Optional[Any] = None,
     ) -> MutationReview:
         """Generate mutation review decision."""
         decision = ReviewDecision.DEFER
@@ -455,6 +610,31 @@ class MutationReviewManager:
             "policy_decision": policy_decision,
             "author": author
         }
+
+        if eai_assessment:
+            eai_data = eai_assessment.to_dict()
+            metadata["eai_safety"] = eai_data
+            eai_decision = eai_data.get("decision")
+            eai_flags = eai_data.get("flags", [])
+            eai_controls = eai_data.get("required_controls", [])
+
+            if eai_flags:
+                concerns.append("EAI safety flags: " + ", ".join(eai_flags))
+            for control in eai_controls:
+                if control not in conditions:
+                    conditions.append(control)
+
+            if eai_decision == "deny":
+                decision = ReviewDecision.REJECT
+                reasoning = (
+                    "Evolvable-AI safety gate denied this mutation: "
+                    f"{eai_data.get('reasoning', 'no reasoning provided')}"
+                )
+                confidence = max(confidence, 0.9)
+            elif eai_decision == "review" and decision == ReviewDecision.APPROVE:
+                decision = ReviewDecision.DEFER
+                reasoning += " Evolvable-AI safety gate requires review."
+                confidence = max(confidence, 0.75)
         
         if ai_validation_result:
             # Store AI validation in metadata
@@ -645,23 +825,12 @@ class MutationReviewManager:
             logger.error(f"Failed to load mutation reviews: {e}")
 
 
-# Example usage
 if __name__ == "__main__":
-    # Initialize components
-    trust_registry = None  # Would be provided
-    trust_policy = None  # Would be provided
-    mutation_engine = None  # Would be provided
-    
-    review_manager = MutationReviewManager(
-        trust_registry=trust_registry,
-        trust_policy=trust_policy,
-        mutation_engine=mutation_engine,
-        auto_approve_trust_threshold=0.9
-    )
-    
-    # Review a mutation
-    # review = review_manager.review_mutation("mut_123")
-    # print(f"Review decision: {review.decision.value}")
-    # print(f"Risk level: {review.risk_level.value}")
-    # print(f"Reasoning: {review.reasoning}")
+    import sys
 
+    print(
+        "MutationReviewManager is constructed via configure_mutation_review_manager(...) "
+        "with a MutationEngine (and optionally TrustRegistry, TrustPolicyManager, "
+        "RecoveryVault, TrustAuditLog), or pass guardian= for attribute-based resolution."
+    )
+    sys.exit(0)

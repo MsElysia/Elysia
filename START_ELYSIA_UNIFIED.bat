@@ -27,17 +27,17 @@ if errorlevel 1 (
 ) else (
   python wait_for_elysia_backend.py
 )
-if errorlevel 2 (
-  echo.
-  echo Backend process appears to have exited — see the Elysia Backend window.
-  pause
-  exit /b 2
-)
 if errorlevel 3 (
   echo.
-  echo Timed out waiting for /status. Backend may still be loading — check backend window or logs.
+  echo Timed out waiting for /status. Backend may still be loading - check backend window or logs.
   pause
   exit /b 3
+)
+if errorlevel 2 (
+  echo.
+  echo Backend process appears to have exited - see the Elysia Backend window.
+  pause
+  exit /b 2
 )
 if errorlevel 1 (
   pause

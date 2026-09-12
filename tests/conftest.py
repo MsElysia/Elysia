@@ -11,6 +11,16 @@ from datetime import datetime
 from typing import Dict, Any
 
 
+@pytest.fixture(autouse=True)
+def _isolate_guardian_core_singleton_between_tests():
+    """Prevent GuardianCore class/singleton state leaking across tests/."""
+    from tests.guardian_core_test_helpers import reset_guardian_core_test_state
+
+    reset_guardian_core_test_state()
+    yield
+    reset_guardian_core_test_state()
+
+
 @pytest.fixture
 def base_metadata() -> Dict[str, Any]:
     """Base metadata fixture for valid proposal"""

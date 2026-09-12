@@ -6,6 +6,7 @@ Integrated from old modules.
 import datetime
 import json
 import logging
+import re
 from collections import defaultdict
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -136,7 +137,8 @@ class ToolRegistry:
 
     def ensure_minimal_builtin_tools(self) -> None:
         """
-        Idempotent stub tools so orchestration sees a non-empty catalog (no external APIs).
+        Idempotent builtin tools so orchestration sees a non-empty catalog.
+        Metadata distinguishes operational local bridges, gated surfaces, and dependency-gated tools.
         Mirrors project_guardian.ai_tool_registry_engine.ensure_minimal_builtin_tools intent.
         """
         builtins: List[Tuple[str, Dict[str, Any]]] = [
@@ -146,7 +148,9 @@ class ToolRegistry:
                     "provider": "builtin",
                     "capabilities": ["llm", "chat", "completion", "general"],
                     "api_endpoint": "local://llm",
-                    "builtin_stub": True,
+                    "builtin": True,
+                    "capability_state": "operational",
+                    "execution_surface": "capability_execution",
                 },
             ),
             (
@@ -155,7 +159,9 @@ class ToolRegistry:
                     "provider": "builtin",
                     "capabilities": ["web", "http", "fetch", "general"],
                     "api_endpoint": "local://web",
-                    "builtin_stub": True,
+                    "builtin": True,
+                    "capability_state": "operational",
+                    "execution_surface": "capability_execution",
                 },
             ),
             (
@@ -164,7 +170,10 @@ class ToolRegistry:
                     "provider": "builtin",
                     "capabilities": ["exec", "run", "script", "general"],
                     "api_endpoint": "local://exec",
-                    "builtin_stub": True,
+                    "builtin": True,
+                    "capability_state": "gated",
+                    "requires_approval": True,
+                    "execution_surface": "capability_execution",
                 },
             ),
             (
@@ -174,25 +183,35 @@ class ToolRegistry:
                     # Intentionally no "fetch"/"web"/"general" — avoids stealing simple URL fetches.
                     "capabilities": ["bounded_browse"],
                     "api_endpoint": "local://bounded_browser",
-                    "builtin_stub": True,
+                    "builtin": True,
+                    "capability_state": "fallback_operational",
+                    "preferred_dependency": "playwright",
+                    "fallback_backend": "urllib_static",
+                    "execution_surface": "capability_execution",
                 },
             ),
             (
                 "elysia_moltbook_browser",
                 {
                     "provider": "builtin",
-                    "capabilities": ["moltbook_browse"],
+                    "capabilities": ["moltbook_browse", "moltbook_interact"],
                     "api_endpoint": "local://moltbook_browser",
-                    "builtin_stub": True,
+                    "builtin": True,
+                    "capability_state": "fallback_operational",
+                    "preferred_dependency": "playwright",
+                    "fallback_backend": "urllib_static",
+                    "execution_surface": "capability_execution",
                 },
             ),
             (
                 "elysia_social_intel",
                 {
                     "provider": "builtin",
-                    "capabilities": ["social_moltbook_observe"],
+                    "capabilities": ["social_moltbook_observe", "moltbook_full_interaction"],
                     "api_endpoint": "local://social_intel",
-                    "builtin_stub": True,
+                    "builtin": True,
+                    "capability_state": "operational",
+                    "execution_surface": "capability_execution",
                 },
             ),
         ]
@@ -315,7 +334,7 @@ class MetaCoderAdapter:
     
     def generate_adapter(self, tool_id: str, api_docs: str) -> str:
         """
-        Generate adapter code for a tool.
+        Generate generic adapter code for a tool.
         
         Args:
             tool_id: Tool identifier
@@ -324,21 +343,89 @@ class MetaCoderAdapter:
         Returns:
             Generated adapter code
         """
-        adapter_code = f"""# Auto-generated adapter for {tool_id}
+        tool = self.tool_registry.tools.get(tool_id, {})
+        endpoint = str(tool.get("api_endpoint") or "").strip()
+        class_name = re.sub(r"\W+", "_", str(tool_id)).strip("_")
+        if not class_name or class_name[0].isdigit():
+            class_name = f"Tool_{class_name}"
+        class_name = f"{class_name}Adapter"
+
+        adapter_code = f"""# Auto-generated generic adapter for {tool_id}
 # Generated: {datetime.datetime.now()}
 # Based on API docs: {api_docs[:200]}...
 
-class {tool_id}Adapter:
-    def __init__(self):
-        self.tool_id = "{tool_id}"
-    
-    def execute(self, method: str, payload: dict):
-        # TODO: Implement adapter logic
-        pass
+import json
+import urllib.error
+import urllib.request
+
+
+class {class_name}:
+    def __init__(self, api_endpoint={json.dumps(endpoint)}, api_key=None):
+        self.tool_id = {json.dumps(tool_id)}
+        self.api_endpoint = api_endpoint
+        self.api_key = api_key
+
+    def execute(self, method="GET", payload=None, timeout=30):
+        payload = dict(payload or {{}})
+        endpoint = str(self.api_endpoint or "").strip()
+        if endpoint.startswith("local://"):
+            return {{
+                "success": False,
+                "status": "local_bridge_required",
+                "tool_id": self.tool_id,
+                "error": "local:// tools execute through capability_execution, not a generated HTTP adapter",
+            }}
+        if not endpoint.startswith(("http://", "https://")):
+            return {{
+                "success": False,
+                "status": "invalid_endpoint",
+                "tool_id": self.tool_id,
+                "error": "Adapter requires an http(s) api_endpoint",
+            }}
+
+        method_name = str(method or payload.pop("method", "GET")).upper()
+        headers = {{"User-Agent": "ElysiaGeneratedAdapter/1.0"}}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {{self.api_key}}"
+
+        body = None
+        if method_name not in ("GET", "HEAD"):
+            body = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+
+        request = urllib.request.Request(endpoint, data=body, headers=headers, method=method_name)
+        try:
+            with urllib.request.urlopen(request, timeout=float(timeout)) as response:
+                raw = response.read()
+                text = raw.decode("utf-8", errors="replace")
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    data = text
+                return {{
+                    "success": True,
+                    "status_code": getattr(response, "status", 200),
+                    "data": data,
+                }}
+        except urllib.error.HTTPError as exc:
+            return {{
+                "success": False,
+                "status_code": getattr(exc, "code", None),
+                "error": str(exc),
+            }}
+        except Exception as exc:
+            return {{"success": False, "error": str(exc)}}
 """
         
         if tool_id in self.tool_registry.tools:
             self.tool_registry.tools[tool_id]['adapter_code'] = adapter_code
+            self.tool_registry.tools[tool_id]['adapter_class'] = class_name
+            self.tool_registry.tools[tool_id]['adapter_status'] = (
+                "local_bridge_required" if endpoint.startswith("local://") else "generic_http_generated"
+            )
+            self.tool_registry.tools[tool_id]['adapter_operational'] = bool(
+                endpoint.startswith(("http://", "https://"))
+            )
         
         entry = f"[{datetime.datetime.now()}] Adapter generated for {tool_id}"
         self.tool_registry.log.append(entry)
@@ -429,10 +516,24 @@ class TaskRouter:
         tt = (task_type or "").strip()
         tt_l = tt.lower()
         ws = set(winners)
+        # Canonical one-tool routes for explicit router task types.
+        canonical_task_tool = {
+            "fetch": "elysia_builtin_web",
+            "script": "elysia_builtin_exec",
+            "completion": "elysia_builtin_llm",
+            "bounded_browse": "elysia_bounded_browser",
+            "moltbook_browse": "elysia_moltbook_browser",
+            "social_moltbook_observe": "elysia_social_intel",
+        }
+        forced = canonical_task_tool.get(tt_l)
+        if forced and forced in ws:
+            return forced, "canonical_task_tool_preferred"
         # Prefer a single tool that lists this exact task_type in capabilities (not via general alone).
         explicit = [w for w in winners if tt in (tools.get(w) or {}).get("capabilities", [])]
         if len(explicit) == 1:
             return explicit[0], "sole_explicit_capability_tag"
+        if len(explicit) > 1:
+            return _first_tool_id_in_map_order(tools, explicit), "explicit_capability_map_order"
         # Keyword hints on task_type string (narrow; does not change global scoring).
         if tt_l == "bounded_browse" and "elysia_bounded_browser" in ws:
             return "elysia_bounded_browser", "keyword_hint_bounded_browse"
@@ -454,9 +555,9 @@ class TaskRouter:
                 return "elysia_builtin_llm", "keyword_hint_llm"
         # Generic orchestration task types: stub ties often match only via "general" — rotate away from pure LLM-first.
         if tt_l == "self_task" or (tt_l.endswith("_task") and "routing_probe" not in tt_l):
-            for pref in ("elysia_builtin_web", "elysia_builtin_exec", "elysia_builtin_llm"):
+            for pref in ("elysia_builtin_llm", "elysia_builtin_exec", "elysia_builtin_web"):
                 if pref in ws:
-                    return pref, "general_stub_tie_order_web_exec_llm"
+                    return pref, "general_stub_tie_order_llm_exec_web"
         return _first_tool_id_in_map_order(tools, winners), "map_order_fallback"
     
     def route_task(self, task_type: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

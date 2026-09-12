@@ -122,7 +122,7 @@ def test_implementer_rejects_non_accepted_proposal(implementer_agent, temp_propo
 
     result = implementer_agent.run_for_proposal(proposal_id)
     assert not result["success"]
-    assert "not in 'accepted' status" in result["error"]
+    assert "not in 'accepted' or 'approved' status" in result["error"]
 
 
 def test_implementer_rejects_missing_proposal(implementer_agent):
@@ -140,6 +140,35 @@ def test_implementer_rejects_missing_plan(implementer_agent, temp_proposals_root
     result = implementer_agent.run_for_proposal(proposal_id)
     assert not result["success"]
     assert "Implementation plan not found" in result["error"]
+
+
+def test_implementer_rejects_generic_only_plan(implementer_agent, temp_proposals_root):
+    """Test that informational design notes do not count as implementation."""
+    proposal_id = "test-prop-generic"
+    proposal_path = create_test_proposal(temp_proposals_root, proposal_id, status="approved")
+
+    plan_path = proposal_path / "design" / "implementation_plan.md"
+    plan_path.write_text(
+        """## Background
+
+Review the research summary and identify useful patterns.
+
+## Rollout Notes
+
+Coordinate with the existing approval workflow.
+""",
+        encoding="utf-8",
+    )
+
+    result = implementer_agent.run_for_proposal(proposal_id)
+
+    assert not result["success"]
+    assert result["steps_completed"] == 0
+    assert result["steps_skipped"] == 2
+    assert "No executable implementation steps" in result["error"]
+    proposal = implementer_agent.proposal_system.get_proposal(proposal_id)
+    assert proposal["status"] == "implementation_failed"
+    assert proposal["implementation_status"] == "failed"
 
 
 def test_implementer_with_valid_plan_dry_run(implementer_agent, temp_proposals_root, temp_repo_root):
@@ -168,8 +197,115 @@ Run pytest on tests/test_foo.py
     implementer_agent.dry_run = True
     result = implementer_agent.run_for_proposal(proposal_id)
 
-    # In dry-run, should succeed but not make changes
-    assert result["success"] or "Implementation plan not found" in result.get("error", "")
+    # In dry-run, should succeed but not make changes or transition status.
+    assert result["success"]
+    assert result["dry_run"] is True
+    assert result["steps_completed"] == 1
+    assert result["steps_skipped"] == 1
+    assert "elysia/agents/foo.py" in result["diff_summary"]
+    assert "+# Test module" in result["diff_summary"]
+    assert not (temp_repo_root / "elysia" / "agents" / "foo.py").exists()
+
+    proposal = implementer_agent.proposal_system.get_proposal(proposal_id)
+    assert proposal["status"] == "accepted"
+    assert "implementation_status" not in proposal
+
+
+def test_implementer_modify_file_step_applies_replacement_content(
+    implementer_agent, temp_proposals_root, temp_repo_root
+):
+    """Test that modify_file steps now make a real file change."""
+    proposal_id = "test-prop-modify"
+    proposal_path = create_test_proposal(temp_proposals_root, proposal_id, status="approved")
+
+    target = temp_repo_root / "src" / "example.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+
+    plan_path = proposal_path / "design" / "implementation_plan.md"
+    plan_path.write_text(
+        """## Step 1: Modify file src/example.py
+
+Replace the file with the approved implementation.
+
+```python
+VALUE = 2
+```
+""",
+        encoding="utf-8",
+    )
+
+    result = implementer_agent.run_for_proposal(proposal_id)
+
+    assert result["success"]
+    assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert result["step_results"][0]["message"] == "File modified"
+    assert "+VALUE = 2" in result["diff_summary"]
+
+
+def test_implementer_dry_run_modify_file_returns_diff_without_writing(
+    implementer_agent, temp_proposals_root, temp_repo_root
+):
+    """Test that dry-run modify previews a diff and leaves files untouched."""
+    proposal_id = "test-prop-preview-modify"
+    proposal_path = create_test_proposal(temp_proposals_root, proposal_id, status="approved")
+
+    target = temp_repo_root / "src" / "example.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+
+    plan_path = proposal_path / "design" / "implementation_plan.md"
+    plan_path.write_text(
+        """## Step 1: Modify file src/example.py
+
+Replace the file with the approved implementation.
+
+```python
+VALUE = 2
+```
+""",
+        encoding="utf-8",
+    )
+
+    implementer_agent.dry_run = True
+    result = implementer_agent.run_for_proposal(proposal_id)
+
+    assert result["success"]
+    assert result["dry_run"] is True
+    assert result["step_results"][0]["message"] == "File would be modified"
+    assert "-VALUE = 1" in result["diff_summary"]
+    assert "+VALUE = 2" in result["diff_summary"]
+    assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
+
+    proposal = implementer_agent.proposal_system.get_proposal(proposal_id)
+    assert proposal["status"] == "approved"
+    assert "implementation_status" not in proposal
+
+
+def test_implementer_modify_file_requires_replacement_block(implementer_agent, temp_repo_root):
+    """Test that vague modify steps fail instead of reporting fake success."""
+    target = temp_repo_root / "src" / "example.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+
+    step = ImplementationStep(1, "Modify file src/example.py", "Modify src/example.py somehow")
+
+    result = implementer_agent._execute_modify_file(step, "proposal-1")
+
+    assert not result["success"]
+    assert "fenced code block" in result["error"]
+    assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
+def test_implementer_create_file_requires_content_block(implementer_agent, temp_repo_root):
+    """Test that create-file steps do not create empty skeletons from vague plans."""
+    step = ImplementationStep(1, "Create file src/new_module.py", "Create src/new_module.py")
+
+    result = implementer_agent._execute_create_file(step, "proposal-1")
+
+    assert not result["success"]
+    assert "fenced code block" in result["error"]
+    assert not (temp_repo_root / "src" / "new_module.py").exists()
 
 
 def test_implementer_batch_processing(implementer_agent, temp_proposals_root):

@@ -1,0 +1,29 @@
+{
+  "brain_pipeline": {
+    "enabled": false,
+    "use_think_decide_act": true,
+    "dry_run": true,
+    "persist_trace": true,
+    "trace_path": "data/runtime/brain_last_pipeline.json",
+    "entrypoints": {
+      "operator_chat": false,
+      "operator_chat_live_execution": false,
+      "tool_execution": false,
+      "autonomy": false,
+      "diagnostic": false
+    },
+    "prompt_contract_validation": {
+      "enabled": false,
+      "mode": "warn",
+      "modules": [
+        "planner",
+        "tool_router",
+        "llm_router",
+        "risk_checker",
+        "think_decide_act_thinker",
+        "think_decide_act_proposer"
+      ],
+      "operator_chat": false
+    }
+  }
+}

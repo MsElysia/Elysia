@@ -13,6 +13,8 @@ ARCHETYPE_TO_CONTRACT: Dict[str, str] = {
     "evaluate_existing_objectives_for_monetization": "revenue_shortlist",
     "identify_idle_capabilities_with_market_value": "revenue_shortlist",
     "create_small_dry_run_offer_ideas": "revenue_shortlist",
+    "package_operator_offer_pack": "offer_pack",
+    "package_operator_offer_page": "offer_pack",
     "summarize_monetizable_directions_from_learning": "learned_digest",
     "harvest_research_brief": "research_brief",
     "harvest_metrics_summarize": "research_brief",
@@ -68,6 +70,46 @@ def validate_contract(contract_id: str, payload: Any) -> Tuple[bool, str]:
     p = normalize_payload(payload)
     if p is None:
         return False, "empty_payload"
+
+    if contract_id == "offer_pack":
+        if not isinstance(p, dict):
+            return False, "expected_object"
+        for k in (
+            "product_name",
+            "one_liner",
+            "target_customer",
+            "problem",
+            "why_buy_now",
+            "validation_prompt",
+            "listing_markdown",
+        ):
+            if not _is_nonempty_str(p.get(k)):
+                return False, f"missing_{k}"
+        deliverables = p.get("deliverables")
+        if not isinstance(deliverables, list) or len(deliverables) < 3:
+            return False, "missing_deliverables"
+        for i, item in enumerate(deliverables[:12]):
+            if not _is_nonempty_str(item):
+                return False, f"deliverable_{i}_empty"
+        pricing = p.get("pricing_options")
+        if not isinstance(pricing, list) or len(pricing) < 2:
+            return False, "missing_pricing_options"
+        for i, option in enumerate(pricing[:6]):
+            if not isinstance(option, dict):
+                return False, f"pricing_{i}_not_object"
+            for key in ("name", "price"):
+                if not _is_nonempty_str(option.get(key)):
+                    return False, f"pricing_{i}_missing_{key}"
+            includes = option.get("includes")
+            if not isinstance(includes, list) or len(includes) < 1:
+                return False, f"pricing_{i}_missing_includes"
+        sources = p.get("source_artifacts") or p.get("sources_or_origin")
+        if isinstance(sources, list):
+            if len(sources) < 1:
+                return False, "missing_sources"
+        elif not _is_nonempty_str(sources):
+            return False, "missing_sources"
+        return True, "ok"
 
     if contract_id == "revenue_shortlist":
         if not isinstance(p, dict):
@@ -365,3 +407,177 @@ def build_small_offer_ideas() -> Dict[str, Any]:
         },
     ]
     return {"opportunities": opps, "sources_or_origin": ["template_local"]}
+
+
+def _first_nonempty_str(*values: Any) -> str:
+    for value in values:
+        if _is_nonempty_str(value):
+            return _coerce_str(value)
+    return ""
+
+
+def _clean_offer_name(seed: str) -> str:
+    name = _coerce_str(seed)
+    if not name:
+        return "Elysia Opportunity Sprint"
+    name = re.sub(r"^(launch|create|generate|package)\s+", "", name, flags=re.IGNORECASE).strip(" -:.")
+    if name.lower().startswith("revenue angle:"):
+        name = name.split(":", 1)[1].strip()
+    if not name:
+        name = "Elysia Opportunity"
+    if not any(token in name.lower() for token in ("pack", "sprint", "service", "audit", "brief", "studio")):
+        name = f"{name} Sprint"
+    return name[:80]
+
+
+def build_offer_pack_from_artifacts(
+    *,
+    revenue_payload: Optional[Dict[str, Any]] = None,
+    digest_payload: Optional[Dict[str, Any]] = None,
+    improvement_payload: Optional[Dict[str, Any]] = None,
+    source_names: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    revenue = revenue_payload if isinstance(revenue_payload, dict) else {}
+    digest = digest_payload if isinstance(digest_payload, dict) else {}
+    improvement = improvement_payload if isinstance(improvement_payload, dict) else {}
+
+    opportunities = revenue.get("opportunities")
+    if not isinstance(opportunities, list) or not opportunities:
+        opportunities = build_small_offer_ideas().get("opportunities") or []
+    top = opportunities[0] if opportunities and isinstance(opportunities[0], dict) else {}
+
+    top_title = _first_nonempty_str(top.get("title"), "Elysia Opportunity")
+    rationale = _first_nonempty_str(top.get("rationale"), top.get("reason"))
+    capability = _first_nonempty_str(top.get("required_capability"), top.get("capability"), "existing Elysia modules")
+    difficulty = _coerce_str(top.get("difficulty")).lower() or "medium"
+    expected_value = _first_nonempty_str(top.get("expected_value"), "medium")
+
+    insights = digest.get("top_insights") if isinstance(digest.get("top_insights"), list) else []
+    top_insight = _first_nonempty_str(insights[0] if insights else "")
+    why_matter = _first_nonempty_str(digest.get("why_they_matter"))
+
+    improvement_notes = []
+    for key in ("recommendations", "gaps", "recommended_followup_tasks"):
+        value = improvement.get(key)
+        if isinstance(value, list):
+            improvement_notes = [_coerce_str(item) for item in value if _is_nonempty_str(item)]
+            if improvement_notes:
+                break
+    improvement_summary = _first_nonempty_str(
+        improvement.get("summary"),
+        improvement.get("weakness"),
+        improvement.get("topic"),
+        improvement_notes[0] if improvement_notes else "",
+    )
+
+    product_name = _clean_offer_name(top_title)
+    target_customer = _first_nonempty_str(
+        revenue.get("target_customer"),
+        "solo operators, founders, and builders who need one clear next-step offer",
+    )
+    problem = _first_nonempty_str(
+        rationale,
+        why_matter,
+        improvement_summary,
+        "There is useful capability inside Elysia, but nothing packaged clearly enough for a buyer to say yes to it quickly.",
+    )
+    one_liner = (
+        f"A fixed-scope offer that turns '{top_title}' into a buyer-ready brief, scoped deliverables, and a concrete next-step plan."
+    )[:240]
+    why_buy_now = _first_nonempty_str(
+        why_matter,
+        top_insight,
+        "Elysia already produces useful internal artifacts; packaging one focused offer is the fastest way to test real demand.",
+    )
+
+    deliverables = [
+        f"Focused offer brief for '{top_title}' with scope tied to {capability}.",
+        "Buyer-facing listing copy with one clear promise and qualification criteria.",
+        "Two pricing tiers with defined deliverables and a validation question.",
+    ]
+    if top_insight:
+        deliverables.append(f"Recent learning angle to strengthen positioning: {top_insight}")
+    if improvement_summary:
+        deliverables.append(f"Improvement-led differentiator: {improvement_summary}")
+    deliverables = deliverables[:5]
+
+    starter_price = "$39" if difficulty == "low" else "$79" if difficulty == "medium" else "$149"
+    premium_price = "$99" if difficulty == "low" else "$199" if difficulty == "medium" else "$349"
+
+    pricing_options = [
+        {
+            "name": "Signal Test",
+            "price": starter_price,
+            "includes": [
+                "Offer brief",
+                "One deliverable outline",
+                "Validation prompt for early buyers",
+            ],
+        },
+        {
+            "name": "Operator Sprint",
+            "price": premium_price,
+            "includes": [
+                "Everything in Signal Test",
+                "Expanded deliverables and buyer-facing copy",
+                "One concrete next-step execution plan",
+            ],
+        },
+    ]
+
+    source_list = [str(item) for item in (source_names or []) if _is_nonempty_str(item)]
+    if not source_list:
+        source_list = ["template_local"]
+
+    validation_prompt = (
+        f"If {product_name} existed today for {starter_price}, would you want it? "
+        "What outcome would make it worth paying for this week?"
+    )
+    recommended_next_step = (
+        "Show this offer to three potential buyers or operators and record which promise, price, and deliverable they react to."
+    )
+
+    listing_markdown = "\n".join(
+        [
+            f"# {product_name}",
+            "",
+            one_liner,
+            "",
+            "## Who It's For",
+            target_customer,
+            "",
+            "## Problem",
+            problem,
+            "",
+            "## Deliverables",
+            *(f"- {item}" for item in deliverables),
+            "",
+            "## Pricing",
+            *(f"- {option['name']}: {option['price']} — {', '.join(option['includes'])}" for option in pricing_options),
+            "",
+            "## Why Buy Now",
+            why_buy_now,
+            "",
+            "## Validation Prompt",
+            validation_prompt,
+        ]
+    )
+
+    return {
+        "title": product_name,
+        "product_name": product_name,
+        "summary": one_liner,
+        "one_liner": one_liner,
+        "target_customer": target_customer,
+        "problem": problem,
+        "deliverables": deliverables,
+        "pricing_options": pricing_options,
+        "why_buy_now": why_buy_now,
+        "validation_prompt": validation_prompt,
+        "listing_markdown": listing_markdown,
+        "recommended_next_step": recommended_next_step,
+        "expected_value_signal": expected_value,
+        "required_capability": capability,
+        "source_artifacts": source_list[:8],
+        "sources_or_origin": source_list[:8],
+    }

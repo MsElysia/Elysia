@@ -452,8 +452,9 @@ class ElysiaLoopCore:
             if task.module != "unknown" and task.module in self.registry.list_modules():
                 adapter = self.registry.get(task.module)
                 if adapter:
+                    method_name = task.func.__name__ if callable(task.func) else str(task.func)
                     result = adapter.execute(
-                        method=task.func.__name__ if callable(task.func) else str(task.func),
+                        method=method_name,
                         payload={"args": task.args, "kwargs": task.kwargs}
                     )
                     
@@ -467,8 +468,14 @@ class ElysiaLoopCore:
                         )
                         self.timeline.log_event(event)
                         return True
-                    else:
-                        raise Exception(result.get("error", "Module execution failed"))
+                    error = str(result.get("error", "Module execution failed"))
+                    if not (callable(task.func) and error.startswith("Unknown method:")):
+                        raise Exception(error)
+                    logger.debug(
+                        "Adapter %s does not expose method %s; executing submitted callable",
+                        task.module,
+                        method_name,
+                    )
             
             # Execute as coroutine or callable
             if asyncio.iscoroutine(task.func):

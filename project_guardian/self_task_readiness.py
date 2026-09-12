@@ -157,6 +157,52 @@ def _readiness_system_improvement(
     return ok, "improvement_proposal_ready" if ok else "improvement_gate_failed", {}
 
 
+def _readiness_offer_pack(
+    p: Dict[str, Any], *, contract_ok: bool, objective_advanced: bool
+) -> Tuple[bool, str, Dict[str, Any]]:
+    product_name = _s(p.get("product_name") or p.get("title"))
+    deliverables = p.get("deliverables")
+    pricing = p.get("pricing_options")
+    validation_prompt = _s(p.get("validation_prompt"))
+    listing_markdown = _s(p.get("listing_markdown"))
+    recommended_next_step = _s(p.get("recommended_next_step") or p.get("next_step"))
+
+    if not product_name:
+        return False, "offer_pack_missing_name", {}
+    if not isinstance(deliverables, list) or len(deliverables) < 3:
+        return False, "offer_pack_deliverables_lt3", {}
+    if not isinstance(pricing, list) or len(pricing) < 2:
+        return False, "offer_pack_pricing_lt2", {}
+    if not validation_prompt:
+        return False, "offer_pack_missing_validation_prompt", {}
+    if not listing_markdown or "## Pricing" not in listing_markdown:
+        return False, "offer_pack_listing_incomplete", {}
+    if not recommended_next_step:
+        return False, "offer_pack_missing_next_step", {}
+
+    prices = []
+    for option in pricing[:6]:
+        if not isinstance(option, dict):
+            return False, "offer_pack_pricing_invalid", {}
+        if not _s(option.get("name")) or not _s(option.get("price")):
+            return False, "offer_pack_pricing_invalid", {}
+        includes = option.get("includes")
+        if not isinstance(includes, list) or len(includes) < 1:
+            return False, "offer_pack_pricing_invalid", {}
+        prices.append(_s(option.get("price")))
+
+    ok = bool(objective_advanced and contract_ok)
+    return (
+        ok,
+        "offer_pack_ready_for_operator_validation" if ok else "offer_pack_gate_failed",
+        {
+            "offer_name": product_name[:120],
+            "price_points": prices[:4],
+            "validation_prompt": validation_prompt[:240],
+        },
+    )
+
+
 def _readiness_default(
     p: Dict[str, Any], *, contract_ok: bool, objective_advanced: bool
 ) -> Tuple[bool, str, Dict[str, Any]]:
@@ -194,6 +240,8 @@ def compute_operator_readiness(
         return _readiness_rank_opportunities(p, contract_ok=contract_ok, objective_advanced=objective_advanced)
     if "execution_plan" in arch or arch == "execute_best_opportunity":
         return _readiness_execution_plan_arch(p, contract_ok=contract_ok, objective_advanced=objective_advanced)
+    if "offer_pack" in arch or "package_operator_offer" in arch:
+        return _readiness_offer_pack(p, contract_ok=contract_ok, objective_advanced=objective_advanced)
     if "improvement" in arch and "proposal" in arch:
         return _readiness_system_improvement(p, contract_ok=contract_ok, objective_advanced=objective_advanced)
 
@@ -319,7 +367,13 @@ def build_handoff_summary(
 
     if isinstance(p, dict):
         summary = _s(p.get("summary") or p.get("overview") or p.get("title"))[:400]
-        why = _s(p.get("why_it_matters") or p.get("impact") or p.get("rationale"))[:400]
+        why = _s(
+            p.get("why_it_matters")
+            or p.get("impact")
+            or p.get("rationale")
+            or p.get("why_buy_now")
+            or p.get("problem")
+        )[:400]
         nxt = _s(p.get("recommended_next_step") or p.get("next_action") or p.get("next_step"))[:400]
         pl = p.get("execution_plan")
         if isinstance(pl, dict) and not nxt:

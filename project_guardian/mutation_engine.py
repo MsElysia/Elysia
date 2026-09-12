@@ -18,6 +18,7 @@ try:
     from .runtime_loop_core import RuntimeLoop
     from .trust_eval_action import TrustEvalAction
     from .ask_ai import AskAI, AIProvider
+    from .mutation import MutationEngine as SafeMutationEngine
 except ImportError:
     from runtime_loop_core import RuntimeLoop
     from trust_eval_action import TrustEvalAction
@@ -26,6 +27,10 @@ except ImportError:
     except ImportError:
         AskAI = None
         AIProvider = None
+    try:
+        from mutation import MutationEngine as SafeMutationEngine
+    except ImportError:
+        SafeMutationEngine = None
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +38,7 @@ logger = logging.getLogger(__name__)
 class MutationStatus(Enum):
     """Mutation status levels."""
     PROPOSED = "proposed"
+    PENDING = "proposed"  # Backward-compatible alias
     REVIEWING = "reviewing"
     APPROVED = "approved"
     REJECTED = "rejected"
@@ -109,13 +115,17 @@ class MutationEngine:
         runtime_loop: Optional[RuntimeLoop] = None,
         trust_eval: Optional[TrustEvalAction] = None,
         ask_ai: Optional[AskAI] = None,
-        storage_path: str = "data/mutations.json"
+        storage_path: str = "data/mutations.json",
+        live_mutation_engine: Optional[Any] = None,
+        repo_root: Optional[str] = None,
     ):
         self.runtime_loop = runtime_loop
         self.trust_eval = trust_eval
         self.ask_ai = ask_ai
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        self.live_mutation_engine = live_mutation_engine
+        self.repo_root = Path(repo_root).resolve() if repo_root else self._infer_repo_root()
         
         # Thread-safe storage (use RLock for reentrant locking)
         self._lock = RLock()
@@ -127,6 +137,117 @@ class MutationEngine:
         self.auto_rollback_on_error: bool = True
         
         self.load()
+
+    def _infer_repo_root(self) -> Path:
+        """Infer a reasonable repo root from storage location."""
+        storage_parent = self.storage_path.resolve().parent
+        if storage_parent.name.lower() == "data":
+            return storage_parent.parent
+        return storage_parent
+
+    def _resolve_target_path(self, target_module: str) -> Path:
+        """Resolve a proposal target path under the configured repo root."""
+        candidate = Path(target_module)
+        resolved = candidate.resolve() if candidate.is_absolute() else (self.repo_root / candidate).resolve()
+
+        try:
+            resolved.relative_to(self.repo_root)
+        except ValueError as e:
+            raise ValueError(f"Mutation target escapes repo root: {target_module}") from e
+
+        return resolved
+
+    def _direct_apply_mutation(self, mutation_id: str, proposal: MutationProposal) -> Dict[str, Any]:
+        """Apply a mutation directly to the working tree when no safe backend is wired."""
+        target_path = self._resolve_target_path(proposal.target_module)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        current_code = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
+        backup_paths: List[str] = []
+        if target_path.exists():
+            backup_path = target_path.with_suffix(target_path.suffix + f".{mutation_id}.bak")
+            backup_path.write_text(current_code, encoding="utf-8")
+            backup_paths.append(str(backup_path))
+
+        proposal.original_code = proposal.original_code if proposal.original_code is not None else current_code
+        target_path.write_text(proposal.proposed_code, encoding="utf-8")
+
+        return {
+            "changed_files": [str(target_path)],
+            "backup_paths": backup_paths,
+            "summary": f"Applied mutation directly to {proposal.target_module}",
+        }
+
+    def _direct_rollback_mutation(self, mutation_id: str, proposal: MutationProposal) -> Dict[str, Any]:
+        """Rollback a mutation directly using original code or stored backups."""
+        target_path = self._resolve_target_path(proposal.target_module)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        restore_code = proposal.original_code
+        if restore_code is None:
+            backup_paths = proposal.metadata.get("backup_paths") or []
+            for backup_path in backup_paths:
+                backup = Path(str(backup_path))
+                if backup.exists():
+                    restore_code = backup.read_text(encoding="utf-8")
+                    break
+
+        if restore_code is None:
+            raise ValueError(f"Original code not available for mutation {mutation_id}")
+
+        target_path.write_text(restore_code, encoding="utf-8")
+        return {
+            "changed_files": [str(target_path)],
+            "backup_paths": list(proposal.metadata.get("backup_paths") or []),
+            "summary": f"Rolled back mutation for {proposal.target_module}",
+        }
+
+    def _apply_with_backend(self, mutation_id: str, proposal: MutationProposal) -> Dict[str, Any]:
+        """Apply a mutation using the wired live mutation backend when available."""
+        if self.live_mutation_engine is None:
+            return self._direct_apply_mutation(mutation_id, proposal)
+
+        target_path = self._resolve_target_path(proposal.target_module)
+        if proposal.original_code is None and target_path.exists():
+            proposal.original_code = target_path.read_text(encoding="utf-8")
+
+        result = self.live_mutation_engine.apply(
+            proposal.target_module,
+            proposal.proposed_code,
+            origin="legacy_mutation_engine",
+            allow_governance_mutation=bool(proposal.metadata.get("allow_governance_mutation", False)),
+            request_id=proposal.metadata.get("request_id"),
+            caller_identity=proposal.reviewer or "legacy_mutation_engine",
+            task_id=mutation_id,
+        )
+        return {
+            "changed_files": list(result.changed_files),
+            "backup_paths": list(result.backup_paths),
+            "summary": result.summary,
+        }
+
+    def _rollback_with_backend(self, mutation_id: str, proposal: MutationProposal) -> Dict[str, Any]:
+        """Rollback a mutation using the live mutation backend when available."""
+        if self.live_mutation_engine is None:
+            return self._direct_rollback_mutation(mutation_id, proposal)
+
+        if proposal.original_code is None:
+            raise ValueError(f"Original code not available for mutation {mutation_id}")
+
+        result = self.live_mutation_engine.apply(
+            proposal.target_module,
+            proposal.original_code,
+            origin="legacy_mutation_engine.rollback",
+            allow_governance_mutation=bool(proposal.metadata.get("allow_governance_mutation", False)),
+            request_id=proposal.metadata.get("request_id"),
+            caller_identity="legacy_mutation_engine.rollback",
+            task_id=mutation_id,
+        )
+        return {
+            "changed_files": list(result.changed_files),
+            "backup_paths": list(result.backup_paths),
+            "summary": result.summary,
+        }
     
     def propose_mutation(
         self,
@@ -347,9 +468,7 @@ class MutationEngine:
     
     def apply_mutation(self, mutation_id: str) -> bool:
         """
-        Apply an approved mutation.
-        Note: This is a placeholder - actual code modification would require
-        file system access and module reloading.
+        Apply an approved mutation to the working tree.
         
         Args:
             mutation_id: Mutation ID
@@ -366,20 +485,25 @@ class MutationEngine:
             if proposal.status != MutationStatus.APPROVED:
                 logger.warning(f"Mutation {mutation_id} is not approved (status: {proposal.status.value})")
                 return False
-            
-            # In production, this would:
-            # 1. Backup original code
-            # 2. Write proposed code to file
-            # 3. Reload module
-            # 4. Run tests
-            # 5. Rollback if tests fail
-            
+
+        with self._lock:
+            proposal.review_notes = proposal.review_notes
+
+        try:
+            apply_result = self._apply_with_backend(mutation_id, proposal)
+        except Exception as e:
+            logger.error(f"Failed to apply mutation {mutation_id}: {e}", exc_info=True)
+            return False
+
+        with self._lock:
             proposal.status = MutationStatus.APPLIED
             proposal.applied_at = datetime.now()
+            proposal.metadata["changed_files"] = list(apply_result.get("changed_files") or [])
+            proposal.metadata["backup_paths"] = list(apply_result.get("backup_paths") or [])
+            proposal.metadata["apply_summary"] = str(apply_result.get("summary") or "")
             self.save()
         
         logger.info(f"Mutation {mutation_id} applied to {proposal.target_module}")
-        logger.warning("NOTE: Actual code modification not implemented - requires file system access")
         return True
     
     async def _ai_code_analysis(
@@ -419,7 +543,7 @@ Check for:
 Return JSON: {{"issues": ["issue1", "issue2"], "suggested_improvements": ["suggestion1"]}}"""
 
         try:
-            response = await self.ask_ai.ask(
+            response = await self.ask_ai.ask_async(
                 prompt=prompt,
                 provider=AIProvider.OPENAI,
                 temperature=0.3,
@@ -460,23 +584,46 @@ Return JSON: {{"issues": ["issue1", "issue2"], "suggested_improvements": ["sugge
                 logger.warning(f"Mutation {mutation_id} is not applied (status: {proposal.status.value})")
                 return False
             
-            if not proposal.original_code:
+            if not proposal.original_code and not proposal.metadata.get("backup_paths"):
                 logger.error(f"Original code not available for mutation {mutation_id}")
                 return False
-            
-            # In production, would restore original code
-            
+
+        try:
+            rollback_result = self._rollback_with_backend(mutation_id, proposal)
+        except Exception as e:
+            logger.error(f"Failed to rollback mutation {mutation_id}: {e}", exc_info=True)
+            return False
+
+        with self._lock:
             proposal.status = MutationStatus.ROLLED_BACK
+            proposal.metadata["rollback_summary"] = str(rollback_result.get("summary") or "")
             self.save()
         
         logger.info(f"Mutation {mutation_id} rolled back")
-        logger.warning("NOTE: Actual code rollback not implemented - requires file system access")
         return True
     
     def get_mutation(self, mutation_id: str) -> Optional[MutationProposal]:
         """Get a mutation proposal."""
         with self._lock:
             return self.proposals.get(mutation_id)
+
+    def get_proposal(self, mutation_id: str) -> Optional[MutationProposal]:
+        """Compatibility alias for older mutation-review integrations."""
+        return self.get_mutation(mutation_id)
+
+    def approve_proposal(
+        self,
+        mutation_id: str,
+        reviewer: str = "system",
+        notes: Optional[str] = None,
+    ) -> bool:
+        """Compatibility alias for approving a proposal before apply."""
+        return self.review_mutation(
+            mutation_id,
+            approved=True,
+            reviewer=reviewer,
+            notes=notes,
+        )
     
     def list_mutations(
         self,
@@ -494,6 +641,20 @@ Return JSON: {{"issues": ["issue1", "issue2"], "suggested_improvements": ["sugge
                 mutations = [m for m in mutations if m.target_module == target_module]
             
             return mutations
+
+    def get_all_proposals(self) -> List[MutationProposal]:
+        """Compatibility alias for older API surfaces."""
+        return self.list_mutations()
+
+    def get_recent_mutations(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Return the most recent mutations for older adapter surfaces."""
+        with self._lock:
+            ordered = sorted(
+                self.proposals.values(),
+                key=lambda proposal: proposal.created_at,
+                reverse=True,
+            )
+            return [proposal.to_dict() for proposal in ordered[:limit]]
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get mutation engine statistics."""
@@ -543,16 +704,23 @@ Return JSON: {{"issues": ["issue1", "issue2"], "suggested_improvements": ["sugge
             logger.error(f"Error loading mutations: {e}")
 
 
-# Example usage
 if __name__ == "__main__":
-    engine = MutationEngine()
-    
-    # Propose a mutation
-    mutation_id = engine.propose_mutation(
-        target_module="example_module",
-        mutation_type="optimization",
-        description="Optimize loop performance",
-        proposed_code="""
+    import os
+    import sys
+    import tempfile
+
+    fd, storage_path = tempfile.mkstemp(suffix="_mutations.json")
+    os.close(fd)
+    with open(storage_path, "w", encoding="utf-8") as f:
+        f.write('{"mutations":{}}')
+    try:
+        engine = MutationEngine(storage_path=storage_path)
+
+        mutation_id = engine.propose_mutation(
+            target_module="example_module",
+            mutation_type="optimization",
+            description="Optimize loop performance",
+            proposed_code="""
 def optimized_function():
     # Optimized version
     result = []
@@ -560,18 +728,18 @@ def optimized_function():
         result.append(i * 2)
     return result
 """,
-        confidence=0.8
-    )
-    
-    # Evaluate mutation
-    evaluation = engine.evaluate_mutation(mutation_id)
-    print(f"Evaluation: {evaluation}")
-    
-    # Review mutation
-    if evaluation.get("recommendation") == "approve":
-        engine.review_mutation(mutation_id, approved=True, reviewer="system")
-    
-    # Get statistics
-    stats = engine.get_statistics()
-    print(f"Statistics: {stats}")
+            confidence=0.8,
+        )
 
+        evaluation = engine.evaluate_mutation(mutation_id)
+        print(f"Evaluation: {evaluation}")
+
+        if evaluation.get("recommendation") == "approve":
+            engine.review_mutation(mutation_id, approved=True, reviewer="system")
+
+        stats = engine.get_statistics()
+        print(f"Statistics: {stats}")
+    finally:
+        if os.path.exists(storage_path):
+            os.unlink(storage_path)
+    sys.exit(0)

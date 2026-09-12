@@ -253,18 +253,30 @@ class ConsensusEngine:
         """
         agent_types = {}
         total_votes = 0
+        agent_inventory: List[Dict[str, Any]] = []
         
-        for agent in self.agents.values():
+        for agent_name, agent in sorted(self.agents.items()):
             agent_type = agent["type"]
             agent_types[agent_type] = agent_types.get(agent_type, 0) + 1
             total_votes += agent["vote_count"]
+            agent_inventory.append(
+                {
+                    "name": agent_name,
+                    "type": agent_type,
+                    "weight": float(agent.get("weight", 1.0) or 1.0),
+                    "vote_count": int(agent.get("vote_count", 0) or 0),
+                    "registered": agent.get("registered"),
+                    "capabilities": list(agent.get("capabilities") or []),
+                }
+            )
             
         return {
             "total_agents": len(self.agents),
             "agent_types": agent_types,
             "total_votes": total_votes,
             "consensus_threshold": self.consensus_threshold,
-            "pending_actions": len(self.votes)
+            "pending_actions": len(self.votes),
+            "agents": agent_inventory,
         }
         
     def get_consensus_history(self) -> List[Dict[str, Any]]:

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 def _infer_value_type(archetype: str) -> str:
     a = (archetype or "").lower()
-    if "revenue" in a or "execute_best" in a or "shortlist" in a:
+    if "revenue" in a or "execute_best" in a or "shortlist" in a or "offer_pack" in a:
         return "revenue"
     if "harvest" in a or "research" in a or "brief" in a:
         return "information"

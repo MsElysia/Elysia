@@ -13,6 +13,7 @@ sys.path.insert(0, str(project_root))
 
 from project_guardian.guardian_singleton import get_guardian_core, reset_singleton
 from project_guardian.core import GuardianCore
+from tests.guardian_core_test_helpers import minimal_unified_elysia_system
 
 
 class TestUnifiedInterfaceNoDoubleInit:
@@ -30,28 +31,15 @@ class TestUnifiedInterfaceNoDoubleInit:
     
     def test_unified_then_interface_uses_singleton(self):
         """Test that UnifiedElysiaSystem then ElysiaInterface uses same GuardianCore"""
-        # Simulate unified system startup
-        from run_elysia_unified import UnifiedElysiaSystem
-        
-        # Mock other initializations to avoid full system startup
-        with patch('run_elysia_unified.UnifiedElysiaSystem._init_architect_core'), \
-             patch('run_elysia_unified.UnifiedElysiaSystem._init_runtime_loop'), \
-             patch('run_elysia_unified.UnifiedElysiaSystem._init_integrated_modules'), \
-             patch('run_elysia_unified.UnifiedElysiaSystem._register_all_modules'):
-            
-            system = UnifiedElysiaSystem(config={})
+        with minimal_unified_elysia_system() as system:
             unified_core = system.guardian
             assert unified_core is not None
-            
-            # Now simulate interface trying to get GuardianCore
+
             from elysia_interface import ElysiaInterface
             interface = ElysiaInterface()
-            
-            # Interface should use singleton (not create new instance)
             interface._init_core()
             interface_core = interface.core
-            
-            # Should be the same instance
+
             assert interface_core is not None
             assert unified_core is interface_core
     
@@ -79,33 +67,22 @@ class TestUnifiedInterfaceNoDoubleInit:
     def test_monitoring_not_started_twice(self):
         """Test that monitoring is not started twice when unified + interface both initialize"""
         from project_guardian.guardian_singleton import ensure_monitoring_started
-        
-        # Simulate unified system
-        from run_elysia_unified import UnifiedElysiaSystem
-        with patch('run_elysia_unified.UnifiedElysiaSystem._init_architect_core'), \
-             patch('run_elysia_unified.UnifiedElysiaSystem._init_runtime_loop'), \
-             patch('run_elysia_unified.UnifiedElysiaSystem._init_integrated_modules'), \
-             patch('run_elysia_unified.UnifiedElysiaSystem._register_all_modules'):
-            
-            system = UnifiedElysiaSystem(config={})
+
+        with minimal_unified_elysia_system() as system:
             unified_core = system.guardian
-            
-            # Unified system should have started monitoring
+
             if unified_core and hasattr(unified_core, 'monitor'):
                 monitoring_started_1 = unified_core.monitor.monitoring_active if unified_core.monitor else False
             else:
                 monitoring_started_1 = False
-            
-            # Now interface initializes
+
             from elysia_interface import ElysiaInterface
             interface = ElysiaInterface()
             interface._init_core()
-            
-            # Monitoring should still be started (not restarted)
+
             if interface.core and hasattr(interface.core, 'monitor'):
                 monitoring_started_2 = interface.core.monitor.monitoring_active if interface.core.monitor else False
             else:
                 monitoring_started_2 = False
-            
-            # Should be same instance, so monitoring state should be consistent
+
             assert unified_core is interface.core

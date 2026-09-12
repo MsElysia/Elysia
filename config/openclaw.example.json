@@ -1,0 +1,19 @@
+{
+  "_comment": "Copy to config/openclaw.json for local use. Do not commit openclaw.json if it contains machine-specific paths or secrets.",
+  "enabled": true,
+  "base_url": "http://127.0.0.1:18789",
+  "timeout_seconds": 60,
+  "default_skills": [
+    "browser_research",
+    "github_scan",
+    "file_scan",
+    "daily_report"
+  ],
+  "autostart": {
+    "enabled": false,
+    "command": [],
+    "working_directory": "",
+    "max_wait_seconds": 30,
+    "log_directory": "logs/openclaw"
+  }
+}

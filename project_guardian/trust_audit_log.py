@@ -124,6 +124,11 @@ class TrustAuditLog:
         
         # Load existing entries
         self.load()
+
+    @property
+    def logs(self) -> List[AuditEntry]:
+        """Compatibility alias for callers that used the old audit log name."""
+        return self.entries
     
     def log_event(
         self,
@@ -257,6 +262,44 @@ class TrustAuditLog:
             action=action_data,
             policy_id=policy_id,
             result=evaluation_result
+        )
+
+    def log_modification(
+        self,
+        user_id: str,
+        original_content: str,
+        modified_content: str,
+        issues: Optional[List[str]] = None,
+    ) -> str:
+        """Compatibility helper for content filters that redact or modify output."""
+        return self.log_event(
+            event_type=AuditEventType.CONTENT_MODIFIED,
+            description=f"Content modified: {', '.join(issues or [])}",
+            severity=AuditSeverity.WARNING,
+            actor=user_id,
+            result={
+                "original_length": len(original_content or ""),
+                "modified_length": len(modified_content or ""),
+                "issues": issues or [],
+            },
+        )
+
+    def log_violation(
+        self,
+        user_id: str,
+        content: str,
+        reason: str,
+    ) -> str:
+        """Compatibility helper for content filters that block unsafe output."""
+        return self.log_event(
+            event_type=AuditEventType.POLICY_VIOLATION,
+            description=reason,
+            severity=AuditSeverity.ERROR,
+            actor=user_id,
+            result={
+                "content_preview": str(content or "")[:200],
+                "reason": reason,
+            },
         )
     
     def log_policy_violation(
@@ -458,6 +501,10 @@ class TrustAuditLog:
             event_type=AuditEventType.POLICY_VIOLATION,
             limit=limit
         )
+
+    def get_violations(self, limit: int = 10) -> List[AuditEntry]:
+        """Compatibility alias for recent policy violations."""
+        return self.get_recent_violations(limit=limit)
     
     def get_recent_escalations(
         self,
@@ -468,6 +515,10 @@ class TrustAuditLog:
             event_type=AuditEventType.ACTION_ESCALATED,
             limit=limit
         )
+
+    def get_escalations(self, limit: int = 10) -> List[AuditEntry]:
+        """Compatibility alias for recent escalations."""
+        return self.get_recent_escalations(limit=limit)
     
     def _cleanup_old_entries(self):
         """Remove entries older than retention period."""
@@ -531,26 +582,67 @@ class TrustAuditLog:
             logger.error(f"Failed to load audit log: {e}")
 
 
-# Example usage
-if __name__ == "__main__":
-    # Create audit log
-    audit_log = TrustAuditLog()
-    
-    # Log an action evaluation
-    audit_log.log_action_evaluation(
-        action_data={"type": "mutation", "target": "code.py"},
-        evaluation_result={
-            "decision": "deny",
-            "severity": "high",
-            "reason": "Potentially dangerous code pattern"
-        },
-        actor="module_xyz"
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
+
+
+def configure_trust_audit_log(
+    *,
+    audit_log: Optional["TrustAuditLog"] = None,
+    guardian: Optional[Any] = None,
+    storage_path: str = "data/trust_audit_log.json",
+    max_entries: int = 10000,
+    retention_days: int = 90,
+) -> "TrustAuditLog":
+    """
+    Return an existing ``TrustAuditLog`` (explicit or from ``guardian``), or construct one.
+    """
+    if audit_log is not None:
+        return audit_log
+    existing = _guardian_component(guardian, "trust_audit_log", "audit_log")
+    if existing is not None:
+        return existing
+    return TrustAuditLog(
+        storage_path=storage_path,
+        max_entries=max_entries,
+        retention_days=retention_days,
     )
-    
-    # Get statistics
-    stats = audit_log.get_statistics(days=7)
-    print(f"Audit statistics: {stats}")
-    
-    # Query recent violations
-    violations = audit_log.get_recent_violations(limit=5)
-    print(f"Recent violations: {len(violations)}")
+
+
+if __name__ == "__main__":
+    import os
+    import sys
+    import tempfile
+
+    fd, path = tempfile.mkstemp(suffix="_trust_audit.json")
+    os.close(fd)
+    if os.path.exists(path):
+        os.unlink(path)
+    try:
+        audit_log = configure_trust_audit_log(storage_path=path)
+
+        audit_log.log_action_evaluation(
+            action_data={"type": "mutation", "target": "code.py"},
+            evaluation_result={
+                "decision": "deny",
+                "severity": "high",
+                "reason": "Potentially dangerous code pattern",
+            },
+            actor="module_xyz",
+        )
+
+        stats = audit_log.get_statistics(days=7)
+        print(f"Audit statistics: {stats}")
+
+        violations = audit_log.get_recent_violations(limit=5)
+        print(f"Recent violations: {len(violations)}")
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+    sys.exit(0)

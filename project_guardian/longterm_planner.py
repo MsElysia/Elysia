@@ -43,6 +43,31 @@ class TaskStatus(Enum):
     CANCELLED = "cancelled"
 
 
+def _planner_task_status_from_runtime(
+    status: Any,
+    *,
+    runtime_bound: bool = False,
+) -> Optional["TaskStatus"]:
+    """Map runtime-loop task status objects/strings into planner task states."""
+    raw = ""
+    if hasattr(status, "value"):
+        raw = str(getattr(status, "value", "") or "").strip().lower()
+    else:
+        raw = str(status or "").strip().lower()
+    if not raw:
+        return None
+    if raw == "failed":
+        return TaskStatus.BLOCKED
+    if runtime_bound and raw in {"pending", "in_progress"}:
+        # Once a planner task is submitted to the runtime loop, both queued and
+        # active runtime states mean "already in flight" from the planner's point of view.
+        return TaskStatus.IN_PROGRESS
+    for candidate in TaskStatus:
+        if candidate.value == raw:
+            return candidate
+    return None
+
+
 @dataclass
 class Objective:
     """
@@ -166,6 +191,259 @@ class LongTermPlanner:
         
         # Load existing data
         self.load()
+
+    def _refresh_objective_status(self, objective_id: str) -> None:
+        """Recompute objective state from its planned tasks."""
+        objective = self.objectives.get(objective_id)
+        if not objective:
+            return
+        if objective.tasks:
+            all_completed = all(
+                self.planned_tasks.get(tid, PlannedTask(
+                    task_id="",
+                    objective_id="",
+                    name="",
+                    description=""
+                )).status == TaskStatus.COMPLETED
+                for tid in objective.tasks
+            )
+            if all_completed:
+                objective.status = ObjectiveStatus.COMPLETED
+                objective.updated_at = datetime.now()
+                logger.info(f"Objective {objective.objective_id} completed")
+                return
+        if objective.status == ObjectiveStatus.COMPLETED:
+            objective.status = ObjectiveStatus.ACTIVE
+            objective.updated_at = datetime.now()
+
+    def sync_runtime_task_states(self, objective_id: Optional[str] = None) -> int:
+        """
+        Reconcile planner-side planned task statuses with the runtime loop.
+
+        Returns:
+            Number of planned tasks whose status changed.
+        """
+        if not self.runtime_loop or not hasattr(self.runtime_loop, "get_task_status"):
+            return 0
+
+        if objective_id:
+            objective = self.objectives.get(objective_id)
+            task_ids = list(objective.tasks) if objective else []
+        else:
+            task_ids = list(self.planned_tasks.keys())
+
+        changed = 0
+        touched_objectives = set()
+        for task_id in task_ids:
+            planned_task = self.planned_tasks.get(task_id)
+            if not planned_task:
+                continue
+            runtime_task_id = str((planned_task.metadata or {}).get("runtime_task_id") or "").strip()
+            if not runtime_task_id:
+                continue
+            runtime_status = self.runtime_loop.get_task_status(runtime_task_id)
+            mapped = _planner_task_status_from_runtime(runtime_status, runtime_bound=True)
+            if mapped is None or mapped == planned_task.status:
+                continue
+            planned_task.status = mapped
+            planned_task.metadata["runtime_last_status"] = mapped.value
+            planned_task.metadata["runtime_last_sync_at"] = datetime.now().isoformat()
+            touched_objectives.add(planned_task.objective_id)
+            changed += 1
+
+        for oid in touched_objectives:
+            self._refresh_objective_status(oid)
+
+        if changed:
+            self.save()
+        return changed
+
+    @staticmethod
+    def _is_smoke_objective(objective: Objective) -> bool:
+        """Identify transient planner smoke-test objectives that should not stay active."""
+        name = str(getattr(objective, "name", "") or "").strip().lower()
+        description = str(getattr(objective, "description", "") or "").strip().lower()
+        return (
+            name == "smokeobjective"
+            and description == "build something small to verify planner."
+        )
+
+    def prune_smoke_test_objectives(self) -> int:
+        """
+        Cancel stale smoke-test objectives so they do not pollute live autonomy.
+
+        When real active objectives exist, all active smoke objectives are cancelled.
+        Otherwise, keep the most recent smoke objective and cancel older duplicates.
+        """
+        smoke_active = [
+            objective
+            for objective in self.objectives.values()
+            if objective.status == ObjectiveStatus.ACTIVE and self._is_smoke_objective(objective)
+        ]
+        if not smoke_active:
+            return 0
+
+        real_active = [
+            objective
+            for objective in self.objectives.values()
+            if objective.status == ObjectiveStatus.ACTIVE and not self._is_smoke_objective(objective)
+        ]
+
+        keep_ids = set()
+        if not real_active and smoke_active:
+            newest = max(
+                smoke_active,
+                key=lambda objective: (
+                    objective.updated_at,
+                    objective.created_at,
+                    objective.objective_id,
+                ),
+            )
+            keep_ids.add(newest.objective_id)
+
+        changed = 0
+        for objective in smoke_active:
+            if objective.objective_id in keep_ids:
+                continue
+            objective.status = ObjectiveStatus.CANCELLED
+            objective.updated_at = datetime.now()
+            objective.metadata["cleanup_reason"] = "smoke_test_objective_pruned"
+            changed += 1
+
+        if changed:
+            logger.info("Pruned %d stale smoke-test objective(s) from planner backlog", changed)
+            self.save()
+        return changed
+
+    def repair_orphaned_runtime_tasks(self, objective_id: Optional[str] = None) -> int:
+        """
+        Recover planner tasks that look in-progress locally but are no longer wired to
+        a live runtime task after a restart or partial save.
+
+        Returns:
+            Number of planned tasks reset to PENDING.
+        """
+        if objective_id:
+            objective = self.objectives.get(objective_id)
+            task_ids = list(objective.tasks) if objective else []
+        else:
+            task_ids = list(self.planned_tasks.keys())
+
+        changed = 0
+        touched_objectives = set()
+        for task_id in task_ids:
+            planned_task = self.planned_tasks.get(task_id)
+            if not planned_task:
+                continue
+
+            metadata = planned_task.metadata if isinstance(planned_task.metadata, dict) else {}
+            runtime_task_id = str(metadata.get("runtime_task_id") or "").strip()
+            recovery_reason = ""
+            if not runtime_task_id:
+                if planned_task.status != TaskStatus.IN_PROGRESS:
+                    continue
+                recovery_reason = "missing_runtime_binding"
+            elif self.runtime_loop and hasattr(self.runtime_loop, "get_task_status"):
+                try:
+                    runtime_status = self.runtime_loop.get_task_status(runtime_task_id)
+                except Exception:
+                    runtime_status = None
+                if runtime_status is None:
+                    recovery_reason = "runtime_task_missing"
+
+            if not recovery_reason:
+                continue
+
+            if not isinstance(planned_task.metadata, dict):
+                planned_task.metadata = {}
+            if runtime_task_id:
+                planned_task.metadata["previous_runtime_task_id"] = runtime_task_id
+                planned_task.metadata.pop("runtime_task_id", None)
+            planned_task.status = TaskStatus.PENDING
+            planned_task.metadata["runtime_last_status"] = TaskStatus.PENDING.value
+            planned_task.metadata["runtime_recovered_at"] = datetime.now().isoformat()
+            planned_task.metadata["runtime_recovery_reason"] = recovery_reason
+            touched_objectives.add(planned_task.objective_id)
+            changed += 1
+
+        for oid in touched_objectives:
+            objective = self.objectives.get(oid)
+            if objective:
+                objective.updated_at = datetime.now()
+
+        if changed:
+            logger.info("Recovered %d orphaned planner task(s) for runtime resubmission", changed)
+            self.save()
+        return changed
+
+    def get_objective_actionability(self, objective_id: str) -> Dict[str, Any]:
+        """Summarize whether an active objective can advance right now."""
+        self.sync_runtime_task_states(objective_id=objective_id)
+        self.repair_orphaned_runtime_tasks(objective_id=objective_id)
+
+        objective = self.objectives.get(objective_id)
+        if not objective:
+            return {}
+
+        task_statuses = {
+            "pending": 0,
+            "in_progress": 0,
+            "completed": 0,
+            "blocked": 0,
+            "cancelled": 0,
+        }
+        for task_id in objective.tasks:
+            task = self.planned_tasks.get(task_id)
+            if not task:
+                continue
+            status_key = task.status.value
+            if status_key in task_statuses:
+                task_statuses[status_key] += 1
+
+        total_tasks = len(objective.tasks)
+        needs_breakdown = total_tasks == 0
+        pending_tasks = task_statuses["pending"]
+        actionable = bool(pending_tasks > 0 or needs_breakdown)
+        return {
+            "objective_id": objective_id,
+            "name": objective.name,
+            "priority": int(objective.priority or 0),
+            "pending_tasks": pending_tasks,
+            "total_tasks": total_tasks,
+            "needs_breakdown": needs_breakdown,
+            "actionable": actionable,
+            "task_statuses": task_statuses,
+        }
+
+    def pick_next_actionable_objective(self, preferred_objective_id: Optional[str] = None) -> Optional[Objective]:
+        """
+        Choose the best active objective to advance now.
+
+        Preference order:
+        1. Preferred objective when it is still actionable.
+        2. Active objectives with pending submit-ready tasks.
+        3. Active objectives that need initial breakdown.
+        """
+        active = self.list_active_objectives()
+        if not active:
+            return None
+
+        scored = []
+        for objective in active:
+            summary = self.get_objective_actionability(objective.objective_id)
+            if not summary:
+                continue
+            bucket = 2 if summary["pending_tasks"] > 0 else 1 if summary["needs_breakdown"] else 0
+            if preferred_objective_id and objective.objective_id == preferred_objective_id and bucket > 0:
+                return objective
+            scored.append((bucket, int(objective.priority or 0), objective.updated_at, objective))
+
+        actionable = [item for item in scored if item[0] > 0]
+        if not actionable:
+            return None
+
+        actionable.sort(key=lambda item: (-item[0], -item[1], item[2], item[3].objective_id))
+        return actionable[0][3]
     
     def add_objective(
         self,
@@ -337,7 +615,7 @@ Provide a JSON array of tasks, each with:
 Return ONLY valid JSON array, no markdown or explanation."""
 
         try:
-            response = await self.ask_ai.ask(
+            response = await self.ask_ai.ask_async(
                 prompt=prompt,
                 provider=AIProvider.OPENAI,
                 temperature=0.3,  # Lower temperature for more consistent structure
@@ -416,7 +694,31 @@ Return ONLY valid JSON array, no markdown or explanation."""
         
         self.planned_tasks[task_id] = task
         return task_id
-    
+
+    async def _run_planned_task_body(self, ptask: PlannedTask) -> Dict[str, Any]:
+        """
+        Execute one planned task inside the runtime loop worker.
+
+        Today: structured log + return completion payload. Extend here to dispatch on
+        ``metadata`` (e.g. ``planner_action``, ``capability``, ``analysis_kind``).
+        """
+        logger.info(
+            "LongTermPlanner executing task_id=%s name=%s objective=%s",
+            ptask.task_id,
+            ptask.name,
+            ptask.objective_id,
+        )
+        meta = ptask.metadata if isinstance(ptask.metadata, dict) else {}
+        action = str(meta.get("planner_action") or meta.get("action") or "").strip()
+        if action:
+            logger.info("LongTermPlanner task metadata action=%s", action[:200])
+        return {
+            "task_id": ptask.task_id,
+            "status": "completed",
+            "name": ptask.name,
+            "objective_id": ptask.objective_id,
+        }
+
     def submit_tasks_to_runtime(
         self,
         objective_id: Optional[str] = None,
@@ -434,6 +736,9 @@ Return ONLY valid JSON array, no markdown or explanation."""
         """
         if not self.runtime_loop:
             raise ValueError("RuntimeLoop not configured")
+
+        self.sync_runtime_task_states(objective_id=objective_id)
+        self.repair_orphaned_runtime_tasks(objective_id=objective_id)
         
         if objective_id:
             objective = self.objectives.get(objective_id)
@@ -450,19 +755,32 @@ Return ONLY valid JSON array, no markdown or explanation."""
             planned_task = self.planned_tasks.get(task_id)
             if not planned_task:
                 continue
-            
+
+            metadata = planned_task.metadata if isinstance(planned_task.metadata, dict) else {}
+            runtime_task_id = str(metadata.get("runtime_task_id") or "").strip()
+            if runtime_task_id and hasattr(self.runtime_loop, "get_task_status"):
+                try:
+                    runtime_status = self.runtime_loop.get_task_status(runtime_task_id)
+                except Exception:
+                    runtime_status = None
+                mapped = _planner_task_status_from_runtime(runtime_status, runtime_bound=True)
+                if mapped is not None and mapped != planned_task.status:
+                    planned_task.status = mapped
+                    planned_task.metadata["runtime_last_status"] = mapped.value
+                    planned_task.metadata["runtime_last_sync_at"] = datetime.now().isoformat()
+
             if planned_task.status != TaskStatus.PENDING:
                 logger.debug(f"Task {task_id} already submitted/completed")
                 continue
-            
+
             # Create a callable function for the task
             def make_task_func(ptask: PlannedTask):
                 """Create a task function from PlannedTask."""
+                planner = self
+
                 async def task_func():
-                    logger.info(f"Executing task: {ptask.name}")
-                    # Task execution logic would go here
-                    # For now, just log
-                    return {"task_id": ptask.task_id, "status": "completed"}
+                    return await planner._run_planned_task_body(ptask)
+
                 return task_func
             
             # Submit to runtime loop
@@ -475,6 +793,9 @@ Return ONLY valid JSON array, no markdown or explanation."""
             )
             
             planned_task.status = TaskStatus.IN_PROGRESS
+            planned_task.metadata["runtime_task_id"] = runtime_task_id
+            planned_task.metadata["runtime_last_status"] = TaskStatus.IN_PROGRESS.value
+            planned_task.metadata["runtime_submitted_at"] = datetime.now().isoformat()
             submitted[task_id] = runtime_task_id
             
             logger.info(f"Submitted task {task_id} ({planned_task.name}) to RuntimeLoop")
@@ -523,24 +844,7 @@ Return ONLY valid JSON array, no markdown or explanation."""
         task = self.planned_tasks.get(task_id)
         if task:
             task.status = status
-            
-            # Update objective status if all tasks completed
-            objective = self.objectives.get(task.objective_id)
-            if objective:
-                all_completed = all(
-                    self.planned_tasks.get(tid, PlannedTask(
-                        task_id="",
-                        objective_id="",
-                        name="",
-                        description=""
-                    )).status == TaskStatus.COMPLETED
-                    for tid in objective.tasks
-                )
-                if all_completed and objective.tasks:
-                    objective.status = ObjectiveStatus.COMPLETED
-                    objective.updated_at = datetime.now()
-                    logger.info(f"Objective {objective.objective_id} completed")
-            
+            self._refresh_objective_status(task.objective_id)
             self.save()
     
     def get_objective(self, objective_id: str) -> Optional[Objective]:
@@ -556,6 +860,7 @@ Return ONLY valid JSON array, no markdown or explanation."""
         status: Optional[ObjectiveStatus] = None
     ) -> List[Objective]:
         """List objectives, optionally filtered by status."""
+        self.sync_runtime_task_states()
         if status:
             return [obj for obj in self.objectives.values() if obj.status == status]
         return list(self.objectives.values())
@@ -566,6 +871,7 @@ Return ONLY valid JSON array, no markdown or explanation."""
     
     def get_objective_progress(self, objective_id: str) -> Dict[str, Any]:
         """Get progress information for an objective."""
+        self.sync_runtime_task_states(objective_id=objective_id)
         objective = self.objectives.get(objective_id)
         if not objective:
             return {}
@@ -636,6 +942,8 @@ Return ONLY valid JSON array, no markdown or explanation."""
                 self.planned_tasks[task.task_id] = task
             
             logger.info(f"Loaded {len(self.objectives)} objectives and {len(self.planned_tasks)} tasks")
+
+            self.prune_smoke_test_objectives()
             
             # If no objectives loaded, initialize defaults
             if len(self.objectives) == 0:

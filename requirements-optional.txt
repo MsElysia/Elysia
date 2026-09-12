@@ -12,3 +12,8 @@ faiss-cpu>=1.7.4
 
 # System monitoring (resource limits, auto-cleanup)
 psutil>=5.9.0
+
+# Model Context Protocol — stdio client for external tools (see scripts/mcp_probe.py)
+mcp>=1.26.0,<2
+# Keep MCP's SSE transport compatible with the FastAPI dashboard Starlette range.
+sse-starlette>=1.6.1,<3

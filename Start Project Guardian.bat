@@ -18,7 +18,9 @@ if exist "%PROJECT_ROOT%elysia.py" (
     python elysia.py
     if errorlevel 2 (
         echo.
-        echo Another instance is already running. Use the dashboard above or close it first.
+        echo Opening status page in browser...
+        start "" "http://127.0.0.1:8888/"
+        echo For a full restart instead: Start Project Guardian (Replace).bat
         pause
     ) else if errorlevel 1 (
         echo.

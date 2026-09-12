@@ -67,22 +67,12 @@ class TestGuardianSingleton:
     
     def test_unified_then_interface_uses_same_instance(self):
         """Test that unified startup then interface startup uses same instance"""
-        # Simulate unified startup
-        from run_elysia_unified import UnifiedElysiaSystem
-        
-        # Mock the other initializations to avoid full system startup
-        with patch('run_elysia_unified.UnifiedElysiaSystem._init_architect_core'), \
-             patch('run_elysia_unified.UnifiedElysiaSystem._init_runtime_loop'), \
-             patch('run_elysia_unified.UnifiedElysiaSystem._init_integrated_modules'), \
-             patch('run_elysia_unified.UnifiedElysiaSystem._register_all_modules'):
-            
-            system = UnifiedElysiaSystem(config={})
+        from project_guardian.guardian_singleton import get_guardian_core
+        from tests.guardian_core_test_helpers import minimal_unified_elysia_system
+
+        with minimal_unified_elysia_system() as system:
             unified_core = system.guardian
-            
-            # Now simulate interface trying to get GuardianCore
             interface_core = get_guardian_core()
-            
-            # Should be the same instance
             assert unified_core is interface_core
     
     def test_monitoring_started_once(self):

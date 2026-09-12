@@ -812,6 +812,7 @@ class EnhancedMemoryCore:
         timeline_memory=None,
         lazy_json: bool = False,
         lazy_vector: bool = False,
+        defer_embeddings: bool = False,
     ):
         from .memory import MemoryCore
         
@@ -821,6 +822,8 @@ class EnhancedMemoryCore:
             timeline_memory=timeline_memory,
             lazy_load=lazy_json,
         )
+        if not defer_embeddings:
+            self.json_memory.enable_embeddings()
         
         # Add vector memory if enabled and available
         self.vector_memory: Optional[VectorMemory] = None
@@ -916,8 +919,10 @@ class EnhancedMemoryCore:
         # Store in JSON (existing functionality)
         self.json_memory.remember(thought, category, priority)
         
-        # Store in vector memory if available
-        if self.vector_memory:
+        # Defer vector writes until startup explicitly enables embeddings on the
+        # underlying JSON memory. This keeps boot-time remember() calls from
+        # triggering provider embedding requests before deferred init completes.
+        if self.vector_memory and bool(getattr(self.json_memory, "_embeddings_enabled", False)):
             self.vector_memory.add_memory(
                 text=thought,
                 category=category,
@@ -946,7 +951,10 @@ class EnhancedMemoryCore:
         """
         self.load_if_needed()
         if self.vector_memory:
-            return self.vector_memory.search(query, limit, threshold, category)
+            results = self.vector_memory.search(query, limit, threshold, category)
+            if results:
+                return results
+            return self.json_memory.search_memories(query, limit)
         else:
             # Fallback to keyword search
             logger.warning("Vector memory not available, using keyword search")

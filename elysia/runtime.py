@@ -17,6 +17,7 @@ from .logging_config import setup_logging
 
 if TYPE_CHECKING:
     from .core.proposal_system import ProposalSystem
+    from .agents.implementer import ImplementerAgent
     from .agents.webscout import WebScoutAgent
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ class ElysiaRuntime:
         self.architect = None
         self.proposal_system: Optional[ProposalSystem] = None
         self.webscout: Optional[WebScoutAgent] = None
+        self.implementer: Optional[ImplementerAgent] = None
         self.api_server: Optional[RuntimeAPIServer] = None
 
     # ------------------------------------------------------------------
@@ -55,6 +57,9 @@ class ElysiaRuntime:
 
         if self.config.enable_webscout:
             self._init_webscout()
+
+        if self.config.enable_implementer:
+            self._init_implementer()
 
         if self.config.enable_api:
             self._init_api_server()
@@ -177,7 +182,33 @@ class ElysiaRuntime:
             logger.warning("WebScout unavailable: %s", exc)
             self.webscout = None
 
+    def _init_implementer(self) -> None:
+        if not self.proposal_system:
+            logger.warning("Proposal system not available, cannot initialize Implementer")
+            self.implementer = None
+            return
+
+        try:
+            from .agents.implementer import ImplementerAgent
+
+            self.implementer = ImplementerAgent(
+                repo_root=Path.cwd(),
+                proposal_system=self.proposal_system,
+                event_bus=self.event_bus,
+                dry_run=False,
+            )
+            self.event_bus.emit("implementer", "initialized", {"repo_root": str(Path.cwd())})
+        except Exception as exc:
+            logger.warning("Implementer unavailable: %s", exc)
+            self.implementer = None
+
     def _init_api_server(self) -> None:
+        guardian = None
+        if self.architect is not None:
+            guardian = getattr(self.architect, "guardian", None) or getattr(
+                self.architect, "guardian_core", None
+            )
+
         self.api_server = RuntimeAPIServer(
             status_provider=self.get_status,
             event_bus=self.event_bus,
@@ -186,6 +217,9 @@ class ElysiaRuntime:
             proposal_system=self.proposal_system,
             webscout=self.webscout,
             architect=self.architect,
+            implementer=self.implementer,
+            auto_implement_on_approval=self.config.auto_implement_on_approval,
+            guardian=guardian,
         )
 
     def _start_heartbeat(self) -> None:
@@ -239,6 +273,7 @@ class ElysiaRuntime:
                 "architect": bool(self.architect),
                 "proposal_system": bool(self.proposal_system),
                 "webscout": bool(self.webscout),
+                "implementer": bool(self.implementer),
                 "api_server": self.api_server.running if self.api_server else False,
             },
             "proposal_count": proposal_count,

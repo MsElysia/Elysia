@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -13,7 +15,11 @@ if str(ROOT) not in sys.path:
 
 from project_guardian.bounded_browser.agent import browse_task, _infer_start_url  # noqa: E402
 from project_guardian.bounded_browser.allowlist import url_matches_allowlist  # noqa: E402
-from project_guardian.bounded_browser.backends import BrowserBackend  # noqa: E402
+from project_guardian.bounded_browser.backends import (  # noqa: E402
+    BrowserBackend,
+    UrllibBrowserBackend,
+    create_browser_backend,
+)
 from project_guardian.bounded_browser.moltbook import browse_moltbook  # noqa: E402
 from project_guardian.bounded_browser.schema import LinkInfo  # noqa: E402
 
@@ -59,6 +65,22 @@ class FakeBackend(BrowserBackend):
         pass
 
 
+class FakeUrlopenResponse:
+    def __init__(self, body: bytes, url: str = "https://example.test/start") -> None:
+        self._body = body
+        self.url = url
+        self.headers = {"Content-Type": "text/html; charset=utf-8"}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def read(self, _limit: int = -1) -> bytes:
+        return self._body
+
+
 def test_infer_start_url_from_goal() -> None:
     assert _infer_start_url("", "https://a.com/x") == "https://a.com/x"
     assert _infer_start_url("https://b.com q", None) == "https://b.com"
@@ -81,6 +103,57 @@ def test_browse_task_fake_backend() -> None:
     assert len(r.steps) >= 1
     assert r.visited_urls
     assert all(s.url for s in r.steps)
+
+
+def test_urllib_backend_extracts_static_page_content_and_links() -> None:
+    body = b"""
+    <html>
+      <head><title>Example Title</title><style>.x{display:none}</style></head>
+      <body>
+        <main><h1>Useful body</h1><p>Static fallback browser can read this page.</p></main>
+        <a href="/next">Next page</a>
+        <a href="javascript:alert(1)">Unsafe</a>
+      </body>
+    </html>
+    """
+
+    def _fake_urlopen(request, timeout=0):
+        assert request.full_url == "https://example.test/start"
+        assert timeout > 0
+        return FakeUrlopenResponse(body)
+
+    backend = UrllibBrowserBackend()
+    with patch("project_guardian.bounded_browser.backends.urllib.request.urlopen", side_effect=_fake_urlopen):
+        backend.open_url("https://example.test/start")
+
+    assert backend.current_title() == "Example Title"
+    assert "Useful body" in backend.extract_visible_content()
+    links = backend.list_links()
+    assert links == [LinkInfo(index=0, href="https://example.test/next", text="Next page")]
+
+
+def test_create_browser_backend_uses_urllib_fallback_when_playwright_missing() -> None:
+    with patch(
+        "project_guardian.bounded_browser.backends.PlaywrightBrowserBackend",
+        side_effect=ImportError("no chromium"),
+    ):
+        backend = create_browser_backend()
+    assert isinstance(backend, UrllibBrowserBackend)
+
+
+def test_create_browser_backend_uses_urllib_fallback_when_chromium_launch_fails() -> None:
+    fake_playwright = types.ModuleType("playwright")
+    fake_sync_api = types.ModuleType("playwright.sync_api")
+    fake_sync_api.sync_playwright = lambda: None
+    with patch.dict(
+        sys.modules,
+        {"playwright": fake_playwright, "playwright.sync_api": fake_sync_api},
+    ), patch(
+        "project_guardian.bounded_browser.backends.PlaywrightBrowserBackend",
+        side_effect=RuntimeError("chromium missing"),
+    ):
+        backend = create_browser_backend()
+    assert isinstance(backend, UrllibBrowserBackend)
 
 
 def test_url_matches_allowlist_moltbook() -> None:

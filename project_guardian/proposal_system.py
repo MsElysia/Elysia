@@ -29,6 +29,33 @@ class ProposalValidator:
     
     REQUIRED_FOLDERS = ["research", "design", "implementation"]
     REQUIRED_FILES = ["metadata.json", "README.md"]
+
+    def ensure_required_scaffold(self, proposal_path: Path) -> List[str]:
+        """
+        Create missing research/design/implementation directories (and placeholder README if missing).
+        Returns list of created paths (as strings) for logging/tests.
+        """
+        created: List[str] = []
+        if not proposal_path.exists() or not proposal_path.is_dir():
+            return created
+        for folder in self.REQUIRED_FOLDERS:
+            fp = proposal_path / folder
+            if not fp.exists():
+                fp.mkdir(parents=True, exist_ok=True)
+                created.append(str(fp))
+            elif not fp.is_dir():
+                continue
+        readme = proposal_path / "README.md"
+        if not readme.exists():
+            try:
+                readme.write_text(
+                    "# Proposal\n\nAuto-created scaffold. Add summary and links.\n",
+                    encoding="utf-8",
+                )
+                created.append(str(readme))
+            except OSError as e:
+                logger.debug("ensure_required_scaffold readme: %s", e)
+        return created
     
     def validate_structure(self, proposal_path: Path) -> Dict[str, Any]:
         """
@@ -38,12 +65,17 @@ class ProposalValidator:
             Dict with "valid" bool and "errors" list
         """
         errors = []
+        scaffolded: List[str] = []
         
         if not proposal_path.exists():
-            return {"valid": False, "errors": ["Proposal path does not exist"]}
+            return {"valid": False, "errors": ["Proposal path does not exist"], "scaffolded": scaffolded}
         
         if not proposal_path.is_dir():
-            return {"valid": False, "errors": ["Proposal path is not a directory"]}
+            return {"valid": False, "errors": ["Proposal path is not a directory"], "scaffolded": scaffolded}
+
+        scaffolded = self.ensure_required_scaffold(proposal_path)
+        if scaffolded:
+            logger.info("Proposal scaffold: created %s", scaffolded[:6])
         
         # Check required folders
         for folder in self.REQUIRED_FOLDERS:
@@ -61,7 +93,8 @@ class ProposalValidator:
         
         return {
             "valid": len(errors) == 0,
-            "errors": errors
+            "errors": errors,
+            "scaffolded": scaffolded,
         }
     
     def validate_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:

@@ -52,3 +52,11 @@ routes:
     planner_model: ollama:mistral:7b
     executor_model: ollama:mistral:7b
     reviewer_model: openai:gpt-4.1-mini
+
+  # Elysia context_pipeline: local Ollama compresses retrieval → prompt_packet; optional OpenAI json_object for structured_online.
+  # Enable in config/context_pipeline.json + mistral_decider use_context_pipeline. Router: multi_api_router task_type context_structuring → local_mistral.
+  context_structuring:
+    pipeline: serial_plan_execute_review
+    planner_model: ollama:mistral:7b
+    executor_model: ollama:mistral:7b
+    reviewer_model: ollama:mistral:7b

@@ -191,6 +191,22 @@ class TestLatestStateCorrectness:
 class TestRestartTolerance:
     """Test A3: Restart tolerance - re-instantiation preserves state"""
     
+    def test_list_pending_uses_latest_status_not_stale_rows(self):
+        """Approved/denied updates append new rows; pending list must use latest state."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue_file = Path(tmpdir) / "review_queue.jsonl"
+            queue = ReviewQueue(queue_file=queue_file)
+            
+            request_id = queue.enqueue(
+                component="WebReader",
+                action=NETWORK_ACCESS,
+                context={"target": "example.com"},
+            )
+            queue.update_status(request_id, "approved", approver="human")
+            
+            pending_ids = [req.request_id for req in queue.list_pending()]
+            assert request_id not in pending_ids, "Latest approved status must not appear as pending"
+    
     def test_restart_preserves_pending_requests(self):
         """Verify re-instantiation preserves pending requests"""
         with tempfile.TemporaryDirectory() as tmpdir:

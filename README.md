@@ -26,21 +26,38 @@ python setup_guardian.py
 export OPENAI_API_KEY=sk-...
 export CLAUDE_API_KEY=sk-ant-...
 
-# Run system
-python -m project_guardian
+# Primary live boot (Windows desktop / operator)
+START_ELYSIA_UNIFIED.bat
+# or: Start_Elysia_Backend.cmd   → python elysia.py
 ```
 
-**Access Web UI**: http://localhost:5000  
-**API Server**: http://localhost:8080
+**Status API**: http://127.0.0.1:8888/status  
+**Control panel**: http://127.0.0.1:5000  
+
+**Boot contract (canonical):** [`docs/CANONICAL_BOOT_CONTRACT.md`](docs/CANONICAL_BOOT_CONTRACT.md)  
+Secondary / parallel entries (`python -m project_guardian`, `python -m elysia run`) are documented there — they are **not** the desktop primary path.
 
 ### Optional: Poetry
 
 The repo includes `pyproject.toml` and `poetry.lock` for a package-based install. With [Poetry](https://python-poetry.org/) installed: `poetry install`
 
+### Safe-stack smoke tests (CI slice)
+
+Verifies conversation memory, brain trace visibility, TDA naming, self-improvement proposals/export, prompt contracts, and memory ranking — **without** starting servers, enabling autonomy, or calling external APIs:
+
+```bash
+python scripts/run_safe_stack_smoke_tests.py
+# or: make safe-smoke
+```
+
+GitHub Actions: workflow **Safe stack smoke** (`.github/workflows/safe-stack-smoke.yml`). See `docs/ELYSIA_ARCHITECTURE_CHECKPOINT.md` for scope and limits.
+
 ---
 
 ## Documentation
 
+- **[Canonical Boot Contract](docs/CANONICAL_BOOT_CONTRACT.md)** - What is actually live
+- **[Canonical Runtime Map](REPORTS/canonical_runtime_map.md)** - Subsystem classification
 - **[User Guide](USER_GUIDE.md)** - Complete usage instructions
 - **[API Reference](API_REFERENCE.md)** - REST API documentation
 - **[Deployment Guide](DEPLOYMENT_GUIDE.md)** - Production deployment
@@ -160,15 +177,20 @@ manager.set_secret("openai_api_key", "sk-...")
 ### Running
 
 ```bash
-# Start system
+# Primary (unified backend + attach UI)
+START_ELYSIA_UNIFIED.bat
+
+# Backend only
+python elysia.py
+
+# Secondary package entry (SystemOrchestrator — not desktop-primary)
 python -m project_guardian
 
-# Start web UI
-python start_ui_panel.py
-
-# Access API
-curl http://localhost:8080/api/health
+# Probe status
+curl http://127.0.0.1:8888/status
 ```
+
+See [`docs/CANONICAL_BOOT_CONTRACT.md`](docs/CANONICAL_BOOT_CONTRACT.md).
 
 ---
 
@@ -192,6 +214,12 @@ project_guardian/
 ```bash
 # Run verification
 python verify_system.py
+
+# Run safe-stack smoke tests (pytest slice; no services, autonomy, or live execution)
+python scripts/run_safe_stack_smoke_tests.py
+
+# Optional Makefile shortcut
+make safe-smoke
 
 # Manual testing
 python test_mutation_manual.py

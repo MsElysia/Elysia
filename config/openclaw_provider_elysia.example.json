@@ -1,0 +1,16 @@
+{
+  "_comment": "Merge this object into OpenClaw's models.providers array (not Project Guardian's config). Adjust baseUrl if ELYSIA_STATUS_PORT is not 8888.",
+  "id": "elysia",
+  "name": "Elysia",
+  "baseUrl": "http://127.0.0.1:8888",
+  "apiKey": "optional-local",
+  "apiType": "openai-completions",
+  "models": [
+    {
+      "id": "elysia/main",
+      "name": "Elysia",
+      "contextWindow": 8192,
+      "maxOutputTokens": 2048
+    }
+  ]
+}

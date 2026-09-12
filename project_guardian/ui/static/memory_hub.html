@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Static local Memory Hub for Project Guardian import, review, search, diagnostics, and safety guidance.">
+  <title>Elysia Memory Hub</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --primary: #6366f1;
+      --success: #10b981;
+      --warning: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 24px;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; }
+    h1 { font-size: 1.85rem; margin-bottom: 8px; }
+    .subtitle { color: var(--muted); margin-bottom: 24px; }
+    .identity {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+    .identity > span,
+    .identity nav > span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: 8px;
+      z-index: 1000;
+      padding: 8px 12px;
+      background: #ffffff;
+      color: #0f172a;
+      border: 2px solid currentColor;
+      border-radius: 8px;
+    }
+    .skip-link:focus { left: 8px; }
+    a:focus,
+    button:focus {
+      outline: 2px solid currentColor;
+      outline-offset: 2px;
+    }
+    .intro {
+      background: #172554;
+      border: 1px solid #1e40af;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 24px;
+      font-size: 0.92rem;
+    }
+    .intro li { margin-left: 18px; margin-top: 4px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .card.future { border-style: dashed; opacity: 0.95; }
+    .card h2 { font-size: 1.05rem; color: #c4b5fd; }
+    .card p { font-size: 0.9rem; color: var(--muted); flex: 1; }
+    .card a {
+      display: inline-block;
+      background: var(--primary);
+      color: white;
+      text-decoration: none;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 0.9rem;
+      text-align: center;
+    }
+    .card a.secondary { background: #475569; }
+    .card a.disabled {
+      pointer-events: none;
+      opacity: 0.55;
+      background: #475569;
+    }
+    .mock-status {
+      font-size: 0.8rem;
+      color: var(--warning);
+    }
+    section,
+    .page-navigation {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    section h2,
+    .page-navigation h2 { font-size: 1.15rem; margin-bottom: 12px; color: #c4b5fd; }
+    .sources { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 0.85rem;
+    }
+    .safety-panel {
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 14px;
+      font-size: 0.88rem;
+    }
+    .safety-panel li { margin-left: 18px; margin-top: 4px; color: var(--muted); }
+    .flow ol { margin-left: 20px; color: var(--muted); font-size: 0.9rem; }
+    .flow li { margin-top: 6px; }
+    .onboarding-links {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .onboarding-link {
+      display: block;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      text-decoration: none;
+      color: var(--text);
+    }
+    .onboarding-link strong {
+      display: block;
+      color: #c4b5fd;
+      margin-bottom: 4px;
+    }
+    .onboarding-link span {
+      display: block;
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+    .flag { color: var(--success); font-size: 0.85rem; margin-top: 12px; }
+    .note { font-size: 0.82rem; color: var(--warning); margin-top: 10px; }
+
+    @media (max-width: 720px) {
+      body { padding: 16px; }
+      .wrap { max-width: 100%; }
+      h1 { font-size: 1.55rem; }
+      .identity { align-items: flex-start; }
+      .identity > span,
+      .identity nav > span { border-radius: 8px; }
+      .grid,
+      .onboarding-links { grid-template-columns: 1fr; }
+      .card,
+      section,
+      .page-navigation,
+      .intro { padding: 16px; }
+      .sources { flex-direction: column; }
+    }
+
+    @media print {
+      .skip-link,
+      .page-navigation { display: none; }
+      body { background: #ffffff; color: #000000; padding: 0; }
+      .wrap { max-width: 100%; }
+      .card,
+      section,
+      .intro,
+      .safety-panel,
+      .chip {
+        background: #ffffff;
+        border-color: #000000;
+        color: #000000;
+      }
+      h1,
+      h2,
+      p,
+      li,
+      span,
+      a,
+      strong,
+      .subtitle,
+      .note,
+      .flag,
+      .mock-status { color: #000000; }
+      a::after { content: " (" attr(href) ")"; font-size: 0.85em; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto;
+        transition-duration: 0.01ms;
+        animation-duration: 0.01ms;
+      }
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root { color-scheme: dark; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <main class="wrap" id="main-content">
+    <h1>Memory Hub</h1>
+    <p class="subtitle">Elysia Memory Hub — static prototype only. Links to import and review/search screens.</p>
+    <div class="identity" aria-label="Page identity">
+      <nav aria-label="Memory breadcrumb">
+        <span aria-current="page">Memory Hub</span>
+      </nav>
+      <span>Local route: /memory/memory_hub.html</span>
+    </div>
+
+    <div class="intro" role="note">
+      <ul>
+        <li>Use local files to build memory safely.</li>
+        <li>No memory is saved until you confirm.</li>
+        <li>Imported items become pending memories for review.</li>
+        <li>Only approved memories are searchable.</li>
+      </ul>
+    </div>
+
+    <nav id="memory-onboarding" class="page-navigation" aria-label="Memory page navigation">
+      <h2>Memory onboarding</h2>
+      <p class="note">Static local prototype navigation only. These allowlisted /memory links do not run backend actions.</p>
+      <div class="onboarding-links">
+        <a class="onboarding-link" href="/memory/memory_first_run_setup.html">
+          <strong>First-Run Setup</strong>
+          <span>Start here if this is your first time using local memory.</span>
+        </a>
+        <a class="onboarding-link" href="/memory/memory_safety.html">
+          <strong>Memory Safety</strong>
+          <span>Review what this local memory prototype does and does not do.</span>
+        </a>
+        <a class="onboarding-link" href="/memory/memory_diagnostics.html">
+          <strong>Diagnostics</strong>
+          <span>Check local memory workspace health.</span>
+        </a>
+        <a class="onboarding-link" href="/memory/memory_import_screen.html">
+          <strong>Import Memory</strong>
+          <span>Preview and apply supported local imports.</span>
+        </a>
+        <a class="onboarding-link" href="/memory/memory_review_search.html">
+          <strong>Review and Search</strong>
+          <span>Review pending candidates and search approved local memory.</span>
+        </a>
+      </div>
+    </nav>
+
+    <div class="grid">
+      <article class="card">
+        <h2>Import Memory</h2>
+        <p>Add transcription files, ChatGPT exports, or email .eml files. Preview before anything is staged.</p>
+        <span class="mock-status">Mock: 0 files selected</span>
+        <a href="/memory/memory_import_screen.html">Open Import Memory</a>
+      </article>
+
+      <article class="card">
+        <h2>Review Pending Memories</h2>
+        <p>Approve, reject, or edit staged candidates. Pending memories are not active memory yet.</p>
+        <span class="mock-status">Mock: 3 pending candidates</span>
+        <a href="/memory/memory_review_search.html">Open Review</a>
+      </article>
+
+      <article class="card">
+        <h2>Search Approved Memory</h2>
+        <p>Search read-only across operator-approved local memory. No model is called during search.</p>
+        <span class="mock-status">Mock: 2 approved memories</span>
+        <a href="/memory/memory_review_search.html">Open Search</a>
+      </article>
+
+      <article class="card future">
+        <h2>Build Context Bundle</h2>
+        <p>Generate local Markdown and JSON context files from approved memory for later model handoff.</p>
+        <span class="mock-status">Mock: not built yet</span>
+        <a class="disabled secondary" href="#" aria-disabled="true">Coming soon (prototype)</a>
+      </article>
+
+      <article class="card">
+        <h2>Diagnostics &amp; Demo</h2>
+        <p>Inspect local memory workspaces, create fake demo inputs, and run a local-only health smoke.</p>
+        <span class="mock-status">Mock: doctor verdict READY_FOR_IMPORT</span>
+        <a href="/memory/memory_diagnostics.html">Open Diagnostics</a>
+      </article>
+    </div>
+
+    <section id="sources">
+      <h2>Supported sources</h2>
+      <div class="sources">
+        <span class="chip">Transcription / text (.txt, .md, .vtt, .srt)</span>
+        <span class="chip">ChatGPT export (conversations.json)</span>
+        <span class="chip">Email export (.eml)</span>
+      </div>
+      <p class="note">No live ChatGPT or email account access. Local exported files only.</p>
+    </section>
+
+    <section id="safety">
+      <h2>Safety</h2>
+      <div class="safety-panel">
+        <ul>
+          <li>No live account access</li>
+          <li>No model calls</li>
+          <li>No embeddings</li>
+          <li>No live runtime memory or vector DB writes</li>
+          <li>No server/API route wiring in this prototype</li>
+          <li>Local files only</li>
+        </ul>
+      </div>
+      <div class="flag">model_called: false | embeddings_used: false | live_memory_written: false | autonomy_enabled: false</div>
+      <p class="note"><a href="/memory/memory_safety.html">Open Memory Safety</a> for the plain-language guardrails.</p>
+    </section>
+
+    <section id="what-next" class="flow">
+      <h2>What happens next</h2>
+      <ol>
+        <li>Preview files on the Import Memory screen</li>
+        <li>Confirm import to stage pending candidates</li>
+        <li>Review pending memories — approve, reject, or edit</li>
+        <li>Search approved memory after export and store steps</li>
+        <li>Build context bundle later (placeholder on review/search screen)</li>
+      </ol>
+      <p class="note">This hub does not call backend scripts. Open linked prototypes for each step.</p>
+    </section>
+  </main>
+</body>
+</html>

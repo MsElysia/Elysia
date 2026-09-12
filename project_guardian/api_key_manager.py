@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """
-API Key Manager for WebScout
-Centralized API key loading and validation for WebScout agent.
+API Key Manager for WebScout and shared secrets.
+Centralized API key loading from env, config/api_keys.json, and the API keys folder.
+
+Income APIs (Gumroad / Stripe) use the same loader; see resolve_gumroad_access_token /
+resolve_stripe_secret_key (env GUMROAD_ACCESS_TOKEN / STRIPE_SECRET_KEY and matching config keys).
 """
 
 import os
 import json
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_LAST_KEY_AVAILABILITY_SIGNATURE: Optional[tuple[bool, bool]] = None
 
 
 @dataclass
@@ -26,7 +30,9 @@ class APIKeys:
     cohere: Optional[str] = None
     brave_search: Optional[str] = None
     tavily: Optional[str] = None
-    
+    gumroad: Optional[str] = None
+    stripe: Optional[str] = None
+
     def has_llm_key(self) -> bool:
         """Check if any LLM API key is available"""
         return bool(self.openai or self.openrouter or self.anthropic or self.huggingface or self.cohere)
@@ -73,10 +79,22 @@ class APIKeyManager:
         # Try loading from API keys folder
         loaded = self._load_from_folder() or loaded
         
+        llm_available = self.keys.has_llm_key()
+        web_available = self.keys.has_web_key()
+        availability_sig = (llm_available, web_available)
+        global _LAST_KEY_AVAILABILITY_SIGNATURE
         if not loaded:
-            logger.warning("No API keys loaded. WebScout will run in simulated mode.")
+            if _LAST_KEY_AVAILABILITY_SIGNATURE != availability_sig:
+                logger.warning("No API keys loaded. WebScout will run in simulated mode.")
+            else:
+                logger.debug("No API keys loaded (unchanged availability state).")
         else:
-            logger.info(f"API keys loaded. LLM available: {self.keys.has_llm_key()}")
+            msg = f"API keys loaded. LLM available: {llm_available}"
+            if _LAST_KEY_AVAILABILITY_SIGNATURE != availability_sig:
+                logger.info(msg)
+            else:
+                logger.debug("%s (unchanged availability state)", msg)
+        _LAST_KEY_AVAILABILITY_SIGNATURE = availability_sig
         
         return loaded
     
@@ -116,7 +134,17 @@ class APIKeyManager:
                 config.get('tavily', {}).get('api_key') if isinstance(config.get('tavily'), dict)
                 else config.get('tavily') or config.get('tavily_api_key') or config.get('TAVILY_API_KEY')
             )
-            
+
+            gumroad_key = (
+                config.get('gumroad', {}).get('api_key') if isinstance(config.get('gumroad'), dict)
+                else config.get('gumroad') or config.get('gumroad_access_token') or config.get('GUMROAD_ACCESS_TOKEN')
+            )
+
+            stripe_key = (
+                config.get('stripe', {}).get('api_key') if isinstance(config.get('stripe'), dict)
+                else config.get('stripe') or config.get('stripe_secret_key') or config.get('STRIPE_SECRET_KEY')
+            )
+
             if openai_key:
                 self.keys.openai = openai_key
             if openrouter_key:
@@ -135,10 +163,14 @@ class APIKeyManager:
                 self.keys.brave_search = brave_search_key
             if tavily_key:
                 self.keys.tavily = tavily_key
-            
+            if gumroad_key:
+                self.keys.gumroad = gumroad_key
+            if stripe_key:
+                self.keys.stripe = stripe_key
+
             return bool(
                 openai_key or openrouter_key or anthropic_key or huggingface_key
-                or cohere_key or brave_search_key or tavily_key
+                or cohere_key or brave_search_key or tavily_key or gumroad_key or stripe_key
             )
         except Exception as e:
             logger.warning(f"Could not load keys from config: {e}")
@@ -175,7 +207,15 @@ class APIKeyManager:
         if os.getenv("TAVILY_API_KEY"):
             self.keys.tavily = os.getenv("TAVILY_API_KEY")
             loaded = True
-        
+
+        if os.getenv("GUMROAD_ACCESS_TOKEN"):
+            self.keys.gumroad = os.getenv("GUMROAD_ACCESS_TOKEN")
+            loaded = True
+
+        if os.getenv("STRIPE_SECRET_KEY"):
+            self.keys.stripe = os.getenv("STRIPE_SECRET_KEY")
+            loaded = True
+
         return loaded
     
     def _load_from_folder(self) -> bool:
@@ -193,6 +233,10 @@ class APIKeyManager:
             "Brave Search API key.txt": ("brave_search", "brave_search"),
             "tavily api key.txt": ("tavily", "tavily"),
             "Tavily API key.txt": ("tavily", "tavily"),
+            "gumroad access token.txt": ("gumroad", "gumroad"),
+            "Gumroad access token.txt": ("gumroad", "gumroad"),
+            "stripe secret key.txt": ("stripe", "stripe"),
+            "Stripe secret key.txt": ("stripe", "stripe"),
         }
         
         for filename, (key_name, attr_name) in key_mapping.items():
@@ -305,4 +349,163 @@ def get_api_key_manager() -> APIKeyManager:
     if _global_manager is None:
         _global_manager = APIKeyManager()
     return _global_manager
+
+
+def resolve_gumroad_access_token() -> Optional[str]:
+    """
+    Gumroad access token for Harvest Engine / income modules.
+    Loaded via APIKeyManager (config/api_keys.json, env GUMROAD_ACCESS_TOKEN, API keys folder).
+    Precedence matches other keys: config, then env, then folder files (last wins).
+    """
+    mgr = get_api_key_manager()
+    v = (mgr.keys.gumroad or "").strip()
+    return v or None
+
+
+def resolve_stripe_secret_key() -> Optional[str]:
+    """Stripe secret key; same sources as resolve_gumroad_access_token (STRIPE_SECRET_KEY, config, folder)."""
+    mgr = get_api_key_manager()
+    v = (mgr.keys.stripe or "").strip()
+    return v or None
+
+
+def reload_api_key_manager() -> None:
+    """Drop singleton so the next resolve_* reloads from disk, env, and API keys folder."""
+    global _global_manager
+    _global_manager = None
+    get_api_key_manager()
+
+
+def _parse_gumroad_from_cfg_dict(cfg: Dict[str, Any]) -> Optional[str]:
+    g = cfg.get("gumroad")
+    if isinstance(g, dict):
+        v = (g.get("api_key") or "").strip()
+        return v or None
+    if isinstance(g, str) and g.strip():
+        return g.strip()
+    v = (cfg.get("gumroad_access_token") or "").strip()
+    return v or None
+
+
+def _parse_stripe_from_cfg_dict(cfg: Dict[str, Any]) -> Optional[str]:
+    s = cfg.get("stripe")
+    if isinstance(s, dict):
+        v = (s.get("api_key") or "").strip()
+        return v or None
+    if isinstance(s, str) and s.strip():
+        return s.strip()
+    v = (cfg.get("stripe_secret_key") or "").strip()
+    return v or None
+
+
+def _folder_key_present(filenames: List[str]) -> bool:
+    api_keys_dir = _PROJECT_ROOT / "API keys"
+    if not api_keys_dir.exists():
+        return False
+    for filename in filenames:
+        path = api_keys_dir / filename
+        if not path.exists():
+            continue
+        try:
+            if path.read_text(encoding="utf-8").strip():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _effective_income_key_source(*, folder: bool, env: bool, config_file: bool, configured: bool) -> str:
+    if not configured:
+        return "none"
+    # APIKeyManager load order is config, env, folder; folder wins when present.
+    if folder:
+        return "api_keys_folder"
+    if env:
+        return "env"
+    if config_file:
+        return "config_file"
+    return "other"
+
+
+def income_keys_ui_status() -> Dict[str, Any]:
+    """Non-secret snapshot for Control Panel (effective token presence + source hints)."""
+    import os
+
+    path = _PROJECT_ROOT / "config" / "api_keys.json"
+    file_g = False
+    file_s = False
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                file_g = bool(_parse_gumroad_from_cfg_dict(data))
+                file_s = bool(_parse_stripe_from_cfg_dict(data))
+        except Exception:
+            pass
+    env_g = bool((os.environ.get("GUMROAD_ACCESS_TOKEN") or "").strip())
+    env_s = bool((os.environ.get("STRIPE_SECRET_KEY") or "").strip())
+    folder_g = _folder_key_present(["gumroad access token.txt", "Gumroad access token.txt"])
+    folder_s = _folder_key_present(["stripe secret key.txt", "Stripe secret key.txt"])
+    eff_g = bool(resolve_gumroad_access_token())
+    eff_s = bool(resolve_stripe_secret_key())
+    return {
+        "gumroad_configured": eff_g,
+        "stripe_configured": eff_s,
+        "gumroad_from_env": env_g,
+        "stripe_from_env": env_s,
+        "gumroad_in_config_file": file_g,
+        "stripe_in_config_file": file_s,
+        "gumroad_in_api_keys_folder": folder_g,
+        "stripe_in_api_keys_folder": folder_s,
+        "gumroad_effective_source": _effective_income_key_source(
+            folder=folder_g,
+            env=env_g,
+            config_file=file_g,
+            configured=eff_g,
+        ),
+        "stripe_effective_source": _effective_income_key_source(
+            folder=folder_s,
+            env=env_s,
+            config_file=file_s,
+            configured=eff_s,
+        ),
+    }
+
+
+def persist_income_keys_to_config_file(
+    *,
+    gumroad_access_token: Optional[str] = None,
+    stripe_secret_key: Optional[str] = None,
+    clear_gumroad: bool = False,
+    clear_stripe: bool = False,
+) -> None:
+    """
+    Merge Gumroad / Stripe into config/api_keys.json (creates file if needed).
+    Env vars are not modified; they still override file after reload. Folder-based keys are unchanged.
+    """
+    path = _PROJECT_ROOT / "config" / "api_keys.json"
+    data: Dict[str, Any] = {}
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                data = dict(raw)
+        except Exception:
+            data = {}
+    if clear_gumroad:
+        data.pop("gumroad", None)
+        data.pop("gumroad_access_token", None)
+    if clear_stripe:
+        data.pop("stripe", None)
+        data.pop("stripe_secret_key", None)
+    if gumroad_access_token is not None and gumroad_access_token.strip():
+        data["gumroad"] = {"api_key": gumroad_access_token.strip()}
+    if stripe_secret_key is not None and stripe_secret_key.strip():
+        data["stripe"] = {"api_key": stripe_secret_key.strip()}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    reload_api_key_manager()
 

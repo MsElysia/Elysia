@@ -748,3 +748,71 @@ class FranchiseManager:
         except Exception as e:
             logger.error(f"Failed to load franchise data: {e}")
 
+
+def _guardian_component(guardian: Any, *names: str) -> Any:
+    """Best-effort attribute lookup for lightweight guardian wiring."""
+    for name in names:
+        if guardian is not None and hasattr(guardian, name):
+            value = getattr(guardian, name)
+            if value is not None:
+                return value
+    return None
+
+
+def configure_franchise_manager(
+    *,
+    franchise_manager: Optional["FranchiseManager"] = None,
+    master_slave: Optional[MasterSlaveController] = None,
+    revenue_sharing: Optional[RevenueSharing] = None,
+    trust_registry: Optional[TrustRegistry] = None,
+    asset_manager: Optional[AssetManager] = None,
+    audit_log: Optional[TrustAuditLog] = None,
+    guardian: Optional[Any] = None,
+    storage_path: str = "data/franchise_manager.json",
+) -> "FranchiseManager":
+    """
+    Build ``FranchiseManager`` from explicit dependencies or a minimal guardian object.
+
+    Requires a ``MasterSlaveController`` (``master_slave=`` or ``guardian.master_slave_controller``).
+    """
+    if franchise_manager is not None:
+        return franchise_manager
+
+    existing = _guardian_component(guardian, "franchise_manager")
+    if existing is not None:
+        return existing
+
+    resolved_master_slave = master_slave or _guardian_component(
+        guardian,
+        "master_slave_controller",
+        "master_slave",
+    )
+    if resolved_master_slave is None:
+        raise ValueError("FranchiseManager requires master_slave")
+
+    resolved_revenue = revenue_sharing or _guardian_component(guardian, "revenue_sharing")
+    resolved_trust = trust_registry or _guardian_component(guardian, "trust_registry")
+    resolved_assets = asset_manager or _guardian_component(guardian, "asset_manager")
+    resolved_audit = audit_log or _guardian_component(
+        guardian,
+        "trust_audit_log",
+        "audit_log",
+    )
+
+    manager = FranchiseManager(
+        master_slave=resolved_master_slave,
+        revenue_sharing=resolved_revenue,
+        trust_registry=resolved_trust,
+        asset_manager=resolved_assets,
+        audit_log=resolved_audit,
+        storage_path=storage_path,
+    )
+
+    if resolved_revenue is not None and getattr(resolved_revenue, "franchise_manager", None) is None:
+        try:
+            resolved_revenue.franchise_manager = manager
+        except Exception:
+            logger.debug("Unable to attach franchise_manager to revenue_sharing", exc_info=True)
+
+    return manager
+

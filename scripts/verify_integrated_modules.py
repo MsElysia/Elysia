@@ -3,6 +3,9 @@
 Smoke-test integrated Elysia modules (same imports as elysia_sub_modules.py).
 Run from project root: python scripts/verify_integrated_modules.py
 
+Loads load_api_keys() when present so GUMROAD_ACCESS_TOKEN / STRIPE_SECRET_KEY
+match normal Elysia startup (optional API keys/ folder).
+
 Exit code 0 if all tests pass, 1 if any fail.
 """
 from __future__ import annotations
@@ -21,6 +24,15 @@ sys.path.insert(0, str(PROJECT_ROOT / "core_modules" / "elysia_core_comprehensiv
 sys.path.insert(0, str(PROJECT_ROOT / "project_guardian"))
 
 
+def _ensure_organized_project_importable() -> Path:
+    """Append organized_project for launcher imports without shadowing stdlib/site packages."""
+    launcher_parent = PROJECT_ROOT / "organized_project"
+    sp = str(launcher_parent)
+    if sp not in sys.path:
+        sys.path.append(sp)
+    return launcher_parent
+
+
 def _ok(name: str, fn: Callable[[], Any]) -> Tuple[str, bool, str]:
     try:
         fn()
@@ -32,6 +44,13 @@ def _ok(name: str, fn: Callable[[], Any]) -> Tuple[str, bool, str]:
 def main() -> int:
     # Avoid booting full GuardianCore from WebScout just to resolve web_reader (slow; not under test here).
     os.environ["ELYSIA_WEBSCOUT_SKIP_GUARDIAN_READER"] = "1"
+
+    try:
+        from load_api_keys import load_api_keys as _load_root_api_keys
+
+        _load_root_api_keys()
+    except Exception:
+        pass
 
     results: List[Tuple[str, bool, str]] = []
 
@@ -62,13 +81,17 @@ def main() -> int:
 
     results.append(_ok("fractalmind", t_fractal))
 
-    # Harvest
+    # Harvest (same token wiring as elysia_sub_modules.HarvestEngine)
     def t_harvest():
         from harvest_engine import HarvestEngine
 
-        h = HarvestEngine()
-        r = h.generate_income_report(source="gumroad")
+        h = HarvestEngine(
+            gumroad_token=os.environ.get("GUMROAD_ACCESS_TOKEN"),
+            stripe_key=os.environ.get("STRIPE_SECRET_KEY"),
+        )
+        r = h.generate_income_report(source="all")
         assert isinstance(r, dict)
+        assert "sources" in r and "timestamp" in r
 
     results.append(_ok("harvest_engine", t_harvest))
 
@@ -96,11 +119,9 @@ def main() -> int:
 
     # Income generator (launcher path — same as elysia_sub_income)
     def t_income_generator():
-        launcher_parent = PROJECT_ROOT / "organized_project"
+        launcher_parent = _ensure_organized_project_importable()
         if not (launcher_parent / "launcher" / "elysia_income_generator.py").exists():
             raise FileNotFoundError("organized_project/launcher/elysia_income_generator.py missing")
-        if str(launcher_parent) not in sys.path:
-            sys.path.insert(0, str(launcher_parent))
         from launcher.elysia_income_generator import ElysiaIncomeGenerator
 
         gen = ElysiaIncomeGenerator(api_manager=None)
@@ -111,11 +132,9 @@ def main() -> int:
 
     # Wallet — Elysia’s own operating account on init
     def t_wallet_system_account():
-        launcher_parent = PROJECT_ROOT / "organized_project"
+        launcher_parent = _ensure_organized_project_importable()
         if not (launcher_parent / "launcher" / "elysia_wallet.py").exists():
             raise FileNotFoundError("organized_project/launcher/elysia_wallet.py missing")
-        if str(launcher_parent) not in sys.path:
-            sys.path.insert(0, str(launcher_parent))
         from launcher.elysia_wallet import ElysiaWallet, ELYSIA_SYSTEM_ACCOUNT_ID
 
         w = ElysiaWallet(api_manager=None)
@@ -130,7 +149,7 @@ def main() -> int:
 
     # WebScout agent (no network; temp proposals root)
     def t_webscout_agent():
-        from webscout_agent import ElysiaWebScout
+        from project_guardian.webscout_agent import ElysiaWebScout
 
         td = Path(tempfile.mkdtemp())
         ws = ElysiaWebScout(web_reader=None, proposals_root=td, require_api_keys=False)
@@ -151,11 +170,9 @@ def main() -> int:
 
     # Revenue creator + financial manager (launcher)
     def t_revenue_creator():
-        launcher_parent = PROJECT_ROOT / "organized_project"
+        launcher_parent = _ensure_organized_project_importable()
         if not (launcher_parent / "launcher" / "elysia_revenue_creator.py").exists():
             raise FileNotFoundError("elysia_revenue_creator.py missing")
-        if str(launcher_parent) not in sys.path:
-            sys.path.insert(0, str(launcher_parent))
         from launcher.elysia_revenue_creator import ElysiaRevenueCreator
 
         rc = ElysiaRevenueCreator(api_manager=None)
@@ -165,11 +182,9 @@ def main() -> int:
     results.append(_ok("revenue_creator", t_revenue_creator))
 
     def t_financial_manager():
-        launcher_parent = PROJECT_ROOT / "organized_project"
+        launcher_parent = _ensure_organized_project_importable()
         if not (launcher_parent / "launcher" / "elysia_financial_manager.py").exists():
             raise FileNotFoundError("elysia_financial_manager.py missing")
-        if str(launcher_parent) not in sys.path:
-            sys.path.insert(0, str(launcher_parent))
         from launcher.elysia_financial_manager import ElysiaFinancialManager
 
         fm = ElysiaFinancialManager(api_manager=None, enable_real_trading=False)

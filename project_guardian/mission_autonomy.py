@@ -46,6 +46,19 @@ _DEFAULT_STATE: Dict[str, Any] = {
         "no_artifact_penalty": 1.0,
         "priority_scale": 0.8,
     },
+    "purpose_state": {
+        "version": 1,
+        "top_goals": [],
+        "constraints": [],
+        "horizon": "session",
+        "confidence": 0.5,
+        "signals": {
+            "primary_campaign_id": "",
+            "recommended_actions": [],
+            "recent_action_mix": {},
+        },
+        "updated_at": "",
+    },
 }
 
 # Rough cost tier: higher = more expensive (LLM/API churn)
@@ -156,6 +169,18 @@ class MissionAutonomyStore:
         self._runtime.setdefault("noop_streak", {})
         self._runtime.setdefault("execute_self_task_momentum", 0.0)
         self._runtime.setdefault("archetype_mission_bias", {})
+        self._runtime.setdefault("purpose_state", deepcopy(self._config.get("purpose_state") or {}))
+        ps = self._runtime.get("purpose_state")
+        if not isinstance(ps, dict):
+            self._runtime["purpose_state"] = deepcopy(self._config.get("purpose_state") or {})
+            ps = self._runtime["purpose_state"]
+        ps.setdefault("version", 1)
+        ps.setdefault("top_goals", [])
+        ps.setdefault("constraints", [])
+        ps.setdefault("horizon", "session")
+        ps.setdefault("confidence", 0.5)
+        ps.setdefault("signals", {})
+        ps.setdefault("updated_at", "")
 
     def _save_runtime(self) -> None:
         self._runtime["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -171,6 +196,7 @@ class MissionAutonomyStore:
         return bool(self._config.get("enabled", True))
 
     def to_inspectable_dict(self) -> Dict[str, Any]:
+        ps = self.current_purpose_state()
         return {
             "config_path": str(CONFIG_PATH),
             "state_path": str(STATE_PATH),
@@ -178,7 +204,92 @@ class MissionAutonomyStore:
             "core_mission": self._config.get("core_mission"),
             "campaign_count": len(self._config.get("campaigns") or []),
             "primary_campaign": self.primary_campaign(),
+            "purpose_state": {
+                "horizon": ps.get("horizon"),
+                "confidence": ps.get("confidence"),
+                "top_goals_count": len(ps.get("top_goals") or []),
+            },
         }
+
+    def current_purpose_state(self) -> Dict[str, Any]:
+        ps = self._runtime.get("purpose_state")
+        return dict(ps) if isinstance(ps, dict) else {}
+
+    def _refresh_purpose_state(
+        self,
+        *,
+        primary: Optional[Dict[str, Any]],
+        recent_actions: List[str],
+    ) -> None:
+        base = deepcopy(self._runtime.get("purpose_state") or {})
+        if not isinstance(base, dict):
+            base = {}
+        rec_actions = []
+        if primary:
+            rec_actions = [str(a).strip() for a in list(primary.get("next_recommended_actions") or []) if str(a).strip()]
+        top_goals: List[str] = []
+        if primary:
+            title = str(primary.get("title") or "").strip()
+            if title:
+                top_goals.append(title[:140])
+        for sp in self._config.get("standing_priorities") or []:
+            if not isinstance(sp, dict):
+                continue
+            t = str(sp.get("title") or "").strip()
+            if t:
+                top_goals.append(t[:140])
+            if len(top_goals) >= 5:
+                break
+        constraints: List[str] = []
+        if primary:
+            for r in list(primary.get("constraints") or [])[:5]:
+                rt = str(r).strip()
+                if rt:
+                    constraints.append(rt[:160])
+        if not constraints:
+            constraints = ["Maintain safety/trust constraints", "Prefer measurable useful outcomes"]
+
+        mix_tail = recent_actions[-8:] if recent_actions else []
+        mix: Dict[str, int] = {}
+        for a in mix_tail:
+            k = str(a or "").strip()
+            if not k:
+                continue
+            mix[k] = int(mix.get(k, 0) + 1)
+        # Confidence rises with campaign priority clarity and recommended-action specificity.
+        conf = 0.45
+        if primary:
+            eff = self._effective_campaign_priority(primary)
+            conf += min(0.35, max(0.0, eff * 0.2))
+            conf += min(0.15, 0.04 * len(rec_actions))
+        if mix:
+            conf += 0.05
+        conf = max(0.05, min(0.99, conf))
+
+        next_state = {
+            "version": 1,
+            "top_goals": top_goals[:5],
+            "constraints": constraints[:5],
+            "horizon": "session",
+            "confidence": round(conf, 3),
+            "signals": {
+                "primary_campaign_id": str((primary or {}).get("id") or ""),
+                "recommended_actions": rec_actions[:6],
+                "recent_action_mix": mix,
+            },
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        prev_sig = json.dumps(base, sort_keys=True, ensure_ascii=False)
+        next_sig = json.dumps(next_state, sort_keys=True, ensure_ascii=False)
+        self._runtime["purpose_state"] = next_state
+        if prev_sig != next_sig:
+            logger.info(
+                "[MissionDirector] purpose_state updated horizon=%s confidence=%.2f goals=%d primary=%s",
+                next_state.get("horizon"),
+                float(next_state.get("confidence", 0.0) or 0.0),
+                len(next_state.get("top_goals") or []),
+                (next_state.get("signals") or {}).get("primary_campaign_id") or "-",
+            )
 
     def _effective_campaign_priority(self, camp: Dict[str, Any]) -> float:
         cid = str(camp.get("id") or "")
@@ -199,6 +310,57 @@ class MissionAutonomyStore:
             if isinstance(c, dict) and str(c.get("id")) == cid:
                 return c
         return None
+
+    def recent_artifacts(self, *, limit: int = 8) -> List[Dict[str, Any]]:
+        arts = [a for a in list(self._runtime.get("last_artifacts") or []) if isinstance(a, dict)]
+        if limit <= 0:
+            return arts
+        return arts[-limit:]
+
+    def recent_archetype_signal(self, archetype: str, *, limit: int = 8) -> Dict[str, int]:
+        arch = str(archetype or "").strip()
+        if not arch:
+            return {"recent_count": 0, "streak": 0, "useful_streak": 0, "non_adv_useful_streak": 0}
+        arts = self.recent_artifacts(limit=limit)
+        recent_count = sum(1 for a in arts if str(a.get("archetype") or "") == arch)
+        same_tail: List[Dict[str, Any]] = []
+        for rec in reversed(arts):
+            if str(rec.get("archetype") or "") != arch:
+                if same_tail:
+                    break
+                continue
+            same_tail.append(rec)
+        useful_streak = 0
+        for rec in same_tail:
+            if bool(rec.get("success")) and bool(rec.get("useful")):
+                useful_streak += 1
+            else:
+                break
+        non_adv_useful_streak = 0
+        for rec in same_tail:
+            if bool(rec.get("success")) and bool(rec.get("useful")) and not bool(rec.get("objective_advanced")):
+                non_adv_useful_streak += 1
+            else:
+                break
+        return {
+            "recent_count": recent_count,
+            "streak": len(same_tail),
+            "useful_streak": useful_streak,
+            "non_adv_useful_streak": non_adv_useful_streak,
+        }
+
+    def _self_task_archetype_repeat_penalty(self, archetype: str) -> Tuple[float, Optional[str]]:
+        sig = self.recent_archetype_signal(archetype, limit=6)
+        non_adv = int(sig.get("non_adv_useful_streak", 0) or 0)
+        if non_adv >= 4:
+            return 1.75, "self_task_archetype_repeat_without_objective_advance"
+        if non_adv >= 3:
+            return 1.15, "self_task_archetype_repeat_without_objective_advance"
+        if non_adv >= 2:
+            return 0.65, "self_task_archetype_repeat_without_objective_advance"
+        if int(sig.get("streak", 0) or 0) >= 3:
+            return 0.35, "self_task_archetype_repeated_recently"
+        return 0.0, None
 
     def score_candidate(
         self,
@@ -310,6 +472,20 @@ class MissionAutonomyStore:
         if tail.count(act) >= 3:
             drift_pen -= 1.6
             reasons.append("repeated_without_evidence")
+
+        tail6 = recent_actions[-6:] if recent_actions else []
+        if act == "execute_task":
+            nm = str(meta.get("name") or "").strip().lower()
+            if nm == "system_monitoring" and tail6.count("execute_task") >= 2:
+                drift_pen -= 1.85
+                reasons.append("system_monitoring_without_new_evidence_tail")
+        elif act == "execute_self_task":
+            arch = str(meta.get("self_task_archetype") or meta.get("archetype") or "").strip()
+            arch_pen, arch_reason = self._self_task_archetype_repeat_penalty(arch)
+            if arch_pen > 0:
+                drift_pen -= arch_pen
+                if arch_reason:
+                    reasons.append(arch_reason)
 
         art_expect = set(self._config.get("artifact_expected_actions") or [])
         if act in art_expect and exploratory:
@@ -460,32 +636,43 @@ class MissionAutonomyStore:
         self.reload()
         if not self.enabled or not success or not useful:
             return
+        sig = self.recent_archetype_signal(archetype, limit=6)
+        repeat_non_adv = int(sig.get("non_adv_useful_streak", 0) or 0)
+        stale_repeat = not objective_advanced and repeat_non_adv >= 2
         mom = float(self._runtime.get("execute_self_task_momentum", 0) or 0)
-        add_m = 1.35 if objective_advanced else 0.85
+        add_m = 1.35 if objective_advanced else (0.2 if stale_repeat else 0.85)
         self._runtime["execute_self_task_momentum"] = round(min(_MOMENTUM_MAX, mom + add_m), 4)
         biases = self._runtime.setdefault("action_priority_bias", {})
         cur = float(biases.get("execute_self_task", 0) or 0)
+        exec_delta = 1.1 if objective_advanced else (0.18 if stale_repeat else 0.75)
         biases["execute_self_task"] = round(
-            max(_ACTION_BIAS_MIN, min(_ACTION_BIAS_MAX, cur + (1.1 if objective_advanced else 0.75))),
+            max(_ACTION_BIAS_MIN, min(_ACTION_BIAS_MAX, cur + exec_delta)),
             4,
         )
         arch = self._runtime.setdefault("archetype_mission_bias", {})
         acur = float(arch.get(archetype, 0) or 0)
+        arch_delta = 0.85 if objective_advanced else (max(-1.2, -0.4 * (repeat_non_adv - 1)) if stale_repeat else 0.55)
         arch[archetype] = round(
-            max(_ARCH_BIAS_MIN, min(_ARCH_BIAS_MAX, acur + (0.85 if objective_advanced else 0.55))),
+            max(_ARCH_BIAS_MIN, min(_ARCH_BIAS_MAX, acur + arch_delta)),
             4,
         )
-        cadj = 0.09 if objective_advanced else 0.06
-        self._adjust_campaign_delta("cmp_execution", cadj, f"useful_artifact arch={archetype[:40]} adv={objective_advanced}")
+        cadj = 0.09 if objective_advanced else (0.015 if stale_repeat else 0.06)
+        self._adjust_campaign_delta(
+            "cmp_execution",
+            cadj,
+            f"useful_artifact arch={archetype[:40]} adv={objective_advanced} stale_repeat={stale_repeat}",
+        )
         self._adjust_campaign_delta("cmp_revenue_intel", -0.02, "rebalance_after_strong_execution_signal")
         logger.info(
-            "[MissionDirector] artifact_reward_applied archetype=%s momentum=%.2f exec_bias=%.2f arch_bias=%.2f useful=%s adv=%s",
+            "[MissionDirector] artifact_reward_applied archetype=%s momentum=%.2f exec_bias=%.2f arch_bias=%.2f useful=%s adv=%s stale_repeat=%s repeat_non_adv=%d",
             archetype[:48],
             self._runtime["execute_self_task_momentum"],
             biases["execute_self_task"],
             arch[archetype],
             useful,
             objective_advanced,
+            stale_repeat,
+            repeat_non_adv,
         )
         self._save_runtime()
 
@@ -510,6 +697,7 @@ class MissionAutonomyStore:
             )
         else:
             logger.info("[MissionDirector] primary_campaign none (no active campaigns)")
+        self._refresh_purpose_state(primary=primary, recent_actions=recent_actions)
 
         out: List[Dict[str, Any]] = []
         arch_biases = self._runtime.get("archetype_mission_bias") or {}
@@ -519,13 +707,18 @@ class MissionAutonomyStore:
             drift_d, drift_msg = self.drift_adjustment(nc, recent_actions, primary=primary)
             total = float(nc.get("priority_score", 0) or 0) + delta + drift_d
             act = str(nc.get("action") or "")
+            meta = nc.get("metadata") if isinstance(nc.get("metadata"), dict) else {}
             apb = float((self._runtime.get("action_priority_bias") or {}).get(act, 0) or 0)
             mom = 0.0
             if act == "execute_self_task":
                 mom = float(self._runtime.get("execute_self_task_momentum", 0) or 0)
             arch_bonus = 0.0
             if act == "execute_self_task" and arch_biases:
-                arch_bonus = sum(float(v) for v in arch_biases.values()) / max(1, len(arch_biases)) * 0.35
+                arch_key = str(meta.get("self_task_archetype") or meta.get("archetype") or "").strip()
+                if arch_key:
+                    arch_bonus = float(arch_biases.get(arch_key, 0) or 0) * 0.55
+                else:
+                    arch_bonus = sum(float(v) for v in arch_biases.values()) / max(1, len(arch_biases)) * 0.12
             fb = apb + mom + arch_bonus
             total += fb
             nc["priority_score"] = total
@@ -533,6 +726,7 @@ class MissionAutonomyStore:
                 "score_delta": round(delta, 4),
                 "drift_delta": round(drift_d, 4),
                 "feedback_bias": round(fb, 4),
+                "feedback_archetype_bonus": round(arch_bonus, 4),
                 "breakdown": {k: round(v, 4) if isinstance(v, float) else v for k, v in br.items()},
             }
             if drift_msg:
@@ -545,6 +739,36 @@ class MissionAutonomyStore:
                     drift_msg,
                 )
             out.append(nc)
+
+        # When recent autonomy tail is mostly queue/monitoring/planning churn, lift execute_self_task
+        # so useful artifacts keep winning over no-op probes.
+        tail_ma = (recent_actions or [])[-8:]
+        churn_hits = sum(
+            1 for a in tail_ma if a in ("process_queue", "execute_task", "fractalmind_planning")
+        )
+        boost_self = 0.0
+        if churn_hits >= 5:
+            boost_self = 3.0
+        elif churn_hits >= 3:
+            boost_self = 1.5
+        if boost_self > 0:
+            for nc in out:
+                if str(nc.get("action") or "") != "execute_self_task":
+                    continue
+                prev = float(nc.get("priority_score", 0) or 0)
+                nc["priority_score"] = prev + boost_self
+                nc["_mission_churn_escape_boost"] = boost_self
+                logger.info(
+                    "[MissionDirector] execute_self_task_escape_boost +%.1f priority %.3f→%.3f "
+                    "(churn_actions_in_tail=%d/8 tail=%s)",
+                    boost_self,
+                    prev,
+                    prev + boost_self,
+                    churn_hits,
+                    tail_ma,
+                )
+                break
+
         self._save_runtime()
         return out
 
@@ -676,3 +900,14 @@ def log_selected_action(action: str, reason: str, mission_meta: Optional[Dict[st
         )
     except Exception as e:
         logger.debug("[MissionDirector] log_selected: %s", e)
+
+
+def mission_purpose_state_snapshot() -> Dict[str, Any]:
+    """Returns current explicit mission purpose state for introspection/UI use."""
+    try:
+        store = MissionAutonomyStore()
+        if not store.enabled:
+            return {}
+        return store.current_purpose_state()
+    except Exception:
+        return {}

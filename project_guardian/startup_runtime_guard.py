@@ -128,7 +128,7 @@ def should_skip_nonessential_remember(category: str, priority: float, thought: s
         return True
     if cat == "learning" and pr < 0.65:
         return True
-    if pr < 0.55 and len(th) < 220:
+    if cat in ("general", "monitoring", "status", "runtime", "heartbeat") and pr < 0.55 and len(th) < 220:
         return True
     return False
 

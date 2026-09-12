@@ -66,6 +66,7 @@ class AutoModuleCreator:
         mutation_engine: Optional[MutationEngine] = None,
         ask_ai: Optional[AskAI] = None,
         trust_eval: Optional[TrustEvalAction] = None,
+        eai_safety: Optional[Any] = None,
         project_root: str = ".",
         modules_dir: str = "project_guardian"
     ):
@@ -73,6 +74,7 @@ class AutoModuleCreator:
         self.mutation_engine = mutation_engine
         self.ask_ai = ask_ai
         self.trust_eval = trust_eval
+        self.eai_safety = eai_safety
         self.project_root = Path(project_root)
         self.modules_dir = Path(modules_dir)
         self.modules_dir.mkdir(parents=True, exist_ok=True)
@@ -199,6 +201,27 @@ class AutoModuleCreator:
                         "error": "Trust evaluation failed",
                         "trust_result": trust_result
                     }
+
+            # Step 4b: Evolvable-AI gate for autonomous variation.
+            eai_result = self._evaluate_eai_module_creation(
+                gap=gap,
+                design=module_design,
+                code=module_code,
+                design_requirements=design_requirements,
+            )
+            if eai_result and eai_result.get("decision") == "deny":
+                return {
+                    "success": False,
+                    "error": "EAI safety gate denied module creation",
+                    "eai_safety": eai_result,
+                }
+            if eai_result and eai_result.get("decision") == "review":
+                return {
+                    "success": False,
+                    "error": "EAI safety review required before module creation",
+                    "requires_review": True,
+                    "eai_safety": eai_result,
+                }
             
             # Step 5: Write module file
             module_path = self._write_module_file(module_name, module_code)
@@ -226,7 +249,8 @@ class AutoModuleCreator:
                     "gap_id": gap_id,
                     "capability": gap.required_capability,
                     "created_at": datetime.now().isoformat(),
-                    "module_path": str(module_path)
+                    "module_path": str(module_path),
+                    "eai_safety": eai_result,
                 })
             
             logger.info(f"Successfully created module '{module_name}' for capability '{gap.required_capability}'")
@@ -293,7 +317,7 @@ Return JSON with:
 """
         
         try:
-            response = await self.ask_ai.ask(
+            response = await self.ask_ai.ask_async(
                 prompt=prompt,
                 provider=AIProvider.OPENAI,
                 temperature=0.7,
@@ -349,7 +373,7 @@ Return ONLY the Python code, no markdown, no explanations, just the code.
 """
         
         try:
-            response = await self.ask_ai.ask(
+            response = await self.ask_ai.ask_async(
                 prompt=prompt,
                 provider=AIProvider.OPENAI,
                 temperature=0.5,
@@ -438,6 +462,46 @@ Return ONLY the Python code, no markdown, no explanations, just the code.
         except Exception as e:
             logger.warning(f"Trust evaluation error: {e}")
             return {"approved": True, "reason": "Trust evaluation error, allowing"}
+
+    def _evaluate_eai_module_creation(
+        self,
+        gap: CapabilityGap,
+        design: Dict[str, Any],
+        code: str,
+        design_requirements: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Evaluate autonomous module creation as a variation event."""
+        if self.eai_safety is None:
+            return None
+
+        requirements = dict(design_requirements or {})
+        try:
+            assessment = self.eai_safety.assess_action(
+                action_type="create_module",
+                actor=str(requirements.get("actor") or "AutoModuleCreator"),
+                target=str(design.get("module_name") or gap.required_capability),
+                metadata={
+                    "gap_id": gap.gap_id,
+                    "required_capability": gap.required_capability,
+                    "task_description": gap.task_description,
+                    "module_design": design,
+                    "autonomous": requirements.get("autonomous", True),
+                    "controlled_evolution": requirements.get("controlled_evolution", False),
+                    "sandboxed": requirements.get("sandboxed", False),
+                    "human_approved": requirements.get("human_approved", False),
+                    "lineage_parent_ids": requirements.get("lineage_parent_ids", []),
+                },
+                lineage_parent_ids=requirements.get("lineage_parent_ids", []),
+                artifact_content=code,
+            )
+            return assessment.to_dict()
+        except Exception as e:
+            logger.warning("EAI safety assessment failed for auto module creation: %s", e)
+            return {
+                "decision": "review",
+                "reasoning": f"EAI safety assessment error: {e}",
+                "required_controls": ["human_review"],
+            }
     
     def _write_module_file(self, module_name: str, code: str) -> Optional[Path]:
         """Write the module code to a file."""

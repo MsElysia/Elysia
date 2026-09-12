@@ -81,6 +81,10 @@ def test_governance_escalate_parallel(monkeypatch):
 
 def test_governance_cloud_executor_with_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "project_guardian.cloud_api_state.openai_usable_for_routing",
+        lambda: True,
+    )
     r = RulesRouter(
         {
             "orchestration": {"enabled": True},

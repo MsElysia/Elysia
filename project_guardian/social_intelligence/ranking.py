@@ -358,6 +358,7 @@ def score_thread_quality(
     participant_count: int,
     campaign_corpus: str,
     thread_prior: Optional[Dict[str, Any]] = None,
+    continuity_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not all_chunks:
         discussion_density = 0.15
@@ -422,10 +423,18 @@ def score_thread_quality(
             "insight_signal": round(insight, 3),
         },
     }
-    if thread_prior is not None and int(thread_prior.get("revisit_count") or 0) > 0:
+    if thread_prior is not None and (
+        int(thread_prior.get("revisit_count") or 0) > 0
+        or int(thread_prior.get("useful_revisit_count") or 0) > 0
+        or int(thread_prior.get("ignored_revisit_count") or 0) > 0
+    ):
         from .continuity import apply_thread_prior_to_rank
 
-        out_rank = apply_thread_prior_to_rank(out_rank, thread_prior=thread_prior, cfg={})
+        out_rank = apply_thread_prior_to_rank(
+            out_rank,
+            thread_prior=thread_prior,
+            cfg=continuity_cfg if isinstance(continuity_cfg, dict) else {},
+        )
     return out_rank
 
 
@@ -444,8 +453,13 @@ def build_rank_context_for_draft(
         pid = str(p.get("id") or "")
         pri = (contact_priors or {}).get(pid) if pid else None
         if isinstance(pri, dict) and pri:
+            sf = int(pri.get("successful_followups") or 0)
+            ig = int(pri.get("ignored_followups") or 0)
+            uo = int(pri.get("useful_outcome_count") or 0)
+            rq = float(pri.get("response_quality") or 0.0)
             continuity_hints.append(
-                f"{p.get('display')}: stage={pri.get('relationship_stage')} prior_visits={pri.get('interaction_count')}"
+                f"{p.get('display')}: stage={pri.get('relationship_stage')} visits={pri.get('interaction_count')} "
+                f"sf={sf} ig={ig} uo={uo} rq={rq:.2f}"
             )
     return {
         "thread_score": thread_rank.get("thread_score"),

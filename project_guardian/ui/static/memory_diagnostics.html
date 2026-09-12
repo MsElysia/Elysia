@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Static diagnostics guide for checking local memory workspace health.">
+  <title>Elysia Memory - Diagnostics</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111827;
+      --panel: #1f2937;
+      --border: #374151;
+      --text: #f9fafb;
+      --muted: #cbd5e1;
+      --accent: #14b8a6;
+      --warn: #fbbf24;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 24px;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; }
+    h1 { font-size: 1.85rem; margin-bottom: 8px; }
+    .subtitle { color: var(--muted); margin-bottom: 24px; }
+    .identity {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+    .identity > span,
+    .identity nav > span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: 8px;
+      z-index: 1000;
+      padding: 8px 12px;
+      background: #ffffff;
+      color: #111827;
+      border: 2px solid currentColor;
+      border-radius: 8px;
+    }
+    .skip-link:focus { left: 8px; }
+    a:focus,
+    button:focus {
+      outline: 2px solid currentColor;
+      outline-offset: 2px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card,
+    section,
+    .page-navigation {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+    }
+    .card h2,
+    section h2,
+    .page-navigation h2 {
+      color: #99f6e4;
+      font-size: 1.05rem;
+      margin-bottom: 10px;
+    }
+    .card p,
+    section p,
+    li {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    code {
+      display: block;
+      margin-top: 8px;
+      padding: 10px;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: #e5e7eb;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    ul { margin-left: 18px; }
+    li { margin-top: 6px; }
+    .flag { color: var(--accent); margin-top: 10px; font-size: 0.86rem; }
+    .note { color: var(--warn); margin-top: 14px; font-size: 0.84rem; }
+    a { color: #67e8f9; }
+
+    @media (max-width: 720px) {
+      body { padding: 16px; }
+      .wrap { max-width: 100%; }
+      h1 { font-size: 1.55rem; }
+      .identity { align-items: flex-start; }
+      .identity > span,
+      .identity nav > span { border-radius: 8px; }
+      .grid { grid-template-columns: 1fr; }
+      .card,
+      section,
+      .page-navigation { padding: 16px; }
+    }
+
+    @media print {
+      .skip-link,
+      .page-navigation { display: none; }
+      body { background: #ffffff; color: #000000; padding: 0; }
+      .wrap { max-width: 100%; }
+      .card,
+      section,
+      code {
+        background: #ffffff;
+        border-color: #000000;
+        color: #000000;
+      }
+      h1,
+      h2,
+      p,
+      li,
+      span,
+      a,
+      code,
+      .subtitle,
+      .flag,
+      .note { color: #000000; }
+      a::after { content: " (" attr(href) ")"; font-size: 0.85em; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto;
+        transition-duration: 0.01ms;
+        animation-duration: 0.01ms;
+      }
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root { color-scheme: dark; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <main class="wrap" id="main-content">
+    <h1>Memory Diagnostics</h1>
+    <p class="subtitle">Static operator reference for local-only memory doctor, demo workspace, and health smoke commands.</p>
+    <div class="identity" aria-label="Page identity">
+      <nav aria-label="Memory breadcrumb">
+        <span>Memory Hub / <span aria-current="page">Diagnostics</span></span>
+      </nav>
+      <span>Local route: /memory/memory_diagnostics.html</span>
+    </div>
+
+    <div class="grid">
+      <article class="card">
+        <h2>Memory Doctor</h2>
+        <p>Read-only workspace inspection. Counts sessions, candidates, decisions, approved stores, and context bundles.</p>
+        <code>python scripts/memory_doctor.py --dest-dir .\tmp\memory-demo --json</code>
+      </article>
+
+      <article class="card">
+        <h2>Demo Workspace</h2>
+        <p>Creates fake transcription, ChatGPT export, and email files under the chosen destination.</p>
+        <code>python scripts/create_memory_demo_workspace.py --dest-dir .\tmp\memory-demo --apply</code>
+      </article>
+
+      <article class="card">
+        <h2>Health Smoke</h2>
+        <p>Builds a temporary demo workspace, runs the fake-data pipeline, runs diagnostics, then cleans up.</p>
+        <code>python scripts/run_memory_health_smoke.py --json</code>
+      </article>
+    </div>
+
+    <section>
+      <h2>Safety Contract</h2>
+      <ul>
+        <li>No live account access.</li>
+        <li>No model, embedding, browser, or network calls.</li>
+        <li>No live runtime memory or vector database writes.</li>
+        <li>No background watchers, schedulers, or server route wiring.</li>
+        <li>Demo writes stay under the selected destination directory.</li>
+      </ul>
+      <div class="flag">model_called: false | embeddings_used: false | live_memory_written: false | autonomy_enabled: false</div>
+      <p class="note">This page is static reference content only. It does not call backend scripts.</p>
+    </section>
+
+    <nav class="page-navigation" aria-label="Memory page navigation">
+      <h2>Navigation</h2>
+      <p class="note">Return to the static local Memory Hub.</p>
+      <p><a href="/memory/memory_hub.html">Back to Memory Hub</a> | <a href="/memory/memory_safety.html">Open Memory Safety</a></p>
+    </nav>
+  </main>
+</body>
+</html>

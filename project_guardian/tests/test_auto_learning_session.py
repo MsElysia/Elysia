@@ -15,12 +15,14 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from project_guardian.auto_learning import (
+    AutoLearningScheduler,
     run_learning_session,
     _fingerprint,
     _normalize_title,
     _snippet_norm,
     DEDUP_INDEX_FILENAME,
 )
+import project_guardian.auto_learning as auto_learning
 
 
 # --- Test data mix ---
@@ -198,3 +200,143 @@ class TestAutoLearningSessionE2E:
                 assert md.get("archived_only") is False
                 assert md.get("ingestion_reason") in ("operational", "strategic")
                 assert md.get("previously_unseen") is True
+
+
+def test_wikipedia_robot_policy_block_sets_cooldown_and_skips_repeat_call():
+    class _Resp:
+        def __init__(self):
+            self.status_code = 403
+            self.text = (
+                "Please respect our robot policy https://w.wiki/4wJS when crawling us. "
+                "Contact bot-traffic@wikimedia.org if you need higher volumes."
+            )
+
+    class _Client:
+        calls = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, *args, **kwargs):
+            self.__class__.calls += 1
+            return _Resp()
+
+    with patch.object(auto_learning, "_WIKIPEDIA_BLOCK_UNTIL_TS", 0.0):
+        with patch("httpx.Client", _Client):
+            assert auto_learning.fetch_wikipedia_summary("Artificial intelligence") is None
+            assert _Client.calls == 1
+            assert auto_learning._WIKIPEDIA_BLOCK_UNTIL_TS > 0
+
+            assert auto_learning.fetch_wikipedia_summary("Machine learning") is None
+            assert _Client.calls == 1
+
+
+def test_finalize_counts_admitted_items_even_without_memory_pipe(tmp_path):
+    item = {
+        "source": "rss",
+        "title": "Operator-ready automation workflow",
+        "text": ("Automation workflow with code deployment, runtime notes, and operator review. " * 8),
+        "compressed": ("Automation workflow with code deployment, runtime notes, and operator review. " * 4),
+        "url": "",
+    }
+
+    with patch(
+        "project_guardian.auto_learning.load_learning_config",
+        return_value={
+            "allow_reddit_into_memory": True,
+            "allow_strategic_into_memory": True,
+            "min_relevance_score": 1,
+            "min_reuse_potential": 1,
+            "max_archived_per_session": 10,
+            "max_memory_per_session": 10,
+            "max_per_source_memory": 5,
+            "dedup_window_days": 30,
+        },
+    ):
+        result = auto_learning.finalize_learned_collection(
+            [item],
+            tmp_path,
+            topics=["automation", "operator-ready"],
+            memory=None,
+            sources_count=1,
+        )
+
+    assert result["archived"] == 1
+    assert result["admitted"] == 1
+    assert result["memory"] == 0
+    assert result["memory_count"] == 0
+
+
+def test_scheduler_startup_guard_defers_without_bad_session_penalty(tmp_path):
+    scheduler = AutoLearningScheduler.__new__(AutoLearningScheduler)
+    scheduler.system_ref = MagicMock(guardian=MagicMock())
+    scheduler.storage_path = tmp_path
+    scheduler.chatlogs_path = tmp_path
+    scheduler.topics = ["AI"]
+    scheduler.reddit_subs = ["MachineLearning"]
+    scheduler.rss_feeds = []
+    scheduler.web_urls = []
+    scheduler.facebook_pages = []
+    scheduler.facebook_access_token = ""
+    scheduler.twitter_search_queries = []
+    scheduler.twitter_bearer_token = ""
+    scheduler.max_per_source = 1
+    scheduler.max_chatlogs = 1
+    scheduler._last_run = None
+    scheduler._bad_session_cooldown_until = None
+    scheduler._bad_session_streak = 1
+
+    with (
+        patch("project_guardian.auto_learning.load_learning_config", return_value={"mistral_chained_learning": True}),
+        patch("project_guardian.auto_learning.AutoLearningScheduler._startup_guard_reason", return_value="early_runtime_budget"),
+        patch("project_guardian.auto_learning.run_mistral_chained_learning_session") as chain_mock,
+        patch("project_guardian.auto_learning.run_learning_session") as flat_mock,
+    ):
+        scheduler._run_once()
+
+    chain_mock.assert_not_called()
+    flat_mock.assert_not_called()
+    assert scheduler._bad_session_streak == 1
+    assert scheduler._bad_session_cooldown_until is None
+    assert scheduler._last_run is None
+
+
+def test_reddit_403_sets_cooldown_and_skips_repeat_fetch():
+    class _Resp:
+        status_code = 403
+        text = "blocked"
+
+        def json(self):
+            return {}
+
+    class _Client:
+        calls = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, *args, **kwargs):
+            self.__class__.calls += 1
+            return _Resp()
+
+    with patch.object(auto_learning, "_REDDIT_BLOCK_UNTIL_TS_BY_KEY", {}):
+        with patch("httpx.Client", _Client):
+            assert auto_learning.fetch_reddit("MachineLearning") == []
+            assert _Client.calls == 1
+            assert auto_learning._reddit_temporarily_blocked("MachineLearning")
+
+            assert auto_learning.fetch_reddit("MachineLearning") == []
+            # second call should be skipped by cooldown (no extra network call)
+            assert _Client.calls == 1

@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0.0",
+  "page_name": "memory_hub",
+  "title": "Elysia Memory Hub UI Contract",
+  "description": "Static hub page linking Memory import and review/search prototypes. No server routes, backend calls, or external network in this milestone.",
+  "prototype_only": true,
+  "server_routes_required": false,
+  "backend_calls_allowed": false,
+  "external_network_allowed": false,
+  "prototype_path": "project_guardian/ui/static/memory_hub.html",
+  "navigation_entry": {
+    "path": "project_guardian/ui/static/index.html",
+    "links_to": "memory_hub.html",
+    "server_routes_required": false,
+    "backend_calls_allowed": false
+  },
+  "source_types": [
+    "transcription",
+    "chatgpt_export",
+    "email_export"
+  ],
+  "linked_static_pages": {
+    "memory_import_screen.html": {
+      "path": "project_guardian/ui/static/memory_import_screen.html",
+      "purpose": "Import Memory — preview and confirm local file import"
+    },
+    "memory_review_search.html": {
+      "path": "project_guardian/ui/static/memory_review_search.html",
+      "purpose": "Review pending memories, search approved memory, context bundle placeholder"
+    }
+  },
+  "user_flow": [
+    "import_memory",
+    "preview",
+    "confirm_import",
+    "review_pending",
+    "approve_reject_edit",
+    "search_approved",
+    "build_context_bundle"
+  ],
+  "hub_sections": [
+    "import_memory",
+    "review_pending_memories",
+    "search_approved_memory",
+    "build_context_bundle"
+  ],
+  "user_safety_copy": [
+    "Use local files to build memory safely.",
+    "No memory is saved until you confirm.",
+    "Imported items become pending memories for review.",
+    "Only approved memories are searchable."
+  ],
+  "safety_panel_copy": [
+    "No live account access",
+    "No model calls",
+    "No embeddings",
+    "No live runtime memory or vector DB writes",
+    "No server/API route wiring in this prototype",
+    "Local files only"
+  ],
+  "safety_flags": {
+    "model_called": false,
+    "embeddings_used": false,
+    "live_memory_written": false,
+    "autonomy_enabled": false
+  },
+  "next_wiring_steps": [
+    "Dashboard navigation link to Memory Hub later",
+    "Local-only static route to serve hub and linked prototypes later",
+    "Review/search subprocess wiring later",
+    "Context bundle wiring later"
+  ],
+  "related_docs": [
+    "docs/MEMORY_HUB_UI_FOUNDATION.md",
+    "docs/MEMORY_SCREEN_UI_CONTRACT.json",
+    "docs/MEMORY_REVIEW_SEARCH_UI_CONTRACT.json",
+    "docs/MEMORY_IMPORT_UI_ROADMAP.md",
+    "docs/LOCAL_MEMORY_PIPELINE_CHECKPOINT.md"
+  ]
+}

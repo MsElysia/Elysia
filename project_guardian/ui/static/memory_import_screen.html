@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Static import guide for supported local memory source previews.">
+  <title>Elysia Memory - Import Memory</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --primary: #6366f1;
+      --success: #10b981;
+      --warning: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 24px;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; }
+    h1 { font-size: 1.75rem; margin-bottom: 8px; }
+    .subtitle { color: var(--muted); margin-bottom: 24px; }
+    .identity {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+    .identity > span,
+    .identity nav > span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: 8px;
+      z-index: 1000;
+      padding: 8px 12px;
+      background: #ffffff;
+      color: #0f172a;
+      border: 2px solid currentColor;
+      border-radius: 8px;
+    }
+    .skip-link:focus { left: 8px; }
+    a:focus,
+    button:focus {
+      outline: 2px solid currentColor;
+      outline-offset: 2px;
+    }
+    .banner {
+      background: #172554;
+      border: 1px solid #1e40af;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 20px;
+      font-size: 0.92rem;
+    }
+    .banner li { margin-left: 18px; margin-top: 4px; }
+    section,
+    .page-navigation {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    section h2,
+    .page-navigation h2 { font-size: 1.15rem; margin-bottom: 12px; color: #c4b5fd; }
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 36px 20px;
+      text-align: center;
+      color: var(--muted);
+      margin-bottom: 16px;
+      transition: border-color 0.2s;
+    }
+    .dropzone.hover { border-color: var(--primary); color: var(--text); }
+    .sources { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+    .chip {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 0.85rem;
+    }
+    label { display: block; font-size: 0.9rem; color: var(--muted); margin-bottom: 6px; }
+    input, select {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      margin-bottom: 12px;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    button {
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+    button.secondary { background: #475569; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .preview-box, .review-box {
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 14px;
+      font-size: 0.9rem;
+      min-height: 80px;
+    }
+    .metric { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); }
+    .metric:last-child { border-bottom: none; }
+    .flag { color: var(--success); font-size: 0.85rem; margin-top: 10px; }
+    .note { font-size: 0.82rem; color: var(--warning); margin-top: 10px; }
+    .future { opacity: 0.85; border-style: dashed; }
+
+    @media (max-width: 720px) {
+      body { padding: 16px; }
+      .wrap { max-width: 100%; }
+      h1 { font-size: 1.5rem; }
+      .identity { align-items: flex-start; }
+      .identity > span,
+      .identity nav > span { border-radius: 8px; }
+      .banner,
+      section,
+      .page-navigation { padding: 16px; }
+      .row { flex-direction: column; align-items: stretch; }
+      .row input,
+      .row button,
+      input[type="file"] { width: 100% !important; }
+      .sources { flex-direction: column; }
+      .dropzone { padding: 24px 14px; }
+    }
+
+    @media print {
+      .skip-link,
+      .page-navigation,
+      button,
+      input,
+      select { display: none; }
+      body { background: #ffffff; color: #000000; padding: 0; }
+      .wrap { max-width: 100%; }
+      .banner,
+      section,
+      .preview-box,
+      .review-box,
+      .dropzone,
+      .chip {
+        background: #ffffff;
+        border-color: #000000;
+        color: #000000;
+      }
+      h1,
+      h2,
+      p,
+      li,
+      span,
+      a,
+      label,
+      strong,
+      em,
+      .subtitle,
+      .flag,
+      .note { color: #000000; }
+      a::after { content: " (" attr(href) ")"; font-size: 0.85em; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto;
+        transition-duration: 0.01ms;
+        animation-duration: 0.01ms;
+      }
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root { color-scheme: dark; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <main class="wrap" id="main-content">
+    <h1>Import Memory</h1>
+    <p class="subtitle">UI foundation prototype — not connected to server or CLI yet.</p>
+    <div class="identity" aria-label="Page identity">
+      <nav aria-label="Memory breadcrumb">
+        <span>Memory Hub / <span aria-current="page">Import Memory</span></span>
+      </nav>
+      <span>Local route: /memory/memory_import_screen.html</span>
+    </div>
+
+    <div class="banner" role="note">
+      <strong>Safety</strong>
+      <ul>
+        <li>No memory is saved until you confirm.</li>
+        <li>Imported items become pending memories for review.</li>
+        <li>Approved memories can be searched later.</li>
+        <li>Elysia does not connect to your email or ChatGPT account for this import.</li>
+        <li>Only local files you choose are used.</li>
+      </ul>
+    </div>
+
+    <nav id="memory-hub-backlink" class="page-navigation" aria-label="Memory page navigation">
+      <h2>Navigation</h2>
+      <p class="note">Return to the static local Memory Hub.</p>
+      <p><a href="/memory/memory_hub.html">Back to Memory Hub</a></p>
+    </nav>
+
+    <section id="import-section">
+      <h2>1. Add files</h2>
+      <div class="dropzone" id="dropzone">
+        <p><strong>Drag files here</strong> or use Choose files</p>
+        <p style="margin-top:8px;font-size:0.85rem;">Supported: text/transcriptions, ChatGPT export JSON, email .eml</p>
+      </div>
+      <div class="row" style="margin-bottom:16px;">
+        <input type="file" id="file-picker" multiple style="width:auto;flex:1;">
+        <button type="button" id="choose-files-btn">Choose files</button>
+      </div>
+      <div class="sources">
+        <span class="chip">Text / transcriptions (.txt, .md, .vtt, .srt)</span>
+        <span class="chip">ChatGPT export (conversations.json)</span>
+        <span class="chip">Email export (.eml)</span>
+      </div>
+      <label for="source-type">Source type (optional)</label>
+      <select id="source-type">
+        <option value="">Auto-detect</option>
+        <option value="transcription">Transcription / text</option>
+        <option value="chatgpt_export">ChatGPT export</option>
+        <option value="email_export">Email export</option>
+      </select>
+      <label for="dest-dir">Destination workspace (dest_dir)</label>
+      <input type="text" id="dest-dir" placeholder="e.g. data/phone_transcriptions" value="data/phone_transcriptions">
+      <label><input type="checkbox" id="recursive"> Scan subfolders (recursive)</label>
+      <div class="row" style="margin-top:12px;">
+        <button type="button" id="preview-btn">Preview import</button>
+      </div>
+      <p class="note" id="import-note">Future CLI reference: python scripts/memory_import.py preview ...</p>
+    </section>
+
+    <section id="preview-section">
+      <h2>2. Preview results</h2>
+      <div class="preview-box" id="preview-results">
+        <em style="color:var(--muted);">Run Preview to see detected source type and session paths.</em>
+      </div>
+      <div class="flag" id="preview-flags"></div>
+    </section>
+
+    <section id="confirm-section">
+      <h2>3. Confirm import</h2>
+      <p style="color:var(--muted);font-size:0.9rem;margin-bottom:12px;">No memory is saved until you confirm.</p>
+      <div class="row">
+        <button type="button" class="secondary" id="dry-run-btn" disabled>Dry-run apply</button>
+        <button type="button" id="confirm-btn" disabled>Confirm import</button>
+      </div>
+      <div class="preview-box" id="apply-results" style="margin-top:14px;">
+        <em style="color:var(--muted);">Confirm import stages pending candidates only.</em>
+      </div>
+    </section>
+
+    <section id="review-section" class="future">
+      <h2>4. Review pending memories (future)</h2>
+      <div class="review-box">
+        <p>Pending candidates will appear here after confirm.</p>
+        <p style="margin-top:8px;color:var(--muted);font-size:0.85rem;">CLI: review_memory_candidates.py list / approve / reject</p>
+      </div>
+    </section>
+
+    <section id="search-section" class="future">
+      <h2>5. Search approved memory (future)</h2>
+      <label for="search-query">Search query</label>
+      <input type="text" id="search-query" placeholder="e.g. drywall quote" disabled>
+      <button type="button" class="secondary" disabled>Search approved memory</button>
+      <p style="margin-top:10px;color:var(--muted);font-size:0.85rem;">Approved memories can be searched later.</p>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      var MOCK_PREVIEW = {
+        source_type: "transcription",
+        session_json: "data/phone_transcriptions/import_sessions/example/import_session_preview.json",
+        session_markdown: "data/phone_transcriptions/import_sessions/example/import_session_preview.md",
+        files_seen: 2,
+        supported_now_count: 2,
+        supported_later_count: 0,
+        skipped_count: 0,
+        model_called: false,
+        embeddings_used: false,
+        live_memory_written: false,
+        autonomy_enabled: false
+      };
+
+      var dropzone = document.getElementById("dropzone");
+      var filePicker = document.getElementById("file-picker");
+      var previewBtn = document.getElementById("preview-btn");
+      var confirmBtn = document.getElementById("confirm-btn");
+      var dryRunBtn = document.getElementById("dry-run-btn");
+      var previewResults = document.getElementById("preview-results");
+      var applyResults = document.getElementById("apply-results");
+      var previewFlags = document.getElementById("preview-flags");
+
+      document.getElementById("choose-files-btn").addEventListener("click", function () {
+        filePicker.click();
+      });
+
+      ["dragenter", "dragover"].forEach(function (ev) {
+        dropzone.addEventListener(ev, function (e) {
+          e.preventDefault();
+          dropzone.classList.add("hover");
+        });
+      });
+      ["dragleave", "drop"].forEach(function (ev) {
+        dropzone.addEventListener(ev, function (e) {
+          e.preventDefault();
+          dropzone.classList.remove("hover");
+        });
+      });
+      dropzone.addEventListener("drop", function (e) {
+        e.preventDefault();
+        dropzone.textContent = "Files selected (prototype only — not uploaded)";
+      });
+
+      function renderFlags(el, data) {
+        el.textContent =
+          "model_called: " + data.model_called +
+          " | embeddings_used: " + data.embeddings_used +
+          " | live_memory_written: " + data.live_memory_written +
+          " | autonomy_enabled: " + data.autonomy_enabled;
+      }
+
+      previewBtn.addEventListener("click", function () {
+        var p = MOCK_PREVIEW;
+        previewResults.innerHTML =
+          "<div class=\"metric\"><span>Source type</span><span>" + p.source_type + "</span></div>" +
+          "<div class=\"metric\"><span>Files seen</span><span>" + p.files_seen + "</span></div>" +
+          "<div class=\"metric\"><span>Supported now</span><span>" + p.supported_now_count + "</span></div>" +
+          "<div class=\"metric\"><span>Session JSON</span><span style=\"font-size:0.8rem;word-break:break-all;\">" + p.session_json + "</span></div>";
+        renderFlags(previewFlags, p);
+        confirmBtn.disabled = false;
+        dryRunBtn.disabled = false;
+      });
+
+      dryRunBtn.addEventListener("click", function () {
+        applyResults.innerHTML =
+          "<div class=\"metric\"><span>Mode</span><span>dry-run</span></div>" +
+          "<div class=\"metric\"><span>Candidates staged</span><span>0</span></div>" +
+          "<p style=\"margin-top:10px;color:var(--muted);\">No live memory was written.</p>";
+        renderFlags(applyResults, MOCK_PREVIEW);
+      });
+
+      confirmBtn.addEventListener("click", function () {
+        applyResults.innerHTML =
+          "<div class=\"metric\"><span>Mode</span><span>applied</span></div>" +
+          "<div class=\"metric\"><span>Candidates staged</span><span>2</span></div>" +
+          "<div class=\"metric\"><span>Status</span><span>pending review</span></div>" +
+          "<p style=\"margin-top:10px;\">Imported items become pending memories for review.</p>" +
+          "<p style=\"color:var(--muted);font-size:0.85rem;\">Future CLI reference: python scripts/memory_import.py apply --session-json ... --apply</p>";
+      });
+    })();
+  </script>
+</body>
+</html>

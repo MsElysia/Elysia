@@ -20,10 +20,10 @@ def builtins_router() -> TaskRouter:
     return TaskRouter(r)
 
 
-def test_self_task_stub_tie_prefers_web_not_llm_first(builtins_router: TaskRouter):
-    """Previously map order picked elysia_builtin_llm; generic self_task now prefers web among stub ties."""
+def test_self_task_stub_tie_prefers_llm_over_url_fetch(builtins_router: TaskRouter):
+    """Generic self_task should not prefer the URL fetcher when no URL-bearing payload exists."""
     out = builtins_router.route_task("self_task", {})
-    assert out["routed_to"] == "elysia_builtin_web"
+    assert out["routed_to"] == "elysia_builtin_llm"
     assert out["score"] == 60.0
 
 
@@ -35,6 +35,11 @@ def test_text_gen_keyword_prefers_llm(builtins_router: TaskRouter):
 def test_explicit_task_type_web_tag_routes_to_web_tool(builtins_router: TaskRouter):
     """task_type 'web' appears only on builtin web tool's capability list among ties."""
     out = builtins_router.route_task("web", {})
+    assert out["routed_to"] == "elysia_builtin_web"
+
+
+def test_canonical_fetch_task_prefers_builtin_web(builtins_router: TaskRouter):
+    out = builtins_router.route_task("fetch", {})
     assert out["routed_to"] == "elysia_builtin_web"
 
 
@@ -50,7 +55,7 @@ def test_health_probe_map_order_unchanged_llm_first(builtins_router: TaskRouter)
 def test_unknown_task_still_routes(builtins_router: TaskRouter):
     out = builtins_router.route_task("totally_unknown_xyz", {})
     assert out["routed_to"] in (
+        "elysia_builtin_llm",
         "elysia_builtin_web",
         "elysia_builtin_exec",
-        "elysia_builtin_llm",
     )

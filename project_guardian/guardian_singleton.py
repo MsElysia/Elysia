@@ -54,6 +54,18 @@ def get_guardian_core(
     
     with _guardian_core_lock:
         if _guardian_core_instance is not None and not force_new:
+            # Disabling a service cannot retroactively change a running singleton.
+            # Reject instead of silently returning an instance with weaker policy.
+            existing = getattr(_guardian_core_instance, "config", {})
+            requested = config or {}
+            for key in ("enable_background_services", "enable_resource_monitoring",
+                        "enable_runtime_health_monitoring", "enable_upstream_routing_live_probes"):
+                if requested.get(key) is False and existing.get(key, True) is not False:
+                    raise ValueError(f"Existing GuardianCore conflicts with disabled {key}")
+            for key in ("enabled", "auto_start"):
+                if (requested.get("ui_config", {}).get(key) is False
+                        and existing.get("ui_config", {}).get(key, True) is not False):
+                    raise ValueError(f"Existing GuardianCore conflicts with disabled ui_config.{key}")
             logger.debug("Returning existing GuardianCore instance")
             return _guardian_core_instance
         
@@ -147,6 +159,8 @@ def ensure_monitoring_started(guardian_core: Any) -> bool:
     global _monitoring_started
     
     with _monitoring_lock:
+        if not getattr(guardian_core, "config", {}).get("enable_background_services", True):
+            return False
         if _monitoring_started:
             logger.debug("Monitoring already started, skipping")
             return True

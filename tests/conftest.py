@@ -12,8 +12,15 @@ from typing import Dict, Any
 
 
 @pytest.fixture(autouse=True)
-def _isolate_guardian_core_singleton_between_tests():
-    """Prevent GuardianCore class/singleton state leaking across tests/."""
+def _isolate_guardian_core_singleton_between_tests(request):
+    """Prevent GuardianCore class/singleton state leaking across tests/.
+
+    Tests marked ``no_guardian_core`` (Issue #23 audit bootstrap) must not
+    import GuardianCore at all — skip singleton reset for those cases.
+    """
+    if request.node.get_closest_marker("no_guardian_core"):
+        yield
+        return
     from tests.guardian_core_test_helpers import reset_guardian_core_test_state
 
     reset_guardian_core_test_state()

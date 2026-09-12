@@ -1,6 +1,6 @@
 # Checkpoint governance admission contract
 
-Status: executable normative specification for GitHub Issues #29/#30/#31.
+Status: executable normative specification for GitHub Issues #29/#30/#31/#33.
 This package is not connected to TaskLedger, the scheduler, Guardian, Codex,
 Cursor, Git, or a repository policy service. Passing its tests does not close
 any of those issues or release the Issue #23 gate.
@@ -21,7 +21,10 @@ contract without replacing, importing, modifying, or certifying that work.
 ## Inputs and decisions
 
 `checkpoint_snapshot.schema.json` defines a **complete** snapshot of gates and
-admitted entities. Gate scope identifies both objectives and branch/PR/SHA
+trusted admission records under `schema_version: 2`. See
+`GOVERNANCE_V2_ADMISSION.md` for versioning, migration, root authority, objective
+and action classification, and the Git-ancestry/governance-lineage distinction.
+Gate scope identifies both objectives and branch/PR/SHA
 lineages. Entity parent links represent task subdivision and restacking; all
 ancestor objective references, lineage references, and explicit gate references
 are unioned. Matching either objective or lineage, or an explicit inherited gate

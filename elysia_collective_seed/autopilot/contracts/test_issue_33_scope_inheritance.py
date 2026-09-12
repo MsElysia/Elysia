@@ -24,7 +24,7 @@ def issue_33_state():
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
-def decide(state, entity, action="semantic_write", checkpoint=None):
+def decide(state, entity, action="semantic_code_write", checkpoint=None):
     return evaluate(
         state,
         {"entity_id": entity, "action": action},
@@ -43,14 +43,14 @@ def assert_gated(result):
 def test_issue_33_fixture_is_valid_and_records_exact_preserved_lineage():
     state = issue_33_state()
     VALIDATOR.validate(state)
-    entities = {entity["entity_id"]: entity for entity in state["entities"]}
-    assert entities["detached-4ff2dc92"]["lineage_refs"] == [
+    entities = {entity["entity_id"]: entity for entity in state["admissions"]}
+    assert entities["detached-4ff2dc92"]["repository_lineage_refs"] == [
         "commit:4ff2dc92dd7d9bc393225bce35de9239a9cad6a5"
     ]
-    assert entities["cursor-side-branch"]["lineage_refs"] == [
+    assert entities["cursor-side-branch"]["repository_lineage_refs"] == [
         "branch:cursor/autopilot-003-issue23-restack-cwa"
     ]
-    assert entities["product-7374820"]["lineage_refs"] == [
+    assert entities["product-7374820"]["repository_lineage_refs"] == [
         "commit:7374820642fad52a6264c86df8632c3a630df592"
     ]
 
@@ -100,18 +100,18 @@ def test_external_writer_is_blocked_normatively_but_explicitly_not_enforced(tran
 
 def test_friendly_self_declared_labels_do_not_erase_admitted_parent_scope():
     state = issue_33_state()
-    product = next(e for e in state["entities"] if e["entity_id"] == "product-7374820")
+    product = next(e for e in state["admissions"] if e["entity_id"] == "product-7374820")
     product["objective_refs"] = ["objective:documentation-only"]
-    product["lineage_refs"] = ["branch:totally-new-candidate"]
+    product["repository_lineage_refs"] = ["branch:totally-new-candidate"]
     product["governance_gate_refs"] = []
     assert_gated(decide(state, "product-7374820"))
 
 
 @pytest.mark.parametrize("mutation", [
-    lambda state: state["entities"].remove(next(e for e in state["entities"] if e["entity_id"] == "detached-4ff2dc92")),
-    lambda state: next(e for e in state["entities"] if e["entity_id"] == "product-7374820").update(parent_refs=[]),
-    lambda state: next(e for e in state["entities"] if e["entity_id"] == "product-7374820").update(parent_refs=["unknown"]),
-    lambda state: next(e for e in state["entities"] if e["entity_id"] == "product-7374820").update(objective_refs=[]),
+    lambda state: state["admissions"].remove(next(e for e in state["admissions"] if e["entity_id"] == "detached-4ff2dc92")),
+    lambda state: next(e for e in state["admissions"] if e["entity_id"] == "product-7374820").update(parent_refs=[]),
+    lambda state: next(e for e in state["admissions"] if e["entity_id"] == "product-7374820").update(parent_refs=["unknown"]),
+    lambda state: next(e for e in state["admissions"] if e["entity_id"] == "product-7374820").update(objective_refs=[]),
 ])
 def test_missing_or_ambiguous_admission_state_fails_closed(mutation):
     state = issue_33_state()
@@ -141,15 +141,23 @@ def test_even_exact_shaped_release_remains_unavailable_and_gate_effective():
 
 def test_no_matching_block_is_explicitly_not_authorization():
     state = issue_33_state()
-    state["entities"].append({
+    state["admissions"].append({
         "entity_id": "unrelated-static-review",
+        "entity_kind": "task",
         "ancestry_kind": "root",
         "parent_refs": [],
         "objective_refs": ["github:MsElysia/Elysia:issue:999"],
-        "lineage_refs": ["branch:unrelated"],
+        "repository_lineage_refs": ["branch:unrelated"],
+        "governance_lineage_refs": ["governance:unrelated"],
+        "action_classes": ["static_read"],
+        "admission_generation": 1,
+        "admitted_by": {"authority_id": "fixture:trusted-control-plane", "authority_generation": 1},
+        "admission_source": ["fixture:source"],
+        "admission_evidence": ["fixture:evidence"],
+        "admitted_at": "2026-09-11T00:00:00Z",
         "governance_gate_refs": [],
     })
-    result = decide(state, "unrelated-static-review", "static_analysis")
+    result = decide(state, "unrelated-static-review", "static_read")
     assert result.disposition == "NO_MATCHING_BLOCK_NOT_AUTHORIZATION"
     assert result.effective_active_gates == ()
     assert result.external_write_enforcement == "NOT_ENFORCED"

@@ -1,0 +1,264 @@
+# Governance snapshot v2 and trusted admission contract
+
+Status: `SPECIFICATION_AND_TEST_ONLY`. This document and its executable reference
+model define proof obligations for a future service. They do not authenticate an
+authority, read GitHub, intercept Git, mutate TaskLedger, or permit an action.
+
+## Version strategy
+
+Snapshot v2 is a breaking replacement for the draft v1 shape. A consumer accepts
+only integer `schema_version: 2`; missing, boolean, string, older, and forward
+versions fail closed. `snapshot_generation` is a monotonically increasing state
+generation. A consumer with a previously trusted generation rejects a lower one.
+The complete snapshot digest must be pinned by an independently trusted current
+state source; hashes supplied alongside worker-controlled content prove nothing.
+
+V1 is supported only as explicit migration input. No runtime consumer treats v1
+as v2. In particular, `parents=[]` never implies root status.
+
+## Trusted admission record
+
+`admissions` is separate from the proposed worker payload. Each record binds:
+
+- stable entity ID and kind;
+- explicitly admitted root or derived status;
+- parent IDs;
+- repository lineage references (Git facts such as branch/SHA/parents);
+- governance lineage references (semantic ports/restacks across Git history);
+- objective references;
+- one or more authoritative action classes;
+- admission generation, authority ID/generation, source, evidence and time;
+- explicitly inherited gate references.
+
+The authority must resolve to the snapshot's independently configured admission
+authority registry at the exact generation. Schema-valid authority strings are
+still only a normative representation. A production service must authenticate
+and control that registry outside worker credentials.
+
+`evaluate_admitted` accepts entity/action classification from the future trusted
+admission boundary and ignores descriptive `worker_proposal` metadata. The action
+must be present in the stored admission. A worker cannot downgrade
+`semantic_code_write` to `test_only` or replace the objective, ancestry, or root
+status in its proposal. Missing, contradictory, or unknown admission data blocks.
+
+## Root admission
+
+Root creation is privileged classification. It requires a record admitted by a
+known trusted control-plane authority and evidence that establishes an objective
+root. Zero parents, a new branch/task/session/provider, a detached checkout, or a
+new objective string is insufficient. Derived records require existing parents.
+Ambiguity remains blocked until trusted review produces a new admission record.
+
+The normative model cannot prove that its configured authority is actually
+trusted. Production must keep authority configuration outside worker control.
+
+## Objective and action classification
+
+Objectives are durable references, inherited by union across every parent.
+Renaming work does not subtract them. Expansion adds references. Reclassification
+requires a new, higher-generation trusted admission with evidence; it cannot
+rewrite history. Ambiguous semantic equivalence routes to human governance rather
+than accepting an unrelated label. General model output may be evidence but is
+not unquestioned classification authority.
+
+V2 action classes are `static_read`, `test_only`, `docs_only`,
+`schema_spec_write`, `semantic_code_write`, `repo_write`, `integration`, `merge`,
+`deploy`, `external_write`, `permission_change`, and `private_data_access`.
+Governance gates must include every consequential class from semantic code write
+through private-data access. Static/test/docs/spec labels do not override stored
+classification. A no-match result remains `NO_MATCHING_BLOCK_NOT_AUTHORIZATION`.
+
+## Repository ancestry and governance lineage
+
+Repository lineage records observable Git/control-plane facts: commit parents,
+branch tips, pull-request refs, detached checkouts, and merge parents. Governance
+lineage records semantic descent that Git ancestry cannot prove, including
+cherry-picks, ports, restacks, recreated patches, and preservation branches.
+Either kind can match a gate; both union transitively through all parents.
+
+The future admission service must derive repository lineage from trusted
+repository state and governance lineage from reviewed provenance/evidence. A
+worker cannot declare either authoritative. Semantic ports without Git ancestry
+must explicitly inherit governance objective/gate references or fail closed.
+
+## Deterministic v1 → v2 migration
+
+`migrate_v1_to_v2` requires:
+
+1. an object validated against the preserved
+   `checkpoint_snapshot.v1.schema.json` contract and an independently pinned
+   source digest;
+2. an explicit v1-to-v2 manifest;
+3. a target generation greater than the v1 revision and any trusted minimum;
+4. an exact trusted migration authority ID/generation from configuration outside
+   the manifest;
+5. exactly one classification decision for every v1 entity;
+6. exact preservation of parents, objectives and gate references;
+7. preservation (and optional expansion) of repository lineage;
+8. nonempty governance lineage and admission evidence;
+9. explicit root-admission evidence for every parentless root;
+10. durable source/manifest digests, authority, time and evidence in migration
+    provenance.
+
+Derived records require their known parent list. Parentless records are ambiguous
+until the manifest explicitly classifies them as roots with trusted evidence.
+Active gates are copied. Old action names are mapped conservatively and all v2
+consequential actions are added, so migration cannot narrow a gate. Stored
+`released` assertions remain present and effective because release validation is
+still `UNAVAILABLE`.
+
+The reference function is deterministic for identical source, manifest, pin and
+authority configuration. It performs no file/database writes. A production
+migration must additionally preserve append-only generations transactionally,
+prevent concurrent rollback, and persist an immutable audit record.
+
+## Fail-closed conditions
+
+Unsupported version; stale source digest; generation rollback; absent or unknown
+authority; incomplete, duplicate, missing or conflicting admissions; fabricated
+parents; lost objective, lineage, gate, or active-gate data; unknown action; action
+downgrade; ambiguous root; malformed record; stale current-state pin; and
+unvalidated release all block. A valid unrelated admission can report no matching
+gate, but that report grants no authority.
+
+## Non-implementation boundaries
+
+`production_enforcement=NOT_IMPLEMENTED`.
+`human_trust_anchor=UNRESOLVED`.
+`external_write_enforcement=NOT_ENFORCED`.
+`release_validation=UNAVAILABLE`.
+
+There is no live repository service, cryptographic human authentication, GitHub
+App/hook, atomic production mutation guard, deployment control, provider/runtime
+activation, or TaskLedger integration in this package. Tests demonstrate the
+normative evaluator only. Issue #23 remains gated and PR #34 remains preserved
+unauthorized evidence.
+
+## Two universes and the authoritative mutation boundary
+
+Source: independent Cursor reconnaissance supplied by the user on 2026-09-12.
+This addition incorporates that finding; it does not repeat the reconnaissance
+or assert that any operational call path has been verified as protected.
+
+The **GOVERNANCE UNIVERSE** contains schema, checkpoint evaluator, admission
+contracts, gate inheritance and tests, including TaskLedger / Issue-33 constructs
+on governance-oriented tips. The **OPERATIONAL UNIVERSE** contains actual
+mutation/execution paths, task queues, repo adapters, Guardian cycles, and local
+or external Git writes. Those paths can exist on lineages that do not contain or
+import the governance implementation. Git-history presence, a passing evaluator,
+or a governance-oriented branch does not join these universes.
+
+Normative principle:
+
+> No semantic or durable mutation path may infer authority merely because governance state exists elsewhere. The authoritative mutation boundary must consume a trusted admitted record and current effective gate state before mutation.
+
+Passing governance tests alone does not establish this property in production.
+An evaluator result, even `NO_MATCHING_BLOCK_NOT_AUTHORIZATION`, is not a mutation
+permit. Actual coverage requires an authoritative bridge on the executing
+operational lineage and evidence that every relevant route crosses that boundary.
+An import alone is insufficient. A gated objective and an unprotected path can
+coexist: the objective remains gated while the path is `NOT_ENFORCED`.
+
+## Operational mutation surfaces and required admission bindings
+
+All four surfaces below are concrete future enforcement/bypass surfaces from
+Cursor's findings. None is assumed to consult governance. In the absence of
+direct evidence of authoritative enforcement, each is `NOT_ENFORCED`.
+
+For **each** surface, the future boundary must obtain the complete trusted
+admission bundle below from a trusted source, bound to the exact attempted effect.
+These are bridge proof obligations, not claims that new fields or a production
+permit format have already been implemented in v2:
+
+| Required binding | What the admission record and trusted current state must supply |
+| --- | --- |
+| Admitted entity identity | Stable entity ID/kind, exact admission generation and authenticated authority ID/generation; bind the acting task and concrete operation/target to that entity. Worker labels cannot supply authority. |
+| Root/derived classification | Explicit trusted root decision and root evidence, or derived classification with existing admitted parents. Empty ancestry cannot create a root. |
+| Ancestry | All admitted parents and independently established repository/control-plane ancestry, including ports, queue sources and detached checkout identity as applicable. |
+| Governance lineage | Reviewed semantic descent across all parents, ports, restacks and recreated work, with inherited objective/gate references; Git disconnection cannot erase it. |
+| Objective | Trusted objective references inherited by union, bound to the proposed effect, including Issue #23 when applicable. Unknown equivalence fails closed. |
+| Action class | Authoritative classification of every intended effect before mutation; compound operations must cover every applicable class. A worker's test/docs label cannot narrow it. |
+| Applicable gate generation | Effective inherited gate IDs and their exact current generations from trusted state, including applicable scope/actions and release state. A prior admission cannot freeze older gate state. |
+| Trusted snapshot/generation | Independently trusted current snapshot digest and monotonic generation, authority-registry generation, and durable rollback high-water mark; recheck freshness at the mutation boundary. |
+| Human-release evidence when required | Authenticated human authority, release provenance, objective/action/gate scope and exact gate generation, validated against current state. A worker assertion or tests cannot release a gate. Validation is currently `UNAVAILABLE`, so required releases remain blocked. |
+
+The following per-surface bindings specialize **all nine** requirements above;
+they are not substitutes for them. Action examples are minimum candidate classes,
+not an exhaustive preclassification of uninspected runtime behavior.
+
+| Surface | Entity, ancestry and effect that the trusted bundle must bind | Objective/action and gate application | Current classification |
+| --- | --- | --- | --- |
+| `mutation_engine._direct_apply_mutation` | Admitted mutation request derived from its submitting task/proposal; exact target checkout/content generation and intended change. A direct call cannot omit its parent or mint a root. | Resolve semantic objective/lineage before apply; classify `semantic_code_write` and/or other applicable durable writes. Consume current inherited gates and generation-scoped release evidence immediately before the effect. | `NOT_ENFORCED` |
+| `implementer/repo_adapter` | Admitted repository operation derived from the implementing task and mutation request; exact repository, target state and local/external destination. Preserve governance descent through ports/restacks regardless of branch or detached SHA. | Classify applicable `repo_write`, `integration`, `merge`, `external_write`, and semantic effects; bind each effect to current objective gates and required releases. Direct adapter invocation must require the same bundle. | `NOT_ENFORCED` |
+| `self_task_queue` | Admitted queue entry/operation derived from the producer task and its full ancestry; persist admission identity/generation through enqueue, update, retry and dequeue/execution. Queue persistence itself needs classification. | Classify durable queue changes and the eventual execution effects under inherited objectives. Re-read current gates on execution/retry; an enqueue-time snapshot or queue-generated task ID grants no authority. | `NOT_ENFORCED` |
+| `guardian_cursor_cycle` | Admitted cycle operation and derived child work tied to originating task(s), inputs and intended output targets; retain ancestry/governance lineage across cycle, worker and restart boundaries. | Classify dispatch, durable cycle updates and each downstream semantic/repository/external effect as applicable. Reconsume current gates at each mutation boundary; a successful cycle or worker output cannot supply release evidence. | `NOT_ENFORCED` |
+
+## Required governance-to-runtime bridge (future, not implemented)
+
+The bridge MUST guarantee all of the following before enforcement can be claimed:
+
+1. **One authoritative admission format.** Runtime paths consume the same
+   versioned, authenticated admitted record, resolved outside worker control and
+   bound to the exact requested effect. Caller-specific permissive formats or
+   worker-supplied authority registries are not alternate admission mechanisms.
+2. **One trusted current gate snapshot.** All boundaries resolve effective gates
+   from the authoritative state source, with independently pinned digest,
+   snapshot/gate/authority generations and a defined freshness protocol.
+3. **Objective/action classification before mutation.** Resolve all applicable
+   objectives and action classes, and ancestry/governance-lineage inheritance
+   across every parent, before any semantic or durable effect. Unknown, missing,
+   contradictory or unavailable classification/state fails closed.
+4. **Atomic check + mutation or equivalent transactional protection.** Bind the
+   admission, exact effect/target state and current gate generation in the commit
+   protocol. A concurrent gate change invalidates stale decisions. A local check
+   followed by an unguarded write is insufficient; external effects need an
+   equivalent generation-fenced protocol at the authoritative external boundary.
+5. **No worker-controlled root creation.** Only the trusted admission authority
+   may admit roots. Task/session/provider changes and empty parents cannot reset
+   inheritance.
+6. **No branch-name or detached-SHA escape.** Bind trusted repository identity and
+   state plus semantic governance lineage. Renames, rebases, ports, restacks,
+   cherry-picks and detached execution cannot subtract inherited gates.
+7. **No direct adapter bypass and no queue/cycle bypass.** Every relevant entry
+   point and downstream write must cross the authoritative boundary, including
+   direct calls, retries, resumed work and local/external Git writes. Protecting
+   one wrapper does not establish complete coverage.
+8. **Restart-safe state and generation rollback protection.** Persist admissions,
+   lineage, gate state, trusted generation high-water marks and effect receipts
+   transactionally outside worker control. Recovery cannot restore older trusted
+   state or replay a stale authorization; retries must revalidate current gates
+   and avoid duplicate effects. Unavailable recovery evidence fails closed.
+9. **Validated release and output provenance.** A required human release must be
+   authenticated and bound to the effective gate generation and intended scope.
+   Record an authoritative effect receipt tying output to the admitted operation
+   and checked generations. Output existence, test success or a worker's receipt
+   alone must never be accepted as authorized progress.
+
+## Cross-universe acceptance scenarios (specification only)
+
+These are normative scenarios for future bridge verification, not executed
+runtime tests. They require no imports or invocation of the unprotected paths
+in the current specification work. Repeat every scenario for each of the four
+surfaces above and for applicable local/external effects.
+
+Base setup: trusted governance state on lineage G gates an objective (Issue #23
+is a concrete example). Operational lineage O contains the selected mutation
+path but does not contain/import the governance implementation. No authoritative
+bridge exists. A worker attempts mutation on O under that objective.
+
+| Scenario | Expected normative result |
+| --- | --- |
+| Base setup, regardless of whether the worker produces output | Path classification is `NOT_ENFORCED`; cross-universe enforcement is `NOT_IMPLEMENTED`. Do not report an actual blocked mutation without runtime evidence. The objective remains gated. |
+| Output exists and passes operational tests; governance tests also pass on G | Output remains unauthorized evidence, never authorized progress or a gate release. Test success does not demonstrate that O consulted G. |
+| Governance code is later copied/imported on O, but no authoritative check guards the effect | Still `NOT_ENFORCED`; availability/import is not boundary enforcement. |
+| Worker changes branch name, uses detached SHA, recreates a patch, or claims a new root | Still `NOT_ENFORCED` without a bridge, and no normative authority is gained. Future bridge must preserve inherited gates and reject fabricated roots. |
+| Worker calls the adapter directly or resumes queued/cycle work | Still `NOT_ENFORCED` without coverage evidence. A future wrapper-only bridge cannot authorize these bypass routes. |
+| Future bridge sees missing admission, unknown objective/action, stale snapshot, generation rollback or unavailable required release validation | Required behavior is fail-closed before effects. This is a future acceptance obligation, not evidence of a present runtime block. |
+| Future gate changes between check and write, or process restarts/retries | Required behavior is transactional rejection/revalidation of stale authority without duplicate effects or rollback; test the interleaving at the actual boundary. |
+
+Future integration tests must observe the real mutation boundary and its effects,
+not merely stub an evaluator that returns a desired result. Even demonstrated
+coverage of one surface does not change the other surfaces' classifications.
+Current cross-universe enforcement remains `NOT_IMPLEMENTED`.
+
+Issue #23 remains: `GATED — NO SEMANTIC WORK AUTHORIZED`.

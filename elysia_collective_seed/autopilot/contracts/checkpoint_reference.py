@@ -53,9 +53,11 @@ no human-controlled release trust anchor has been selected.
                 or type(proposal["entity_id"]) is not str
                 or type(proposal["action"]) is not str or proposal["action"] not in ACTIONS):
             return invalid("proposal_schema")
-        nodes = {n["entity_id"]: n for n in snapshot["entities"]}
+        nodes = {n["entity_id"]: n for n in snapshot["admissions"]}
         gates = {g["gate_id"]: g for g in snapshot["gates"]}
-        if len(nodes) != len(snapshot["entities"]) or len(gates) != len(snapshot["gates"]):
+        authorities = {(a["authority_id"], a["authority_generation"]): a for a in snapshot["admission_authorities"]}
+        if (len(nodes) != len(snapshot["admissions"]) or len(gates) != len(snapshot["gates"])
+                or len(authorities) != len(snapshot["admission_authorities"])):
             return invalid("duplicate_identity")
         if proposal["entity_id"] not in nodes:
             return invalid("unknown_entity")
@@ -68,12 +70,16 @@ no human-controlled release trust anchor has been selected.
             progressed = False
             for key in sorted(pending):
                 node = nodes[key]
+                authority = node["admitted_by"]
+                if (authority["authority_id"], authority["authority_generation"]) not in authorities:
+                    return invalid("unknown_admission_authority")
                 if any(p not in nodes for p in node["parent_refs"]):
                     return invalid("missing_parent")
                 if any(p not in scopes for p in node["parent_refs"]):
                     continue
-                objectives, lineages, refs = (set(node[k]) for k in
-                    ("objective_refs", "lineage_refs", "governance_gate_refs"))
+                objectives = set(node["objective_refs"])
+                lineages = set(node["repository_lineage_refs"]) | set(node["governance_lineage_refs"])
+                refs = set(node["governance_gate_refs"])
                 for parent in node["parent_refs"]:
                     for target, inherited in zip((objectives, lineages, refs), scopes[parent]):
                         target.update(inherited)
@@ -86,6 +92,8 @@ no human-controlled release trust anchor has been selected.
                 return invalid("ancestry_cycle")
 
         objectives, lineages, refs = scopes[proposal["entity_id"]]
+        if proposal["action"] not in nodes[proposal["entity_id"]]["action_classes"]:
+            return invalid("action_not_admitted")
         applicable = [g for g in gates.values() if
             g["gate_id"] in refs or objectives.intersection(g["scope"]["objective_refs"])
             or lineages.intersection(g["scope"]["lineage_refs"])]

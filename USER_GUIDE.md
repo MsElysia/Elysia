@@ -42,10 +42,13 @@
    python -m project_guardian.secrets_manager
    ```
 
-4. **Start the System**
+4. **Start the System** (primary live boot)
    ```bash
-   python -m project_guardian
+   START_ELYSIA_UNIFIED.bat
+   # or: python elysia.py
    ```
+   Status: http://127.0.0.1:8888/status · Control panel: http://127.0.0.1:5000  
+   See `docs/CANONICAL_BOOT_CONTRACT.md`. (`python -m project_guardian` is secondary.)
 
 ---
 
@@ -140,30 +143,38 @@ export GUARDIAN_LOG_LEVEL=INFO
 ### Basic Usage
 
 ```bash
-# Start the system
-python -m project_guardian
-
-# Or use the batch file (Windows)
+# Primary live boot (Windows)
+START_ELYSIA_UNIFIED.bat
 Start Project Guardian.bat
+python elysia.py
+
+# Secondary package entry (SystemOrchestrator)
+python -m project_guardian
 ```
+
+Canonical contract: `docs/CANONICAL_BOOT_CONTRACT.md`
 
 ### Running with Options
 
-```python
-# Custom config
+```bash
+# Secondary orchestrator entry with options
 python -m project_guardian --config custom_config.json
-
-# Debug mode
 python -m project_guardian --log-level DEBUG
+
+# Unified backend force-full (also set by Start_Elysia_Backend.cmd)
+set ELYSIA_FORCE_FULL_BACKEND=1
+python elysia.py
 ```
 
 ### Web UI Control Panel
 
 ```bash
-# Start UI on port 5000
-python start_ui_panel.py
+# Usually auto-started by GuardianCore on primary boot
+# Access at http://127.0.0.1:5000
 
-# Access at http://localhost:5000
+# Optional standalone / FastAPI workbench
+python start_ui_panel.py
+# or: scripts/start_control_panel.ps1  → :8000
 ```
 
 ### System Status

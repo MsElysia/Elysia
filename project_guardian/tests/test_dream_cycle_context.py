@@ -2,8 +2,11 @@ import asyncio
 import datetime
 
 from project_guardian.creativity import DreamEngine as CreativeDreamEngine
-from project_guardian.dream_engine import DreamEngine as ReflectiveDreamEngine
+from project_guardian.dream_engine import ReflectiveDreamEngine
+from project_guardian.dream_engine import DreamEngine as ReflectiveDreamEngineAlias
 from project_guardian.dream_engine import DreamType
+
+assert ReflectiveDreamEngineAlias is ReflectiveDreamEngine
 
 
 def _entry(thought, category="autonomy"):

@@ -13,12 +13,19 @@ pip install -r requirements.txt
 # Configure
 python setup_guardian.py
 
-# Run
-python -m project_guardian
+# Primary live boot (desktop)
+START_ELYSIA_UNIFIED.bat
+# or: python elysia.py
 
-# UI
-python start_ui_panel.py
+# Status / UI
+# http://127.0.0.1:8888/status
+# http://127.0.0.1:5000
+
+# Secondary (SystemOrchestrator — not desktop-primary)
+python -m project_guardian
 ```
+
+Canonical boot: `docs/CANONICAL_BOOT_CONTRACT.md`
 
 ---
 

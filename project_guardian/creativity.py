@@ -96,6 +96,9 @@ class DreamEngine:
     """
     Creative thinking and autonomous idea generation for Project Guardian.
     Provides context-aware dreaming and creative mutation proposals.
+
+    LIVE_CANONICAL on GuardianCore (``self.dreams``). Distinct from
+    ``dream_engine.ReflectiveDreamEngine`` (orchestrator-optional reflective planner).
     """
     
     def __init__(self, memory: MemoryCore, mutator=None, prompt_evolver=None):

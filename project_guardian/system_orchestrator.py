@@ -39,7 +39,7 @@ try:
     from .mutation_autonomy_sandbox import SANDBOX_VERSION as MUTATION_SANDBOX_VERSION
     from .ai_mutation_validator import AIMutationValidator, configure_ai_validator_integration
     from .digital_safehouse import DigitalSafehouse
-    from .dream_engine import DreamEngine
+    from .dream_engine import ReflectiveDreamEngine, DreamEngine
     from .mutation_sandbox import MutationSandbox
     from .mutation_publisher import configure_mutation_publisher
     from .mutation_review_manager import configure_mutation_review_manager
@@ -83,7 +83,7 @@ except ImportError:
     from mutation_autonomy_sandbox import SANDBOX_VERSION as MUTATION_SANDBOX_VERSION
     from ai_mutation_validator import AIMutationValidator, configure_ai_validator_integration
     from digital_safehouse import DigitalSafehouse
-    from dream_engine import DreamEngine
+    from dream_engine import ReflectiveDreamEngine, DreamEngine
     from mutation_sandbox import MutationSandbox
     from mutation_publisher import configure_mutation_publisher
     from mutation_review_manager import configure_mutation_review_manager
@@ -987,7 +987,7 @@ class SystemOrchestrator:
             logger.info("[OK] DigitalSafehouse compatibility surface initialized")
 
         if self.dream_engine is None and self.config.get("enable_dream_engine", False):
-            self.dream_engine = DreamEngine(
+            self.dream_engine = ReflectiveDreamEngine(
                 runtime_loop=self.runtime_loop,
                 introspection=getattr(self.guardian_core, "introspection", None),
                 ask_ai=self.ask_ai,
@@ -1001,7 +1001,7 @@ class SystemOrchestrator:
                     self.config.get("dream_engine_idle_threshold_seconds", 5.0)
                 ),
             )
-            logger.info("[OK] DreamEngine compatibility surface initialized")
+            logger.info("[OK] ReflectiveDreamEngine compatibility surface initialized")
 
         if self.ai_mutation_validator is None and self.config.get("enable_ai_mutation_validator", False):
             self.ai_mutation_validator = AIMutationValidator(

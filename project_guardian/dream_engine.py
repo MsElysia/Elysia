@@ -1,6 +1,10 @@
 # project_guardian/dream_engine.py
-# DreamEngine: Reflective Planning and Optimization During Idle Time
+# ReflectiveDreamEngine: Reflective Planning and Optimization During Idle Time
 # Based on Conversation 3 (elysia 4 sub a) and Part 3 designs
+#
+# Naming: creativity.DreamEngine is LIVE_CANONICAL on GuardianCore.
+# This module's ReflectiveDreamEngine is the orchestrator-optional reflective planner.
+# DreamEngine remains a compatibility alias for ReflectiveDreamEngine.
 
 import logging
 import json
@@ -364,11 +368,14 @@ class EmotionalChamber:
         return insights if insights else ["Emotional memory processed"]
 
 
-class DreamEngine:
+class ReflectiveDreamEngine:
     """
     Reflective planning and optimization during idle time.
     Processes memories, analyzes behavior, and generates insights.
     Extended with Chamber of Grief (emotional processing) and anchor/subnode dreams.
+
+    Distinct from ``creativity.DreamEngine`` (creative dream cycles on GuardianCore).
+    Prefer this name in new code; ``DreamEngine`` remains a compatibility alias.
     """
     
     def __init__(
@@ -662,6 +669,10 @@ Make the insights more specific, actionable, and deeper. Return as a JSON array 
             logger.info(f"Loaded {len(self.dreams)} dreams from storage")
         except Exception as e:
             logger.error(f"Error loading dream engine: {e}")
+
+
+# Compatibility alias. Live GuardianCore uses creativity.DreamEngine instead.
+DreamEngine = ReflectiveDreamEngine
 
 
 # Example usage

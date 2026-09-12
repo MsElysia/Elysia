@@ -10,7 +10,8 @@ blueprint after independent operational red-team review. They model trusted
 per-attempt admission issuance, content/effect-based authoritative classification,
 canonical exact write-set and staged-patch binding, single-use generation-fenced
 mutation tickets, task/admission ownership, immutable cycle context, mutation
-result and verification identities, fail-closed dual-failure handling,
+result and verification identities, unique ticket-consumption tuples, trusted
+task-owner/verifier/progression-authority registries, fail-closed dual-failure handling,
 composed-boundary completeness and the separation between artifact existence,
 technical verification and authorized progress. The authority chain is Admission
 → Classification → Ticket → Effect → Result → Verification → Authorized Progress,

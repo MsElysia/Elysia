@@ -12,6 +12,12 @@ transfer.
 
 Pending exact commit.
 
+Intermediate candidate `180d17d692efd1229e29deff1b99e08916d7968b`
+received fresh Vega `FAIL`: nonce-only consumption allowed cross-ticket
+substitution, verifier records lacked a trusted registry, progression lacked an
+authenticated decision, and task ownership was prose-only. That verdict is
+preserved and does not transfer to the pending repaired candidate.
+
 ## CLASSIFIED WRITE-SET MODEL
 
 The authoritative classifier emits a canonical nonempty list of exact effects.
@@ -41,6 +47,10 @@ independently derived actual effect. Any extra/omitted/changed path, operation,
 content digest, patch, classifier digest, surface or target is
 `BLOCKED_EFFECT_MISMATCH`.
 
+Issuance requires authoritative ticket-ID and nonce uniqueness state. Consumption
+and result receipts bind a digest of `(ticket ID, nonce, ticket state digest)`, so
+consuming one ticket cannot authorize a sibling that reuses its nonce.
+
 ## DYNAMIC EFFECT HANDLING
 
 Unknown expansion cannot weaken the ticket. Dynamic generation must occur in a
@@ -53,8 +63,10 @@ writes should authorize an exact staged-patch digest wherever practical.
 
 Attachment binds matching task/admitted-entity IDs, exact parent refs,
 objectives, governance lineage, admission generation and admission-record digest.
-A task cannot borrow a foreign admission. Restart revalidates the immutable
-binding and quarantines missing or changed provenance.
+A separately trusted task record also binds the complete worker-payload digest
+and authoritative owner from a unique task-owner registry. A task cannot borrow
+a foreign admission, reuse an attached identity or swap its semantic body.
+Restart revalidates the immutable binding and quarantines missing or changed provenance.
 
 ## CYCLE CONTEXT BINDING
 
@@ -75,16 +87,20 @@ digest.
 ## VERIFICATION PROVENANCE
 
 `VERIFICATION_EVIDENCE` binds PASS/FAIL to the exact mutation-result digest,
-ticket ID and result identity, with verifier identity and provenance. A bare PASS
-boolean, completion flag or verdict for another result has no progression
-authority.
+ticket ID and result identity. Its verifier identity/generation/provenance must
+resolve exactly once in an independently trusted verifier registry. A bare PASS
+boolean, worker-authored structured verdict, completion flag or verdict for
+another result has no progression authority.
 
 ## AUTHORIZED-PROGRESS CHAIN
 
 Admission → Classification → Ticket → Effect → Result → Verification →
-Authorized Progress. Every record references the previous immutable identity.
-Progression revalidates the entire chain and current result identity; a missing,
-tampered, substituted or stale link is `BLOCKED_PROVENANCE_MISMATCH`.
+Progression Authorization → Authorized Progress. Every record references the
+previous immutable identity. A separately trusted progression authority issues a
+content-addressed decision for that exact chain. Progression revalidates the
+entire chain, current result identity, and authority registry; a missing,
+worker-authored, tampered, substituted or stale link is
+`BLOCKED_PROVENANCE_MISMATCH`.
 
 ## MUTATE/EVIDENCE FAILURE MODEL
 
@@ -118,8 +134,8 @@ trust anchoring.
 
 ## TEST RESULTS
 
-Implementer: **478 passed** in the required aggregate suite, including **265
-governance-contract tests**, **32 effect-binding repair tests**, all 32 prior
+Implementer: **482 passed** in the required aggregate suite, including **269
+governance-contract tests**, **36 effect-binding repair tests**, all 32 prior
 blueprint tests and the inherited Issue #33/autopilot/Vega evidence regressions.
 Python 3.13.15, pytest 9.1.1 and jsonschema 4.26.0 were used. Contract
 `compileall`, AST parsing of all changed Python, all 66 repository JSON parses,

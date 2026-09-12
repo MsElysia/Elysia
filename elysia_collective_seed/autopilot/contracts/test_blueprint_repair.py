@@ -181,6 +181,7 @@ def admission_and_ticket(*, facts=("documentation_text",), surface="repository_f
         issued_at="2026-09-12T12:05:00Z",
         expires_at="2026-09-12T12:30:00Z",
         issuer_provenance=["fixture:ticket-event"],
+        issued_ticket_ids=[], issued_nonces=[],
     )
     return state, record, ticket
 
@@ -191,7 +192,7 @@ def consume(ticket, current=None, *, actions=None, consumed=()):
         requested_actions=actions or ticket["action_classes"],
         current_time="2026-09-12T12:10:00Z",
         actual_effect=ticket_bound_actual_effect(ticket),
-        consumed_nonces=consumed,
+        trusted_consumed_ticket_identities=consumed,
     )
 
 
@@ -288,6 +289,7 @@ def test_classification_and_admission_records_require_independent_current_pins()
             issued_at="2026-09-12T12:05:00Z",
             expires_at="2026-09-12T12:30:00Z",
             issuer_provenance=["fixture:ticket-event"],
+            issued_ticket_ids=[], issued_nonces=[],
         )
 
 
@@ -313,6 +315,7 @@ def test_ticket_is_stale_after_exact_applicable_gate_generation_change():
         issued_at="2026-09-12T12:05:00Z",
         expires_at="2026-09-12T12:30:00Z",
         issuer_provenance=["fixture:ticket-event"],
+        issued_ticket_ids=[], issued_nonces=[],
     )
     current = ticket_current_state(ticket)
     current["applicable_gate_generations"][0]["generation"] = 5
@@ -364,7 +367,7 @@ def test_expired_ticket_fails_without_worker_refresh():
     decision, _ = consume_mutation_authorization_ticket(
         ticket, ticket_current_state(ticket), requested_actions=ticket["action_classes"],
         current_time="2026-09-12T12:30:00Z",
-        actual_effect=ticket_bound_actual_effect(ticket), consumed_nonces=(),
+        actual_effect=ticket_bound_actual_effect(ticket), trusted_consumed_ticket_identities=(),
     )
     assert decision.reason == "ticket_expired_or_not_yet_valid"
 
@@ -501,4 +504,5 @@ def test_issue31_unavailable_release_blocks_ticket_issuance():
             issued_at="2026-09-12T12:05:00Z",
             expires_at="2026-09-12T12:30:00Z",
             issuer_provenance=["fixture:ticket-event"],
+            issued_ticket_ids=[], issued_nonces=[],
         )

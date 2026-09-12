@@ -13,6 +13,8 @@ from .blueprint import (
     classify_unmediated_output,
     consume_mutation_authorization_ticket,
     issue_mutation_authorization_ticket,
+    issue_progression_authorization,
+    issue_trusted_task_record,
     issue_trusted_admission_record,
     mediated_writer_status,
     progress_transition,
@@ -33,6 +35,20 @@ from .test_blueprint_repair import (
 )
 
 
+VERIFIER = {
+    "verifier_id": "verifier:vega", "verifier_generation": 4,
+    "provenance": ["fixture:trusted-verifier-registry"],
+}
+PROGRESSION_AUTHORITY = {
+    "authority_id": "progression-control-plane", "authority_generation": 3,
+}
+PROGRESSION_AUTHORITIES = [{
+    **PROGRESSION_AUTHORITY,
+    "provenance": ["fixture:trusted-progression-registry"],
+}]
+TASK_OWNER = AUTHORITY_REF
+
+
 def result_identity(ticket, value="c" * 40):
     return {
         "kind": "commit_sha",
@@ -49,7 +65,25 @@ def consume(ticket, actual_effect, consumed=()):
         requested_actions=ticket["action_classes"],
         current_time="2026-09-12T12:10:00Z",
         actual_effect=actual_effect,
-        consumed_nonces=consumed,
+        trusted_consumed_ticket_identities=consumed,
+    )
+
+
+def verification_for(result, identity, verdict="PASS"):
+    return record_verification_evidence(
+        result, observed_result_identity=identity, verdict=verdict,
+        verifier_id=VERIFIER["verifier_id"],
+        verifier_generation=VERIFIER["verifier_generation"],
+        verifier_provenance=VERIFIER["provenance"], trusted_verifiers=[VERIFIER],
+    )
+
+
+def progression_for(record, ticket, result, verification, identity):
+    return issue_progression_authorization(
+        record, ticket, result, verification, current_result_identity=identity,
+        authority=PROGRESSION_AUTHORITY,
+        authority_provenance=PROGRESSION_AUTHORITIES[0]["provenance"],
+        trusted_progression_authorities=PROGRESSION_AUTHORITIES,
     )
 
 
@@ -60,19 +94,19 @@ def successful_chain():
     result = record_mutation_result(
         ticket, ticket_bound_actual_effect(ticket), result_identity=identity,
         mutation_status="succeeded", evidence_persisted=True,
-        consumed_nonces=consumed,
+        trusted_consumed_ticket_identities=consumed,
     )
-    verification = record_verification_evidence(
-        result, observed_result_identity=identity, verdict="PASS",
-        verifier_id="verifier:vega", verifier_provenance=["fixture:verification"],
-    )
-    return record, ticket, result, verification, identity
+    verification = verification_for(result, identity)
+    progression = progression_for(record, ticket, result, verification, identity)
+    return record, ticket, result, verification, progression, identity
 
 
 def test_complete_exact_chain_authorizes_reference_progress():
-    record, ticket, result, verification, identity = successful_chain()
+    record, ticket, result, verification, progression, identity = successful_chain()
     decision = authorize_progress_chain(
-        record, ticket, result, verification, current_result_identity=identity,
+        record, ticket, result, verification, progression,
+        current_result_identity=identity,
+        trusted_progression_authorities=PROGRESSION_AUTHORITIES,
     )
     assert decision.disposition == "AUTHORIZED_PROGRESS"
     assert decision.production_enforcement == "NOT_IMPLEMENTED"
@@ -94,7 +128,35 @@ def test_result_cannot_exist_without_consumed_ticket_identity():
         record_mutation_result(
             ticket, ticket_bound_actual_effect(ticket),
             result_identity=result_identity(ticket), mutation_status="succeeded",
-            evidence_persisted=True, consumed_nonces=(),
+            evidence_persisted=True, trusted_consumed_ticket_identities=(),
+        )
+
+
+def test_cross_ticket_nonce_collision_cannot_borrow_consumption():
+    _, _, ticket1 = admission_and_ticket()
+    with pytest.raises(BlueprintError, match="duplicate_ticket_nonce"):
+        state, record, _ = admission_and_ticket()
+        issue_mutation_authorization_ticket(
+            state, record, trusted_current_digest=snapshot_digest(state),
+            trusted_admission_record_digest=bridge_record_digest(record),
+            ticket_id="ticket:2", nonce=ticket1["nonce"],
+            issued_at="2026-09-12T12:06:00Z",
+            expires_at="2026-09-12T12:30:00Z",
+            issuer_provenance=["fixture:ticket-2"],
+            issued_ticket_ids=[ticket1["ticket_id"]],
+            issued_nonces=[ticket1["nonce"]],
+        )
+    ticket2 = deepcopy(ticket1)
+    ticket2["ticket_id"] = "ticket:forged-sibling"
+    unsigned = {key: value for key, value in ticket2.items() if key != "state_digest"}
+    ticket2["state_digest"] = bridge_record_digest(unsigned)
+    _, consumed_ticket1 = consume(ticket1, ticket_bound_actual_effect(ticket1))
+    with pytest.raises(BlueprintError, match="consumed_ticket_required"):
+        record_mutation_result(
+            ticket2, ticket_bound_actual_effect(ticket2),
+            result_identity=result_identity(ticket2), mutation_status="succeeded",
+            evidence_persisted=True,
+            trusted_consumed_ticket_identities=consumed_ticket1,
         )
 
 
@@ -107,6 +169,18 @@ def task_for(record):
         "governance_lineage_refs": deepcopy(record["governance_lineage_refs"]),
         "admission_generation": record["admission_generation"],
     }
+
+
+def trusted_task_for(worker_task, record, issued=()):
+    owners = [{
+        "task_id": record["entity_id"],
+        "admitted_entity_id": record["entity_id"],
+        "owned_by": TASK_OWNER,
+    }]
+    return issue_trusted_task_record(
+        worker_task, record, owner=TASK_OWNER,
+        authoritative_task_owners=owners, issued_task_ids=issued,
+    )
 
 
 def test_classify_path_a_attempt_path_b_is_blocked():
@@ -205,7 +279,7 @@ def test_task_cannot_attach_another_entity_admission():
     worker_task = task_for(record)
     worker_task["task_id"] = "unrelated-task"
     with pytest.raises(BlueprintError, match="task_admission_identity_mismatch"):
-        attach_task_or_queue_record(worker_task, record)
+        trusted_task_for(worker_task, record)
 
 
 def test_task_parent_admission_mismatch_is_blocked():
@@ -213,11 +287,56 @@ def test_task_parent_admission_mismatch_is_blocked():
     worker_task = task_for(record)
     worker_task["parent_entity_refs"] = ["foreign-parent"]
     with pytest.raises(BlueprintError, match="task_admission_provenance_mismatch"):
-        attach_task_or_queue_record(worker_task, record)
+        trusted_task_for(worker_task, record)
+
+
+def test_task_payload_and_unique_ownership_are_authoritatively_bound():
+    _, record, _ = admission_and_ticket()
+    worker_task = task_for(record)
+    trusted_task = trusted_task_for(worker_task, record)
+    attachment = attach_task_or_queue_record(
+        worker_task, record, trusted_task_record=trusted_task,
+        trusted_task_record_digest=bridge_record_digest(trusted_task),
+        attached_task_ids=(),
+    )
+    assert attachment["attachment_status"] == "ADMITTED_REFERENCE_ONLY"
+    changed_payload = {**worker_task, "description": "substituted body"}
+    with pytest.raises(BlueprintError, match="task_admission_provenance_mismatch"):
+        attach_task_or_queue_record(
+            changed_payload, record, trusted_task_record=trusted_task,
+            trusted_task_record_digest=bridge_record_digest(trusted_task),
+            attached_task_ids=(),
+        )
+    with pytest.raises(BlueprintError, match="duplicate_task_identity"):
+        trusted_task_for(worker_task, record, issued=[record["entity_id"]])
+
+
+def test_worker_authored_structured_pass_is_rejected():
+    _, ticket, result, _, _, identity = successful_chain()
+    with pytest.raises(BlueprintError, match="untrusted_or_ambiguous_verifier"):
+        record_verification_evidence(
+            result, observed_result_identity=identity, verdict="PASS",
+            verifier_id="worker:self", verifier_generation=1,
+            verifier_provenance=["worker:assertion"], trusted_verifiers=[VERIFIER],
+        )
+
+
+def test_worker_cannot_issue_progression_authority():
+    record, ticket, result, verification, _, identity = successful_chain()
+    with pytest.raises(
+        BlueprintError, match="untrusted_or_ambiguous_progression_authority"
+    ):
+        issue_progression_authorization(
+            record, ticket, result, verification,
+            current_result_identity=identity,
+            authority={"authority_id": "worker:self", "authority_generation": 1},
+            authority_provenance=["worker:assertion"],
+            trusted_progression_authorities=PROGRESSION_AUTHORITIES,
+        )
 
 
 def test_progression_verification_for_different_ticket_is_blocked():
-    record, ticket, result, _, identity = successful_chain()
+    record, ticket, result, _, progression, identity = successful_chain()
     state = snapshot()
     ticket2 = issue_mutation_authorization_ticket(
         state, record, trusted_current_digest=snapshot_digest(state),
@@ -225,31 +344,30 @@ def test_progression_verification_for_different_ticket_is_blocked():
         ticket_id="ticket:2", nonce="nonce:2",
         issued_at="2026-09-12T12:06:00Z", expires_at="2026-09-12T12:30:00Z",
         issuer_provenance=["fixture:ticket-2"],
+        issued_ticket_ids=[ticket["ticket_id"]], issued_nonces=[ticket["nonce"]],
     )
     result2 = record_mutation_result(
         ticket2, ticket_bound_actual_effect(ticket2), result_identity=identity,
         mutation_status="succeeded", evidence_persisted=True,
-        consumed_nonces=consume(ticket2, ticket_bound_actual_effect(ticket2))[1],
+        trusted_consumed_ticket_identities=consume(ticket2, ticket_bound_actual_effect(ticket2))[1],
     )
-    verification2 = record_verification_evidence(
-        result2, observed_result_identity=identity, verdict="PASS",
-        verifier_id="verifier:vega", verifier_provenance=["fixture:verification-2"],
-    )
+    verification2 = verification_for(result2, identity)
     decision = authorize_progress_chain(
-        record, ticket, result, verification2, current_result_identity=identity,
+        record, ticket, result, verification2, progression,
+        current_result_identity=identity,
+        trusted_progression_authorities=PROGRESSION_AUTHORITIES,
     )
     assert decision.disposition == "BLOCKED_PROVENANCE_MISMATCH"
 
 
 def test_progression_verification_for_different_result_is_blocked():
-    record, ticket, result, _, identity = successful_chain()
+    record, ticket, result, _, progression, identity = successful_chain()
     other = result_identity(ticket, "d" * 40)
-    verification = record_verification_evidence(
-        result, observed_result_identity=other, verdict="PASS",
-        verifier_id="verifier:vega", verifier_provenance=["fixture:wrong-result"],
-    )
+    verification = verification_for(result, other)
     decision = authorize_progress_chain(
-        record, ticket, result, verification, current_result_identity=identity,
+        record, ticket, result, verification, progression,
+        current_result_identity=identity,
+        trusted_progression_authorities=PROGRESSION_AUTHORITIES,
     )
     assert decision.reason == "stale_or_different_result_identity"
 
@@ -263,7 +381,7 @@ def test_pass_boolean_without_provenance_chain_is_insufficient():
 
 
 def test_provider_switch_retains_ticket_and_admission_identity():
-    record, ticket, _, _, _ = successful_chain()
+    record, ticket, _, _, _, _ = successful_chain()
     context = {
         "admitted_entity_id": record["entity_id"],
         "admission_record_digest": ticket["admission_record_digest"],
@@ -301,7 +419,7 @@ def test_ticket_replay_after_failed_or_partial_mutation_is_blocked(mutation_stat
     record_mutation_result(
         ticket, actual, result_identity=result_identity(ticket),
         mutation_status=mutation_status, evidence_persisted=True,
-        consumed_nonces=consumed,
+        trusted_consumed_ticket_identities=consumed,
     )
     replay, _ = consume(ticket, actual, consumed)
     assert replay.reason == "ticket_replay"
@@ -314,54 +432,53 @@ def test_mutation_success_evidence_failure_is_not_authorized_progress():
     result = record_mutation_result(
         ticket, actual, result_identity=result_identity(ticket),
         mutation_status="succeeded", evidence_persisted=False,
-        consumed_nonces=consumed,
+        trusted_consumed_ticket_identities=consumed,
     )
     assert result["authority_state"] == "QUARANTINED_INCOMPLETE_EVIDENCE"
 
 
 def test_evidence_pass_mutation_failure_is_not_authorized_progress():
-    record, ticket, _, _, identity = successful_chain()
+    record, ticket, _, _, progression, identity = successful_chain()
     actual = ticket_bound_actual_effect(ticket)
     _, consumed = consume(ticket, actual)
     result = record_mutation_result(
         ticket, actual, result_identity=identity,
         mutation_status="failed", evidence_persisted=True,
-        consumed_nonces=consumed,
+        trusted_consumed_ticket_identities=consumed,
     )
-    verification = record_verification_evidence(
-        result, observed_result_identity=identity, verdict="PASS",
-        verifier_id="verifier:vega", verifier_provenance=["fixture:false-positive"],
-    )
+    verification = verification_for(result, identity)
     decision = authorize_progress_chain(
-        record, ticket, result, verification, current_result_identity=identity,
+        record, ticket, result, verification, progression,
+        current_result_identity=identity,
+        trusted_progression_authorities=PROGRESSION_AUTHORITIES,
     )
     assert decision.disposition == "QUARANTINED_INCOMPLETE_EVIDENCE"
 
 
 def test_partial_mutation_is_not_authorized_progress():
-    record, ticket, _, _, identity = successful_chain()
+    record, ticket, _, _, progression, identity = successful_chain()
     actual = ticket_bound_actual_effect(ticket)
     _, consumed = consume(ticket, actual)
     result = record_mutation_result(
         ticket, actual, result_identity=identity,
         mutation_status="partial", evidence_persisted=True,
-        consumed_nonces=consumed,
+        trusted_consumed_ticket_identities=consumed,
     )
-    verification = record_verification_evidence(
-        result, observed_result_identity=identity, verdict="PASS",
-        verifier_id="verifier:vega", verifier_provenance=["fixture:partial"],
-    )
+    verification = verification_for(result, identity)
     decision = authorize_progress_chain(
-        record, ticket, result, verification, current_result_identity=identity,
+        record, ticket, result, verification, progression,
+        current_result_identity=identity,
+        trusted_progression_authorities=PROGRESSION_AUTHORITIES,
     )
     assert decision.disposition == "QUARANTINED_INCOMPLETE_EVIDENCE"
 
 
 def test_stale_result_identity_is_blocked():
-    record, ticket, result, verification, _ = successful_chain()
+    record, ticket, result, verification, progression, _ = successful_chain()
     decision = authorize_progress_chain(
-        record, ticket, result, verification,
+        record, ticket, result, verification, progression,
         current_result_identity=result_identity(ticket, "e" * 40),
+        trusted_progression_authorities=PROGRESSION_AUTHORITIES,
     )
     assert decision.reason == "stale_or_different_result_identity"
 
@@ -402,4 +519,5 @@ def test_issue31_unavailable_release_cannot_issue_gated_ticket():
             issued_at="2026-09-12T12:05:00Z",
             expires_at="2026-09-12T12:30:00Z",
             issuer_provenance=["fixture:ticket-event"],
+            issued_ticket_ids=[], issued_nonces=[],
         )

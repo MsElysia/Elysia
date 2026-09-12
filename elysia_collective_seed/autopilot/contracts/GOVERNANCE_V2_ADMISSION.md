@@ -340,6 +340,11 @@ success disposition explicitly says it is not production authority; they neither
 reserve state nor mutate anything. Production needs durable nonce consumption,
 high-water marks, concurrency serialization and recovery semantics.
 
+The trusted issuance store enforces unique ticket IDs and globally unique nonces.
+Consumption and every result receipt bind the digest of the complete tuple
+`(ticket_id, nonce, ticket state digest)`; nonce membership alone never proves
+that a sibling ticket was consumed.
+
 Tickets are fail-closed single-consumption tokens. Once a mutation attempt enters
 the fenced boundary, its nonce is consumed whether the attempt succeeds, fails,
 partially writes, or crashes. A retry re-reads actual repository state,
@@ -348,9 +353,12 @@ ticket. A worker cannot replay or refresh the old token.
 
 ## Task, queue and cycle identity binding
 
-A task/queue attachment binds task ID, admitted entity ID, parent entity refs,
+A trusted task record binds task ID, admitted entity ID, parent entity refs,
 objective refs, governance lineage, admission generation and admission-record
-digest. The task ID and admitted entity ID must identify the same admitted task;
+digest, plus the complete worker-payload digest and authoritative owner identity.
+Issuance consults an authoritative unique task-owner registry, and attachment
+independently pins the trusted task-record digest. The task ID and admitted entity
+ID must identify the same admitted task;
 the parent/scope/generation fields must exactly match the admission record. IDs
 are unique in the authoritative store and ownership cannot be transferred by a
 worker reference. Foreign-admission borrowing and parent/admission swaps fail
@@ -388,9 +396,13 @@ effect, staged patch, mutation outcome, evidence-persistence outcome and immutab
 result identity. Result identity is an exact commit SHA, tree SHA, patch digest or
 changed-file digest plus repository head and write-set digest. Verification binds
 its PASS/FAIL to that exact mutation-result digest, ticket ID and result identity.
-Progression revalidates every link and the current result identity. A PASS boolean,
-completion flag or technically valid but differently bound verification is
-`BLOCKED_PROVENANCE_MISMATCH`.
+Verification issuance consults a trusted verifier identity/generation/provenance
+registry. Progression then requires a separate `PROGRESSION_AUTHORIZATION` from
+an independently trusted progression-authority registry, content-bound to the
+admission, consumed ticket tuple, mutation result, verification and current
+result identity. Progression revalidates every link and both registries. A PASS
+boolean, worker-shaped verification, completion flag or technically valid but
+differently bound verification is `BLOCKED_PROVENANCE_MISMATCH`.
 
 Verification answers whether work is technically correct; governance answers
 whether it was authorized. CI,

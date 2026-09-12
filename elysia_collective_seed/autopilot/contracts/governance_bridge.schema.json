@@ -6,7 +6,9 @@
     {"$ref": "#/$defs/trusted_admission_record"},
     {"$ref": "#/$defs/mutation_authorization_ticket"},
     {"$ref": "#/$defs/mutation_result"},
-    {"$ref": "#/$defs/verification_evidence"}
+    {"$ref": "#/$defs/verification_evidence"},
+    {"$ref": "#/$defs/trusted_task_record"},
+    {"$ref": "#/$defs/progression_authorization"}
   ],
   "$defs": {
     "id": {"type": "string", "minLength": 1, "pattern": "^\\S(?:.*\\S)?$"},
@@ -164,12 +166,13 @@
     "mutation_result": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["record_type", "record_version", "ticket_id", "ticket_nonce", "ticket_state_digest", "admission_record_digest", "classification_digest", "write_set_digest", "staged_patch_digest", "result_identity", "mutation_status", "evidence_persisted", "authority_state", "result_record_digest"],
+      "required": ["record_type", "record_version", "ticket_id", "ticket_nonce", "ticket_consumption_identity", "ticket_state_digest", "admission_record_digest", "classification_digest", "write_set_digest", "staged_patch_digest", "result_identity", "mutation_status", "evidence_persisted", "authority_state", "result_record_digest"],
       "properties": {
         "record_type": {"const": "MUTATION_RESULT"},
         "record_version": {"const": 1},
         "ticket_id": {"$ref": "#/$defs/id"},
         "ticket_nonce": {"$ref": "#/$defs/id"},
+        "ticket_consumption_identity": {"$ref": "#/$defs/digest"},
         "ticket_state_digest": {"$ref": "#/$defs/digest"},
         "admission_record_digest": {"$ref": "#/$defs/digest"},
         "classification_digest": {"$ref": "#/$defs/digest"},
@@ -185,7 +188,7 @@
     "verification_evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["record_type", "record_version", "mutation_result_digest", "ticket_id", "result_identity", "verdict", "verifier_id", "verifier_provenance", "verification_digest"],
+      "required": ["record_type", "record_version", "mutation_result_digest", "ticket_id", "result_identity", "verdict", "verifier_id", "verifier_generation", "verifier_provenance", "verification_digest"],
       "properties": {
         "record_type": {"const": "VERIFICATION_EVIDENCE"},
         "record_version": {"const": 1},
@@ -194,8 +197,45 @@
         "result_identity": {"$ref": "#/$defs/result_identity"},
         "verdict": {"enum": ["PASS", "FAIL"]},
         "verifier_id": {"$ref": "#/$defs/id"},
+        "verifier_generation": {"type": "integer", "minimum": 1},
         "verifier_provenance": {"$ref": "#/$defs/nonempty_refs"},
         "verification_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "trusted_task_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_type", "record_version", "task_id", "admitted_entity_id", "parent_entity_refs", "objective_refs", "governance_lineage_refs", "admission_generation", "admission_record_digest", "worker_payload_digest", "owned_by"],
+      "properties": {
+        "record_type": {"const": "TRUSTED_TASK_RECORD"},
+        "record_version": {"const": 1},
+        "task_id": {"$ref": "#/$defs/id"},
+        "admitted_entity_id": {"$ref": "#/$defs/id"},
+        "parent_entity_refs": {"$ref": "#/$defs/refs"},
+        "objective_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "governance_lineage_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "admission_generation": {"type": "integer", "minimum": 1},
+        "admission_record_digest": {"$ref": "#/$defs/digest"},
+        "worker_payload_digest": {"$ref": "#/$defs/digest"},
+        "owned_by": {"$ref": "#/$defs/authority_ref"}
+      }
+    },
+    "progression_authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_type", "record_version", "admission_record_digest", "ticket_state_digest", "ticket_consumption_identity", "mutation_result_digest", "verification_digest", "result_identity", "authorized_by", "authority_provenance", "progression_authorization_digest"],
+      "properties": {
+        "record_type": {"const": "PROGRESSION_AUTHORIZATION"},
+        "record_version": {"const": 1},
+        "admission_record_digest": {"$ref": "#/$defs/digest"},
+        "ticket_state_digest": {"$ref": "#/$defs/digest"},
+        "ticket_consumption_identity": {"$ref": "#/$defs/digest"},
+        "mutation_result_digest": {"$ref": "#/$defs/digest"},
+        "verification_digest": {"$ref": "#/$defs/digest"},
+        "result_identity": {"$ref": "#/$defs/result_identity"},
+        "authorized_by": {"$ref": "#/$defs/authority_ref"},
+        "authority_provenance": {"$ref": "#/$defs/nonempty_refs"},
+        "progression_authorization_digest": {"$ref": "#/$defs/digest"}
       }
     }
   }

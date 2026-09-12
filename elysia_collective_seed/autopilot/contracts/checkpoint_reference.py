@@ -19,9 +19,9 @@ from jsonschema import Draft202012Validator, FormatChecker
 SCHEMA = json.loads(Path(__file__).with_name("checkpoint_snapshot.schema.json").read_text(encoding="utf-8"))
 FORMAT_CHECKER = FormatChecker()
 RFC3339 = re.compile(
-    r"^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})T"
-    r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
-    r"(?:\.\d+)?(?P<zone>Z|[+-](?P<zone_hour>\d{2}):(?P<zone_minute>\d{2}))$"
+    r"^(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})T"
+    r"(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})"
+    r"(?:\.[0-9]+)?(?P<zone>Z|[+-](?P<zone_hour>[0-9]{2}):(?P<zone_minute>[0-9]{2}))$"
 )
 
 

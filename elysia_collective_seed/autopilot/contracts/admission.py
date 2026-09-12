@@ -4,9 +4,12 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+from pathlib import Path
 from typing import Mapping
 
-from .checkpoint_reference import VALIDATOR, Decision, evaluate, snapshot_digest
+from jsonschema import Draft202012Validator
+
+from .checkpoint_reference import SCHEMA, VALIDATOR, Decision, evaluate, snapshot_digest
 
 
 class AdmissionError(ValueError):
@@ -22,6 +25,11 @@ MANDATORY_GATED_ACTIONS = (
     "semantic_code_write", "repo_write", "integration", "merge", "deploy",
     "external_write", "permission_change", "private_data_access",
 )
+V1_SCHEMA = json.loads(Path(__file__).with_name("checkpoint_snapshot.v1.schema.json").read_text(encoding="utf-8"))
+V1_VALIDATOR = Draft202012Validator(V1_SCHEMA)
+AUTHORITY_VALIDATOR = Draft202012Validator({
+    "$schema": SCHEMA["$schema"], "$defs": SCHEMA["$defs"], "$ref": "#/$defs/authority",
+})
 
 
 def _digest(value) -> str:
@@ -95,6 +103,8 @@ def _migrate_v1_to_v2(legacy, manifest, *, trusted_source_digest,
     required_legacy = {"schema_version", "revision", "source_refs", "gates", "entities"}
     if set(legacy) != required_legacy or type(legacy["revision"]) is not int or legacy["revision"] < 1:
         raise AdmissionError("invalid_v1_snapshot")
+    if not V1_VALIDATOR.is_valid(legacy):
+        raise AdmissionError("invalid_v1_snapshot")
     if (not isinstance(manifest, dict)
             or type(manifest.get("from_schema_version")) is not int
             or type(manifest.get("to_schema_version")) is not int
@@ -110,7 +120,9 @@ def _migrate_v1_to_v2(legacy, manifest, *, trusted_source_digest,
         raise AdmissionError("missing_migration_authority")
     if (not isinstance(trusted_authorities, (list, tuple))
             or any(not isinstance(a, Mapping) for a in trusted_authorities)):
-        raise AdmissionError("invalid_trusted_authorities")
+        raise AdmissionError("invalid_trusted_authority_registry")
+    if any(not AUTHORITY_VALIDATOR.is_valid(dict(a)) for a in trusted_authorities):
+        raise AdmissionError("invalid_trusted_authority_registry")
     trusted = {(a.get("authority_id"), a.get("authority_generation")): a
                for a in trusted_authorities}
     if len(trusted) != len(trusted_authorities):
@@ -144,7 +156,11 @@ def _migrate_v1_to_v2(legacy, manifest, *, trusted_source_digest,
         if decision.get("governance_gate_refs") != source.get("governance_gate_refs"):
             raise AdmissionError("migration_cannot_drop_gate_refs")
         if decision.get("ancestry_kind") == "root":
-            if source.get("parent_refs") or not isinstance(root_evidence, list) or not root_evidence:
+            if (source.get("parent_refs") or not isinstance(root_evidence, list)
+                    or not root_evidence
+                    or any(type(ref) is not str or not ref.strip()
+                           or ref != ref.strip() for ref in root_evidence)
+                    or len(set(root_evidence)) != len(root_evidence)):
                 raise AdmissionError("root_requires_explicit_migration_evidence")
         elif decision.get("ancestry_kind") == "derived":
             if not source.get("parent_refs"):

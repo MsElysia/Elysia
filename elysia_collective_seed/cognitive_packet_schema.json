@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Elysia Cognitive Packet",
+  "type": "object",
+  "required": ["packet_id", "type", "author", "claim", "confidence", "status", "created_at"],
+  "properties": {
+    "packet_id": {"type": "string", "pattern": "^ELY-[0-9]{6,}$"},
+    "type": {"enum": ["hypothesis", "evidence", "critique", "experiment", "result", "question", "synthesis", "proposal"]},
+    "author": {"type": "string"},
+    "parents": {"type": "array", "items": {"type": "string"}, "default": []},
+    "claim": {"type": "string", "minLength": 1},
+    "rationale": {"type": "string"},
+    "evidence": {"type": "array", "items": {"type": "string"}, "default": []},
+    "counterevidence": {"type": "array", "items": {"type": "string"}, "default": []},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "related": {"type": "array", "items": {"type": "string"}, "default": []},
+    "needs": {"type": "array", "items": {"enum": ["research", "critique", "experiment", "engineering", "human_review", "none"]}, "default": ["none"]},
+    "status": {"enum": ["open", "testing", "supported", "disputed", "rejected", "archived"]},
+    "created_at": {"type": "string", "format": "date-time"},
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "source_type": {"enum": ["genesis", "collective", "external", "experiment", "human"]},
+        "source_refs": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "elysia.autopilot.audit_event.v0.1",
+  "title": "Elysia Autopilot Audit Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "task_id", "timestamp", "actor", "from_state", "to_state", "reason", "evidence_refs"],
+  "properties": {
+    "schema_version": {"const": "0.1"},
+    "event_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"enum": ["orchestrator", "worker", "verifier", "human", "ci"]},
+        "id": {"type": "string", "minLength": 1}
+      }
+    },
+    "from_state": {"type": ["string", "null"]},
+    "to_state": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1},
+    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+    "task_packet_ref": {"type": ["string", "null"]},
+    "completion_packet_ref": {"type": ["string", "null"]},
+    "lease_id": {"type": ["string", "null"]},
+    "retry_number": {"type": "integer", "minimum": 0},
+    "metadata": {"type": "object"}
+  }
+}

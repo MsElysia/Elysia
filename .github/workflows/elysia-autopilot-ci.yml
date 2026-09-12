@@ -1,0 +1,64 @@
+name: Elysia Autopilot CI
+
+on:
+  push:
+    branches:
+      - 'elysia-collective-*'
+  pull_request:
+    branches:
+      - main
+      - 'elysia-collective-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  seed-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test runner
+        run: python -m pip install --upgrade pytest
+
+      - name: Compile seed Python
+        run: python -m compileall -q elysia_collective_seed
+
+      - name: Validate JSON artifacts parse
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          failures = []
+          for path in Path('elysia_collective_seed').rglob('*.json'):
+              try:
+                  json.loads(path.read_text(encoding='utf-8'))
+              except Exception as exc:
+                  failures.append(f'{path}: {exc}')
+          if failures:
+              raise SystemExit('\n'.join(failures))
+          print('All JSON artifacts parsed successfully.')
+
+      - name: Run Elysia Collective seed tests
+        run: |
+          python -m pytest -q \
+            elysia_collective_seed/test_*.py
+
+      - name: Enforce no runtime-enable flag in seed prompt pack
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('elysia_collective_seed/agent_prompt_pack.py')
+          if path.exists():
+              text = path.read_text(encoding='utf-8')
+              if 'RUNTIME_ENABLED = True' in text:
+                  raise SystemExit('Elysia seed runtime was enabled before reconciliation gate cleared.')
+          print('Runtime-enable gate remains closed.')

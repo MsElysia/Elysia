@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Elysia Genesis Extraction Record",
+  "type": "object",
+  "required": [
+    "record_id",
+    "source_id",
+    "record_type",
+    "statement",
+    "source_locators",
+    "confidence",
+    "status"
+  ],
+  "properties": {
+    "record_id": {"type": "string", "pattern": "^GEN-[0-9]{6,}$"},
+    "source_id": {"type": "string", "minLength": 1},
+    "record_type": {
+      "enum": [
+        "USER_DECISION",
+        "CONSTITUTIONAL_PRINCIPLE",
+        "PROPOSED_ARCHITECTURE",
+        "IMPLEMENTED_COMPONENT",
+        "REJECTED_DIRECTION",
+        "EXPERIMENT",
+        "RESULT",
+        "OPEN_QUESTION",
+        "NAMED_CONCEPT",
+        "VERSION_MILESTONE"
+      ]
+    },
+    "statement": {"type": "string", "minLength": 1},
+    "source_locators": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["locator"],
+        "properties": {
+          "message_id": {"type": ["string", "null"]},
+          "locator": {"type": "string"},
+          "content_hash": {"type": ["string", "null"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "effective_date": {"type": ["string", "null"]},
+    "supersedes": {"type": "array", "items": {"type": "string"}, "default": []},
+    "superseded_by": {"type": "array", "items": {"type": "string"}, "default": []},
+    "related_records": {"type": "array", "items": {"type": "string"}, "default": []},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "verification": {
+      "type": "object",
+      "properties": {
+        "human_verified": {"type": "boolean", "default": false},
+        "repository_verified": {"type": "boolean", "default": false},
+        "requires_primary_source_review": {"type": "boolean", "default": true}
+      },
+      "additionalProperties": false
+    },
+    "privacy": {
+      "enum": ["project_public", "project_private", "sensitive_do_not_federate"]
+    },
+    "status": {"enum": ["extracted", "verified", "disputed", "superseded", "archived"]}
+  },
+  "additionalProperties": false
+}

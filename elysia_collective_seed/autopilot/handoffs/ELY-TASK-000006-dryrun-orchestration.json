@@ -1,0 +1,32 @@
+{
+  "task_id": "ELY-TASK-000006",
+  "status": "implemented_pending_verification",
+  "summary": "Connected the deterministic dispatcher to the persistent SQLite task ledger in provider-free dry-run mode. Eligible work is persisted, re-read from authoritative ledger state, dispatched, and atomically leased to the selected worker without invoking any provider or Guardian runtime.",
+  "files_changed": [
+    "elysia_collective_seed/autopilot/dryrun_orchestrator.py",
+    "elysia_collective_seed/autopilot/test_dryrun_orchestrator.py",
+    "elysia_collective_seed/autopilot/handoffs/ELY-TASK-000006-dryrun-orchestration.json"
+  ],
+  "verification_added": [
+    "happy-path dispatch and lease",
+    "human approval gate prevents claim",
+    "incomplete dependencies prevent claim",
+    "existing active lease cannot be stolen",
+    "stale queued payload cannot reopen completed task"
+  ],
+  "safety": {
+    "provider_invocation": false,
+    "network_execution": false,
+    "subprocess_execution": false,
+    "guardian_runtime_execution": false,
+    "merge_or_deployment": false,
+    "external_write": false
+  },
+  "evidence": [
+    "GitHub Actions previously passed on parent head 781d87fd3b17f7e1cbb0c35f7a863a1a6860b442.",
+    "New orchestration code requires CI on its new head before it can be considered verified."
+  ],
+  "next_role": "independent_verifier",
+  "next_task": "Review dispatcher-ledger integration for stale-state, attempt-limit, lease ownership, concurrency, and schema/interface defects; confirm CI on the new head before any provider adapter work.",
+  "human_approval_required": false
+}

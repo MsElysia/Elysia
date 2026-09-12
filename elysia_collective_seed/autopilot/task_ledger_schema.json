@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Elysia Autopilot Task Ledger",
+  "type": "object",
+  "required": ["ledger_version", "tasks", "leases", "events"],
+  "properties": {
+    "ledger_version": {"type": "integer", "minimum": 1},
+    "updated_at": {"type": ["string", "null"], "format": "date-time"},
+    "tasks": {
+      "type": "object",
+      "additionalProperties": {"$ref": "task_packet_schema.json"},
+      "default": {}
+    },
+    "leases": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["task_id", "worker_id", "lease_id", "claimed_at", "expires_at"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "worker_id": {"type": "string"},
+          "lease_id": {"type": "string"},
+          "claimed_at": {"type": "string", "format": "date-time"},
+          "expires_at": {"type": "string", "format": "date-time"},
+          "heartbeat_at": {"type": ["string", "null"], "format": "date-time"},
+          "attempt": {"type": "integer", "minimum": 1}
+        },
+        "additionalProperties": false
+      },
+      "default": {}
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["event_id", "task_id", "event_type", "actor", "timestamp"],
+        "properties": {
+          "event_id": {"type": "string"},
+          "task_id": {"type": "string"},
+          "event_type": {
+            "enum": [
+              "created", "queued", "claimed", "started", "heartbeat", "released",
+              "completion_submitted", "verification_requested", "verification_passed",
+              "verification_failed", "blocked", "retry_scheduled", "completed",
+              "rejected", "archived", "human_gate_requested", "human_gate_resolved"
+            ]
+          },
+          "actor": {"type": "string"},
+          "timestamp": {"type": "string", "format": "date-time"},
+          "from_status": {"type": ["string", "null"]},
+          "to_status": {"type": ["string", "null"]},
+          "evidence_refs": {"type": "array", "items": {"type": "string"}, "default": []},
+          "details": {"type": ["string", "null"]}
+        },
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "completion_packets": {
+      "type": "object",
+      "additionalProperties": {"$ref": "completion_packet_schema.json"},
+      "default": {}
+    }
+  },
+  "additionalProperties": false
+}

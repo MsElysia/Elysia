@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Guardian governance snapshot v2 — normative, not production enforcement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "snapshot_generation", "source_refs", "admission_authorities", "gates", "admissions", "migration_provenance"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "snapshot_generation": {"type": "integer", "minimum": 1},
+    "source_refs": {"$ref": "#/$defs/nonempty_refs"},
+    "admission_authorities": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/authority"}},
+    "gates": {"type": "array", "items": {"$ref": "#/$defs/gate"}},
+    "admissions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/admission"}},
+    "migration_provenance": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/migration_provenance"}]}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "pattern": "^\\S(?:.*\\S)?$"},
+    "refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "nonempty_refs": {"allOf": [{"$ref": "#/$defs/refs"}], "minItems": 1},
+    "action": {"enum": ["static_read", "test_only", "docs_only", "schema_spec_write", "semantic_code_write", "repo_write", "integration", "merge", "deploy", "external_write", "permission_change", "private_data_access"]},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["authority_id", "authority_kind", "authority_generation", "source_refs"],
+      "properties": {
+        "authority_id": {"$ref": "#/$defs/id"},
+        "authority_kind": {"enum": ["trusted_repository_control_plane", "trusted_migration_control_plane"]},
+        "authority_generation": {"type": "integer", "minimum": 1},
+        "source_refs": {"$ref": "#/$defs/nonempty_refs"}
+      }
+    },
+    "authority_ref": {
+      "type": "object", "additionalProperties": false,
+      "required": ["authority_id", "authority_generation"],
+      "properties": {"authority_id": {"$ref": "#/$defs/id"}, "authority_generation": {"type": "integer", "minimum": 1}}
+    },
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["objective_refs", "lineage_refs"],
+      "properties": {"objective_refs": {"$ref": "#/$defs/nonempty_refs"}, "lineage_refs": {"$ref": "#/$defs/nonempty_refs"}}
+    },
+    "release_claim": {
+      "description": "Untrusted audit assertion. Schema validity cannot release a gate.",
+      "type": "object", "additionalProperties": false,
+      "required": ["gate_id", "generation", "scope", "actions", "asserted_human", "transport", "application", "evidence_refs"],
+      "properties": {
+        "gate_id": {"$ref": "#/$defs/id"}, "generation": {"type": "integer", "minimum": 1}, "scope": {"$ref": "#/$defs/scope"},
+        "actions": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/action"}},
+        "asserted_human": {"$ref": "#/$defs/id"}, "transport": {"$ref": "#/$defs/id"}, "application": {"$ref": "#/$defs/id"},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_refs"}
+      }
+    },
+    "gate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["gate_id", "generation", "kind", "state", "scope", "inherit_to_children", "blocked_actions", "reason", "source_refs", "release"],
+      "properties": {
+        "gate_id": {"$ref": "#/$defs/id"}, "generation": {"type": "integer", "minimum": 1},
+        "kind": {"const": "human_governance_required"}, "state": {"enum": ["active", "released"]},
+        "scope": {"$ref": "#/$defs/scope"}, "inherit_to_children": {"const": true},
+        "blocked_actions": {
+          "type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/action"},
+          "allOf": [
+            {"contains": {"const": "semantic_code_write"}}, {"contains": {"const": "repo_write"}},
+            {"contains": {"const": "integration"}}, {"contains": {"const": "merge"}},
+            {"contains": {"const": "deploy"}}, {"contains": {"const": "external_write"}},
+            {"contains": {"const": "permission_change"}}, {"contains": {"const": "private_data_access"}}
+          ]
+        },
+        "reason": {"$ref": "#/$defs/id"}, "source_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "release": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/release_claim"}]}
+      }
+    },
+    "admission": {
+      "type": "object", "additionalProperties": false,
+      "required": ["entity_id", "entity_kind", "ancestry_kind", "parent_refs", "repository_lineage_refs", "governance_lineage_refs", "objective_refs", "action_classes", "admission_generation", "admitted_by", "admission_source", "admission_evidence", "admitted_at", "governance_gate_refs"],
+      "properties": {
+        "entity_id": {"$ref": "#/$defs/id"}, "entity_kind": {"enum": ["objective", "task", "branch", "commit", "pull_request", "worktree", "artifact"]},
+        "ancestry_kind": {"enum": ["root", "derived"]}, "parent_refs": {"$ref": "#/$defs/refs"},
+        "repository_lineage_refs": {"$ref": "#/$defs/nonempty_refs"}, "governance_lineage_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "objective_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "action_classes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/action"}},
+        "admission_generation": {"type": "integer", "minimum": 1}, "admitted_by": {"$ref": "#/$defs/authority_ref"},
+        "admission_source": {"$ref": "#/$defs/nonempty_refs"}, "admission_evidence": {"$ref": "#/$defs/nonempty_refs"},
+        "admitted_at": {"type": "string", "format": "date-time"}, "governance_gate_refs": {"$ref": "#/$defs/refs"}
+      },
+      "allOf": [{"if": {"properties": {"ancestry_kind": {"const": "root"}}}, "then": {"properties": {"parent_refs": {"maxItems": 0}}}, "else": {"properties": {"parent_refs": {"minItems": 1}}}}]
+    },
+    "migration_provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["from_schema_version", "source_snapshot_digest", "migration_manifest_digest", "migrated_by", "migrated_at", "evidence_refs"],
+      "properties": {
+        "from_schema_version": {"const": 1}, "source_snapshot_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "migration_manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "migrated_by": {"$ref": "#/$defs/authority_ref"},
+        "migrated_at": {"type": "string", "format": "date-time"}, "evidence_refs": {"$ref": "#/$defs/nonempty_refs"}
+      }
+    }
+  }
+}

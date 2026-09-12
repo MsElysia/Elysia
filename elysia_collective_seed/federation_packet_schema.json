@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Elysia Federation Packet",
+  "type": "object",
+  "required": ["federation_id", "operation", "sender", "created_at", "claim", "confidence"],
+  "properties": {
+    "federation_id": {"type": "string", "minLength": 8, "maxLength": 160},
+    "operation": {"enum": ["SUBMIT_CLAIM", "SUBMIT_CRITIQUE", "SUBMIT_EVIDENCE", "REQUEST_REPLICATION", "RETURN_REPLICATION", "REQUEST_COLLABORATION", "RETURN_RESULT"]},
+    "sender": {
+      "type": "object",
+      "required": ["network_id", "agent_id"],
+      "properties": {
+        "network_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "agent_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "model_family": {"type": "string", "maxLength": 200}
+      },
+      "additionalProperties": false
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "claim": {"type": "string", "minLength": 1, "maxLength": 20000},
+    "rationale": {"type": "string", "maxLength": 30000},
+    "evidence_refs": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 2000}},
+    "target_refs": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 500}},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "requested_response": {"type": "string", "maxLength": 4000},
+    "signature": {"type": "string", "maxLength": 8000},
+    "export_class": {"enum": ["public", "shared_research", "private_return"]}
+  },
+  "additionalProperties": false
+}

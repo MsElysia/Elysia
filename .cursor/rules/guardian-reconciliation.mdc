@@ -1,0 +1,18 @@
+---
+description: Safety and provenance rules for reconciling legacy Elysia and Project Guardian files with the current codebase.
+alwaysApply: false
+---
+When working on legacy Elysia / Project Guardian reconciliation:
+
+- Inventory and compare before editing.
+- Never delete, move, rename, or overwrite the only known copy of a legacy source.
+- Work on isolated branches/worktrees for code changes; never directly on main.
+- Preserve original path, content hash, and reconciliation provenance for archived/replaced material.
+- Treat the AI Constitution/Covenant, Rebuild Manifest, Quantum Oath, original Elysia/Erebus material, and other identity/governance records as potential immutable Genesis sources.
+- Do not silently normalize or rewrite historical source text.
+- Do not commit secrets, credentials, API keys, private databases, raw personal chatlogs, caches, or unrelated personal material.
+- File existence is not proof of implementation. Distinguish operational code from stubs, TODO-only files, generated proposals, backups, and design documents.
+- Prefer porting a useful feature into the current live architecture over restoring an obsolete parallel subsystem.
+- Every code-changing consolidation task requires independent verification before it is considered complete.
+- Use the approved Guardian Cursor subagents and structured handoff/task-ledger artifacts for multi-stage work.
+- Stop for human review when deletion is ambiguous, governance sources conflict, privacy boundaries are unclear, or competing implementations cannot be reconciled from evidence.

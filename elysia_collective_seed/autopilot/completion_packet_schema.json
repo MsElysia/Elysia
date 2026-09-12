@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Elysia Autopilot Completion Packet",
+  "type": "object",
+  "required": ["task_id", "worker", "outcome", "summary", "checks", "next_recommendation"],
+  "properties": {
+    "task_id": {"type": "string"},
+    "packet_id": {"type": "string", "minLength": 1},
+    "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "worker": {
+      "type": "object",
+      "required": ["provider", "role"],
+      "properties": {
+        "provider": {"type": "string"},
+        "role": {"type": "string"},
+        "model": {"type": ["string", "null"]},
+        "run_id": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "outcome": {"enum": ["completed", "partial", "blocked", "failed", "rejected"]},
+    "summary": {"type": "string"},
+    "files_read": {"type": "array", "items": {"type": "string"}, "default": []},
+    "files_changed": {"type": "array", "items": {"type": "string"}, "default": []},
+    "commits": {"type": "array", "items": {"type": "string"}, "default": []},
+    "pull_requests": {"type": "array", "items": {"type": "string"}, "default": []},
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["claim", "evidence"],
+        "properties": {
+          "claim": {"type": "string"},
+          "evidence": {"type": "array", "items": {"type": "string"}},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+        },
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "result"],
+        "properties": {
+          "name": {"type": "string"},
+          "result": {"enum": ["pass", "fail", "skip", "not_run"]},
+          "details": {"type": ["string", "null"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "uncertainties": {"type": "array", "items": {"type": "string"}, "default": []},
+    "risks": {"type": "array", "items": {"type": "string"}, "default": []},
+    "blockers": {"type": "array", "items": {"type": "string"}, "default": []},
+    "next_recommendation": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"enum": ["verify", "continue", "retry", "spawn_followup", "human_review", "archive", "none"]},
+        "preferred_role": {"type": ["string", "null"]},
+        "task_title": {"type": ["string", "null"]},
+        "task_objective": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "completed_at": {"type": ["string", "null"], "format": "date-time"}
+  },
+  "additionalProperties": false
+}

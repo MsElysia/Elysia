@@ -1,0 +1,8 @@
+parsed_json=65
+original_v1_blob=b5aa1fed58ff86b5a79ef49f51049476e8c14473
+preserved_v1_blob=b5aa1fed58ff86b5a79ef49f51049476e8c14473
+exact_v1_schema_match=True
+compileall=PASS
+git_diff_check=PASS
+candidate_head=7b076548751e72879d0632c1ec687e087e43a7b8
+candidate_status=

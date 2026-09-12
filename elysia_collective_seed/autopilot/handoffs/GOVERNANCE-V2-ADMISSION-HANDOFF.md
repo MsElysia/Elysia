@@ -6,7 +6,7 @@
 
 ## CANDIDATE SHA
 
-Recorded after commit and in separate exact-candidate verification evidence.
+`7b076548751e72879d0632c1ec687e087e43a7b8`, verified unchanged by both independent reviews.
 Branch: `codex/governance-v2-trusted-admission`.
 
 ## SCHEMA VERSION
@@ -75,17 +75,15 @@ unvalidated releases block. No-match remains explicitly non-authorizing.
 
 ## TEST RESULTS
 
-Implementer: **376 passed** (163 governance contract and 213 inherited tests),
-Python 3.13.15, pytest 9.1.1, jsonschema 4.26.0. Contract compileall, every JSON
-parse, and `git diff --check` passed. No Guardian/runtime/provider code activated.
+Exact candidate suite: **414 passed**. Focused contract suite: **201 passed**. Independent Vega corpus: **151 passed**. Python 3.13.15, pytest 9.1.1, jsonschema 4.26.0. Contract compileall, 65 JSON parses, preserved-v1-schema identity, `git diff --check`, exact-SHA, and clean detached-worktree checks passed. No Guardian/runtime/provider code activated.
 
 ## VEGA VERDICT
 
-Pending fresh breaker on exact committed candidate.
+**PASS** for exact candidate `7b076548751e72879d0632c1ec687e087e43a7b8`. See `../evidence/governance-v2-admission/VEGA-REPORT.md`.
 
 ## ARCHITECTURE VERDICT
 
-Pending separate reviewer after Vega PASS.
+**READY_FOR_INTEGRATION_REVIEW**, with no blockers inside the specification-and-test scope. See `../evidence/governance-v2-admission/ARCHITECTURE-REPORT.md`.
 
 ## PRODUCTION ENFORCEMENT STATUS
 
@@ -101,8 +99,7 @@ Pending separate reviewer after Vega PASS.
 
 ## NEXT BOUNDED TASK
 
-Independent falsification, then architecture review. If both pass, preserve
-reports on a separate evidence branch and open a stacked draft PR. A later task
+Review the stacked draft PR and its separate evidence commit. A later task
 may design the transactional storage/admission interface but must not claim Git
 or human-auth enforcement without separately authorized implementation/evidence.
 

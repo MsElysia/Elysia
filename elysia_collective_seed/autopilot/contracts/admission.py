@@ -64,6 +64,22 @@ def evaluate_admitted(snapshot, entity_id, authoritative_action, *,
 
 def migrate_v1_to_v2(legacy, manifest, *, trusted_source_digest,
                      trusted_authorities, minimum_target_generation=1):
+    """Fail-closed public boundary for deterministic v1-to-v2 migration."""
+    try:
+        return _migrate_v1_to_v2(
+            legacy, manifest,
+            trusted_source_digest=trusted_source_digest,
+            trusted_authorities=trusted_authorities,
+            minimum_target_generation=minimum_target_generation,
+        )
+    except AdmissionError:
+        raise
+    except (KeyError, TypeError, ValueError, RecursionError) as exc:
+        raise AdmissionError("malformed_migration_input") from exc
+
+
+def _migrate_v1_to_v2(legacy, manifest, *, trusted_source_digest,
+                      trusted_authorities, minimum_target_generation=1):
     """Deterministically migrate only with explicit classification evidence.
 
     This models what a trusted migration service must prove. Passing a mapping to

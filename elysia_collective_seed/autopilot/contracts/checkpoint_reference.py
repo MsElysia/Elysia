@@ -19,16 +19,32 @@ from jsonschema import Draft202012Validator, FormatChecker
 SCHEMA = json.loads(Path(__file__).with_name("checkpoint_snapshot.schema.json").read_text(encoding="utf-8"))
 FORMAT_CHECKER = FormatChecker()
 RFC3339 = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+    r"^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})T"
+    r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
+    r"(?:\.\d+)?(?P<zone>Z|[+-](?P<zone_hour>\d{2}):(?P<zone_minute>\d{2}))$"
 )
 
 
 @FORMAT_CHECKER.checks("date-time", raises=(TypeError, ValueError))
 def _is_rfc3339_datetime(value):
-    if not isinstance(value, str) or RFC3339.fullmatch(value) is None:
+    if not isinstance(value, str):
         return False
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return parsed.tzinfo is not None
+    match = RFC3339.fullmatch(value)
+    if match is None:
+        return False
+    parts = {name: int(match.group(name)) for name in
+             ("year", "month", "day", "hour", "minute", "second")}
+    if parts["second"] > 60 or parts["hour"] > 23 or parts["minute"] > 59:
+        return False
+    if match.group("zone") != "Z" and (
+            int(match.group("zone_hour")) > 23
+            or int(match.group("zone_minute")) > 59):
+        return False
+    # datetime validates calendar dates. RFC 3339 permits the leap-second value
+    # 60, so use 59 solely for calendar validation after checking the bound.
+    datetime(parts["year"], parts["month"], parts["day"], parts["hour"],
+             parts["minute"], min(parts["second"], 59))
+    return True
 
 
 VALIDATOR = Draft202012Validator(SCHEMA, format_checker=FORMAT_CHECKER)

@@ -326,3 +326,28 @@ def test_migration_wraps_noniterable_authority_config_as_admission_error():
 
 
 
+
+@pytest.mark.parametrize("timestamp", ["2026-09-12T00:00:00+01:60", "2026-02-30T00:00:00Z"])
+def test_invalid_rfc3339_timestamp_is_rejected(timestamp):
+    source = legacy_v1()
+    target = migrate(source)
+    target["admissions"][0]["admitted_at"] = timestamp
+    with pytest.raises(AdmissionError, match="invalid_v2_snapshot"):
+        validate_snapshot_version(target)
+
+
+def test_rfc3339_leap_second_is_accepted():
+    source = legacy_v1()
+    target = migrate(source)
+    target["admissions"][0]["admitted_at"] = "2026-12-31T23:59:60Z"
+    validate_snapshot_version(target)
+
+
+@pytest.mark.parametrize("bad", [None, "one", 1.5, True, [], {}])
+def test_malformed_minimum_generation_fails_closed(bad):
+    source = legacy_v1()
+    with pytest.raises(AdmissionError):
+        migrate_v1_to_v2(
+            source, manifest(source), trusted_source_digest=snapshot_digest(source),
+            trusted_authorities=[AUTHORITY], minimum_target_generation=bad,
+        )

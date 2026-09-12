@@ -19,6 +19,52 @@ Source: Cursor's independent
 `docs/GOVERNANCE-V2-OPERATIONAL-RED-TEAM-REPORT-20260912.md`. The repair consumes
 that reconnaissance rather than duplicating it.
 
+## TWO-UNIVERSES FINDING
+
+Governance schemas, evaluators, admission contracts and tests may exist on a
+governance-oriented lineage while live mutation, repository adapters, task
+queues, Guardian cycles and Git writes execute on an operational lineage that
+does not contain or consume them. Governance availability and passing governance
+tests therefore do not establish runtime protection. The universes meet only
+when an authoritative operational boundary consumes a trusted admitted record
+and current effective gate state before mutation.
+
+## OPERATIONAL MUTATION SURFACES
+
+`mutation_engine._direct_apply_mutation`, `implementer/repo_adapter`,
+`self_task_queue` and `guardian_cursor_cycle` are concrete future integration and
+bypass surfaces. Each remains `NOT_ENFORCED`. A future authorization attempt at
+any of them must receive admitted entity identity, root/derived classification,
+ancestry, governance lineage, objective, authoritative action class, applicable
+gate generation, trusted snapshot generation/digest and validated human-release
+evidence when required.
+
+## CURRENT CROSS-UNIVERSE ENFORCEMENT
+
+`NOT_IMPLEMENTED`
+
+Existing operational output is not authorized progress merely because it exists
+or passes CI, Vega or architecture review.
+
+## REQUIRED GOVERNANCE→RUNTIME BRIDGE
+
+The bridge must provide one authoritative admission format and one trusted
+current gate snapshot; classify objective and action before mutation; preserve
+ancestry and governance-lineage inheritance; fail closed on unknowns; perform an
+atomic check-and-mutate transaction or equivalent fencing; prevent
+worker-created roots plus branch-name, detached-SHA, adapter, queue and cycle
+bypasses; persist restart-safe state; and reject generation rollback.
+
+## FIRST FUTURE MUTATION BOUNDARY TO INTEGRATE
+
+The smallest credible first slice is the Phase A control-plane sequence: trusted
+admission issuance, claim/queue attachment, authoritative classification and a
+fenced single-use authorization ticket, kept dry-run/reference-only until its
+persistence and replay properties are proven. No single mutation function is a
+sufficient first boundary. Live `mutation.py.apply` and
+`repo_adapter.apply_patch` must consume the same ticket together in the later
+mediated-write phase.
+
 ## `_direct_apply_mutation` STATUS
 
 `PARTIAL_BOUNDARY`

@@ -1,199 +1,284 @@
-# GOVERNANCE V2 ADMISSION HANDOFF
+# GOVERNANCE V2 ADMISSION HANDOFF — FINAL
 
 ## BASE SHA
 
 `9ad2d941269650b231d3f3e4f5327266a66f9cb1` (draft PR #35 product).
 
-## CANDIDATE SHA
+## EXACT CANDIDATE SHA
 
-Recorded after commit and in separate exact-candidate verification evidence.
-Branch: `codex/governance-v2-trusted-admission`.
+`7b076548751e72879d0632c1ec687e087e43a7b8`
+
+All test and review verdicts below are bound to this exact immutable product SHA.
+This final handoff is a later evidence-only commit and is not part of that product.
+
+## BRANCH
+
+Product: `codex/governance-v2-trusted-admission` (pushed at the exact candidate).
+
+Final evidence: `codex/governance-v2-trusted-admission-final-evidence`.
 
 ## SCHEMA VERSION
 
-`2`. Only exact integer version 2 is a valid current snapshot. V1 is accepted
-solely by the explicit migration reference function. Missing, boolean, string,
-older, and forward versions fail closed.
+`2`. Only exact integer version 2 is accepted as current. Missing, boolean,
+string, v1, older, and forward versions fail closed at the v2 boundary. V1 is
+accepted solely as exact legacy input to the explicit trusted migration model.
 
-## BREAKING CHANGE
+## CHANGE TYPE
 
-V2 replaces `revision/entities` with `snapshot_generation/admissions`, separates
-repository from governance lineage, adds an authority registry and provenance,
-and binds authoritative action classes. It resolves PR #35's improper breaking
-mutation of v1. Existing v1 data cannot be consumed directly as v2.
+`NORMATIVE_SPECIFICATION_AND_EXECUTABLE_CONTRACT_ONLY`
 
-## V1 → V2 MIGRATION
+The candidate contains schema, a pure reference evaluator/migration model,
+fixtures, tests, documentation and this handoff's pre-review form. It does not
+authenticate an authority, mutate runtime state, intercept Git/GitHub, or grant
+permission. Cross-universe scenarios and the future bridge remain specification
+requirements rather than executable production enforcement.
 
-Migration requires a pinned v1 digest, explicit manifest, separately configured
-trusted migration authority, strictly increasing generation, exactly one decision
-per old entity, explicit root evidence, exact parent/objective/gate preservation,
-repository-lineage preservation, nonempty governance lineage, and durable source
-and manifest digests. Empty parents never infer root. Gate actions are mapped
-conservatively and expanded to every consequential v2 action. Released assertions
-remain ineffective. The reference is pure and deterministic; production
-transaction/persistence is not implemented.
+## TWO-UNIVERSE MODEL
 
-## ROOT ADMISSION MODEL
+The **GOVERNANCE UNIVERSE** contains schemas, the checkpoint evaluator, trusted
+admission model, gate inheritance, migration/versioning and tests.
 
-Root is privileged classification by a registered trusted control-plane authority
-at an exact generation with source/evidence/time. A new name, branch, session,
-provider, detached SHA, or empty parent list grants nothing. Derived admissions
-require existing parents. Authority strings are normative data, not authentication.
+The **OPERATIONAL UNIVERSE** contains runtime mutation paths, repository adapters,
+task queues, Guardian cycles, local Git, external GitHub writes and external
+agents. Those paths may exist on lineages that do not contain or import the
+governance implementation.
 
-## OBJECTIVE ADMISSION MODEL
+Normative invariant:
 
-Objective references live in trusted admission records and union through all
-parents. Workers cannot replace them in proposal metadata. Expansion/reclassification
-requires a new trusted admission with evidence; ambiguity remains blocked.
+> Governance state existing somewhere in repository history does not mean an operational mutation path is governed.
 
-## ACTION ADMISSION MODEL
+No semantic or durable mutation may derive authority from that existence. A
+future authoritative mutation boundary must consume a trusted admitted record
+and current effective gate state before mutation. Passing governance tests or
+producing operational output does not establish authorization.
 
-Stored classes distinguish static read, tests, docs, schema/spec, semantic code,
-repo write, integration, merge, deploy, external write, permissions and private
-data. The proposed authoritative action must exist in the admission. Descriptive
-worker action labels are ignored and cannot downgrade semantic code to tests/docs.
+## MUTATION SURFACES
 
-## REPOSITORY ANCESTRY MODEL
+Every listed surface requires all nine trusted inputs before future authorization:
 
-Repository lineage represents independently derived Git/control-plane facts:
-parents, branches, SHAs, PRs, detached rebinds and merge parents. This reference
-model consumes those facts; it does not retrieve or authenticate them.
+1. admitted entity identity;
+2. explicit root/derived classification;
+3. ancestry;
+4. governance lineage;
+5. objective;
+6. action class;
+7. applicable gate generation;
+8. trusted current snapshot/generation;
+9. authenticated human-release evidence when required.
 
-## GOVERNANCE LINEAGE MODEL
+### `mutation_engine._direct_apply_mutation`
 
-Governance lineage carries semantic descent across cherry-picks, ports, restacks,
-recreated patches and preservation branches where Git ancestry alone is
-insufficient. Repository and governance lineages union transitively and either
-can match a gate.
+Status: `NOT_ENFORCED`.
 
-## FAIL-CLOSED CONDITIONS
+The nine inputs must bind an admitted mutation request and its parent task to the
+exact target checkout/content generation and semantic or durable effect. Current
+effective gates and generation-scoped release evidence must be consumed at the
+apply boundary. Direct invocation cannot omit ancestry or create a root.
 
-Unsupported versions, stale pins, generation rollback, unknown/duplicate authority,
-incomplete/conflicting admissions, unknown/missing parents, ambiguous roots,
-lost ancestry/objectives/lineage/gates, unadmitted action, malformed data, and
-unvalidated releases block. No-match remains explicitly non-authorizing.
+Remaining bypasses after integrating only this point: `implementer/repo_adapter`,
+`self_task_queue`, `guardian_cursor_cycle`, raw local Git, external GitHub/API
+writes, other clones/agents, and any write that does not converge on this method.
 
-## TEST RESULTS
+### `implementer/repo_adapter`
 
-Implementer: **376 passed** (163 governance contract and 213 inherited tests),
-Python 3.13.15, pytest 9.1.1, jsonschema 4.26.0. Contract compileall, every JSON
-parse, and `git diff --check` passed. No Guardian/runtime/provider code activated.
+Status: `NOT_ENFORCED`.
 
-## VEGA VERDICT
+The nine inputs must bind the implementing task and mutation request to the exact
+repository, target state and local/external destination. Objective and governance
+lineage must survive ports, restacks, branch changes and detached SHAs. Every
+applicable semantic, repo-write, integration, merge and external-write action
+must be classified against current inherited gates.
 
-Pending fresh breaker on exact committed candidate.
+Remaining bypasses: direct adapter calls, raw Git/GitHub writers, mutation paths
+outside the adapter, queue/cycle execution, retries and separately credentialed
+agents. A protected caller or wrapper alone does not cover this surface.
 
-## ARCHITECTURE VERDICT
+### `self_task_queue`
 
-Pending separate reviewer after Vega PASS.
+Status: `NOT_ENFORCED`.
 
-## PRODUCTION ENFORCEMENT STATUS
+The nine inputs must bind every queue entry and durable queue operation to its
+producer and full ancestry, then persist the admission identity/generation across
+enqueue, update, retry, dequeue and execution. Eventual effects must be classified
+under inherited objectives and current gates must be reread at execution/retry.
+
+Remaining bypasses: direct queue-file changes, queue-created root/task identities,
+stale enqueue-time snapshots, resumed/retried work, downstream adapter/Git writes,
+and operational paths that never use this queue.
+
+### `guardian_cursor_cycle`
+
+Status: `NOT_ENFORCED`.
+
+The nine inputs must bind the cycle and every derived child operation to its
+originating task, inputs and exact output targets. Ancestry and governance lineage
+must persist across worker and restart boundaries; dispatch, durable cycle state
+and downstream semantic/repository/external effects require their own applicable
+action classifications and current-gate checks.
+
+Remaining bypasses: direct script/output writes, resumed cycles, child workers,
+downstream queue/adapter/Git calls, external agents and successful output presented
+as authority. A successful cycle is neither admission nor human release evidence.
+
+## FIRST RECOMMENDED INTEGRATION BOUNDARY
+
+`mutation_engine._direct_apply_mutation`
+
+## WHY THIS BOUNDARY FIRST
+
+The preserved Cursor admission-boundary map identifies it as a concrete local
+semantic-write operation that can apply directly when the live backend is absent.
+It is a small, high-leverage place to bind one exact effect and target generation
+to one trusted admitted record and current effective gate snapshot. Integration
+must first confirm actual caller and transaction coverage; this recommendation
+does not assert that all writes converge there.
+
+## WHAT IT DOES NOT COVER
+
+Integrating only `_direct_apply_mutation` would not cover `implementer/repo_adapter`,
+`self_task_queue`, `guardian_cursor_cycle`, other MutationEngine routes, direct
+filesystem edits, raw commits/ref updates/pushes, GitHub App/API/CLI writes, other
+clones, separately credentialed workers, deploy/release paths, or downstream
+effects that occur after the guarded call. Every uncovered path remains
+`NOT_ENFORCED` until direct exact-boundary evidence proves otherwise.
+
+## V1 → V2 MIGRATION STATUS
+
+`EXECUTABLE_NORMATIVE_MODEL_VALIDATED`; production migration is `NOT_IMPLEMENTED`.
+
+The migration accepts only a schema-valid exact v1 snapshot with an independently
+pinned source digest, explicit v1→v2 manifest, strictly increasing target
+generation, independently configured trusted migration authority, one decision
+per entity, exact parent/objective/gate preservation, repository-lineage
+preservation, nonempty governance lineage, explicit root evidence and durable
+provenance. It maps actions conservatively, adds all consequential v2 actions,
+and leaves release assertions ineffective. It is pure and deterministic; durable
+transactional persistence, concurrency protection and authentication remain future
+bridge obligations.
+
+## ROOT ADMISSION STATUS
+
+`EXECUTABLE_NORMATIVE_MODEL_VALIDATED`; production trust is `NOT_IMPLEMENTED`.
+
+Root is a privileged explicit classification by a registered trusted authority at
+an exact generation with source/evidence/time. Empty parents, a new task/branch,
+provider/session, detached SHA or new objective label never implies root. Derived
+admissions require admitted parents. Authority records are normative data rather
+than proof that a human or control plane is authenticated.
+
+## OBJECTIVE ADMISSION STATUS
+
+`EXECUTABLE_NORMATIVE_MODEL_VALIDATED`; production classification is
+`NOT_IMPLEMENTED`.
+
+Trusted objective references union through every parent. Worker proposals cannot
+replace them. Expansion/reclassification requires a higher-generation trusted
+admission with evidence; ambiguous semantic equivalence fails closed.
+
+## ACTION ADMISSION STATUS
+
+`EXECUTABLE_NORMATIVE_MODEL_VALIDATED`; production classification is
+`NOT_IMPLEMENTED`.
+
+The v2 admission stores authoritative action classes. The requested action must
+be admitted, consequential classes remain gated, worker labels cannot downgrade
+semantic work to tests/docs, and no-match is explicitly not authorization.
+
+## CROSS-UNIVERSE ENFORCEMENT
 
 `NOT_IMPLEMENTED`
 
-## HUMAN TRUST ANCHOR STATUS
+The specification includes future acceptance scenarios for a gated governance
+lineage and an operational lineage without an authoritative bridge. Expected path
+classification is `NOT_ENFORCED`; any output remains unauthorized evidence even
+if operational and governance tests pass. These scenarios are
+`DOCUMENTATION_VALIDATED`, not production integration tests.
+
+## PRODUCTION ENFORCEMENT
+
+`NOT_IMPLEMENTED`
+
+No enforcement was added to the four mutation surfaces, TaskLedger production
+writes, hooks, GitHub Apps, Guardian runtime, providers, deployment, local Git or
+external GitHub writes.
+
+## HUMAN TRUST ANCHOR
 
 `UNRESOLVED`
 
-## ISSUE #23 STATUS
+Release validation remains `UNAVAILABLE`. Actor strings, owner association,
+automation-writable evidence and worker assertions cannot authenticate a human
+release. Required release remains blocking until a separately authorized trust
+anchor exists and binds human identity, gate ID/generation, objective/lineage,
+actions, scope and provenance.
+
+## TESTS
+
+Exact candidate `7b076548751e72879d0632c1ec687e087e43a7b8`, Windows,
+Python 3.13.15, pytest 9.1.1, jsonschema 4.26.0:
+
+- Required governance plus inherited suite: **414 passed**.
+- Governance contract/checkpoint/Issue #33/v2 migration/adversarial suite:
+  **201 passed**.
+- Independent Vega rerun of the 201-test scoped suite: **201 passed**.
+- All **65** repository JSON files parsed; v1 and v2 schemas passed Draft 2020-12
+  meta-schema validation.
+- Contract Python compiled; independent AST/JSON parse passed.
+- Candidate diff check passed; worktree was clean; product and remote branch SHAs
+  matched.
+
+Result: `EXECUTABLE_CONTRACT_VALIDATED` for the pure normative model and
+`DOCUMENTATION_VALIDATED` for future bridge/cross-universe requirements. No test
+claims production enforcement or authorization.
+
+## VEGA VERDICT
+
+`PASS` — exact-SHA-bound to
+`7b076548751e72879d0632c1ec687e087e43a7b8`.
+
+Vega found no place where worker-controlled fields, disconnected governance
+history, successful tests or unbridged output becomes authority. It confirmed
+all four surfaces are `NOT_ENFORCED`, cross-universe enforcement is
+`NOT_IMPLEMENTED`, external writes are `NOT_ENFORCED`, and release validation is
+`UNAVAILABLE`. This verdict does not transfer to a changed product SHA.
+
+## ARCHITECTURE VERDICT
+
+`READY_FOR_INTEGRATION_REVIEW` — exact-SHA-bound to
+`7b076548751e72879d0632c1ec687e087e43a7b8`.
+
+The separate review found the v2 model internally coherent: version evolution is
+explicit; root/derived, objective/action and lineage authority boundaries are
+clear; Git ancestry and governance lineage are distinct; the two-universe gap is
+truthful; `_direct_apply_mutation` is recommendation only; bypasses remain explicit;
+the future bridge requires fail-closed classification, trusted current state,
+generation fencing and atomic check+mutation or equivalent protection. It grants
+no runtime coverage, trust anchor, release or Issue #23 authority.
+
+## ISSUE #23
 
 `GATED — NO SEMANTIC WORK AUTHORIZED`
 
+## PR #34
+
+`UNAUTHORIZED_BUT_PRESERVED_EVIDENCE`
+
+Neither technical correctness, CI, Vega nor architecture review promotes it.
+
+## CURSOR 0a2d135
+
+`TECHNICALLY_VERIFIED_BUT_NOT_AUTHORIZED_FOR_PROMOTION`
+
+Its sibling/disconnected Git lineage does not erase the Issue #23 governance
+lineage or supply human release.
+
 ## NEXT BOUNDED TASK
 
-Independent falsification, then architecture review. If both pass, preserve
-reports on a separate evidence branch and open a stacked draft PR. A later task
-may design the transactional storage/admission interface but must not claim Git
-or human-auth enforcement without separately authorized implementation/evidence.
-
-## TWO-UNIVERSES FINDING
-
-Independent Cursor reconnaissance supplied by the user on 2026-09-12 identifies
-a split between governance-oriented tips containing TaskLedger / Issue-33
-constructs and operational/runtime lineages containing actual mutation paths.
-This addendum incorporates that reconnaissance without repeating it.
-
-GOVERNANCE UNIVERSE: schema, checkpoint evaluator, trusted admission contracts,
-gate inheritance and tests. OPERATIONAL UNIVERSE: mutation/execution paths, queues,
-repo adapters, Guardian cycles, local/external Git writes. Governance existing
-somewhere in Git history does not protect runtime effects.
-
-> No semantic or durable mutation path may infer authority merely because governance state exists elsewhere. The authoritative mutation boundary must consume a trusted admitted record and current effective gate state before mutation.
-
-Passing governance tests alone does not establish this property in production.
-
-## OPERATIONAL MUTATION SURFACES
-
-| Cursor-identified surface | Current classification |
-| --- | --- |
-| `mutation_engine._direct_apply_mutation` | `NOT_ENFORCED` |
-| `implementer/repo_adapter` | `NOT_ENFORCED` |
-| `self_task_queue` | `NOT_ENFORCED` |
-| `guardian_cursor_cycle` | `NOT_ENFORCED` |
-
-No direct enforcement evidence is supplied for these paths; none is assumed to
-consult governance. The [v2 contract](../contracts/GOVERNANCE_V2_ADMISSION.md#operational-mutation-surfaces-and-required-admission-bindings)
-specifies each surface's required entity identity, explicit root/derived status,
-ancestry, governance lineage, objective, action class, applicable gate generation,
-trusted snapshot/generation and required human-release evidence. These future
-bindings do not change any current enforcement classification.
-
-## CURRENT CROSS-UNIVERSE ENFORCEMENT
-
-`NOT_IMPLEMENTED`
-
-The contract now specifies cross-universe acceptance scenarios: a gated objective
-on governance lineage G, a worker mutation attempt on operational lineage O with
-no governance import or authoritative bridge, and `NOT_ENFORCED` as the expected
-path classification. Operational output, even passing tests, remains unauthorized
-evidence. The scenarios also cover import-only wiring, detached/renamed work,
-direct adapter calls, queue/cycle retries, stale state and transactional races.
-They are specification scenarios, not executed integration tests or proof that
-runtime attempts are blocked.
-
-## REQUIRED GOVERNANCE→RUNTIME BRIDGE
-
-Future requirements: one authoritative admission format; one trusted current gate
-snapshot; objective/action classification before effects; complete ancestry and
-governance-lineage inheritance; fail-closed unknown classification; atomic check
-plus mutation or equivalent transactional protection; no worker-controlled roots;
-no branch-name or detached-SHA escape; no direct adapter or queue/cycle bypass;
-restart-safe trusted state; generation rollback protection; authenticated,
-generation-scoped human releases when required; and authoritative output receipts.
-The [normative bridge requirements](../contracts/GOVERNANCE_V2_ADMISSION.md#required-governance-to-runtime-bridge-future-not-implemented)
-define the obligations. No production bridge is implemented or authorized here.
-
-## FIRST FUTURE MUTATION BOUNDARY TO INTEGRATE
-
-Recommend `mutation_engine._direct_apply_mutation` as the first bounded candidate:
-the directly identified apply operation offers a small place to bind one concrete
-mutation effect to an admitted entity and current gate generation. This is a
-design recommendation based on the supplied surface, not a verified claim that
-all writes converge there. A separately authorized integration task must first
-establish its actual write/transaction boundary and caller coverage, then enforce
-and test that bounded effect. Adapter, queue, cycle and external-write routes
-remain `NOT_ENFORCED` unless separately covered and evidenced. Do not implement
-this recommendation without separate authority.
-
-## CURSOR FINDING INCORPORATION RECORD
-
-Task: Governance Schema v2 / Trusted Admission Contract, Cursor finding addendum.
-Worker: Codex. State: specification incorporated; production bridge pending
-separate authority. Issue #23: `GATED — NO SEMANTIC WORK AUTHORIZED`.
-
-Read: repository `AGENTS.md`, existing v2 specification and this handoff; supplied
-Cursor findings. Changed: only this handoff and `GOVERNANCE_V2_ADMISSION.md`.
-Existing admission/reference/schema working-tree changes belong to other ongoing
-work and are outside this addendum. No operational source was changed or invoked.
-
-Validation: reviewed all nine admission bindings for every listed surface, all
-requested bridge properties, and the cross-universe scenario matrix; ran scoped
-`git diff --check`. No executable tests added or run for this documentation-only
-addendum. Earlier test counts above are historical and do not validate runtime
-enforcement. Changes are uncommitted on `codex/governance-v2-trusted-admission`.
-
-Uncertainty/risk: supplied reconnaissance does not establish a universal write
-choke point or authenticated human release mechanism. Next bounded task remains
-independent contract review; any runtime integration needs separate authority
-and direct boundary evidence. No merge, publication, release or Issue #23 semantic
-work is authorized by this record.
+Prepare an integration-review packet for the normative v2 candidate and decide,
+under separate authority, whether to design the first dry-run bridge around
+`mutation_engine._direct_apply_mutation`. Before implementation, prove caller and
+transaction coverage and define the #31 human trust anchor plus the write-plane
+strategy. Any bridge implementation, Issue #23 semantic work, PR #34/`0a2d135`
+promotion, gate release, merge, deploy, credential/permission change, hook install,
+provider/runtime activation or external-write enforcement requires separate
+authority and is not performed by this finalization.

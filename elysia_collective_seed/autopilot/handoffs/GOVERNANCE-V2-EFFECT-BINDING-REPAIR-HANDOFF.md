@@ -18,6 +18,13 @@ substitution, verifier records lacked a trusted registry, progression lacked an
 authenticated decision, and task ownership was prose-only. That verdict is
 preserved and does not transfer to the pending repaired candidate.
 
+Second candidate `9e7afd84e5342a7a71b923b537121357fc445ad1`
+also received fresh Vega `FAIL`: a forged rehashed sibling ticket could be
+self-consumed because issuance state was caller supplied; verifier and progression
+registries could likewise be substituted; task issuance could replay a fresh empty
+list; and cycle context omitted ticket-state digest, consumption identity and an
+immutable context digest. That verdict is preserved and does not transfer.
+
 ## CLASSIFIED WRITE-SET MODEL
 
 The authoritative classifier emits a canonical nonempty list of exact effects.
@@ -47,8 +54,11 @@ independently derived actual effect. Any extra/omitted/changed path, operation,
 content digest, patch, classifier digest, surface or target is
 `BLOCKED_EFFECT_MISMATCH`.
 
-Issuance requires authoritative ticket-ID and nonce uniqueness state. Consumption
-and result receipts bind a digest of `(ticket ID, nonce, ticket state digest)`, so
+Issuance consumes one independently pinned `BRIDGE_CONTROL_STATE` and returns a
+generation-advanced state containing the exact issued ticket identity as well as
+unique ticket-ID and nonce state. Consumption requires that exact issued identity
+and returns another generation-advanced state. Result receipts bind the consumed
+control-state digest/generation and `(ticket ID, nonce, ticket state digest)`, so
 consuming one ticket cannot authorize a sibling that reuses its nonce.
 
 ## DYNAMIC EFFECT HANDLING
@@ -64,22 +74,26 @@ writes should authorize an exact staged-patch digest wherever practical.
 Attachment binds matching task/admitted-entity IDs, exact parent refs,
 objectives, governance lineage, admission generation and admission-record digest.
 A separately trusted task record also binds the complete worker-payload digest
-and authoritative owner from a unique task-owner registry. A task cannot borrow
+and authoritative owner from the pinned control state's unique task-owner registry.
+Issuance advances the durable issued-task set; attachment advances the durable
+attached-task set. A task cannot borrow
 a foreign admission, reuse an attached identity or swap its semantic body.
 Restart revalidates the immutable binding and quarantines missing or changed provenance.
 
 ## CYCLE CONTEXT BINDING
 
 The immutable cycle context includes admission-record digest, entity, active
-ticket ID/nonce, classification/write-set digests, objectives, repository and
+ticket ID/nonce, ticket-state digest, exact consumption identity,
+classification/write-set digests, objectives, repository and
 governance lineage, gates, admission generation and snapshot identity. Provider,
-session, retry and restart may carry this context but cannot replace it. Missing
-context quarantines the cycle.
+session, retry and restart may carry this context but cannot replace it. A digest
+over the immutable context is revalidated on carry. Missing or changed context
+quarantines the cycle.
 
 ## RESULT IDENTITY
 
 `MUTATION_RESULT` requires the ticket nonce to be consumed and binds that nonce,
-ticket state, admission/classification/write-set/patch
+ticket state, bridge-control-state digest/generation, admission/classification/write-set/patch
 digests, actual mutation outcome, evidence-persistence outcome, and an immutable
 commit/tree/patch/changed-file identity plus repository head and write-set
 digest.
@@ -88,7 +102,7 @@ digest.
 
 `VERIFICATION_EVIDENCE` binds PASS/FAIL to the exact mutation-result digest,
 ticket ID and result identity. Its verifier identity/generation/provenance must
-resolve exactly once in an independently trusted verifier registry. A bare PASS
+resolve exactly once in the independently pinned bridge control state. A bare PASS
 boolean, worker-authored structured verdict, completion flag or verdict for
 another result has no progression authority.
 
@@ -98,7 +112,7 @@ Admission → Classification → Ticket → Effect → Result → Verification �
 Progression Authorization → Authorized Progress. Every record references the
 previous immutable identity. A separately trusted progression authority issues a
 content-addressed decision for that exact chain. Progression revalidates the
-entire chain, current result identity, and authority registry; a missing,
+entire chain, current result identity, and pinned control state; a missing,
 worker-authored, tampered, substituted or stale link is
 `BLOCKED_PROVENANCE_MISMATCH`.
 
@@ -111,6 +125,51 @@ is `QUARANTINED_INCOMPLETE_EVIDENCE`; partial mutation is
 cannot advance. A crash requires independent state inspection and trusted
 reconciliation with a new chain. Ordinary filesystem/Git writes are not claimed
 to be transactional.
+
+## TWO-UNIVERSES FINDING
+
+The governance universe contains schema, evaluator, admission/gate inheritance
+contracts and tests. The operational universe contains the executing mutation,
+queue, adapter, cycle and Git paths, potentially on lineages that do not contain
+or import the governance implementation. Governance code or passing tests on one
+lineage do not protect effects on another. The universes meet only when an
+authoritative runtime mutation boundary consumes the trusted admitted record and
+current effective gate state before the exact effect.
+
+## OPERATIONAL MUTATION SURFACES
+
+`mutation_engine._direct_apply_mutation`, `implementer/repo_adapter`,
+`self_task_queue` and `guardian_cursor_cycle` are concrete future enforcement and
+bypass surfaces. Each must receive admitted entity identity, root/derived status,
+ancestry, governance lineage, objective, authoritative action classification,
+applicable gate generations, a trusted current snapshot/generation, and validated
+human-release evidence when required. Each remains `NOT_ENFORCED`.
+
+## CURRENT CROSS-UNIVERSE ENFORCEMENT
+
+`NOT_IMPLEMENTED`
+
+Existing or technically passing operational output is preserved evidence only;
+it is never authorized progress merely because it exists or passes tests.
+
+## REQUIRED GOVERNANCE→RUNTIME BRIDGE
+
+The future bridge must provide one authoritative admission format and pinned
+current gate/control state; classify objectives, actions, ancestry and governance
+lineage before mutation; fail closed on unknowns; make check plus mutation atomic
+or transactionally equivalent; prevent worker-created roots, branch/detached-SHA
+escape, adapter and queue/cycle bypass; persist restart-safe state; and reject
+generation rollback. This document specifies those obligations and does not
+implement the bridge.
+
+## FIRST FUTURE MUTATION BOUNDARY TO INTEGRATE
+
+Start with `implementer/repo_adapter.apply_patch`: it is the smallest high-leverage
+repository write boundary in the known inventory and can bind an exact staged
+patch, target head and resulting receipt. This first integration cannot establish
+complete enforcement by itself; direct mutation, publisher/MetaCoder, queue/cycle
+and repository-side routes must subsequently join the same control plane. Separate
+authority is required before any production integration.
 
 ## PHASE B WRITER INVENTORY
 
@@ -134,8 +193,8 @@ trust anchoring.
 
 ## TEST RESULTS
 
-Implementer: **482 passed** in the required aggregate suite, including **269
-governance-contract tests**, **36 effect-binding repair tests**, all 32 prior
+Implementer: **487 passed** in the required aggregate suite, including **274
+governance-contract tests**, **41 effect-binding repair tests**, all 32 prior
 blueprint tests and the inherited Issue #33/autopilot/Vega evidence regressions.
 Python 3.13.15, pytest 9.1.1 and jsonschema 4.26.0 were used. Contract
 `compileall`, AST parsing of all changed Python, all 66 repository JSON parses,

@@ -340,8 +340,16 @@ success disposition explicitly says it is not production authority; they neither
 reserve state nor mutate anything. Production needs durable nonce consumption,
 high-water marks, concurrency serialization and recovery semantics.
 
-The trusted issuance store enforces unique ticket IDs and globally unique nonces.
-Consumption and every result receipt bind the digest of the complete tuple
+One independently pinned, versioned `BRIDGE_CONTROL_STATE` contains classifier,
+task-owner, verifier and progression-authority registries plus issued ticket IDs,
+nonces, exact ticket identities, consumed identities, issued task IDs and attached
+task IDs. Each
+issuance or consumption returns a generation-advanced state for an atomic durable
+store to commit. A caller-created replacement state or rollback does not become
+trusted merely because it hashes correctly; the boundary must obtain the current
+digest independently. The trusted issuance store enforces unique ticket IDs and
+globally unique nonces. Issuance, consumption and every result receipt bind the
+digest of the complete tuple
 `(ticket_id, nonce, ticket state digest)`; nonce membership alone never proves
 that a sibling ticket was consumed.
 
@@ -356,7 +364,8 @@ ticket. A worker cannot replay or refresh the old token.
 A trusted task record binds task ID, admitted entity ID, parent entity refs,
 objective refs, governance lineage, admission generation and admission-record
 digest, plus the complete worker-payload digest and authoritative owner identity.
-Issuance consults an authoritative unique task-owner registry, and attachment
+Issuance consults the pinned control state's unique task-owner registry, advances
+its issued-task set, and attachment
 independently pins the trusted task-record digest. The task ID and admitted entity
 ID must identify the same admitted task;
 the parent/scope/generation fields must exactly match the admission record. IDs
@@ -366,12 +375,14 @@ closed. Restart validates the immutable attachment and quarantines missing or
 changed lineage.
 
 Every orchestration cycle carries admission-record digest, admitted entity,
-active ticket ID and nonce, classification and write-set digests, objectives,
+active ticket ID and nonce, ticket-state digest, exact ticket-consumption identity,
+classification and write-set digests, objectives,
 repository and governance lineage, applicable gate generations, admission and
 snapshot generations, and snapshot digest through selection → prompt → worker
 launch → tool invocation → result → verifier → retry → provider switch → restart.
 Provider/session are transport fields only. A worker response cannot replace the
-immutable context; missing context quarantines the cycle.
+immutable context. A digest over all immutable context fields is revalidated on
+provider/session changes and restart; missing or altered context quarantines the cycle.
 
 ## Authorized-progress state model
 
@@ -390,17 +401,18 @@ decision bound to the complete immutable provenance chain:
 and state digest → mutation result digest/result identity → verification digest
 → authorized-progress decision`.
 
-A mutation result can be created only after the ticket nonce is in the consumed
-state and binds that nonce plus the admission and ticket identities, exact classified
+A mutation result can be created only after the exact ticket identity is in the
+independently pinned consumed control state and binds its digest/generation plus
+the admission and ticket identities, exact classified
 effect, staged patch, mutation outcome, evidence-persistence outcome and immutable
 result identity. Result identity is an exact commit SHA, tree SHA, patch digest or
 changed-file digest plus repository head and write-set digest. Verification binds
-its PASS/FAIL to that exact mutation-result digest, ticket ID and result identity.
-Verification issuance consults a trusted verifier identity/generation/provenance
+its PASS/FAIL to that exact mutation-result digest, ticket ID, result identity and
+control-state digest/generation. Verification issuance consults the pinned verifier
 registry. Progression then requires a separate `PROGRESSION_AUTHORIZATION` from
-an independently trusted progression-authority registry, content-bound to the
+the pinned progression-authority registry, content-bound to the
 admission, consumed ticket tuple, mutation result, verification and current
-result identity. Progression revalidates every link and both registries. A PASS
+result identity. Progression revalidates every link and current control state. A PASS
 boolean, worker-shaped verification, completion flag or technically valid but
 differently bound verification is `BLOCKED_PROVENANCE_MISMATCH`.
 

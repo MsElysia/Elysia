@@ -18,6 +18,7 @@ from .blueprint import (
     progress_transition,
     restore_task_or_queue_attachment,
     ticket_bound_actual_effect,
+    ticket_consumption_identity,
     ticket_current_state,
 )
 from .checkpoint_reference import snapshot_digest
@@ -39,6 +40,46 @@ CLASSIFIER = {
     "classifier_version": "effect-classifier-v2",
     "provenance": ["fixture:classifier-registry"],
 }
+
+
+def control_state(*, issued_ticket_ids=(), issued_nonces=(),
+                  issued_ticket_identities=(), consumed=(),
+                  issued_task_ids=(), verifiers=None, progression_authorities=None,
+                  task_owners=None, attached_task_ids=()):
+    if verifiers is None:
+        verifiers = [{"verifier_id": "verifier:vega", "verifier_generation": 4,
+                      "provenance": ["fixture:trusted-verifier-registry"]}]
+    if progression_authorities is None:
+        progression_authorities = [{
+            "authority_id": "progression-control-plane", "authority_generation": 3,
+            "provenance": ["fixture:trusted-progression-registry"],
+        }]
+    if task_owners is None:
+        task_owners = [{"task_id": "child", "admitted_entity_id": "child",
+                        "owned_by": deepcopy(AUTHORITY_REF)}]
+    return {
+        "record_type": "BRIDGE_CONTROL_STATE", "record_version": 1,
+        "registry_generation": 1,
+        "source_refs": ["fixture:independently-pinned-control-state"],
+        "classifiers": [deepcopy(CLASSIFIER)],
+        "issued_ticket_ids": list(issued_ticket_ids),
+        "issued_nonces": list(issued_nonces),
+        "issued_ticket_identities": list(issued_ticket_identities),
+        "consumed_ticket_identities": list(consumed),
+        "task_owners": list(task_owners),
+        "issued_task_ids": list(issued_task_ids),
+        "attached_task_ids": list(attached_task_ids),
+        "verifiers": list(verifiers),
+        "progression_authorities": list(progression_authorities),
+    }
+
+
+def control_kwargs(state=None):
+    state = state or control_state()
+    return {
+        "bridge_control_state": state,
+        "trusted_control_state_digest": bridge_record_digest(state),
+    }
 ALL_ACTIONS = [
     "static_read", "test_only", "docs_only", "schema_spec_write",
     "semantic_code_write", "repo_write", "integration", "merge", "deploy",
@@ -154,12 +195,13 @@ def target(surface="repository_file_write"):
 
 def classification(**kwargs):
     return classify_authoritatively(
-        effect(**kwargs), trusted_classifiers=[CLASSIFIER],
+        effect(**kwargs), **control_kwargs(),
         worker_proposal={"action": "docs_only", "objective": "worker:new-root"},
     )
 
 
-def admission_and_ticket(*, facts=("documentation_text",), surface="repository_file_write"):
+def admission_and_ticket(*, facts=("documentation_text",),
+                         surface="repository_file_write", return_control=False):
     state = snapshot()
     classified = classification(facts=facts, surface=surface)
     record = issue_trusted_admission_record(
@@ -173,7 +215,7 @@ def admission_and_ticket(*, facts=("documentation_text",), surface="repository_f
         issuer=AUTHORITY_REF,
         issuer_provenance=["fixture:issuance-event"],
     )
-    ticket = issue_mutation_authorization_ticket(
+    ticket, issued_control = issue_mutation_authorization_ticket(
         state, record,
         trusted_current_digest=snapshot_digest(state),
         trusted_admission_record_digest=bridge_record_digest(record),
@@ -181,18 +223,25 @@ def admission_and_ticket(*, facts=("documentation_text",), surface="repository_f
         issued_at="2026-09-12T12:05:00Z",
         expires_at="2026-09-12T12:30:00Z",
         issuer_provenance=["fixture:ticket-event"],
-        issued_ticket_ids=[], issued_nonces=[],
+        **control_kwargs(),
     )
+    if return_control:
+        return state, record, ticket, issued_control
     return state, record, ticket
 
 
 def consume(ticket, current=None, *, actions=None, consumed=()):
+    control = (consumed if isinstance(consumed, dict) else control_state(
+        issued_ticket_ids=[ticket["ticket_id"]], issued_nonces=[ticket["nonce"]],
+        issued_ticket_identities=[ticket_consumption_identity(ticket)],
+        consumed=consumed,
+    ))
     return consume_mutation_authorization_ticket(
         ticket, current or ticket_current_state(ticket),
         requested_actions=actions or ticket["action_classes"],
         current_time="2026-09-12T12:10:00Z",
         actual_effect=ticket_bound_actual_effect(ticket),
-        trusted_consumed_ticket_identities=consumed,
+        **control_kwargs(control),
     )
 
 
@@ -231,7 +280,7 @@ def test_task_or_queue_root_minting_requires_trusted_admission():
 def test_worker_action_labels_cannot_downgrade_observed_effects(facts, worker_label, expected):
     result = classify_authoritatively(
         effect(facts=facts, path="docs/friendly.md"),
-        trusted_classifiers=[CLASSIFIER],
+        **control_kwargs(),
         worker_proposal={"action": worker_label},
     )
     assert result["action_classes"] == expected
@@ -244,7 +293,7 @@ def test_file_extension_cannot_replace_content_classification():
 
 def test_worker_objective_name_cannot_replace_trusted_objective_attachment():
     result = classify_authoritatively(
-        effect(), trusted_classifiers=[CLASSIFIER],
+        effect(), **control_kwargs(),
         worker_proposal={"objective_refs": ["constructor-cleanup"]},
     )
     assert result["objective_refs"] == ["issue:999", "task:renamed-maintenance"]
@@ -289,7 +338,7 @@ def test_classification_and_admission_records_require_independent_current_pins()
             issued_at="2026-09-12T12:05:00Z",
             expires_at="2026-09-12T12:30:00Z",
             issuer_provenance=["fixture:ticket-event"],
-            issued_ticket_ids=[], issued_nonces=[],
+            **control_kwargs(),
         )
 
 
@@ -308,14 +357,14 @@ def test_ticket_is_stale_after_exact_applicable_gate_generation_change():
         expires_at="2026-09-12T13:00:00Z", issuer=AUTHORITY_REF,
         issuer_provenance=["fixture:issuance-event"],
     )
-    ticket = issue_mutation_authorization_ticket(
+    ticket, _ = issue_mutation_authorization_ticket(
         state, record, trusted_current_digest=snapshot_digest(state),
         trusted_admission_record_digest=bridge_record_digest(record),
         ticket_id="ticket:docs", nonce="nonce:docs",
         issued_at="2026-09-12T12:05:00Z",
         expires_at="2026-09-12T12:30:00Z",
         issuer_provenance=["fixture:ticket-event"],
-        issued_ticket_ids=[], issued_nonces=[],
+        **control_kwargs(),
     )
     current = ticket_current_state(ticket)
     current["applicable_gate_generations"][0]["generation"] = 5
@@ -367,7 +416,10 @@ def test_expired_ticket_fails_without_worker_refresh():
     decision, _ = consume_mutation_authorization_ticket(
         ticket, ticket_current_state(ticket), requested_actions=ticket["action_classes"],
         current_time="2026-09-12T12:30:00Z",
-        actual_effect=ticket_bound_actual_effect(ticket), trusted_consumed_ticket_identities=(),
+        actual_effect=ticket_bound_actual_effect(ticket),
+        **control_kwargs(control_state(
+            issued_ticket_ids=[ticket["ticket_id"]], issued_nonces=[ticket["nonce"]]
+        )),
     )
     assert decision.reason == "ticket_expired_or_not_yet_valid"
 
@@ -419,8 +471,12 @@ def test_provider_or_session_switch_preserves_admitted_identity():
         "admission_generation": record["admission_generation"],
         "snapshot_generation": record["trusted_snapshot_generation"],
         "snapshot_digest": record["trusted_snapshot_digest"],
+        "ticket_state_digest": ticket["state_digest"],
+        "ticket_consumption_identity": "0" * 64,
         "provider": "cursor", "session": "old",
     }
+    from .blueprint import execution_context_digest
+    context["context_digest"] = execution_context_digest(context)
     switched = carry_execution_context(context, provider="codex", session="new")
     for field in set(context) - {"provider", "session"}:
         assert switched[field] == context[field]
@@ -504,5 +560,5 @@ def test_issue31_unavailable_release_blocks_ticket_issuance():
             issued_at="2026-09-12T12:05:00Z",
             expires_at="2026-09-12T12:30:00Z",
             issuer_provenance=["fixture:ticket-event"],
-            issued_ticket_ids=[], issued_nonces=[],
+            **control_kwargs(),
         )

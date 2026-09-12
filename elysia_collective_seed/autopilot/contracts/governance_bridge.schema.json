@@ -8,7 +8,8 @@
     {"$ref": "#/$defs/mutation_result"},
     {"$ref": "#/$defs/verification_evidence"},
     {"$ref": "#/$defs/trusted_task_record"},
-    {"$ref": "#/$defs/progression_authorization"}
+    {"$ref": "#/$defs/progression_authorization"},
+    {"$ref": "#/$defs/bridge_control_state"}
   ],
   "$defs": {
     "id": {"type": "string", "minLength": 1, "pattern": "^\\S(?:.*\\S)?$"},
@@ -25,6 +26,72 @@
       "properties": {
         "authority_id": {"$ref": "#/$defs/id"},
         "authority_generation": {"type": "integer", "minimum": 1}
+      }
+    },
+    "bridge_control_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_type", "record_version", "registry_generation", "source_refs", "classifiers", "issued_ticket_ids", "issued_nonces", "issued_ticket_identities", "consumed_ticket_identities", "task_owners", "issued_task_ids", "attached_task_ids", "verifiers", "progression_authorities"],
+      "properties": {
+        "record_type": {"const": "BRIDGE_CONTROL_STATE"},
+        "record_version": {"const": 1},
+        "registry_generation": {"type": "integer", "minimum": 1},
+        "source_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "classifiers": {
+          "type": "array", "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["classifier_id", "classifier_generation", "classifier_version", "provenance"],
+            "properties": {
+              "classifier_id": {"$ref": "#/$defs/id"},
+              "classifier_generation": {"type": "integer", "minimum": 1},
+              "classifier_version": {"$ref": "#/$defs/id"},
+              "provenance": {"$ref": "#/$defs/nonempty_refs"}
+            }
+          }
+        },
+        "issued_ticket_ids": {"$ref": "#/$defs/refs"},
+        "issued_nonces": {"$ref": "#/$defs/refs"},
+        "issued_ticket_identities": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/digest"}},
+        "consumed_ticket_identities": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/digest"}},
+        "task_owners": {
+          "type": "array", "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["task_id", "admitted_entity_id", "owned_by"],
+            "properties": {
+              "task_id": {"$ref": "#/$defs/id"},
+              "admitted_entity_id": {"$ref": "#/$defs/id"},
+              "owned_by": {"$ref": "#/$defs/authority_ref"}
+            }
+          }
+        },
+        "issued_task_ids": {"$ref": "#/$defs/refs"},
+        "attached_task_ids": {"$ref": "#/$defs/refs"},
+        "verifiers": {
+          "type": "array", "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["verifier_id", "verifier_generation", "provenance"],
+            "properties": {
+              "verifier_id": {"$ref": "#/$defs/id"},
+              "verifier_generation": {"type": "integer", "minimum": 1},
+              "provenance": {"$ref": "#/$defs/nonempty_refs"}
+            }
+          }
+        },
+        "progression_authorities": {
+          "type": "array", "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["authority_id", "authority_generation", "provenance"],
+            "properties": {
+              "authority_id": {"$ref": "#/$defs/id"},
+              "authority_generation": {"type": "integer", "minimum": 1},
+              "provenance": {"$ref": "#/$defs/nonempty_refs"}
+            }
+          }
+        }
       }
     },
     "classifier_ref": {
@@ -166,7 +233,7 @@
     "mutation_result": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["record_type", "record_version", "ticket_id", "ticket_nonce", "ticket_consumption_identity", "ticket_state_digest", "admission_record_digest", "classification_digest", "write_set_digest", "staged_patch_digest", "result_identity", "mutation_status", "evidence_persisted", "authority_state", "result_record_digest"],
+      "required": ["record_type", "record_version", "ticket_id", "ticket_nonce", "ticket_consumption_identity", "ticket_state_digest", "bridge_control_state_digest", "bridge_control_state_generation", "admission_record_digest", "classification_digest", "write_set_digest", "staged_patch_digest", "result_identity", "mutation_status", "evidence_persisted", "authority_state", "result_record_digest"],
       "properties": {
         "record_type": {"const": "MUTATION_RESULT"},
         "record_version": {"const": 1},
@@ -174,6 +241,8 @@
         "ticket_nonce": {"$ref": "#/$defs/id"},
         "ticket_consumption_identity": {"$ref": "#/$defs/digest"},
         "ticket_state_digest": {"$ref": "#/$defs/digest"},
+        "bridge_control_state_digest": {"$ref": "#/$defs/digest"},
+        "bridge_control_state_generation": {"type": "integer", "minimum": 1},
         "admission_record_digest": {"$ref": "#/$defs/digest"},
         "classification_digest": {"$ref": "#/$defs/digest"},
         "write_set_digest": {"$ref": "#/$defs/digest"},
@@ -188,7 +257,7 @@
     "verification_evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["record_type", "record_version", "mutation_result_digest", "ticket_id", "result_identity", "verdict", "verifier_id", "verifier_generation", "verifier_provenance", "verification_digest"],
+      "required": ["record_type", "record_version", "mutation_result_digest", "ticket_id", "result_identity", "verdict", "verifier_id", "verifier_generation", "verifier_provenance", "bridge_control_state_digest", "bridge_control_state_generation", "verification_digest"],
       "properties": {
         "record_type": {"const": "VERIFICATION_EVIDENCE"},
         "record_version": {"const": 1},
@@ -199,6 +268,8 @@
         "verifier_id": {"$ref": "#/$defs/id"},
         "verifier_generation": {"type": "integer", "minimum": 1},
         "verifier_provenance": {"$ref": "#/$defs/nonempty_refs"},
+        "bridge_control_state_digest": {"$ref": "#/$defs/digest"},
+        "bridge_control_state_generation": {"type": "integer", "minimum": 1},
         "verification_digest": {"$ref": "#/$defs/digest"}
       }
     },
@@ -223,7 +294,7 @@
     "progression_authorization": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["record_type", "record_version", "admission_record_digest", "ticket_state_digest", "ticket_consumption_identity", "mutation_result_digest", "verification_digest", "result_identity", "authorized_by", "authority_provenance", "progression_authorization_digest"],
+      "required": ["record_type", "record_version", "admission_record_digest", "ticket_state_digest", "ticket_consumption_identity", "mutation_result_digest", "verification_digest", "result_identity", "authorized_by", "authority_provenance", "bridge_control_state_digest", "bridge_control_state_generation", "progression_authorization_digest"],
       "properties": {
         "record_type": {"const": "PROGRESSION_AUTHORIZATION"},
         "record_version": {"const": 1},
@@ -235,6 +306,8 @@
         "result_identity": {"$ref": "#/$defs/result_identity"},
         "authorized_by": {"$ref": "#/$defs/authority_ref"},
         "authority_provenance": {"$ref": "#/$defs/nonempty_refs"},
+        "bridge_control_state_digest": {"$ref": "#/$defs/digest"},
+        "bridge_control_state_generation": {"type": "integer", "minimum": 1},
         "progression_authorization_digest": {"$ref": "#/$defs/digest"}
       }
     }

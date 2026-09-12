@@ -10,8 +10,8 @@ blueprint after independent operational red-team review. They model trusted
 per-attempt admission issuance, content/effect-based authoritative classification,
 canonical exact write-set and staged-patch binding, single-use generation-fenced
 mutation tickets, task/admission ownership, immutable cycle context, mutation
-result and verification identities, unique ticket-consumption tuples, trusted
-task-owner/verifier/progression-authority registries, fail-closed dual-failure handling,
+result and verification identities, unique ticket-consumption tuples, and trusted
+registries in one independently pinned, versioned bridge control state, fail-closed dual-failure handling,
 composed-boundary completeness and the separation between artifact existence,
 technical verification and authorized progress. The authority chain is Admission
 → Classification → Ticket → Effect → Result → Verification → Authorized Progress,
@@ -167,12 +167,12 @@ trusted classifier/issuer authentication, repository rules and the Issue #31
 human trust anchor remain `NOT_IMPLEMENTED` or `UNRESOLVED` as applicable.
 Effect-binding tests additionally validate path/operation/patch substitution,
 task/admission and result/verification swaps, partial/crashed evidence states,
-cycle identity continuity and mediated-writer inventory classification. They do
+cycle identity and control-state continuity and mediated-writer inventory classification. They do
 not make ordinary filesystem or Git operations transactional.
 
 ## Source and lineage
 
-- [Current checkpoint](https://github.com/MsElysia/Elysia/issues/11#issuecomment-5636666687)
+- [Current checkpoint](https://github.com/MsElysia/Elysia/issues/11#issuecomment-5641159193)
 - [Gate packet](https://github.com/MsElysia/Elysia/issues/29#issuecomment-5638137343)
 - [Human-authenticity refinement](https://github.com/MsElysia/Elysia/issues/29#issuecomment-5638881866)
 - [Checkpoint consumption contract](https://github.com/MsElysia/Elysia/issues/30#issuecomment-5639605013)

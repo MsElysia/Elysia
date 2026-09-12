@@ -6,7 +6,10 @@
 
 ## REPAIRED CANDIDATE SHA
 
-Recorded after the repair is committed. Verdicts never transfer from the base.
+`65c7feae50633f772caec6d0cbe58de2cfba8971`
+
+Both fresh verdicts below are bound to this exact candidate. They do not transfer
+from the base or to later product changes.
 
 ## RED-TEAM INPUT
 
@@ -156,11 +159,24 @@ activated.
 
 ## VEGA VERDICT
 
-Pending fresh independent review of the exact repaired candidate.
+`PASS` — exact SHA `65c7feae50633f772caec6d0cbe58de2cfba8971`.
+
+The independent breaker verified 32/32 repair tests and 233/233 governance
+contract tests, then exercised the specified direct-boundary, adapter, root-mint,
+restart, relabel, downgrade, stale-ticket, replay, race, external-writer and
+verification-laundering cases. No material specification gap was found. The
+review expressly retained future CAS/nonces as unimplemented transactional
+obligations and left external paths `NOT_ENFORCED`.
 
 ## ARCHITECTURE VERDICT
 
-Pending and permitted only after Vega PASS.
+`READY_FOR_INTEGRATION_REVIEW` — exact SHA
+`65c7feae50633f772caec6d0cbe58de2cfba8971`.
+
+The separate post-Vega reviewer found a coherent composed path from admission
+through controlled progression, with honest limitations: no issuer
+authentication, persistent nonce/generation store, atomic mutation integration,
+operational bridge, repository policy or human trust anchor exists yet.
 
 ## CROSS-UNIVERSE ENFORCEMENT
 

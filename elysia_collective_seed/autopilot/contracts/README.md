@@ -8,9 +8,13 @@ any of those issues or release the Issue #23 gate.
 `governance_bridge.schema.json` and `blueprint.py` repair the future integration
 blueprint after independent operational red-team review. They model trusted
 per-attempt admission issuance, content/effect-based authoritative classification,
-single-use generation-fenced mutation tickets, task/queue context preservation,
+canonical exact write-set and staged-patch binding, single-use generation-fenced
+mutation tickets, task/admission ownership, immutable cycle context, mutation
+result and verification identities, fail-closed dual-failure handling,
 composed-boundary completeness and the separation between artifact existence,
-technical verification and authorized progress. They are pure executable
+technical verification and authorized progress. The authority chain is Admission
+→ Classification → Ticket → Effect → Result → Verification → Authorized Progress,
+with every link referencing the prior immutable digest. They are pure executable
 specifications and do not reserve state, consume a production nonce, write a
 file, claim a task, intercept Git, or authorize an operation.
 
@@ -22,6 +26,13 @@ both live mutation and repository-adapter mediated write checks; evidence captur
 and a distinct authorized-progress transition. Repository-side enforcement is a
 second required boundary for raw Git/GitHub and credentialed external agents.
 All of those paths remain unimplemented and unprotected here.
+
+The known Phase B inventory includes `mutation.py.apply`,
+`mutation_engine._direct_apply_mutation`,
+`implementer/repo_adapter.apply_patch`, `MutationPublisher.publish_mutation`
+(including its direct `Path.write_text` effects) and
+`MetaCoder.apply_mutation`. It is explicitly non-exhaustive. Every unknown or
+unintegrated mediated writer remains `NOT_ENFORCED`.
 
 ## Problem and authority boundary
 
@@ -153,6 +164,10 @@ ticket disposition explicitly says it is not production authority. Actual CAS,
 atomic check-plus-write, durable nonce consumption, restart-safe high-water marks,
 trusted classifier/issuer authentication, repository rules and the Issue #31
 human trust anchor remain `NOT_IMPLEMENTED` or `UNRESOLVED` as applicable.
+Effect-binding tests additionally validate path/operation/patch substitution,
+task/admission and result/verification swaps, partial/crashed evidence states,
+cycle identity continuity and mediated-writer inventory classification. They do
+not make ordinary filesystem or Git operations transactional.
 
 ## Source and lineage
 

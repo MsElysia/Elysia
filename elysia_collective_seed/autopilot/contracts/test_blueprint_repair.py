@@ -17,6 +17,7 @@ from .blueprint import (
     issue_trusted_admission_record,
     progress_transition,
     restore_task_or_queue_attachment,
+    ticket_bound_actual_effect,
     ticket_current_state,
 )
 from .checkpoint_reference import snapshot_digest
@@ -35,6 +36,7 @@ AUTHORITY_REF = {
 CLASSIFIER = {
     "classifier_id": "trusted-effect-classifier",
     "classifier_generation": 2,
+    "classifier_version": "effect-classifier-v2",
     "provenance": ["fixture:classifier-registry"],
 }
 ALL_ACTIONS = [
@@ -101,15 +103,38 @@ def snapshot(*, gated=False):
 
 def effect(*, facts=("documentation_text",), objectives=None,
            surface="repository_file_write", ambiguous_action=False,
-           ambiguous_objective=False, path="docs/design.md"):
+           ambiguous_objective=False, path="docs/design.md", operation="update",
+           dynamic_mode="exact_staged_patch", approved_namespaces=()):
+    action_map = {
+        "documentation_text": "docs_only", "test_code": "test_only",
+        "schema_contract": "schema_spec_write", "runtime_code": "semantic_code_write",
+        "generated_runtime_code": "semantic_code_write",
+        "repository_ref_update": "repo_write", "integration_change": "integration",
+        "merge_operation": "merge", "deploy_operation": "deploy",
+        "external_effect": "external_write", "permission_change": "permission_change",
+        "private_data_access": "private_data_access", "static_read": "static_read",
+    }
+    objective_values = list(objectives or ["issue:999", "task:renamed-maintenance"])
+    governance_root = "governance:23" if "issue:23" in objective_values else "governance:999"
     return {
         "classifier_id": CLASSIFIER["classifier_id"],
         "classifier_generation": CLASSIFIER["classifier_generation"],
+        "classifier_version": CLASSIFIER["classifier_version"],
         "classifier_provenance": deepcopy(CLASSIFIER["provenance"]),
-        "objective_refs": list(objectives or ["issue:999", "task:renamed-maintenance"]),
+        "admitted_entity_id": "child",
+        "admission_generation": 9,
+        "objective_refs": objective_values,
+        "governance_lineage_refs": [governance_root, "port:semantic-copy"],
         "content_facts": list(facts),
-        "source_paths": [path],
-        "target_surface": surface,
+        "classified_write_set": [{
+            "path": path, "operation": operation, "effect_digest": "d" * 64,
+            "action_classes": sorted({action_map.get(fact, "unknown") for fact in facts}),
+        }],
+        "staged_patch_digest": "e" * 64,
+        "dynamic_effect_policy": {
+            "mode": dynamic_mode, "approved_namespaces": list(approved_namespaces),
+        },
+        "mutation_target": target(surface),
         "ambiguous_action": ambiguous_action,
         "ambiguous_objective": ambiguous_objective,
         "evidence_refs": ["fixture:trusted-content-inspection"],
@@ -165,6 +190,7 @@ def consume(ticket, current=None, *, actions=None, consumed=()):
         ticket, current or ticket_current_state(ticket),
         requested_actions=actions or ticket["action_classes"],
         current_time="2026-09-12T12:10:00Z",
+        actual_effect=ticket_bound_actual_effect(ticket),
         consumed_nonces=consumed,
     )
 
@@ -337,7 +363,8 @@ def test_expired_ticket_fails_without_worker_refresh():
     _, _, ticket = admission_and_ticket()
     decision, _ = consume_mutation_authorization_ticket(
         ticket, ticket_current_state(ticket), requested_actions=ticket["action_classes"],
-        current_time="2026-09-12T12:30:00Z", consumed_nonces=(),
+        current_time="2026-09-12T12:30:00Z",
+        actual_effect=ticket_bound_actual_effect(ticket), consumed_nonces=(),
     )
     assert decision.reason == "ticket_expired_or_not_yet_valid"
 
@@ -346,7 +373,7 @@ def test_verification_pass_does_not_create_authorized_progress():
     state = progress_transition("PRESERVED_EVIDENCE", "verify_pass")
     assert state == "VERIFIED_NOT_YET_AUTHORIZED_FOR_PROGRESSION"
     with pytest.raises(BlueprintError, match="verification_is_not_authorization"):
-        progress_transition(state, "authorize_progress", ticket_consumed=True)
+        progress_transition(state, "authorize_progress")
 
 
 def test_unauthorized_commit_can_be_preserved_without_promotion():
@@ -374,10 +401,16 @@ def test_restart_missing_lineage_fails_closed_to_quarantine():
 
 
 def test_provider_or_session_switch_preserves_admitted_identity():
-    _, record, _ = admission_and_ticket()
+    _, record, ticket = admission_and_ticket()
     context = {
         "admitted_entity_id": record["entity_id"],
+        "admission_record_digest": ticket["admission_record_digest"],
+        "ticket_id": ticket["ticket_id"],
+        "nonce": ticket["nonce"],
+        "classification_digest": ticket["classification_digest"],
+        "write_set_digest": ticket["write_set_digest"],
         "objective_refs": record["objective_refs"],
+        "repository_lineage_refs": record["repository_lineage_refs"],
         "governance_lineage_refs": record["governance_lineage_refs"],
         "applicable_gate_generations": record["applicable_gate_generations"],
         "admission_generation": record["admission_generation"],

@@ -4,7 +4,9 @@
   "description": "Portable shapes for a future composed bridge. Schema validity is not production authority.",
   "oneOf": [
     {"$ref": "#/$defs/trusted_admission_record"},
-    {"$ref": "#/$defs/mutation_authorization_ticket"}
+    {"$ref": "#/$defs/mutation_authorization_ticket"},
+    {"$ref": "#/$defs/mutation_result"},
+    {"$ref": "#/$defs/verification_evidence"}
   ],
   "$defs": {
     "id": {"type": "string", "minLength": 1, "pattern": "^\\S(?:.*\\S)?$"},
@@ -26,11 +28,29 @@
     "classifier_ref": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["classifier_id", "classifier_generation"],
+      "required": ["classifier_id", "classifier_generation", "classifier_version"],
       "properties": {
         "classifier_id": {"$ref": "#/$defs/id"},
-        "classifier_generation": {"type": "integer", "minimum": 1}
+        "classifier_generation": {"type": "integer", "minimum": 1},
+        "classifier_version": {"$ref": "#/$defs/id"}
       }
+    },
+    "write_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "operation", "effect_digest", "action_classes"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*\\\\).+$"},
+        "operation": {"enum": ["create", "update", "delete", "rename"]},
+        "effect_digest": {"$ref": "#/$defs/digest"},
+        "action_classes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/action"}}
+      }
+    },
+    "classified_write_set": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/write_effect"}
     },
     "gate_generation": {
       "type": "object",
@@ -59,10 +79,10 @@
     "trusted_admission_record": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["record_type", "record_version", "entity_id", "ancestry_kind", "parent_refs", "repository_lineage_refs", "governance_lineage_refs", "objective_refs", "action_classes", "applicable_gate_generations", "trusted_snapshot_generation", "trusted_snapshot_digest", "mutation_target", "admission_generation", "issuance_generation", "issued_at", "expires_at", "issued_by", "issuer_provenance", "classified_by", "classification_digest", "classification_evidence", "human_release_evidence", "release_validation"],
+      "required": ["record_type", "record_version", "entity_id", "ancestry_kind", "parent_refs", "repository_lineage_refs", "governance_lineage_refs", "objective_refs", "action_classes", "applicable_gate_generations", "trusted_snapshot_generation", "trusted_snapshot_digest", "mutation_target", "admission_generation", "issuance_generation", "issued_at", "expires_at", "issued_by", "issuer_provenance", "classified_by", "classification_digest", "classified_write_set", "write_set_digest", "staged_patch_digest", "classification_evidence", "human_release_evidence", "release_validation"],
       "properties": {
         "record_type": {"const": "TRUSTED_ADMISSION_RECORD"},
-        "record_version": {"const": 1},
+        "record_version": {"const": 2},
         "entity_id": {"$ref": "#/$defs/id"},
         "ancestry_kind": {"enum": ["root", "derived"]},
         "parent_refs": {"$ref": "#/$defs/refs"},
@@ -82,6 +102,9 @@
         "issuer_provenance": {"$ref": "#/$defs/nonempty_refs"},
         "classified_by": {"$ref": "#/$defs/classifier_ref"},
         "classification_digest": {"$ref": "#/$defs/digest"},
+        "classified_write_set": {"$ref": "#/$defs/classified_write_set"},
+        "write_set_digest": {"$ref": "#/$defs/digest"},
+        "staged_patch_digest": {"$ref": "#/$defs/digest"},
         "classification_evidence": {"$ref": "#/$defs/nonempty_refs"},
         "human_release_evidence": {"$ref": "#/$defs/refs"},
         "release_validation": {"const": "UNAVAILABLE"}
@@ -93,10 +116,10 @@
     "mutation_authorization_ticket": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["record_type", "record_version", "ticket_id", "nonce", "admitted_entity_id", "admission_record_digest", "objective_refs", "repository_lineage_refs", "governance_lineage_refs", "action_classes", "mutation_target", "gate_snapshot_generation", "gate_snapshot_digest", "applicable_gate_generations", "admission_generation", "issuance_generation", "release_generations", "issued_at", "expires_at", "issuer", "issuer_provenance", "state_digest"],
+      "required": ["record_type", "record_version", "ticket_id", "nonce", "admitted_entity_id", "admission_record_digest", "objective_refs", "repository_lineage_refs", "governance_lineage_refs", "action_classes", "mutation_target", "classification_digest", "classified_write_set", "write_set_digest", "staged_patch_digest", "gate_snapshot_generation", "gate_snapshot_digest", "applicable_gate_generations", "admission_generation", "issuance_generation", "release_generations", "issued_at", "expires_at", "issuer", "issuer_provenance", "state_digest"],
       "properties": {
         "record_type": {"const": "MUTATION_AUTHORIZATION_TICKET"},
-        "record_version": {"const": 1},
+        "record_version": {"const": 2},
         "ticket_id": {"$ref": "#/$defs/id"},
         "nonce": {"$ref": "#/$defs/id"},
         "admitted_entity_id": {"$ref": "#/$defs/id"},
@@ -106,6 +129,10 @@
         "governance_lineage_refs": {"$ref": "#/$defs/nonempty_refs"},
         "action_classes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/action"}},
         "mutation_target": {"$ref": "#/$defs/mutation_target"},
+        "classification_digest": {"$ref": "#/$defs/digest"},
+        "classified_write_set": {"$ref": "#/$defs/classified_write_set"},
+        "write_set_digest": {"$ref": "#/$defs/digest"},
+        "staged_patch_digest": {"$ref": "#/$defs/digest"},
         "gate_snapshot_generation": {"type": "integer", "minimum": 1},
         "gate_snapshot_digest": {"$ref": "#/$defs/digest"},
         "applicable_gate_generations": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/gate_generation"}},
@@ -117,6 +144,58 @@
         "issuer": {"$ref": "#/$defs/authority_ref"},
         "issuer_provenance": {"$ref": "#/$defs/nonempty_refs"},
         "state_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "result_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value", "repository_head_sha", "write_set_digest"],
+      "properties": {
+        "kind": {"enum": ["commit_sha", "tree_sha", "patch_digest", "changed_file_digest"]},
+        "value": {"$ref": "#/$defs/id"},
+        "repository_head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "write_set_digest": {"$ref": "#/$defs/digest"}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"enum": ["commit_sha", "tree_sha"]}}}, "then": {"properties": {"value": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}}},
+        {"if": {"properties": {"kind": {"enum": ["patch_digest", "changed_file_digest"]}}}, "then": {"properties": {"value": {"$ref": "#/$defs/digest"}}}}
+      ]
+    },
+    "mutation_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_type", "record_version", "ticket_id", "ticket_nonce", "ticket_state_digest", "admission_record_digest", "classification_digest", "write_set_digest", "staged_patch_digest", "result_identity", "mutation_status", "evidence_persisted", "authority_state", "result_record_digest"],
+      "properties": {
+        "record_type": {"const": "MUTATION_RESULT"},
+        "record_version": {"const": 1},
+        "ticket_id": {"$ref": "#/$defs/id"},
+        "ticket_nonce": {"$ref": "#/$defs/id"},
+        "ticket_state_digest": {"$ref": "#/$defs/digest"},
+        "admission_record_digest": {"$ref": "#/$defs/digest"},
+        "classification_digest": {"$ref": "#/$defs/digest"},
+        "write_set_digest": {"$ref": "#/$defs/digest"},
+        "staged_patch_digest": {"$ref": "#/$defs/digest"},
+        "result_identity": {"$ref": "#/$defs/result_identity"},
+        "mutation_status": {"enum": ["succeeded", "failed", "partial"]},
+        "evidence_persisted": {"type": "boolean"},
+        "authority_state": {"enum": ["EXECUTED_PENDING_VERIFICATION", "QUARANTINED_INCOMPLETE_EVIDENCE", "QUARANTINED_PARTIAL_MUTATION", "QUARANTINED_MUTATION_FAILED"]},
+        "result_record_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "verification_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_type", "record_version", "mutation_result_digest", "ticket_id", "result_identity", "verdict", "verifier_id", "verifier_provenance", "verification_digest"],
+      "properties": {
+        "record_type": {"const": "VERIFICATION_EVIDENCE"},
+        "record_version": {"const": 1},
+        "mutation_result_digest": {"$ref": "#/$defs/digest"},
+        "ticket_id": {"$ref": "#/$defs/id"},
+        "result_identity": {"$ref": "#/$defs/result_identity"},
+        "verdict": {"enum": ["PASS", "FAIL"]},
+        "verifier_id": {"$ref": "#/$defs/id"},
+        "verifier_provenance": {"$ref": "#/$defs/nonempty_refs"},
+        "verification_digest": {"$ref": "#/$defs/digest"}
       }
     }
   }

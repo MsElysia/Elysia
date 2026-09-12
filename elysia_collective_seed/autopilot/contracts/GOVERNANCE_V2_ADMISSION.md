@@ -214,6 +214,16 @@ not an exhaustive preclassification of uninspected runtime behavior.
 | `self_task_queue` | Admitted queue entry/operation derived from the producer task and its full ancestry; persist admission identity/generation through enqueue, update, retry and dequeue/execution. Queue persistence itself needs classification. | Classify durable queue changes and the eventual execution effects under inherited objectives. Re-read current gates on execution/retry; an enqueue-time snapshot or queue-generated task ID grants no authority. | `NOT_ENFORCED` |
 | `guardian_cursor_cycle` | Admitted cycle operation and derived child work tied to originating task(s), inputs and intended output targets; retain ancestry/governance lineage across cycle, worker and restart boundaries. | Classify dispatch, durable cycle updates and each downstream semantic/repository/external effect as applicable. Reconsume current gates at each mutation boundary; a successful cycle or worker output cannot supply release evidence. | `NOT_ENFORCED` |
 
+The bounded current mediated-writer inventory additionally names
+`mutation.py.apply`, `MutationPublisher.publish_mutation` (including its direct
+`Path.write_text` effects) and
+`MetaCoder.apply_mutation`. They also remain `NOT_ENFORCED`. The future control
+plane must maintain a versioned authoritative writer registry: an entry records
+the writer identity/version, surface class, integration generation and reviewed
+effect adapter. Presence in a source scan or registry is not enforcement.
+Unknown/unintegrated writers are outside the enforcement plane and remain
+`NOT_ENFORCED` until direct integration evidence proves otherwise.
+
 ## Admission issuance and objective attachment
 
 `WORKER_PROPOSAL` is descriptive, untrusted input. It can request work and offer
@@ -232,8 +242,10 @@ service from independently controlled state and evidence. It binds:
 8. admission and issuance generations;
 9. issue/expiry times;
 10. issuer identity/generation and provenance;
-11. classifier evidence; and
-12. required human-release evidence and validation status.
+11. classifier identity/version and evidence;
+12. canonical classified write set, write-set digest, classification digest and
+    exact staged-patch digest; and
+13. required human-release evidence and validation status.
 
 Workers cannot manufacture, refresh or widen these fields. A derived task or
 queue item must attach to admitted parents before execution. A root requires a
@@ -248,6 +260,46 @@ objective. A trusted higher-generation reclassification with evidence may expand
 or clarify scope. The system does not claim perfect automatic semantic detection:
 uncertain equivalence is quarantined for human governance review.
 
+## Classified write set and deterministic classification digest
+
+This repair advances the bridge-only `TRUSTED_ADMISSION_RECORD` and
+`MUTATION_AUTHORIZATION_TICKET` shapes to record version 2 because exact-effect
+fields are safety-significant required data. Version 1 bridge records are legacy
+evidence and cannot be silently accepted or inferred into version 2.
+
+Authorization applies to exact intended effects, not merely an action label. An
+authoritative classifier emits a canonical `classified_write_set`. Each entry
+binds one repository-relative normalized path, its operation (`create`, `update`,
+`delete` or `rename`), a content/effect digest, and every action class applicable
+to that path. Paths use `/`, are relative, contain no empty, `.` or `..` segment,
+and are unique. Entries sort by path, operation and effect digest; action arrays
+sort lexically. Duplicate, malformed, unsorted or noncanonical input fails closed.
+
+`write_set_digest` is SHA-256 over UTF-8 contract-canonical JSON v1:
+`{"write_set_version":1,"effects":[...]}` with object keys lexically sorted,
+compact `,`/`:` separators, JSON arrays preserved in their required canonical
+order, and non-finite numbers forbidden. `classification_digest` uses the same
+serialization over the authoritative classification record excluding the digest
+field itself. It binds admitted entity ID, admission generation, objective refs,
+governance lineage, exact repository/ref/worktree/base/head target, normalized
+write set and digest, aggregate action classes, classifier ID/generation/version,
+staged-patch digest, dynamic-effect policy and classification evidence. Ticket ID
+and nonce are deliberately absent, avoiding a circular dependency.
+
+The classifier and admission issuer independently pin the classification digest.
+The admission issuer also compares entity, generation, objectives, governance
+lineage and mutation target against trusted admission state. A worker cannot
+classify `docs/readme.md` and later substitute `project_guardian/core.py`, even if
+both attempts claim the same action class.
+
+For semantic writes, the preferred safe pattern is an exact staged patch whose
+digest and complete materialized write set are classified before ticket issuance.
+Generated/dynamic work may first run in a non-durable sandbox, then materialize,
+reclassify and request a new ticket. An authoritative classifier may additionally
+limit materialization to approved namespaces, but a namespace is not a substitute
+for the final exact patch/write-set binding. Unknown expansion, namespace escape,
+or `reclassify_after_materialization` state cannot receive a mutation ticket.
+
 ## Mutation authorization ticket and atomic consumption
 
 After admission and authoritative classification, a future boundary may issue a
@@ -257,6 +309,8 @@ single-use `MUTATION_AUTHORIZATION_TICKET`. The executable schema/reference bind
 - admitted entity, inherited objective refs, and both lineage forms;
 - every permitted action class;
 - exact target surface, repository, worktree/ref, expected base SHA and head SHA;
+- classifier version, classification digest, canonical classified write set,
+  write-set digest and exact staged-patch digest;
 - current gate snapshot generation/digest and applicable gate generations;
 - admission and issuance generations;
 - release generations (empty while validation is unavailable);
@@ -272,11 +326,44 @@ stale digest, expired/not-yet-valid ticket, nonce replay, scope widening, or a
 revoked/superseded release. A worker cannot silently refresh a ticket. External
 effects need equivalent fencing at their authoritative repository/service edge.
 
+Immediately before mutation, the mediated writer must independently derive the
+actual requested target, complete write set and staged-patch digest and compare
+them with the ticket. Any added, omitted, changed or reordered path; different
+operation/content; classifier substitution; surface change; or patch change is
+`BLOCKED_EFFECT_MISMATCH`. Omission is handled deterministically as a mismatch,
+not silently narrowed authority. The check, durable nonce consumption, exact
+effect, and effect receipt must share one transaction/CAS or equivalent fence.
+
 `issue_mutation_authorization_ticket` and
 `consume_mutation_authorization_ticket` are pure reference functions. Their
 success disposition explicitly says it is not production authority; they neither
 reserve state nor mutate anything. Production needs durable nonce consumption,
 high-water marks, concurrency serialization and recovery semantics.
+
+Tickets are fail-closed single-consumption tokens. Once a mutation attempt enters
+the fenced boundary, its nonce is consumed whether the attempt succeeds, fails,
+partially writes, or crashes. A retry re-reads actual repository state,
+re-materializes and reclassifies the effect where needed, and obtains a new
+ticket. A worker cannot replay or refresh the old token.
+
+## Task, queue and cycle identity binding
+
+A task/queue attachment binds task ID, admitted entity ID, parent entity refs,
+objective refs, governance lineage, admission generation and admission-record
+digest. The task ID and admitted entity ID must identify the same admitted task;
+the parent/scope/generation fields must exactly match the admission record. IDs
+are unique in the authoritative store and ownership cannot be transferred by a
+worker reference. Foreign-admission borrowing and parent/admission swaps fail
+closed. Restart validates the immutable attachment and quarantines missing or
+changed lineage.
+
+Every orchestration cycle carries admission-record digest, admitted entity,
+active ticket ID and nonce, classification and write-set digests, objectives,
+repository and governance lineage, applicable gate generations, admission and
+snapshot generations, and snapshot digest through selection → prompt → worker
+launch → tool invocation → result → verifier → retry → provider switch → restart.
+Provider/session are transport fields only. A worker response cannot replace the
+immutable context; missing context quarantines the cycle.
 
 ## Authorized-progress state model
 
@@ -289,12 +376,44 @@ control-plane progress. The normative states are:
 
 Transitions can skip from observed/preserved output to technically verified
 evidence, but cannot reach `AUTHORIZED_PROGRESS` without a trusted progression
-decision bound to consumed admission/ticket state. Verification answers whether
-work is technically correct; governance answers whether it was authorized. CI,
+decision bound to the complete immutable provenance chain:
+
+`Admission record digest → classification digest/write-set digest → ticket ID
+and state digest → mutation result digest/result identity → verification digest
+→ authorized-progress decision`.
+
+A mutation result can be created only after the ticket nonce is in the consumed
+state and binds that nonce plus the admission and ticket identities, exact classified
+effect, staged patch, mutation outcome, evidence-persistence outcome and immutable
+result identity. Result identity is an exact commit SHA, tree SHA, patch digest or
+changed-file digest plus repository head and write-set digest. Verification binds
+its PASS/FAIL to that exact mutation-result digest, ticket ID and result identity.
+Progression revalidates every link and the current result identity. A PASS boolean,
+completion flag or technically valid but differently bound verification is
+`BLOCKED_PROVENANCE_MISMATCH`.
+
+Verification answers whether work is technically correct; governance answers
+whether it was authorized. CI,
 Vega, architecture review, a completion packet, branch, commit, PR, file or worker
 output cannot substitute for governance. Historical `7374820` and `0a2d135` may
 remain technically useful preserved evidence while staying outside authorized
 progress.
+
+Mutation/evidence dual failures are explicit fail-closed states:
+
+- mutation succeeds but its receipt/evidence persistence fails, or the process
+  crashes between them: `QUARANTINED_INCOMPLETE_EVIDENCE` pending trusted
+  reconciliation, never authorized progress;
+- evidence claims success while mutation failed: the independently observed
+  mutation/result identity controls, so progression is blocked;
+- partial mutation: `QUARANTINED_PARTIAL_MUTATION`, with the ticket consumed;
+- stale or substituted result identity: `BLOCKED_PROVENANCE_MISMATCH`.
+
+Ordinary filesystem and Git writes are not database transactions. A production
+design must either transactionally couple mutation, nonce and receipt, or persist
+a recoverable intent/receipt journal with fencing and post-crash reconciliation.
+Reconciliation must independently inspect repository state and issue a new
+immutable chain; it cannot mark the old incomplete attempt authorized.
 
 ## Composed multi-boundary design
 
@@ -308,12 +427,14 @@ The smallest credible bridge is `COMPOSED_MULTI_BOUNDARY_DESIGN` spanning:
 
 1. trusted admission issuance and objective/lineage attachment;
 2. task/claim authorization and queue attachment before execution;
-3. authoritative objective/action classification from intended effects;
+3. authoritative objective/action and exact write-set classification from
+   intended effects;
 4. fenced single-use authorization-ticket issuance;
 5. mediated checks at the actual live `mutation.py.apply` (or authoritative
    equivalent) and `implementer/repo_adapter.apply_patch`/equivalent repository
    file-write paths;
-6. atomic ticket consumption with mutation and evidence capture;
+6. atomic ticket/effect comparison and consumption with mutation and evidence
+   capture;
 7. a controlled authorized-progress transition distinct from verification; and
 8. later repository-side enforcement for external transports.
 
@@ -325,17 +446,29 @@ together, while continuing to report production/cross-universe enforcement as
 
 Recommended sequencing, without implementation:
 
-- **Phase A:** trusted admission issuance, task/queue attachment, authoritative
-  classifier and authorization-ticket contract/state store design.
-- **Phase B:** consume the same ticket at both live mutation and mediated
-  `repo_adapter` file-write boundaries with transactional fencing.
-- **Phase C:** record effect evidence and require a distinct trusted transition
-  from verified output to authorized progress.
+- **Phase A — dry-run control plane:** trusted admission issuance store,
+  task/queue attachment, objective/action/write-set classifier, deterministic
+  classification digest, fenced ticket lifecycle, durable nonce/generation
+  high-water state and simulated/quarantine progression. No live writer consumes
+  a ticket.
+- **Phase B — mediated writer enforcement:** consume the same effect-bound ticket
+  at all inventoried mediated writers: live `mutation.py.apply`,
+  `mutation_engine._direct_apply_mutation`,
+  `implementer/repo_adapter.apply_patch`, `MutationPublisher.publish_mutation`
+  and its direct `Path.write_text` effects,
+  `MetaCoder.apply_mutation`, and proven current equivalents. This inventory is
+  the known set, not a completeness claim. Every unknown or unintegrated mediated
+  writer remains `NOT_ENFORCED` until registered, reviewed and connected to the
+  same effect comparison and transaction.
+- **Phase C — authorized progress:** enable the real transition only when the
+  complete admission → classification → ticket → effect → result → verification
+  chain validates against current state.
 - **Phase D:** add repository-side enforcement and credential mediation for raw
   external writes, plus a separately approved Issue #31 trust anchor.
 
-`guardian_cursor_cycle` must carry the immutable admitted identity, objectives,
-lineage, gate/snapshot/admission generations and ticket relationship through
+`guardian_cursor_cycle` must carry the immutable admission-record digest,
+admitted identity, active ticket ID/nonce, classification/write-set digests,
+objectives, repository/governance lineage and gate/snapshot/admission generations through
 selection → launch → worker execution → completion → verification → progression.
 Provider/session changes, retries and restarts cannot erase them. Completion can
 produce evidence but cannot self-promote progression.

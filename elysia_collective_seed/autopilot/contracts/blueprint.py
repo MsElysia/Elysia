@@ -34,6 +34,16 @@ TICKET_VALIDATOR = Draft202012Validator(
      "$ref": "#/$defs/mutation_authorization_ticket"},
     format_checker=FORMAT_CHECKER,
 )
+MUTATION_RESULT_VALIDATOR = Draft202012Validator(
+    {"$schema": BRIDGE_SCHEMA["$schema"], "$defs": BRIDGE_SCHEMA["$defs"],
+     "$ref": "#/$defs/mutation_result"},
+    format_checker=FORMAT_CHECKER,
+)
+VERIFICATION_VALIDATOR = Draft202012Validator(
+    {"$schema": BRIDGE_SCHEMA["$schema"], "$defs": BRIDGE_SCHEMA["$defs"],
+     "$ref": "#/$defs/verification_evidence"},
+    format_checker=FORMAT_CHECKER,
+)
 
 COMPOSED_MEDIATED_BOUNDARIES = frozenset({
     "live_mutation",
@@ -46,6 +56,14 @@ PARTIAL_BOUNDARIES = frozenset({"mutation_engine._direct_apply_mutation"})
 EXTERNAL_WRITERS = frozenset({
     "git_cli", "github_api", "cursor_shell", "codex_shell",
     "third_party_git_client", "human_local_git",
+})
+KNOWN_MEDIATED_WRITERS = frozenset({
+    "mutation.py.apply",
+    "mutation_engine._direct_apply_mutation",
+    "implementer/repo_adapter.apply_patch",
+    "MutationPublisher.publish_mutation",
+    "MutationPublisher.write_text",
+    "MetaCoder.apply_mutation",
 })
 PROGRESS_STATES = frozenset({
     "OBSERVED_UNTRUSTED",
@@ -119,6 +137,51 @@ def _refs(value, name: str, *, allow_empty: bool = False) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _canonical_write_set(write_set):
+    """Validate an exact, deterministic effect set; do not repair worker input."""
+    if not isinstance(write_set, list) or not write_set:
+        raise BlueprintError("invalid_classified_write_set")
+    normalized = []
+    for effect in write_set:
+        if not isinstance(effect, dict) or set(effect) != {
+            "path", "operation", "effect_digest", "action_classes",
+        }:
+            raise BlueprintError("invalid_classified_write_set")
+        path = effect["path"]
+        if (type(path) is not str or not path or path != path.strip()
+                or "\\" in path or path.startswith("/")
+                or any(part in {"", ".", ".."} for part in path.split("/"))):
+            raise BlueprintError("noncanonical_write_set")
+        if effect["operation"] not in {"create", "update", "delete", "rename"}:
+            raise BlueprintError("invalid_classified_write_set")
+        digest = effect["effect_digest"]
+        if (type(digest) is not str or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)):
+            raise BlueprintError("invalid_classified_write_set")
+        actions = sorted(_refs(effect["action_classes"], "write_effect_actions"))
+        if any(action not in set(CONTENT_FACT_ACTIONS.values()) for action in actions):
+            raise BlueprintError("invalid_classified_write_set")
+        normalized.append({
+            "path": path,
+            "operation": effect["operation"],
+            "effect_digest": digest,
+            "action_classes": actions,
+        })
+    ordered = sorted(
+        normalized,
+        key=lambda item: (item["path"], item["operation"], item["effect_digest"]),
+    )
+    if normalized != ordered or len({item["path"] for item in ordered}) != len(ordered):
+        raise BlueprintError("noncanonical_write_set")
+    return ordered
+
+
+def classified_write_set_digest(write_set) -> str:
+    """Content identity for canonical classified effects."""
+    canonical = _canonical_write_set(write_set)
+    return _digest({"write_set_version": 1, "effects": canonical})
+
+
 def assess_composed_boundary_plan(boundaries: Iterable[str]) -> BridgeDecision:
     """Assess blueprint completeness, never actual runtime coverage."""
     try:
@@ -143,9 +206,12 @@ def classify_authoritatively(effect, *, trusted_classifiers, worker_proposal=Non
     """
     del worker_proposal
     if not isinstance(effect, dict) or set(effect) != {
-        "classifier_id", "classifier_generation", "classifier_provenance",
-        "objective_refs", "content_facts", "source_paths", "target_surface",
-        "ambiguous_action", "ambiguous_objective", "evidence_refs",
+        "classifier_id", "classifier_generation", "classifier_version",
+        "classifier_provenance", "admitted_entity_id", "admission_generation",
+        "objective_refs", "governance_lineage_refs", "content_facts",
+        "classified_write_set", "staged_patch_digest", "dynamic_effect_policy",
+        "mutation_target", "ambiguous_action", "ambiguous_objective",
+        "evidence_refs",
     }:
         raise BlueprintError("invalid_trusted_effect")
     if not isinstance(trusted_classifiers, (list, tuple)):
@@ -153,10 +219,15 @@ def classify_authoritatively(effect, *, trusted_classifiers, worker_proposal=Non
     registry = {}
     for classifier in trusted_classifiers:
         if (not isinstance(classifier, Mapping)
-                or set(classifier) != {"classifier_id", "classifier_generation", "provenance"}
+                or set(classifier) != {
+                    "classifier_id", "classifier_generation", "classifier_version",
+                    "provenance",
+                }
                 or type(classifier["classifier_id"]) is not str
                 or type(classifier["classifier_generation"]) is not int
-                or classifier["classifier_generation"] < 1):
+                or classifier["classifier_generation"] < 1
+                or type(classifier["classifier_version"]) is not str
+                or not classifier["classifier_version"].strip()):
             raise BlueprintError("invalid_classifier_registry")
         _refs(classifier["provenance"], "classifier_provenance")
         key = (classifier["classifier_id"], classifier["classifier_generation"])
@@ -168,24 +239,73 @@ def classify_authoritatively(effect, *, trusted_classifiers, worker_proposal=Non
         raise BlueprintError("unknown_classifier")
     if effect["classifier_provenance"] != registry[key]["provenance"]:
         raise BlueprintError("classifier_provenance_mismatch")
+    if effect["classifier_version"] != registry[key]["classifier_version"]:
+        raise BlueprintError("classifier_version_mismatch")
     if effect["ambiguous_action"] is not False or effect["ambiguous_objective"] is not False:
         raise BlueprintError("ambiguous_classification")
     objectives = _refs(effect["objective_refs"], "objective_refs")
+    governance_lineage = _refs(
+        effect["governance_lineage_refs"], "governance_lineage_refs"
+    )
     facts = _refs(effect["content_facts"], "content_facts")
-    _refs(effect["source_paths"], "source_paths")
     evidence = _refs(effect["evidence_refs"], "classification_evidence")
-    if effect["target_surface"] not in COMPOSED_MEDIATED_BOUNDARIES | {"repository_side"}:
+    mutation_target = effect["mutation_target"]
+    if (not isinstance(mutation_target, dict)
+            or mutation_target.get("surface") not in
+            COMPOSED_MEDIATED_BOUNDARIES | {"repository_side"}):
         raise BlueprintError("unknown_target_surface")
+    if type(effect["admitted_entity_id"]) is not str or not effect["admitted_entity_id"]:
+        raise BlueprintError("invalid_entity")
+    if type(effect["admission_generation"]) is not int or effect["admission_generation"] < 1:
+        raise BlueprintError("invalid_admission_generation")
     if any(fact not in CONTENT_FACT_ACTIONS for fact in facts):
         raise BlueprintError("ambiguous_classification")
     actions = tuple(sorted({CONTENT_FACT_ACTIONS[fact] for fact in facts}))
+    write_set = _canonical_write_set(effect["classified_write_set"])
+    write_actions = {action for item in write_set for action in item["action_classes"]}
+    if write_actions != set(actions):
+        raise BlueprintError("write_set_action_mismatch")
+    policy = effect["dynamic_effect_policy"]
+    if (not isinstance(policy, dict)
+            or set(policy) != {"mode", "approved_namespaces"}):
+        raise BlueprintError("invalid_dynamic_effect_policy")
+    if policy["mode"] == "reclassify_after_materialization":
+        raise BlueprintError("generated_effect_reclassification_required")
+    if policy["mode"] != "exact_staged_patch":
+        raise BlueprintError("invalid_dynamic_effect_policy")
+    namespaces = _refs(
+        policy["approved_namespaces"], "approved_namespaces", allow_empty=True
+    )
+    for namespace in namespaces:
+        if ("\\" in namespace or namespace.startswith("/")
+                or any(part in {"", ".", ".."} for part in namespace.split("/"))):
+            raise BlueprintError("invalid_dynamic_effect_policy")
+    if namespaces and any(
+        not any(item["path"] == ns or item["path"].startswith(ns + "/")
+                for ns in namespaces)
+        for item in write_set
+    ):
+        raise BlueprintError("generated_effect_outside_approved_namespace")
+    staged_patch_digest = effect["staged_patch_digest"]
+    if (type(staged_patch_digest) is not str or len(staged_patch_digest) != 64
+            or any(char not in "0123456789abcdef" for char in staged_patch_digest)):
+        raise BlueprintError("invalid_staged_patch_digest")
+    write_set_digest = classified_write_set_digest(write_set)
     result = {
         "classification_status": "AUTHORITATIVE_REFERENCE_CLASSIFICATION",
         "classifier_id": effect["classifier_id"],
         "classifier_generation": effect["classifier_generation"],
+        "classifier_version": effect["classifier_version"],
+        "admitted_entity_id": effect["admitted_entity_id"],
+        "admission_generation": effect["admission_generation"],
         "objective_refs": list(objectives),
+        "governance_lineage_refs": list(governance_lineage),
         "action_classes": list(actions),
-        "target_surface": effect["target_surface"],
+        "mutation_target": deepcopy(mutation_target),
+        "classified_write_set": write_set,
+        "write_set_digest": write_set_digest,
+        "staged_patch_digest": staged_patch_digest,
+        "dynamic_effect_policy": deepcopy(policy),
         "evidence_refs": list(evidence),
     }
     result["classification_digest"] = _digest(result)
@@ -261,13 +381,18 @@ def issue_trusted_admission_record(
         raise BlueprintError("unknown_entity")
     node = nodes[entity_id]
     objectives, repository_lineage, governance_lineage, gate_refs = scopes[entity_id]
+    if (classification.get("admitted_entity_id") != entity_id
+            or classification.get("admission_generation") != node["admission_generation"]):
+        raise BlueprintError("classification_admission_identity_mismatch")
     if set(classification.get("objective_refs", ())) != objectives:
         raise BlueprintError("objective_attachment_mismatch")
+    if set(classification.get("governance_lineage_refs", ())) != governance_lineage:
+        raise BlueprintError("classification_governance_lineage_mismatch")
     actions = set(classification.get("action_classes", ()))
     if not actions or not actions.issubset(set(node["action_classes"])):
         raise BlueprintError("action_not_admitted")
     if (not isinstance(trusted_mutation_target, dict)
-            or trusted_mutation_target.get("surface") != classification.get("target_surface")):
+            or trusted_mutation_target != classification.get("mutation_target")):
         raise BlueprintError("mutation_target_mismatch")
     if type(issuance_generation) is not int or issuance_generation < node["admission_generation"]:
         raise BlueprintError("issuance_generation_rollback")
@@ -295,7 +420,7 @@ def issue_trusted_admission_record(
     )
     record = {
         "record_type": "TRUSTED_ADMISSION_RECORD",
-        "record_version": 1,
+        "record_version": 2,
         "entity_id": entity_id,
         "ancestry_kind": node["ancestry_kind"],
         "parent_refs": deepcopy(node["parent_refs"]),
@@ -316,8 +441,12 @@ def issue_trusted_admission_record(
         "classified_by": {
             "classifier_id": classification["classifier_id"],
             "classifier_generation": classification["classifier_generation"],
+            "classifier_version": classification["classifier_version"],
         },
         "classification_digest": trusted_classification_digest,
+        "classified_write_set": deepcopy(classification["classified_write_set"]),
+        "write_set_digest": classification["write_set_digest"],
+        "staged_patch_digest": classification["staged_patch_digest"],
         "classification_evidence": deepcopy(classification["evidence_refs"]),
         "human_release_evidence": [],
         "release_validation": "UNAVAILABLE",
@@ -397,7 +526,7 @@ def issue_mutation_authorization_ticket(
             raise BlueprintError("blocked_pending_human_release")
     ticket = {
         "record_type": "MUTATION_AUTHORIZATION_TICKET",
-        "record_version": 1,
+        "record_version": 2,
         "ticket_id": ticket_id,
         "nonce": nonce,
         "admitted_entity_id": admission_record["entity_id"],
@@ -407,6 +536,10 @@ def issue_mutation_authorization_ticket(
         "governance_lineage_refs": deepcopy(admission_record["governance_lineage_refs"]),
         "action_classes": deepcopy(admission_record["action_classes"]),
         "mutation_target": deepcopy(admission_record["mutation_target"]),
+        "classification_digest": admission_record["classification_digest"],
+        "classified_write_set": deepcopy(admission_record["classified_write_set"]),
+        "write_set_digest": admission_record["write_set_digest"],
+        "staged_patch_digest": admission_record["staged_patch_digest"],
         "gate_snapshot_generation": snapshot["snapshot_generation"],
         "gate_snapshot_digest": trusted_current_digest,
         "applicable_gate_generations": applicable,
@@ -432,6 +565,9 @@ def ticket_current_state(ticket):
         "repository_lineage_refs": deepcopy(ticket["repository_lineage_refs"]),
         "governance_lineage_refs": deepcopy(ticket["governance_lineage_refs"]),
         "mutation_target": deepcopy(ticket["mutation_target"]),
+        "classification_digest": ticket["classification_digest"],
+        "write_set_digest": ticket["write_set_digest"],
+        "staged_patch_digest": ticket["staged_patch_digest"],
         "snapshot_generation": ticket["gate_snapshot_generation"],
         "snapshot_digest": ticket["gate_snapshot_digest"],
         "applicable_gate_generations": deepcopy(ticket["applicable_gate_generations"]),
@@ -447,6 +583,7 @@ def consume_mutation_authorization_ticket(
     *,
     requested_actions,
     current_time,
+    actual_effect,
     consumed_nonces=(),
 ):
     """Compare-and-swap proof: checked state must equal mutated state."""
@@ -469,6 +606,22 @@ def consume_mutation_authorization_ticket(
         return reject("ticket_replay")
     if not actions.issubset(set(ticket["action_classes"])):
         return reject("ticket_scope_exceeded")
+    if not isinstance(actual_effect, dict) or set(actual_effect) != {
+        "mutation_target", "classified_write_set", "staged_patch_digest",
+        "classification_digest",
+    }:
+        return reject("BLOCKED_EFFECT_MISMATCH")
+    try:
+        actual_write_set = _canonical_write_set(actual_effect["classified_write_set"])
+        actual_write_set_digest = classified_write_set_digest(actual_write_set)
+    except BlueprintError:
+        return reject("BLOCKED_EFFECT_MISMATCH")
+    if (actual_effect["mutation_target"] != ticket["mutation_target"]
+            or actual_effect["classification_digest"] != ticket["classification_digest"]
+            or actual_effect["staged_patch_digest"] != ticket["staged_patch_digest"]
+            or actual_write_set != ticket["classified_write_set"]
+            or actual_write_set_digest != ticket["write_set_digest"]):
+        return reject("BLOCKED_EFFECT_MISMATCH")
     expected = ticket_current_state(ticket)
     if not isinstance(current_state, dict) or set(current_state) != set(expected):
         return reject("invalid_current_state")
@@ -478,6 +631,9 @@ def consume_mutation_authorization_ticket(
         ("repository_lineage_refs", "ancestry_changed"),
         ("governance_lineage_refs", "governance_lineage_changed"),
         ("mutation_target", "mutation_target_or_head_changed"),
+        ("classification_digest", "classification_changed"),
+        ("write_set_digest", "classified_write_set_changed"),
+        ("staged_patch_digest", "staged_patch_changed"),
         ("snapshot_generation", "gate_generation_changed"),
         ("snapshot_digest", "snapshot_stale"),
         ("applicable_gate_generations", "gate_generation_changed"),
@@ -501,21 +657,61 @@ def attach_task_or_queue_record(worker_task, admission_record):
         raise BlueprintError("invalid_worker_proposal")
     if not ADMISSION_RECORD_VALIDATOR.is_valid(admission_record):
         raise BlueprintError("trusted_admission_required")
+    required = {
+        "task_id", "admitted_entity_id", "parent_entity_refs", "objective_refs",
+        "governance_lineage_refs", "admission_generation",
+    }
+    if not required.issubset(worker_task):
+        raise BlueprintError("task_admission_binding_required")
+    if (worker_task["task_id"] != admission_record["entity_id"]
+            or worker_task["admitted_entity_id"] != admission_record["entity_id"]):
+        raise BlueprintError("task_admission_identity_mismatch")
+    if (worker_task["parent_entity_refs"] != admission_record["parent_refs"]
+            or worker_task["objective_refs"] != admission_record["objective_refs"]
+            or worker_task["governance_lineage_refs"] !=
+            admission_record["governance_lineage_refs"]
+            or worker_task["admission_generation"] !=
+            admission_record["admission_generation"]):
+        raise BlueprintError("task_admission_provenance_mismatch")
     return {
         "attachment_status": "ADMITTED_REFERENCE_ONLY",
-        "worker_proposal": deepcopy(worker_task),
+        "task_id": worker_task["task_id"],
+        "admitted_entity_id": admission_record["entity_id"],
+        "parent_entity_refs": deepcopy(admission_record["parent_refs"]),
+        "objective_refs": deepcopy(admission_record["objective_refs"]),
+        "governance_lineage_refs": deepcopy(admission_record["governance_lineage_refs"]),
+        "admission_generation": admission_record["admission_generation"],
+        "admission_record_digest": _digest(admission_record),
         "trusted_admission_record": deepcopy(admission_record),
     }
 
 
 def restore_task_or_queue_attachment(persisted):
     """Restart never reconstructs authority from worker text."""
-    if (not isinstance(persisted, dict)
-            or not ADMISSION_RECORD_VALIDATOR.is_valid(
-                persisted.get("trusted_admission_record"))):
+    if not isinstance(persisted, dict):
         return BridgeDecision(
             "QUARANTINED_MISSING_TRUSTED_LINEAGE",
             "restart_requires_persisted_trusted_admission",
+        )
+    record = persisted.get("trusted_admission_record")
+    if not ADMISSION_RECORD_VALIDATOR.is_valid(record):
+        return BridgeDecision(
+            "QUARANTINED_MISSING_TRUSTED_LINEAGE",
+            "restart_requires_persisted_trusted_admission",
+        )
+    expected = {
+        "task_id": record["entity_id"],
+        "admitted_entity_id": record["entity_id"],
+        "parent_entity_refs": record["parent_refs"],
+        "objective_refs": record["objective_refs"],
+        "governance_lineage_refs": record["governance_lineage_refs"],
+        "admission_generation": record["admission_generation"],
+        "admission_record_digest": _digest(record),
+    }
+    if any(persisted.get(field) != value for field, value in expected.items()):
+        return BridgeDecision(
+            "QUARANTINED_PROVENANCE_MISMATCH",
+            "persisted_task_admission_binding_changed",
         )
     return BridgeDecision("ADMITTED_REFERENCE_ONLY", "ticket_still_required")
 
@@ -523,7 +719,9 @@ def restore_task_or_queue_attachment(persisted):
 def carry_execution_context(context, *, provider, session):
     """Provider/session changes preserve, and cannot replace, admitted identity."""
     required = {
-        "admitted_entity_id", "objective_refs", "governance_lineage_refs",
+        "admitted_entity_id", "admission_record_digest", "ticket_id", "nonce",
+        "classification_digest", "write_set_digest", "objective_refs",
+        "repository_lineage_refs", "governance_lineage_refs",
         "applicable_gate_generations", "admission_generation",
         "snapshot_generation", "snapshot_digest",
     }
@@ -535,11 +733,174 @@ def carry_execution_context(context, *, provider, session):
     return result
 
 
+def ticket_bound_actual_effect(ticket):
+    """Reference fixture shape; production must derive this from the real attempt."""
+    return {
+        "mutation_target": deepcopy(ticket["mutation_target"]),
+        "classified_write_set": deepcopy(ticket["classified_write_set"]),
+        "staged_patch_digest": ticket["staged_patch_digest"],
+        "classification_digest": ticket["classification_digest"],
+    }
+
+
+def record_mutation_result(
+    ticket,
+    actual_effect,
+    *,
+    result_identity,
+    mutation_status,
+    evidence_persisted,
+    consumed_nonces,
+):
+    """Create a fail-closed effect receipt after a single consumed attempt."""
+    if not TICKET_VALIDATOR.is_valid(ticket):
+        raise BlueprintError("invalid_ticket")
+    unsigned_ticket = deepcopy(ticket)
+    supplied_ticket_digest = unsigned_ticket.pop("state_digest")
+    if _digest(unsigned_ticket) != supplied_ticket_digest:
+        raise BlueprintError("invalid_ticket")
+    if ticket["nonce"] not in set(consumed_nonces):
+        raise BlueprintError("consumed_ticket_required")
+    if ticket_bound_actual_effect(ticket) != actual_effect:
+        raise BlueprintError("BLOCKED_EFFECT_MISMATCH")
+    if mutation_status not in {"succeeded", "failed", "partial"}:
+        raise BlueprintError("invalid_mutation_status")
+    if type(evidence_persisted) is not bool:
+        raise BlueprintError("invalid_evidence_status")
+    if not isinstance(result_identity, dict):
+        raise BlueprintError("invalid_result_identity")
+    if result_identity.get("write_set_digest") != ticket["write_set_digest"]:
+        raise BlueprintError("invalid_result_identity")
+    if mutation_status == "succeeded" and evidence_persisted:
+        authority_state = "EXECUTED_PENDING_VERIFICATION"
+    elif mutation_status == "succeeded":
+        authority_state = "QUARANTINED_INCOMPLETE_EVIDENCE"
+    elif mutation_status == "partial":
+        authority_state = "QUARANTINED_PARTIAL_MUTATION"
+    else:
+        authority_state = "QUARANTINED_MUTATION_FAILED"
+    result = {
+        "record_type": "MUTATION_RESULT",
+        "record_version": 1,
+        "ticket_id": ticket["ticket_id"],
+        "ticket_nonce": ticket["nonce"],
+        "ticket_state_digest": ticket["state_digest"],
+        "admission_record_digest": ticket["admission_record_digest"],
+        "classification_digest": ticket["classification_digest"],
+        "write_set_digest": ticket["write_set_digest"],
+        "staged_patch_digest": ticket["staged_patch_digest"],
+        "result_identity": deepcopy(result_identity),
+        "mutation_status": mutation_status,
+        "evidence_persisted": evidence_persisted,
+        "authority_state": authority_state,
+    }
+    result["result_record_digest"] = _digest(result)
+    if not MUTATION_RESULT_VALIDATOR.is_valid(result):
+        raise BlueprintError("invalid_mutation_result")
+    return result
+
+
+def record_verification_evidence(
+    mutation_result,
+    *,
+    observed_result_identity,
+    verdict,
+    verifier_id,
+    verifier_provenance,
+):
+    """Bind technical verification to one immutable mutation result identity."""
+    if not MUTATION_RESULT_VALIDATOR.is_valid(mutation_result):
+        raise BlueprintError("invalid_mutation_result")
+    unsigned_result = deepcopy(mutation_result)
+    supplied_result_digest = unsigned_result.pop("result_record_digest")
+    if _digest(unsigned_result) != supplied_result_digest:
+        raise BlueprintError("invalid_mutation_result")
+    _refs(verifier_provenance, "verifier_provenance")
+    if verdict not in {"PASS", "FAIL"}:
+        raise BlueprintError("invalid_verification_verdict")
+    evidence = {
+        "record_type": "VERIFICATION_EVIDENCE",
+        "record_version": 1,
+        "mutation_result_digest": mutation_result["result_record_digest"],
+        "ticket_id": mutation_result["ticket_id"],
+        "result_identity": deepcopy(observed_result_identity),
+        "verdict": verdict,
+        "verifier_id": verifier_id,
+        "verifier_provenance": list(verifier_provenance),
+    }
+    evidence["verification_digest"] = _digest(evidence)
+    if not VERIFICATION_VALIDATOR.is_valid(evidence):
+        raise BlueprintError("invalid_verification_evidence")
+    return evidence
+
+
+def authorize_progress_chain(
+    admission_record,
+    ticket,
+    mutation_result,
+    verification,
+    *,
+    current_result_identity,
+):
+    """Validate Admission → Ticket → Effect → Result → Verification provenance."""
+    blocked = lambda reason: BridgeDecision("BLOCKED_PROVENANCE_MISMATCH", reason)
+    if (not ADMISSION_RECORD_VALIDATOR.is_valid(admission_record)
+            or not TICKET_VALIDATOR.is_valid(ticket)
+            or not MUTATION_RESULT_VALIDATOR.is_valid(mutation_result)
+            or not VERIFICATION_VALIDATOR.is_valid(verification)):
+        return blocked("invalid_provenance_record")
+    unsigned_ticket = deepcopy(ticket)
+    ticket_digest = unsigned_ticket.pop("state_digest")
+    unsigned_result = deepcopy(mutation_result)
+    result_digest = unsigned_result.pop("result_record_digest")
+    unsigned_verification = deepcopy(verification)
+    verification_digest = unsigned_verification.pop("verification_digest")
+    if (_digest(unsigned_ticket) != ticket_digest
+            or _digest(unsigned_result) != result_digest
+            or _digest(unsigned_verification) != verification_digest):
+        return blocked("tampered_provenance_record")
+    if (_digest(admission_record) != ticket["admission_record_digest"]
+            or mutation_result["ticket_id"] != ticket["ticket_id"]
+            or mutation_result["ticket_nonce"] != ticket["nonce"]
+            or mutation_result["ticket_state_digest"] != ticket["state_digest"]
+            or mutation_result["classification_digest"] != ticket["classification_digest"]
+            or mutation_result["write_set_digest"] != ticket["write_set_digest"]):
+        return blocked("authority_chain_link_mismatch")
+    if (verification["mutation_result_digest"] != mutation_result["result_record_digest"]
+            or verification["ticket_id"] != ticket["ticket_id"]):
+        return blocked("verification_ticket_or_result_mismatch")
+    if (mutation_result["mutation_status"] != "succeeded"
+            or mutation_result["evidence_persisted"] is not True
+            or mutation_result["authority_state"] != "EXECUTED_PENDING_VERIFICATION"):
+        return BridgeDecision(
+            "QUARANTINED_INCOMPLETE_EVIDENCE",
+            "mutation_or_evidence_not_complete",
+        )
+    if (verification["verdict"] != "PASS"
+            or verification["result_identity"] != mutation_result["result_identity"]
+            or current_result_identity != mutation_result["result_identity"]):
+        return blocked("stale_or_different_result_identity")
+    return BridgeDecision(
+        "AUTHORIZED_PROGRESS",
+        "complete_immutable_provenance_chain_reference_only",
+    )
+
+
+def mediated_writer_status(writer, *, integrated_writers=()):
+    """Inventory classification only; it does not inspect or guard a writer."""
+    if writer in set(integrated_writers):
+        return BridgeDecision("REFERENCE_INTEGRATION_CLAIM_UNPROVEN")
+    if writer in KNOWN_MEDIATED_WRITERS:
+        return BridgeDecision("NOT_ENFORCED", "known_writer_not_integrated")
+    return BridgeDecision("NOT_ENFORCED", "unknown_writer_outside_enforcement_plane")
+
+
 def progress_transition(
     current_state,
     event,
     *,
-    ticket_consumed=False,
+    provenance_chain=None,
+    current_result_identity=None,
     trusted_progression_decision=False,
 ):
     """Keep technical verification separate from governance progression."""
@@ -552,7 +913,7 @@ def progress_transition(
             raise BlueprintError("trusted_admission_required")
         return "ADMITTED"
     if event == "authorize_execute" and current_state == "ADMITTED":
-        if not ticket_consumed:
+        if not isinstance(provenance_chain, dict) or "ticket" not in provenance_chain:
             raise BlueprintError("consumed_ticket_required")
         return "AUTHORIZED_TO_EXECUTE"
     if event == "execute" and current_state == "AUTHORIZED_TO_EXECUTE":
@@ -562,9 +923,19 @@ def progress_transition(
     }:
         return "VERIFIED_NOT_YET_AUTHORIZED_FOR_PROGRESSION"
     if event == "authorize_progress" and current_state == "VERIFIED_NOT_YET_AUTHORIZED_FOR_PROGRESSION":
-        if not (ticket_consumed and trusted_progression_decision):
+        if not isinstance(provenance_chain, dict):
             raise BlueprintError("verification_is_not_authorization")
-        return "AUTHORIZED_PROGRESS"
+        required = {"admission_record", "ticket", "mutation_result", "verification"}
+        if set(provenance_chain) != required:
+            raise BlueprintError("verification_is_not_authorization")
+        decision = authorize_progress_chain(
+            provenance_chain["admission_record"], provenance_chain["ticket"],
+            provenance_chain["mutation_result"], provenance_chain["verification"],
+            current_result_identity=current_result_identity,
+        )
+        if decision.disposition != "AUTHORIZED_PROGRESS":
+            raise BlueprintError(decision.reason)
+        return decision.disposition
     raise BlueprintError("invalid_progress_transition")
 
 

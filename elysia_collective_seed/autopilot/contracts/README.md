@@ -5,6 +5,24 @@ This package is not connected to TaskLedger, the scheduler, Guardian, Codex,
 Cursor, Git, or a repository policy service. Passing its tests does not close
 any of those issues or release the Issue #23 gate.
 
+`governance_bridge.schema.json` and `blueprint.py` repair the future integration
+blueprint after independent operational red-team review. They model trusted
+per-attempt admission issuance, content/effect-based authoritative classification,
+single-use generation-fenced mutation tickets, task/queue context preservation,
+composed-boundary completeness and the separation between artifact existence,
+technical verification and authorized progress. They are pure executable
+specifications and do not reserve state, consume a production nonce, write a
+file, claim a task, intercept Git, or authorize an operation.
+
+`mutation_engine._direct_apply_mutation` is classified as `PARTIAL_BOUNDARY`, not
+the first sufficient choke point. The smallest credible future bridge is a
+`COMPOSED_MULTI_BOUNDARY_DESIGN`: admission issuance and objective attachment;
+task/claim and queue attachment; authoritative classification; fenced ticket;
+both live mutation and repository-adapter mediated write checks; evidence capture;
+and a distinct authorized-progress transition. Repository-side enforcement is a
+second required boundary for raw Git/GitHub and credentialed external agents.
+All of those paths remain unimplemented and unprotected here.
+
 ## Problem and authority boundary
 
 A newer checkpoint can omit an active gate and recommend a semantic port. An
@@ -129,6 +147,12 @@ Every result declares `external_write_enforcement=NOT_ENFORCED`. There is no Git
 write interception or deployment protection in this package. External writers
 must remain a separate blocked acceptance criterion; a required check alone
 would need careful distinction between blocking integration and blocking writes.
+
+Blueprint repair tests similarly validate only reference invariants. A reference
+ticket disposition explicitly says it is not production authority. Actual CAS,
+atomic check-plus-write, durable nonce consumption, restart-safe high-water marks,
+trusted classifier/issuer authentication, repository rules and the Issue #31
+human trust anchor remain `NOT_IMPLEMENTED` or `UNRESOLVED` as applicable.
 
 ## Source and lineage
 

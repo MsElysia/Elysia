@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Guardian governance-to-runtime bridge artifacts — normative only",
+  "description": "Portable shapes for a future composed bridge. Schema validity is not production authority.",
+  "oneOf": [
+    {"$ref": "#/$defs/trusted_admission_record"},
+    {"$ref": "#/$defs/mutation_authorization_ticket"}
+  ],
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "pattern": "^\\S(?:.*\\S)?$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "nonempty_refs": {"allOf": [{"$ref": "#/$defs/refs"}], "minItems": 1},
+    "action": {
+      "enum": ["static_read", "test_only", "docs_only", "schema_spec_write", "semantic_code_write", "repo_write", "integration", "merge", "deploy", "external_write", "permission_change", "private_data_access"]
+    },
+    "authority_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority_id", "authority_generation"],
+      "properties": {
+        "authority_id": {"$ref": "#/$defs/id"},
+        "authority_generation": {"type": "integer", "minimum": 1}
+      }
+    },
+    "classifier_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classifier_id", "classifier_generation"],
+      "properties": {
+        "classifier_id": {"$ref": "#/$defs/id"},
+        "classifier_generation": {"type": "integer", "minimum": 1}
+      }
+    },
+    "gate_generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_id", "generation"],
+      "properties": {
+        "gate_id": {"$ref": "#/$defs/id"},
+        "generation": {"type": "integer", "minimum": 1}
+      }
+    },
+    "mutation_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface", "repository", "worktree", "ref", "expected_base_sha", "expected_head_sha"],
+      "properties": {
+        "surface": {
+          "enum": ["live_mutation", "repository_file_write", "task_claim", "queue_objective_attach", "authorized_progress", "repository_side"]
+        },
+        "repository": {"$ref": "#/$defs/id"},
+        "worktree": {"$ref": "#/$defs/id"},
+        "ref": {"$ref": "#/$defs/id"},
+        "expected_base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "expected_head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "trusted_admission_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_type", "record_version", "entity_id", "ancestry_kind", "parent_refs", "repository_lineage_refs", "governance_lineage_refs", "objective_refs", "action_classes", "applicable_gate_generations", "trusted_snapshot_generation", "trusted_snapshot_digest", "mutation_target", "admission_generation", "issuance_generation", "issued_at", "expires_at", "issued_by", "issuer_provenance", "classified_by", "classification_digest", "classification_evidence", "human_release_evidence", "release_validation"],
+      "properties": {
+        "record_type": {"const": "TRUSTED_ADMISSION_RECORD"},
+        "record_version": {"const": 1},
+        "entity_id": {"$ref": "#/$defs/id"},
+        "ancestry_kind": {"enum": ["root", "derived"]},
+        "parent_refs": {"$ref": "#/$defs/refs"},
+        "repository_lineage_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "governance_lineage_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "objective_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "action_classes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/action"}},
+        "applicable_gate_generations": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/gate_generation"}},
+        "trusted_snapshot_generation": {"type": "integer", "minimum": 1},
+        "trusted_snapshot_digest": {"$ref": "#/$defs/digest"},
+        "mutation_target": {"$ref": "#/$defs/mutation_target"},
+        "admission_generation": {"type": "integer", "minimum": 1},
+        "issuance_generation": {"type": "integer", "minimum": 1},
+        "issued_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "issued_by": {"$ref": "#/$defs/authority_ref"},
+        "issuer_provenance": {"$ref": "#/$defs/nonempty_refs"},
+        "classified_by": {"$ref": "#/$defs/classifier_ref"},
+        "classification_digest": {"$ref": "#/$defs/digest"},
+        "classification_evidence": {"$ref": "#/$defs/nonempty_refs"},
+        "human_release_evidence": {"$ref": "#/$defs/refs"},
+        "release_validation": {"const": "UNAVAILABLE"}
+      },
+      "allOf": [
+        {"if": {"properties": {"ancestry_kind": {"const": "root"}}}, "then": {"properties": {"parent_refs": {"maxItems": 0}}}, "else": {"properties": {"parent_refs": {"minItems": 1}}}}
+      ]
+    },
+    "mutation_authorization_ticket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_type", "record_version", "ticket_id", "nonce", "admitted_entity_id", "admission_record_digest", "objective_refs", "repository_lineage_refs", "governance_lineage_refs", "action_classes", "mutation_target", "gate_snapshot_generation", "gate_snapshot_digest", "applicable_gate_generations", "admission_generation", "issuance_generation", "release_generations", "issued_at", "expires_at", "issuer", "issuer_provenance", "state_digest"],
+      "properties": {
+        "record_type": {"const": "MUTATION_AUTHORIZATION_TICKET"},
+        "record_version": {"const": 1},
+        "ticket_id": {"$ref": "#/$defs/id"},
+        "nonce": {"$ref": "#/$defs/id"},
+        "admitted_entity_id": {"$ref": "#/$defs/id"},
+        "admission_record_digest": {"$ref": "#/$defs/digest"},
+        "objective_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "repository_lineage_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "governance_lineage_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "action_classes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/action"}},
+        "mutation_target": {"$ref": "#/$defs/mutation_target"},
+        "gate_snapshot_generation": {"type": "integer", "minimum": 1},
+        "gate_snapshot_digest": {"$ref": "#/$defs/digest"},
+        "applicable_gate_generations": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/gate_generation"}},
+        "admission_generation": {"type": "integer", "minimum": 1},
+        "issuance_generation": {"type": "integer", "minimum": 1},
+        "release_generations": {"type": "array", "maxItems": 0},
+        "issued_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "issuer": {"$ref": "#/$defs/authority_ref"},
+        "issuer_provenance": {"$ref": "#/$defs/nonempty_refs"},
+        "state_digest": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

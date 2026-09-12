@@ -41,6 +41,16 @@ must be present in the stored admission. A worker cannot downgrade
 `semantic_code_write` to `test_only` or replace the objective, ancestry, or root
 status in its proposal. Missing, contradictory, or unknown admission data blocks.
 
+The snapshot admission is durable identity/classification state. The separate
+per-attempt `TRUSTED_ADMISSION_RECORD` in `governance_bridge.schema.json` binds
+that state to a concrete mutation target, current snapshot digest/generation,
+applicable gate generations, issuance generation, freshness window, issuer
+identity/provenance, and trusted classification evidence. It is not constructed
+from a worker proposal. Both classifier output and the issued admission record
+must match independently trusted current digests at the next boundary; a digest
+chosen by the worker proves nothing. Schema validity still does not authenticate
+its issuer.
+
 ## Root admission
 
 Root creation is privileged classification. It requires a record admitted by a
@@ -60,6 +70,17 @@ requires a new, higher-generation trusted admission with evidence; it cannot
 rewrite history. Ambiguous semantic equivalence routes to human governance rather
 than accepting an unrelated label. General model output may be evidence but is
 not unquestioned classification authority.
+
+The authoritative action classifier must inspect the intended mutation surface,
+operation and content-derived facts where practical. Filenames, extensions and
+worker labels such as docs, tests, refactor or maintenance are only proposals.
+Runtime code under a documentation extension remains semantic code; generated
+runtime code remains semantic code; a test-labeled patch that changes runtime
+contains both action classes; and compound effects retain every applicable class.
+Unknown content, conflicting evidence, or uncertain objective/action identity
+fails closed. `classify_authoritatively` is a pure executable model of that
+obligation and accepts only a separately registered classifier identity and
+provenance. It does not perform or authenticate production content inspection.
 
 V2 action classes are `static_read`, `test_only`, `docs_only`,
 `schema_spec_write`, `semantic_code_write`, `repo_write`, `integration`, `merge`,
@@ -188,14 +209,156 @@ not an exhaustive preclassification of uninspected runtime behavior.
 
 | Surface | Entity, ancestry and effect that the trusted bundle must bind | Objective/action and gate application | Current classification |
 | --- | --- | --- | --- |
-| `mutation_engine._direct_apply_mutation` | Admitted mutation request derived from its submitting task/proposal; exact target checkout/content generation and intended change. A direct call cannot omit its parent or mint a root. | Resolve semantic objective/lineage before apply; classify `semantic_code_write` and/or other applicable durable writes. Consume current inherited gates and generation-scoped release evidence immediately before the effect. | `NOT_ENFORCED` |
+| `mutation_engine._direct_apply_mutation` | Admitted mutation request derived from its submitting task/proposal; exact target checkout/content generation and intended change. A direct call cannot omit its parent or mint a root. Operational inspection shows it is a fallback skipped by the configured live mutation backend, so its architectural role is `PARTIAL_BOUNDARY`, never a sufficient choke point. | Resolve semantic objective/lineage before apply; classify `semantic_code_write` and/or other applicable durable writes. Consume current inherited gates and generation-scoped release evidence immediately before the effect. | `NOT_ENFORCED` |
 | `implementer/repo_adapter` | Admitted repository operation derived from the implementing task and mutation request; exact repository, target state and local/external destination. Preserve governance descent through ports/restacks regardless of branch or detached SHA. | Classify applicable `repo_write`, `integration`, `merge`, `external_write`, and semantic effects; bind each effect to current objective gates and required releases. Direct adapter invocation must require the same bundle. | `NOT_ENFORCED` |
 | `self_task_queue` | Admitted queue entry/operation derived from the producer task and its full ancestry; persist admission identity/generation through enqueue, update, retry and dequeue/execution. Queue persistence itself needs classification. | Classify durable queue changes and the eventual execution effects under inherited objectives. Re-read current gates on execution/retry; an enqueue-time snapshot or queue-generated task ID grants no authority. | `NOT_ENFORCED` |
 | `guardian_cursor_cycle` | Admitted cycle operation and derived child work tied to originating task(s), inputs and intended output targets; retain ancestry/governance lineage across cycle, worker and restart boundaries. | Classify dispatch, durable cycle updates and each downstream semantic/repository/external effect as applicable. Reconsume current gates at each mutation boundary; a successful cycle or worker output cannot supply release evidence. | `NOT_ENFORCED` |
 
+## Admission issuance and objective attachment
+
+`WORKER_PROPOSAL` is descriptive, untrusted input. It can request work and offer
+evidence, but its task ID, objective name, root/derived label, parent list,
+provider/session identity, action label, target or claimed generation grants no
+authority. `TRUSTED_ADMISSION_RECORD` is issued by the future trusted admission
+service from independently controlled state and evidence. It binds:
+
+1. admitted entity identity and explicit root/derived status;
+2. all parents plus inherited repository and governance lineage;
+3. the union of inherited objective references;
+4. every authoritative action class for the intended effect;
+5. applicable gate IDs and generations;
+6. trusted current snapshot generation and digest;
+7. exact mutation surface/repository/worktree/ref and expected base/head state;
+8. admission and issuance generations;
+9. issue/expiry times;
+10. issuer identity/generation and provenance;
+11. classifier evidence; and
+12. required human-release evidence and validation status.
+
+Workers cannot manufacture, refresh or widen these fields. A derived task or
+queue item must attach to admitted parents before execution. A root requires a
+separate trusted root admission. A new queue/task/branch/objective ID is never a
+root proof. On restart, missing or invalid persisted admission context is not
+reconstructed from worker text; the item fails closed or is quarantined.
+
+Objective attachment occurs before claim or mutation. Inherited objective refs
+cannot be replaced by labels such as constructor cleanup, bootstrap repair,
+lifecycle normalization, runtime hygiene, monitoring refactor, or a newly minted
+objective. A trusted higher-generation reclassification with evidence may expand
+or clarify scope. The system does not claim perfect automatic semantic detection:
+uncertain equivalence is quarantined for human governance review.
+
+## Mutation authorization ticket and atomic consumption
+
+After admission and authoritative classification, a future boundary may issue a
+single-use `MUTATION_AUTHORIZATION_TICKET`. The executable schema/reference binds:
+
+- ticket ID and nonce/replay identity;
+- admitted entity, inherited objective refs, and both lineage forms;
+- every permitted action class;
+- exact target surface, repository, worktree/ref, expected base SHA and head SHA;
+- current gate snapshot generation/digest and applicable gate generations;
+- admission and issuance generations;
+- release generations (empty while validation is unavailable);
+- issue/expiry times; and
+- issuer identity/provenance plus a digest of the complete checked state.
+
+The normative invariant is: **the state checked must be the state mutated, or the
+mutation must fail**. The production boundary must consume the ticket and perform
+the effect in one transaction/CAS or an equivalent generation-fenced protocol.
+It rejects a changed head/base/ref/worktree/surface, changed ancestry or governance
+lineage, changed objective, gate/snapshot/admission/issuance generation change,
+stale digest, expired/not-yet-valid ticket, nonce replay, scope widening, or a
+revoked/superseded release. A worker cannot silently refresh a ticket. External
+effects need equivalent fencing at their authoritative repository/service edge.
+
+`issue_mutation_authorization_ticket` and
+`consume_mutation_authorization_ticket` are pure reference functions. Their
+success disposition explicitly says it is not production authority; they neither
+reserve state nor mutate anything. Production needs durable nonce consumption,
+high-water marks, concurrency serialization and recovery semantics.
+
+## Authorized-progress state model
+
+Artifact existence and technical correctness are separate from authorized
+control-plane progress. The normative states are:
+
+`OBSERVED_UNTRUSTED` → `PRESERVED_EVIDENCE` → `ADMITTED` →
+`AUTHORIZED_TO_EXECUTE` → `EXECUTED_PENDING_VERIFICATION` →
+`VERIFIED_NOT_YET_AUTHORIZED_FOR_PROGRESSION` → `AUTHORIZED_PROGRESS`.
+
+Transitions can skip from observed/preserved output to technically verified
+evidence, but cannot reach `AUTHORIZED_PROGRESS` without a trusted progression
+decision bound to consumed admission/ticket state. Verification answers whether
+work is technically correct; governance answers whether it was authorized. CI,
+Vega, architecture review, a completion packet, branch, commit, PR, file or worker
+output cannot substitute for governance. Historical `7374820` and `0a2d135` may
+remain technically useful preserved evidence while staying outside authorized
+progress.
+
+## Composed multi-boundary design
+
+`mutation_engine._direct_apply_mutation` is retracted as a sufficient or singular
+first production boundary. Operational inspection classifies it as
+`PARTIAL_BOUNDARY`: it is absent on the product tip, is a fallback on the current
+operational lineage, and is bypassed by the configured live mutation backend,
+`repo_adapter`, publisher/MetaCoder, queue/cycle orchestration and raw writers.
+
+The smallest credible bridge is `COMPOSED_MULTI_BOUNDARY_DESIGN` spanning:
+
+1. trusted admission issuance and objective/lineage attachment;
+2. task/claim authorization and queue attachment before execution;
+3. authoritative objective/action classification from intended effects;
+4. fenced single-use authorization-ticket issuance;
+5. mediated checks at the actual live `mutation.py.apply` (or authoritative
+   equivalent) and `implementer/repo_adapter.apply_patch`/equivalent repository
+   file-write paths;
+6. atomic ticket consumption with mutation and evidence capture;
+7. a controlled authorized-progress transition distinct from verification; and
+8. later repository-side enforcement for external transports.
+
+Protecting only one listed function is an incomplete plan. The executable
+`assess_composed_boundary_plan` model requires live mutation, repository file
+write, task claim, queue/objective attachment and authorized-progress boundaries
+together, while continuing to report production/cross-universe enforcement as
+`NOT_IMPLEMENTED`.
+
+Recommended sequencing, without implementation:
+
+- **Phase A:** trusted admission issuance, task/queue attachment, authoritative
+  classifier and authorization-ticket contract/state store design.
+- **Phase B:** consume the same ticket at both live mutation and mediated
+  `repo_adapter` file-write boundaries with transactional fencing.
+- **Phase C:** record effect evidence and require a distinct trusted transition
+  from verified output to authorized progress.
+- **Phase D:** add repository-side enforcement and credential mediation for raw
+  external writes, plus a separately approved Issue #31 trust anchor.
+
+`guardian_cursor_cycle` must carry the immutable admitted identity, objectives,
+lineage, gate/snapshot/admission generations and ticket relationship through
+selection → launch → worker execution → completion → verification → progression.
+Provider/session changes, retries and restarts cannot erase them. Completion can
+produce evidence but cannot self-promote progression.
+
+## Repository-side second boundary and external writers
+
+Raw Git CLI, GitHub API/App/CLI, Cursor/Codex shells, third-party Git clients,
+other clones and human local Git cannot necessarily be stopped by Guardian-local
+checks. They remain `NOT_ENFORCED`. Their outputs may exist, be observed, and be
+preserved, but must remain quarantined from `AUTHORIZED_PROGRESS` until trusted
+admission/reconciliation establishes the required lineage, objective, action and
+current gate state.
+
+Future repository-side enforcement is necessary to control ref mutation, push,
+branch creation, PR-source provenance, direct API writes and credentialed external
+agents. Possible mechanisms require a separate authority decision; this contract
+does not choose or install hooks/rulesets, alter credentials, configure an App,
+or claim server policy exists.
+
 ## Required governance-to-runtime bridge (future, not implemented)
 
-The bridge MUST guarantee all of the following before enforcement can be claimed:
+The first credible bridge is the composed sequence above, not one function. It
+MUST guarantee all of the following before enforcement can be claimed:
 
 1. **One authoritative admission format.** Runtime paths consume the same
    versioned, authenticated admitted record, resolved outside worker control and

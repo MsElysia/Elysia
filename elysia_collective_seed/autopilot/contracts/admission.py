@@ -31,7 +31,9 @@ def _digest(value) -> str:
 
 def validate_snapshot_version(snapshot, *, minimum_generation=None) -> None:
     """Reject unsupported versions and generation rollback before evaluation."""
-    if not isinstance(snapshot, dict) or snapshot.get("schema_version") != 2:
+    if (not isinstance(snapshot, dict)
+            or type(snapshot.get("schema_version")) is not int
+            or snapshot.get("schema_version") != 2):
         raise AdmissionError("unsupported_schema_version")
     if minimum_generation is not None and (
         type(minimum_generation) is not int
@@ -68,14 +70,20 @@ def migrate_v1_to_v2(legacy, manifest, *, trusted_source_digest,
     this function is not authentication; callers must supply independently trusted
     authority configuration and the current source digest.
     """
-    if not isinstance(legacy, dict) or legacy.get("schema_version") != 1:
+    if (not isinstance(legacy, dict)
+            or type(legacy.get("schema_version")) is not int
+            or legacy.get("schema_version") != 1):
         raise AdmissionError("source_must_be_v1")
     if snapshot_digest(legacy) != trusted_source_digest:
         raise AdmissionError("stale_or_untrusted_source_digest")
     required_legacy = {"schema_version", "revision", "source_refs", "gates", "entities"}
     if set(legacy) != required_legacy or type(legacy["revision"]) is not int or legacy["revision"] < 1:
         raise AdmissionError("invalid_v1_snapshot")
-    if not isinstance(manifest, dict) or manifest.get("from_schema_version") != 1 or manifest.get("to_schema_version") != 2:
+    if (not isinstance(manifest, dict)
+            or type(manifest.get("from_schema_version")) is not int
+            or type(manifest.get("to_schema_version")) is not int
+            or manifest.get("from_schema_version") != 1
+            or manifest.get("to_schema_version") != 2):
         raise AdmissionError("explicit_v1_to_v2_manifest_required")
     generation = manifest.get("target_snapshot_generation")
     if type(generation) is not int or generation <= max(legacy["revision"], minimum_target_generation - 1):
@@ -84,8 +92,13 @@ def migrate_v1_to_v2(legacy, manifest, *, trusted_source_digest,
     authority_ref = manifest.get("migration_authority")
     if not isinstance(authority_ref, dict):
         raise AdmissionError("missing_migration_authority")
+    if (not isinstance(trusted_authorities, (list, tuple))
+            or any(not isinstance(a, Mapping) for a in trusted_authorities)):
+        raise AdmissionError("invalid_trusted_authorities")
     trusted = {(a.get("authority_id"), a.get("authority_generation")): a
-               for a in trusted_authorities if isinstance(a, Mapping)}
+               for a in trusted_authorities}
+    if len(trusted) != len(trusted_authorities):
+        raise AdmissionError("duplicate_trusted_authority")
     key = (authority_ref.get("authority_id"), authority_ref.get("authority_generation"))
     authority = trusted.get(key)
     if not authority or authority.get("authority_kind") != "trusted_migration_control_plane":
@@ -124,12 +137,15 @@ def migrate_v1_to_v2(legacy, manifest, *, trusted_source_digest,
             raise AdmissionError("ancestry_classification_required")
         admissions.append(decision)
 
-    gates = deepcopy(legacy["gates"])
-    for gate in gates:
-        mapped = [ACTION_MIGRATION.get(a, a) for a in gate["blocked_actions"]]
-        gate["blocked_actions"] = list(dict.fromkeys(mapped + list(MANDATORY_GATED_ACTIONS)))
-        if gate.get("release"):
-            gate["release"]["actions"] = list(dict.fromkeys(ACTION_MIGRATION.get(a, a) for a in gate["release"]["actions"]))
+    try:
+        gates = deepcopy(legacy["gates"])
+        for gate in gates:
+            mapped = [ACTION_MIGRATION.get(a, a) for a in gate["blocked_actions"]]
+            gate["blocked_actions"] = list(dict.fromkeys(mapped + list(MANDATORY_GATED_ACTIONS)))
+            if gate.get("release"):
+                gate["release"]["actions"] = list(dict.fromkeys(ACTION_MIGRATION.get(a, a) for a in gate["release"]["actions"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AdmissionError("invalid_v1_snapshot") from exc
 
     migrated_at = manifest.get("migrated_at")
     evidence = manifest.get("evidence_refs")
@@ -152,4 +168,12 @@ def migrate_v1_to_v2(legacy, manifest, *, trusted_source_digest,
         },
     }
     validate_snapshot_version(target, minimum_generation=minimum_target_generation)
+    probe = target["admissions"][0]
+    semantic = evaluate(
+        target,
+        {"entity_id": probe["entity_id"], "action": probe["action_classes"][0]},
+        trusted_current_digest=snapshot_digest(target),
+    )
+    if semantic.disposition == "BLOCKED_INVALID_STATE":
+        raise AdmissionError(f"invalid_v2_semantics:{semantic.reason}")
     return target

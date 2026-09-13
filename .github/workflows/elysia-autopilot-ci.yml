@@ -6,16 +6,18 @@ on:
       - 'elysia-collective-*'
       - 'autopilot-*'
       - 'codex/governance-checkpoint-contract'
-      # One path segment + /governance-* (codex/governance-*, cursor/governance-*).
-      # GitHub branch globs: '*' does not cross '/', so this stays narrow.
-      - '*/governance-*'
+      # Explicit currently supported governance families only (not */governance-*).
+      - 'codex/governance-*'
+      - 'cursor/governance-*'
   pull_request:
     branches:
       - main
       - 'elysia-collective-*'
       - 'autopilot-*'
       - 'codex/remote-fix-*'
-      - '*/governance-*'
+      # Explicit currently supported governance families only (not */governance-*).
+      - 'codex/governance-*'
+      - 'cursor/governance-*'
   workflow_dispatch:
 
 permissions:

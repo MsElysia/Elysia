@@ -32,6 +32,7 @@ Repository-backed bounded tranches may be added when sufficiently strong primary
 - `tranches/2026-04_to_2026-09_capability_realism_bounded_tools.md` — repository-backed reconstruction of tool discovery evolving into operational capability awareness, bounded browser/execution surfaces, and staged capability adoption with explicit governance.
 - `tranches/2026-04_to_2026-05_governance_review_replay_preflight.md` — repository-backed reconstruction of Guardian governance evolving from trust decisions into durable review, context-bound approval replay, atomic control-plane state, mutation preflight, and the May 2026 evolvable-AI safety extension.
 - `tranches/2026-09_governance_scope_inheritance_trusted_admission.md` — repository-backed reconstruction of the September 2026 transition from advisory human-governance gates and branch-specific freezes to objective/lineage/action scope inheritance, trusted admission, human-release authenticity requirements, and explicit separation between governance specification and operational enforcement.
+- `tranches/2026-04_adversarial_learning_verification_loop.md` — repository-backed reconstruction of Guardian adversarial learning evolving from an optional TrustMatrix self-improvement module into evidence-bearing findings, remediation tasks, recurrence tracking, and verification-gated resolution, while preserving the unverified relationship to the earlier Erebus concept.
 
 ## Highest-priority primary-source recovery
 

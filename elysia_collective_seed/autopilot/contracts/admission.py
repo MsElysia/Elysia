@@ -37,17 +37,33 @@ def _digest(value) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _exact_generation(value, *, field: str) -> int:
+    """Require an exact non-boolean integer in the v2 generation range.
+
+    JSON bools are rejected: ``type(True) is int`` is false, but relying on
+    ``isinstance(..., int)`` would incorrectly accept booleans. Strings, floats,
+    null, containers, and other malformed values are not coerced.
+    """
+    if type(value) is not int or value < 1:
+        raise AdmissionError(f"invalid_{field}")
+    return value
+
+
 def validate_snapshot_version(snapshot, *, minimum_generation=None) -> None:
     """Reject unsupported versions and generation rollback before evaluation."""
     if (not isinstance(snapshot, dict)
             or type(snapshot.get("schema_version")) is not int
             or snapshot.get("schema_version") != 2):
         raise AdmissionError("unsupported_schema_version")
-    if minimum_generation is not None and (
-        type(minimum_generation) is not int
-        or snapshot.get("snapshot_generation", 0) < minimum_generation
-    ):
-        raise AdmissionError("snapshot_generation_rollback")
+    if minimum_generation is not None:
+        generation = _exact_generation(
+            snapshot.get("snapshot_generation"), field="snapshot_generation",
+        )
+        minimum = _exact_generation(
+            minimum_generation, field="minimum_generation",
+        )
+        if generation < minimum:
+            raise AdmissionError("snapshot_generation_rollback")
     if not VALIDATOR.is_valid(snapshot):
         raise AdmissionError("invalid_v2_snapshot")
 

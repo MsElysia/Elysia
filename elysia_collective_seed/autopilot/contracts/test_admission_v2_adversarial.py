@@ -4,6 +4,7 @@ These assertions state the fail-closed behavior promised by
 GOVERNANCE_V2_ADMISSION.md. They live outside the candidate worktree.
 """
 from copy import deepcopy
+import json
 
 import pytest
 
@@ -351,3 +352,32 @@ def test_malformed_minimum_generation_fails_closed(bad):
             source, manifest(source), trusted_source_digest=snapshot_digest(source),
             trusted_authorities=[AUTHORITY], minimum_target_generation=bad,
         )
+
+
+@pytest.mark.parametrize("generation", [None, "1", [], {}, True, False, -1, 1.5])
+def test_malformed_snapshot_generation_fails_closed_at_public_boundary(generation):
+    """Public evaluate_admitted must not raise on malformed generation values."""
+    snapshot = migrate(legacy_v1())
+    snapshot["snapshot_generation"] = generation
+    if generation not in (True, False):
+        snapshot = json.loads(json.dumps(snapshot))
+    result = evaluate_admitted(
+        snapshot, "child", "semantic_code_write",
+        trusted_current_digest=snapshot_digest(snapshot), minimum_generation=1,
+    )
+    assert result.disposition == "BLOCKED_INVALID_STATE"
+    assert result.release_validation == "UNAVAILABLE"
+    assert result.external_write_enforcement == "NOT_ENFORCED"
+
+
+@pytest.mark.parametrize("minimum", ["1", [], {}, True, False, -1, 1.5, 0])
+def test_malformed_minimum_generation_at_validate_boundary(minimum):
+    snapshot = migrate(legacy_v1())
+    with pytest.raises(AdmissionError, match="invalid_minimum_generation"):
+        validate_snapshot_version(snapshot, minimum_generation=minimum)
+
+
+def test_equal_and_increasing_generation_remain_valid():
+    snapshot = json.loads(json.dumps(migrate(legacy_v1())))
+    validate_snapshot_version(snapshot, minimum_generation=snapshot["snapshot_generation"])
+    validate_snapshot_version(snapshot, minimum_generation=1)

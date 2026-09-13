@@ -1,4 +1,4 @@
-"""Static regression for Issue #39 exact-head CI reachability.
+"""Static regression for Issue #39 exact-head CI reachability + safety finalization.
 
 Dependency-light: parses the Autopilot workflow text without PyYAML so the
 governance contract suite can prove trigger/permission/breaker invariants.
@@ -14,6 +14,40 @@ from pathlib import Path
 import pytest
 
 WORKFLOW = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "elysia-autopilot-ci.yml"
+
+# Explicit currently supported governance families (not arbitrary one-segment prefixes).
+EXPLICIT_GOVERNANCE_FAMILIES = (
+    "codex/governance-*",
+    "cursor/governance-*",
+)
+REQUIRED_PUSH_PATTERNS = (
+    "elysia-collective-*",
+    "autopilot-*",
+    "codex/governance-checkpoint-contract",
+    *EXPLICIT_GOVERNANCE_FAMILIES,
+)
+REQUIRED_PR_BASE_PATTERNS = (
+    "main",
+    "elysia-collective-*",
+    "autopilot-*",
+    "codex/remote-fix-*",
+    *EXPLICIT_GOVERNANCE_FAMILIES,
+)
+FORBIDDEN_BRANCH_PATTERNS = ("*/governance-*",)
+
+POSITIVE_GOVERNANCE_BRANCHES = (
+    "codex/governance-v2-example",
+    "cursor/governance-v2-example",
+)
+NEGATIVE_BRANCHES = (
+    "feature/random-ui-work",
+    "codex/unrelated-work",
+    "cursor/unrelated-work",
+    "foo/governance-test",
+    "team/governance-test",
+    "team/codex/governance-test",
+    "governance-unprefixed",
+)
 
 
 def _workflow_text() -> str:
@@ -51,6 +85,10 @@ def github_branch_match(name: str, pattern: str) -> bool:
     return True
 
 
+def _matches_any(name: str, patterns: list[str]) -> bool:
+    return any(github_branch_match(name, pattern) for pattern in patterns)
+
+
 def _permissions_block(text: str) -> str:
     match = re.search(r"(?m)^permissions:\n((?:  .*\n)+)", text)
     assert match, "missing top-level permissions block"
@@ -64,35 +102,49 @@ def workflow() -> str:
 
 def test_governance_push_family_is_represented(workflow: str) -> None:
     patterns = _branch_patterns(_section_body(workflow, "push:"))
-    assert "*/governance-*" in patterns
-    assert github_branch_match("codex/governance-v2-ci-reachability-repair", "*/governance-*")
-    assert github_branch_match("cursor/governance-v2-ci-reachability-repair", "*/governance-*")
-    # Preserve prior allow-list entries.
-    assert "elysia-collective-*" in patterns
-    assert "autopilot-*" in patterns
-    assert "codex/governance-checkpoint-contract" in patterns
+    for required in REQUIRED_PUSH_PATTERNS:
+        assert required in patterns, f"push.branches missing {required!r}: {patterns}"
+    for name in POSITIVE_GOVERNANCE_BRANCHES:
+        assert _matches_any(name, list(EXPLICIT_GOVERNANCE_FAMILIES)), name
 
 
 def test_governance_stacked_pr_base_family_is_represented(workflow: str) -> None:
     patterns = _branch_patterns(_section_body(workflow, "pull_request:"))
-    assert "*/governance-*" in patterns
+    for required in REQUIRED_PR_BASE_PATTERNS:
+        assert required in patterns, f"pull_request.branches missing {required!r}: {patterns}"
     assert github_branch_match(
         "cursor/governance-v2-generation-boundary-repair-1799",
-        "*/governance-*",
+        "cursor/governance-*",
     )
-    assert "main" in patterns
-    assert "codex/remote-fix-*" in patterns
+    for name in POSITIVE_GOVERNANCE_BRANCHES:
+        assert _matches_any(name, list(EXPLICIT_GOVERNANCE_FAMILIES)), name
 
 
-def test_unrelated_branch_negative_fixture_excluded(workflow: str) -> None:
+def test_arbitrary_one_segment_governance_prefix_absent(workflow: str) -> None:
     push_patterns = _branch_patterns(_section_body(workflow, "push:"))
     pr_patterns = _branch_patterns(_section_body(workflow, "pull_request:"))
-    negative = "feature/random-ui-work"
-    assert not any(github_branch_match(negative, pattern) for pattern in push_patterns)
-    assert not any(github_branch_match(negative, pattern) for pattern in pr_patterns)
-    # New governance family must stay one-segment-prefix narrow.
-    assert not github_branch_match("team/codex/governance-nested", "*/governance-*")
-    assert not github_branch_match("governance-unprefixed", "*/governance-*")
+    for forbidden in FORBIDDEN_BRANCH_PATTERNS:
+        assert forbidden not in push_patterns
+        assert forbidden not in pr_patterns
+        assert f"'{forbidden}'" not in workflow
+        assert f'"{forbidden}"' not in workflow
+
+
+def test_unrelated_branch_negative_fixtures_excluded(workflow: str) -> None:
+    push_patterns = _branch_patterns(_section_body(workflow, "push:"))
+    pr_patterns = _branch_patterns(_section_body(workflow, "pull_request:"))
+    for negative in NEGATIVE_BRANCHES:
+        assert not _matches_any(negative, push_patterns), negative
+        assert not _matches_any(negative, pr_patterns), negative
+        assert not _matches_any(negative, list(EXPLICIT_GOVERNANCE_FAMILIES)), negative
+
+
+def test_pull_request_target_absent(workflow: str) -> None:
+    assert "pull_request_target:" not in workflow
+    assert re.search(r"(?m)^\s*pull_request_target\s*:", workflow) is None
+    on_match = re.search(r"(?ms)^on:\n(.*?)(?=\npermissions:|\njobs:)", workflow)
+    assert on_match is not None, "missing on: block"
+    assert "pull_request_target" not in on_match.group(1)
 
 
 def test_exact_sha_assertion_present(workflow: str) -> None:
@@ -108,7 +160,11 @@ def test_permissions_remain_contents_read_only(workflow: str) -> None:
     block = _permissions_block(workflow)
     assert "contents: read" in block
     assert "permissions:\n  contents: read\n" in workflow
-    assert "contents: write" not in workflow.lower()
+    write_entries = re.findall(
+        r"(?mi)^\s*([a-z0-9-]+)\s*:\s*['\"]?write['\"]?\s*(?:#.*)?$",
+        workflow,
+    )
+    assert not write_entries, f"workflow must not grant write permissions: {write_entries}"
     for item in (
         "pull-requests:",
         "actions:",

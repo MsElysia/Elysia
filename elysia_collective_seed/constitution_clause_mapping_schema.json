@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Elysia Constitution Clause Governance Mapping",
+  "type": "object",
+  "required": [
+    "constitution_source_id",
+    "constitution_hash",
+    "constitution_version",
+    "mappings"
+  ],
+  "properties": {
+    "constitution_source_id": {"type": "string"},
+    "constitution_hash": {"type": "string", "minLength": 32},
+    "constitution_version": {"type": "string"},
+    "verified_at": {"type": ["string", "null"], "format": "date-time"},
+    "mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "mapping_id",
+          "clause_id",
+          "source_locator",
+          "rule_type",
+          "machine_rule",
+          "status"
+        ],
+        "properties": {
+          "mapping_id": {"type": "string"},
+          "clause_id": {"type": "string"},
+          "source_locator": {"type": "string", "description": "Exact source line/range/message locator in the verified Constitution."},
+          "source_excerpt_hash": {"type": ["string", "null"]},
+          "rule_type": {
+            "enum": [
+              "permission",
+              "prohibition",
+              "human_approval",
+              "memory_policy",
+              "external_action",
+              "self_modification",
+              "privacy",
+              "oversight",
+              "amendment",
+              "other"
+            ]
+          },
+          "machine_rule": {"type": "string", "minLength": 1},
+          "applies_to": {"type": "array", "items": {"type": "string"}},
+          "enforcement_point": {"type": ["string", "null"]},
+          "tests": {"type": "array", "items": {"type": "string"}},
+          "ambiguity": {"type": ["string", "null"]},
+          "human_interpretation_required": {"type": "boolean", "default": false},
+          "status": {"enum": ["draft", "verified", "implemented", "superseded"]}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

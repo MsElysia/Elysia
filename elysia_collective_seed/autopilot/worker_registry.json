@@ -1,0 +1,54 @@
+{
+  "schema_version": "0.1",
+  "runtime_enabled": false,
+  "purpose": "Routing metadata only. This registry grants no credentials, permissions, deployment authority, or provider access.",
+  "workers": [
+    {
+      "worker_id": "chatgpt-supervisor",
+      "provider": "openai_chatgpt",
+      "classes": ["research", "synthesis", "governance_mapping", "task_specification", "github_control_plane"],
+      "local_files": false,
+      "repository_write": true,
+      "external_write": false,
+      "verification_eligible": true,
+      "risk_ceiling": "isolated_repository_write"
+    },
+    {
+      "worker_id": "codex-engineer",
+      "provider": "openai_codex",
+      "classes": ["implementation", "tests", "refactor", "static_analysis", "code_review"],
+      "local_files": false,
+      "repository_write": true,
+      "external_write": false,
+      "verification_eligible": true,
+      "risk_ceiling": "isolated_repository_write"
+    },
+    {
+      "worker_id": "cursor-local",
+      "provider": "cursor",
+      "classes": ["local_archaeology", "implementation", "tests", "local_build", "static_analysis"],
+      "local_files": true,
+      "repository_write": true,
+      "external_write": false,
+      "verification_eligible": true,
+      "risk_ceiling": "isolated_repository_write"
+    },
+    {
+      "worker_id": "local-model-pool",
+      "provider": "local_optional",
+      "classes": ["classification", "embedding", "deduplication", "log_triage"],
+      "local_files": true,
+      "repository_write": false,
+      "external_write": false,
+      "verification_eligible": false,
+      "risk_ceiling": "read_only",
+      "status": "not_configured"
+    }
+  ],
+  "routing_invariants": [
+    "worker_capability_does_not_imply_authority",
+    "reviewer_must_be_independent_of_producer_when_practical",
+    "local_private_sources_require_explicitly_approved_scope",
+    "protected_merge_and_deployment_are_not_granted_by_this_registry"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Elysia Autopilot Worker Registry",
+  "type": "object",
+  "required": ["registry_version", "workers"],
+  "properties": {
+    "registry_version": {"type": "string", "minLength": 1},
+    "updated_at": {"type": ["string", "null"], "format": "date-time"},
+    "workers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["worker_id", "provider", "enabled", "task_classes", "risk_classes", "locality", "capabilities"],
+        "properties": {
+          "worker_id": {"type": "string", "minLength": 1},
+          "provider": {"enum": ["chatgpt", "codex", "cursor", "local", "dry_run", "other"]},
+          "model": {"type": ["string", "null"]},
+          "enabled": {"type": "boolean"},
+          "task_classes": {"type": "array", "items": {"type": "string"}},
+          "risk_classes": {"type": "array", "items": {"type": "string"}},
+          "locality": {"enum": ["cloud", "local", "hybrid", "none"]},
+          "capabilities": {"type": "array", "items": {"type": "string"}},
+          "independence_group": {"type": ["string", "null"]},
+          "max_concurrency": {"type": "integer", "minimum": 1, "default": 1},
+          "cost_rank": {"type": "integer", "minimum": 0, "default": 100},
+          "quality_rank": {"type": "integer", "minimum": 0, "default": 100},
+          "success_count": {"type": "integer", "minimum": 0, "default": 0},
+          "failure_count": {"type": "integer", "minimum": 0, "default": 0},
+          "last_seen_at": {"type": ["string", "null"], "format": "date-time"},
+          "notes": {"type": "array", "items": {"type": "string"}, "default": []}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Elysia Collective Dashboard State",
+  "type": "object",
+  "required": [
+    "generated_at",
+    "collective_version",
+    "runtime_enabled",
+    "agents",
+    "questions",
+    "contradictions",
+    "pending_human_approvals"
+  ],
+  "properties": {
+    "generated_at": {"type": "string", "format": "date-time"},
+    "collective_version": {"type": "string"},
+    "runtime_enabled": {"type": "boolean"},
+    "constitution": {
+      "type": "object",
+      "properties": {
+        "verified_source_loaded": {"type": "boolean"},
+        "version": {"type": ["string", "null"]},
+        "hash": {"type": ["string", "null"]},
+        "unresolved_conflicts": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "agents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["agent_id", "role", "status"],
+        "properties": {
+          "agent_id": {"type": "string"},
+          "role": {"type": "string"},
+          "status": {"enum": ["idle", "working", "blocked", "offline", "retired"]},
+          "model": {"type": ["string", "null"]},
+          "contract_version": {"type": ["string", "null"]},
+          "current_task": {"type": ["string", "null"]},
+          "reputation": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+          "calibration": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["question_id", "text", "priority", "status"],
+        "properties": {
+          "question_id": {"type": "string"},
+          "text": {"type": "string"},
+          "priority": {"type": "number", "minimum": 0, "maximum": 1},
+          "status": {"enum": ["open", "investigating", "testing", "resolved", "archived"]},
+          "assigned_agents": {"type": "array", "items": {"type": "string"}},
+          "related_packets": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["contradiction_id", "packet_ids", "severity", "status"],
+        "properties": {
+          "contradiction_id": {"type": "string"},
+          "packet_ids": {"type": "array", "minItems": 2, "items": {"type": "string"}},
+          "severity": {"type": "number", "minimum": 0, "maximum": 1},
+          "status": {"enum": ["open", "under_review", "resolved", "accepted_tension"]},
+          "erebus_packet": {"type": ["string", "null"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "memory_health": {
+      "type": "object",
+      "properties": {
+        "genesis_sources": {"type": "integer", "minimum": 0},
+        "collective_packets": {"type": "integer", "minimum": 0},
+        "orphan_packets": {"type": "integer", "minimum": 0},
+        "stale_claims": {"type": "integer", "minimum": 0},
+        "unverified_genesis_summaries": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "collaboration_graph": {
+      "type": "object",
+      "properties": {
+        "nodes": {"type": "integer", "minimum": 0},
+        "edges": {"type": "integer", "minimum": 0},
+        "strongest_pairings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["agents", "score"],
+            "properties": {
+              "agents": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "string"}},
+              "score": {"type": "number", "minimum": 0, "maximum": 1}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "experiments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["experiment_id", "status"],
+        "properties": {
+          "experiment_id": {"type": "string"},
+          "status": {"enum": ["planned", "running", "completed", "failed", "paused"]},
+          "collective_lift": {"type": ["number", "null"]},
+          "cost_ratio": {"type": ["number", "null"]},
+          "guardrail_flags": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "external_gateways": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["gateway_id", "mode", "status"],
+        "properties": {
+          "gateway_id": {"type": "string"},
+          "mode": {"enum": ["read_only", "submit_only", "bidirectional"]},
+          "status": {"enum": ["disabled", "sandboxed", "active", "blocked"]},
+          "trust_score": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "pending_human_approvals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["approval_id", "action", "risk"],
+        "properties": {
+          "approval_id": {"type": "string"},
+          "action": {"type": "string"},
+          "risk": {"type": "number", "minimum": 0, "maximum": 1},
+          "requested_by": {"type": ["string", "null"]},
+          "related_packets": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

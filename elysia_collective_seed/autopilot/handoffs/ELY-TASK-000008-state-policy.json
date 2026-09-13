@@ -1,0 +1,60 @@
+{
+  "task_id": "ELY-TASK-000008",
+  "worker": {
+    "provider": "chatgpt",
+    "role": "autopilot-supervisor",
+    "model": null,
+    "run_id": null
+  },
+  "outcome": "partial",
+  "summary": "Added a pure, provider-neutral task-state policy primitive for AUTOPILOT-004. It defines legal task transitions, dependency/attempt claim gates, independent-verification requirements for runtime-changing completion, and human-approval requirements for higher-authority risk classes. No dispatcher, network adapter, model call, lease persistence, or runtime activation was added.",
+  "files_read": [
+    "elysia_collective_seed/autopilot/orchestrator_spec.md",
+    "elysia_collective_seed/autopilot/task_packet_schema.json",
+    "elysia_collective_seed/autopilot/completion_packet_schema.json"
+  ],
+  "files_changed": [
+    "elysia_collective_seed/autopilot/task_state_machine.py",
+    "elysia_collective_seed/autopilot/task_state_machine_tests.py",
+    "elysia_collective_seed/autopilot/handoffs/ELY-TASK-000008-state-policy.json"
+  ],
+  "commits": [
+    "6ee0d5fa5441ba233d2e51cdf5b6cf3d39d2a92b",
+    "3784360807bbd3a2bc776f1214d761108750ffb5"
+  ],
+  "pull_requests": [],
+  "claims": [
+    {
+      "claim": "The new module is a pure policy primitive and performs no external or runtime actions.",
+      "evidence": ["elysia_collective_seed/autopilot/task_state_machine.py"],
+      "confidence": 1.0
+    }
+  ],
+  "checks": [
+    {
+      "name": "static_review",
+      "result": "pass",
+      "details": "Module contains only constants, dataclasses, and pure validation functions."
+    },
+    {
+      "name": "test_execution",
+      "result": "not_run",
+      "details": "GitHub connector can write repository files but this run did not execute repository tests."
+    }
+  ],
+  "uncertainties": [
+    "Persistent lease semantics and provider adapter contracts remain to be implemented.",
+    "Tests require independent execution/CI before this partial task can advance beyond implementation evidence."
+  ],
+  "risks": [
+    "State-policy semantics may need refinement after the canonical Guardian runtime is reconciled."
+  ],
+  "blockers": [],
+  "next_recommendation": {
+    "action": "verify",
+    "preferred_role": "guardian-verifier",
+    "task_title": "Verify AUTOPILOT task-state policy",
+    "task_objective": "Execute and review the task-state tests independently, then identify the smallest persistent ledger/lease primitive that can be added without activating runtime workers."
+  },
+  "completed_at": "2026-09-07T03:20:00Z"
+}

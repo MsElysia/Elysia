@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Elysia Capability Candidate",
+  "type": "object",
+  "required": [
+    "candidate_id",
+    "name",
+    "provider",
+    "discovered_at",
+    "capability_class",
+    "availability",
+    "status",
+    "proposed_experiment"
+  ],
+  "properties": {
+    "candidate_id": {"type": "string", "pattern": "^CAP-[0-9]{6,}$"},
+    "name": {"type": "string", "minLength": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "discovered_at": {"type": "string", "format": "date-time"},
+    "capability_class": {
+      "enum": [
+        "model", "tool", "connector", "plugin", "protocol", "memory",
+        "browser", "automation", "data_source", "coding", "multimodal",
+        "compute", "other"
+      ]
+    },
+    "availability": {"enum": ["unknown", "announced", "limited", "available", "deprecated"]},
+    "evidence_refs": {"type": "array", "items": {"type": "string"}, "default": []},
+    "access_requirements": {"type": "array", "items": {"type": "string"}, "default": []},
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "reads_private_data": {"type": "boolean", "default": false},
+        "writes_external_state": {"type": "boolean", "default": false},
+        "executes_code": {"type": "boolean", "default": false},
+        "uses_credentials": {"type": "boolean", "default": false}
+      },
+      "additionalProperties": false
+    },
+    "guardian_mapping": {"type": "array", "items": {"type": "string"}, "default": []},
+    "elysia_role": {"type": "string"},
+    "expected_usefulness": {"type": "number", "minimum": 0, "maximum": 1},
+    "estimated_risk": {"type": "number", "minimum": 0, "maximum": 1},
+    "estimated_cost": {"type": "number", "minimum": 0, "maximum": 1},
+    "interoperability": {"type": "number", "minimum": 0, "maximum": 1},
+    "proposed_experiment": {"type": "string", "minLength": 1},
+    "success_criteria": {"type": "array", "items": {"type": "string"}, "default": []},
+    "rollback": {"type": "string"},
+    "erebus_review_packet": {"type": ["string", "null"]},
+    "human_approval_required": {"type": "boolean", "default": false},
+    "status": {
+      "enum": ["candidate", "verified", "proposed", "sandboxed", "adopted", "rejected", "archived"]
+    }
+  },
+  "additionalProperties": false
+}

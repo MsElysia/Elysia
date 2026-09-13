@@ -1,0 +1,69 @@
+{
+  "schema_version": "0.1",
+  "runtime_enabled": false,
+  "purpose": "Routing metadata only. This file grants no credentials, permissions, or execution authority.",
+  "workers": [
+    {
+      "worker_id": "chatgpt_supervisor",
+      "provider": "openai_chatgpt",
+      "classes": ["research", "architecture", "governance", "corpus_recovery", "task_planning", "github_control_plane"],
+      "local_files": false,
+      "repository_write": "isolated_branches_only",
+      "strengths": ["cross-source synthesis", "requirements recovery", "governance mapping", "task decomposition"],
+      "verification_independence": ["cursor", "codex", "ci"],
+      "availability": "configured",
+      "risk_ceiling": "automatic_with_verification"
+    },
+    {
+      "worker_id": "codex_engineer",
+      "provider": "openai_codex",
+      "classes": ["implementation", "tests", "refactor", "code_review", "security_review"],
+      "local_files": false,
+      "repository_write": "isolated_branch_or_worktree",
+      "strengths": ["repository engineering", "test-repair loops", "independent code review"],
+      "verification_independence": ["cursor", "chatgpt_supervisor", "ci"],
+      "availability": "adapter_pending",
+      "risk_ceiling": "automatic_with_verification"
+    },
+    {
+      "worker_id": "cursor_archaeologist",
+      "provider": "cursor",
+      "classes": ["local_archaeology", "local_build", "implementation", "tests", "subagent_coordination"],
+      "local_files": true,
+      "repository_write": "isolated_branch_or_worktree",
+      "strengths": ["legacy folder access", "local state inspection", "specialized subagents"],
+      "verification_independence": ["codex", "chatgpt_supervisor", "ci"],
+      "availability": "local_connection_pending",
+      "risk_ceiling": "automatic_with_verification"
+    },
+    {
+      "worker_id": "local_batch_worker",
+      "provider": "local_model",
+      "classes": ["classification", "embedding", "duplicate_detection", "log_triage"],
+      "local_files": true,
+      "repository_write": "none",
+      "strengths": ["cheap high-volume bounded processing"],
+      "verification_independence": ["chatgpt_supervisor", "cursor", "codex"],
+      "availability": "optional_not_configured",
+      "risk_ceiling": "fully_automatic_read_only"
+    },
+    {
+      "worker_id": "github_ci",
+      "provider": "github_actions",
+      "classes": ["mechanical_verification", "tests", "schema_validation", "safety_gate"],
+      "local_files": false,
+      "repository_write": "none",
+      "strengths": ["repeatable mechanical checks", "provider-independent evidence"],
+      "verification_independence": ["chatgpt_supervisor", "cursor", "codex"],
+      "availability": "configured_on_experimental_branch",
+      "risk_ceiling": "fully_automatic"
+    }
+  ],
+  "routing_invariants": [
+    "A worker must not verify its own consequential runtime write as the sole verifier.",
+    "Local-file-required tasks must remain blocked until a local-capable worker is configured.",
+    "Unavailable workers are never treated as successful routes.",
+    "Worker metadata cannot expand the authority encoded in task packets or governance gates.",
+    "Production merge, deployment, destructive archival, new private-data scope, and Constitution changes remain human/governance gated."
+  ]
+}

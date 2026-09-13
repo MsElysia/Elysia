@@ -1,0 +1,67 @@
+{
+  "task_id": "ELY-TASK-000009",
+  "worker": {
+    "provider": "chatgpt",
+    "role": "guardian-verifier",
+    "model": null,
+    "run_id": null
+  },
+  "outcome": "completed",
+  "summary": "Independent static verification found that the task-state policy regression file was named task_state_machine_tests.py, which does not match pytest's default test_*.py discovery pattern used by Elysia Autopilot CI. Added a pytest-discoverable test_task_state_machine.py containing the policy coverage plus terminal/unknown-state regressions. The original evidence file was preserved; no runtime or provider behavior was enabled.",
+  "files_read": [
+    ".github/workflows/elysia-autopilot-ci.yml",
+    "elysia_collective_seed/autopilot/task_state_machine.py",
+    "elysia_collective_seed/autopilot/task_state_machine_tests.py",
+    "elysia_collective_seed/autopilot/completion_validator.py",
+    "elysia_collective_seed/autopilot/test_completion_validator.py"
+  ],
+  "files_changed": [
+    "elysia_collective_seed/autopilot/test_task_state_machine.py",
+    "elysia_collective_seed/autopilot/handoffs/ELY-TASK-000009-test-discovery-verification.json"
+  ],
+  "commits": [
+    "7010ca75d69384797ba435561957decc0def18f6"
+  ],
+  "pull_requests": ["#12"],
+  "claims": [
+    {
+      "claim": "The state-policy tests now match pytest's default test_*.py collection pattern used by the CI workflow.",
+      "evidence": [
+        ".github/workflows/elysia-autopilot-ci.yml",
+        "elysia_collective_seed/autopilot/test_task_state_machine.py"
+      ],
+      "confidence": 1.0
+    },
+    {
+      "claim": "No runtime activation, provider invocation, network adapter, merge, deployment, or authority expansion was introduced.",
+      "evidence": ["elysia_collective_seed/autopilot/test_task_state_machine.py"],
+      "confidence": 1.0
+    }
+  ],
+  "checks": [
+    {
+      "name": "static_test_discovery_review",
+      "result": "pass",
+      "details": "CI invokes `python -m pytest -q elysia_collective_seed`; the new filename begins with test_ and is therefore discoverable under pytest defaults."
+    },
+    {
+      "name": "executable_ci",
+      "result": "not_run",
+      "details": "The new branch head must pass GitHub Actions before this verification is treated as executable evidence."
+    }
+  ],
+  "uncertainties": [
+    "GitHub Actions result for the new branch head was not yet available at handoff creation."
+  ],
+  "risks": [
+    "The older task_state_machine_tests.py remains as historical implementation evidence but is not relied upon for CI collection."
+  ],
+  "blockers": [],
+  "next_recommendation": {
+    "action": "verify",
+    "preferred_role": "guardian-verifier",
+    "task_title": "Verify CI on pytest-discovery repair",
+    "task_objective": "Confirm the new branch head passes Elysia Autopilot CI and that test_task_state_machine.py is collected before wiring completion validation to persistent ledger transitions."
+  },
+  "completed_at": "2026-09-07T14:22:39Z"
+}

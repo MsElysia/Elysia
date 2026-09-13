@@ -1,0 +1,70 @@
+{
+  "task_id": "ELY-TASK-000004",
+  "parent_issue": 8,
+  "role": "guardian-verifier",
+  "status": "partial_pending_execution",
+  "summary": "Independent static verification of the persistent task ledger found two correctness hazards: the original claim path used a read-then-write sequence that was not a safe multi-connection claim primitive, and stale put_task input could reopen a terminal task. The ledger was repaired so renewal and acquisition use conditional atomic UPDATE predicates, stale upserts preserve terminal states, release/reap mutations use ownership/version predicates, and regression coverage now includes independent SQLite connections, same-worker expired reacquisition, and terminal-state preservation.",
+  "defects_found": [
+    {
+      "severity": "high",
+      "defect": "Lease acquisition used SELECT followed by unconditional UPDATE; independent connections could both observe an available task before serialized writes.",
+      "resolution": "Acquisition eligibility is now part of a conditional UPDATE. Renewal is a separate conditional UPDATE and never increments attempts."
+    },
+    {
+      "severity": "high",
+      "defect": "put_task preserved active lease states but not terminal states, so stale queued input could reopen completed/rejected/archived work.",
+      "resolution": "Upsert now preserves active and terminal ledger states."
+    },
+    {
+      "severity": "medium",
+      "defect": "Reap/release used read-then-write ownership assumptions.",
+      "resolution": "Release and reap writes now include current owner/lease predicates and only emit events after a successful row update."
+    }
+  ],
+  "files_changed": [
+    "elysia_collective_seed/autopilot/task_ledger.py",
+    "elysia_collective_seed/autopilot/test_task_ledger.py",
+    "elysia_collective_seed/autopilot/handoffs/ELY-TASK-000004-ledger-verification.json"
+  ],
+  "commits": [
+    "b808886cf04390eb60f1708ca2a83da70e98a3b9",
+    "7c59776864a8dcaced78d92eedfb2a4f04568408",
+    "a60e2bb429ef1407b9b379ffedd32e1899e01af2"
+  ],
+  "checks": [
+    {
+      "name": "independent static concurrency review",
+      "result": "pass_after_repair",
+      "details": "Claim acquisition is now a conditional SQLite UPDATE whose eligibility is checked at write time."
+    },
+    {
+      "name": "terminal-state monotonicity review",
+      "result": "pass_after_repair",
+      "details": "Stale upserts cannot transition completed/rejected/archived tasks back to queued."
+    },
+    {
+      "name": "regression tests committed",
+      "result": "pass",
+      "details": "Added coverage for two independent ledger connections, expired same-worker reacquisition as a new attempt, and stale terminal upserts."
+    },
+    {
+      "name": "test execution",
+      "result": "not_run",
+      "details": "Executable CI/local test evidence is still required before the ledger is integration-ready."
+    }
+  ],
+  "safety": {
+    "provider_invocation": false,
+    "network": false,
+    "subprocess": false,
+    "guardian_runtime_wiring": false,
+    "merge_or_deploy": false
+  },
+  "next_recommendation": {
+    "action": "verify_execution_then_continue",
+    "preferred_role": "guardian-verifier",
+    "task_title": "Execute AUTOPILOT-004 ledger tests and then wire dispatcher-to-ledger claim flow",
+    "task_objective": "Obtain executable test evidence for dispatcher and ledger. If green, add a runtime-disabled orchestration service that dispatches and atomically claims a selected task without invoking any provider."
+  },
+  "completed_at": "2026-09-07T09:21:00Z"
+}

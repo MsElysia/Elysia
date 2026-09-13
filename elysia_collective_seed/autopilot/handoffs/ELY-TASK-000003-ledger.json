@@ -1,0 +1,35 @@
+{
+  "task_id": "ELY-TASK-000003",
+  "parent_issue": 8,
+  "role": "engineer",
+  "status": "completed_pending_verification",
+  "summary": "Implemented a runtime-disabled SQLite task ledger with auditable events and bounded claim/lease semantics so multiple workers cannot silently claim the same task.",
+  "files_changed": [
+    "elysia_collective_seed/autopilot/task_ledger.py",
+    "elysia_collective_seed/autopilot/test_task_ledger.py"
+  ],
+  "evidence": [
+    "TaskLedger persists task payload/status/attempt/claim/lease state in SQLite.",
+    "Claim rejects active leases held by another worker.",
+    "Same-worker renewal extends a lease without incrementing attempts.",
+    "Expired leases can be deterministically reaped and reclaimed.",
+    "Release requires the current lease owner.",
+    "Terminal tasks cannot be claimed.",
+    "Every mutation appends an auditable event record."
+  ],
+  "tests_added": 6,
+  "execution_evidence": "pending CI or independent local execution",
+  "safety": {
+    "provider_invocation": false,
+    "network": false,
+    "subprocess": false,
+    "guardian_runtime_wiring": false,
+    "merge_or_deploy": false
+  },
+  "uncertainties": [
+    "SQLite concurrency behavior should be independently stress-tested before multi-process workers use the ledger.",
+    "Completion-packet validation and verifier-state transitions are not yet wired into the ledger."
+  ],
+  "next_role": "verifier",
+  "next_task": "Independently inspect and execute the task-ledger tests; probe lease expiry, ownership, transaction/concurrency behavior, and schema compatibility before extending dispatcher integration."
+}

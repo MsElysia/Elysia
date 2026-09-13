@@ -59,6 +59,34 @@ BRIDGE_CONTROL_STATE_VALIDATOR = Draft202012Validator(
      "$ref": "#/$defs/bridge_control_state"},
     format_checker=FORMAT_CHECKER,
 )
+GOVERNANCE_CONTROL_V2_VALIDATOR = Draft202012Validator(
+    {"$schema": BRIDGE_SCHEMA["$schema"], "$defs": BRIDGE_SCHEMA["$defs"],
+     "$ref": "#/$defs/governance_control_state_v2"}, format_checker=FORMAT_CHECKER,
+)
+EFFECT_TRANSACTION_VALIDATOR = Draft202012Validator(
+    {"$schema": BRIDGE_SCHEMA["$schema"], "$defs": BRIDGE_SCHEMA["$defs"],
+     "$ref": "#/$defs/effect_transaction"}, format_checker=FORMAT_CHECKER,
+)
+EFFECT_RECEIPT_VALIDATOR = Draft202012Validator(
+    {"$schema": BRIDGE_SCHEMA["$schema"], "$defs": BRIDGE_SCHEMA["$defs"],
+     "$ref": "#/$defs/exact_effect_receipt"}, format_checker=FORMAT_CHECKER,
+)
+MUTATION_RESULT_V2_VALIDATOR = Draft202012Validator(
+    {"$schema": BRIDGE_SCHEMA["$schema"], "$defs": BRIDGE_SCHEMA["$defs"],
+     "$ref": "#/$defs/mutation_result_v2"}, format_checker=FORMAT_CHECKER,
+)
+VERIFIER_CLAIM_VALIDATOR = Draft202012Validator(
+    {"$schema": BRIDGE_SCHEMA["$schema"], "$defs": BRIDGE_SCHEMA["$defs"],
+     "$ref": "#/$defs/verifier_claim"}, format_checker=FORMAT_CHECKER,
+)
+VERIFICATION_RECORD_V2_VALIDATOR = Draft202012Validator(
+    {"$schema": BRIDGE_SCHEMA["$schema"], "$defs": BRIDGE_SCHEMA["$defs"],
+     "$ref": "#/$defs/verification_record_v2"}, format_checker=FORMAT_CHECKER,
+)
+PROGRESS_TOKEN_V2_VALIDATOR = Draft202012Validator(
+    {"$schema": BRIDGE_SCHEMA["$schema"], "$defs": BRIDGE_SCHEMA["$defs"],
+     "$ref": "#/$defs/progress_token_v2"}, format_checker=FORMAT_CHECKER,
+)
 
 COMPOSED_MEDIATED_BOUNDARIES = frozenset({
     "live_mutation",
@@ -1310,3 +1338,522 @@ def classify_unmediated_output(*, verification_pass=False):
         "external_write_enforcement": "NOT_ENFORCED",
         "authorized_progress": False,
     }
+
+
+# Governance-v2 result/verification/progression reference path.  These records
+# intentionally do not integrate a writer; they define the transaction that a
+# future trusted adapter must implement atomically.
+def _validate_v2_control(state, trusted_digest):
+    if (not GOVERNANCE_CONTROL_V2_VALIDATOR.is_valid(state)
+            or type(trusted_digest) is not str or _digest(state) != trusted_digest):
+        raise BlueprintError("governance_control_state_not_current_or_not_pinned")
+    history = state["state_history"]
+    expected_generations = list(range(1, state["state_generation"]))
+    if [entry["state_generation"] for entry in history] != expected_generations:
+        raise BlueprintError("control_state_ancestry_discontinuous")
+    if state["state_generation"] == 1:
+        if history or state["previous_state_digest"] != "0" * 64:
+            raise BlueprintError("control_state_ancestry_discontinuous")
+    elif (not history
+          or history[-1]["state_digest"] != state["previous_state_digest"]):
+        raise BlueprintError("control_state_ancestry_discontinuous")
+    return state
+
+
+def _v2_principal(control, principal, role):
+    if not isinstance(principal, Mapping):
+        raise BlueprintError("untrusted_principal")
+    matches = [item for item in control["principals"]
+               if item["principal_id"] == principal.get("principal_id")
+               and item["principal_generation"] == principal.get("principal_generation")
+               and role in item["roles"]]
+    if len(matches) != 1:
+        raise BlueprintError("untrusted_principal")
+    return matches[0]
+
+
+def _advance_v2(control, **updates):
+    current_digest = _digest(control)
+    advanced = deepcopy(control)
+    advanced["state_generation"] += 1
+    advanced["previous_state_digest"] = current_digest
+    advanced["state_history"].append({
+        "state_generation": control["state_generation"],
+        "state_digest": current_digest,
+    })
+    for key, value in updates.items():
+        advanced[key] = deepcopy(value)
+    if not GOVERNANCE_CONTROL_V2_VALIDATOR.is_valid(advanced):
+        raise BlueprintError("invalid_governance_control_transition")
+    return advanced
+
+
+def canonical_git_result_identity(*, commit_sha, tree_sha, repository_head_sha,
+                                  write_set_digest, effect_digest):
+    """Build a discriminated result identity; commit identity is never an alias."""
+    identity = {
+        "kind": "git_commit", "commit_sha": commit_sha, "tree_sha": tree_sha,
+        "repository_head_sha": repository_head_sha,
+        "write_set_digest": write_set_digest, "effect_digest": effect_digest,
+    }
+    validator = Draft202012Validator({"$schema": BRIDGE_SCHEMA["$schema"],
+        "$defs": BRIDGE_SCHEMA["$defs"], "$ref": "#/$defs/canonical_result_identity"})
+    if not validator.is_valid(identity):
+        raise BlueprintError("invalid_result_identity")
+    if commit_sha != repository_head_sha:
+        raise BlueprintError("commit_head_mismatch")
+    return identity
+
+
+def prepare_effect_transaction(ticket, actual_effect, *, transaction_id,
+                               producer, repository_pre_state_sha,
+                               bridge_control_state, trusted_control_state_digest):
+    """Consume a ticket and append PREPARED in one reference-state transition."""
+    control = _validate_v2_control(bridge_control_state, trusted_control_state_digest)
+    producer_record = _v2_principal(control, producer, "producer")
+    if not TICKET_VALIDATOR.is_valid(ticket):
+        raise BlueprintError("invalid_ticket")
+    unsigned = deepcopy(ticket)
+    if _digest({k: v for k, v in unsigned.items() if k != "state_digest"}) != ticket["state_digest"]:
+        raise BlueprintError("invalid_ticket")
+    identity = ticket_consumption_identity(ticket)
+    if identity not in control["issued_ticket_identities"]:
+        raise BlueprintError("ticket_not_authoritatively_issued")
+    if identity in control["consumed_ticket_identities"]:
+        raise BlueprintError("ticket_replay")
+    if actual_effect != ticket_bound_actual_effect(ticket):
+        raise BlueprintError("BLOCKED_EFFECT_MISMATCH")
+    if repository_pre_state_sha != ticket["mutation_target"]["expected_head_sha"]:
+        raise BlueprintError("stale_repository_pre_state")
+    if any(item["transaction_id"] == transaction_id for item in control["transactions"]):
+        raise BlueprintError("duplicate_transaction")
+    transaction = {
+        "record_type": "EFFECT_TRANSACTION", "record_version": 2,
+        "transaction_id": transaction_id, "state": "PREPARED",
+        "ticket_id": ticket["ticket_id"], "ticket_state_digest": ticket["state_digest"],
+        "ticket_consumption_identity": identity,
+        "admission_record_digest": ticket["admission_record_digest"],
+        "classification_digest": ticket["classification_digest"],
+        "mutation_target": deepcopy(ticket["mutation_target"]),
+        "write_set_digest": ticket["write_set_digest"],
+        "staged_patch_digest": ticket["staged_patch_digest"],
+        "producer": {"principal_id": producer_record["principal_id"],
+                     "principal_generation": producer_record["principal_generation"],
+                     "independence_group": producer_record["independence_group"]},
+        "observer": None, "observer_provenance": None,
+        "observation_generation": None, "observed_at": None,
+        "repository_pre_state_sha": repository_pre_state_sha,
+        "actual_effect_digest": _digest(actual_effect), "receipt": None,
+        "result": None, "transaction_digest": "0" * 64,
+    }
+    transaction["transaction_digest"] = _digest({k: v for k, v in transaction.items()
+                                                  if k != "transaction_digest"})
+    if not EFFECT_TRANSACTION_VALIDATOR.is_valid(transaction):
+        raise BlueprintError("invalid_effect_transaction")
+    advanced = _advance_v2(
+        control,
+        consumed_ticket_identities=control["consumed_ticket_identities"] + [identity],
+        transactions=control["transactions"] + [transaction],
+    )
+    return transaction, advanced
+
+
+def observe_effect_transaction(transaction, *, observer, outcome,
+                               observed_pre_state_sha, observed_post_state,
+                               result_identity,
+                               evidence_persisted, observed_at,
+                               bridge_control_state,
+                               trusted_control_state_digest):
+    """Append a trusted exact-effect observation and classify crash outcomes."""
+    control = _validate_v2_control(bridge_control_state, trusted_control_state_digest)
+    registered = _v2_principal(control, observer, "effect_observer")
+    stored = [item for item in control["transactions"]
+              if item["transaction_id"] == transaction.get("transaction_id")]
+    if len(stored) != 1 or stored[0] != transaction or transaction["state"] != "PREPARED":
+        raise BlueprintError("transaction_not_current_prepared")
+    if observed_pre_state_sha != transaction["repository_pre_state_sha"]:
+        raise BlueprintError("concurrent_repository_mutation")
+    if outcome not in {"succeeded", "failed", "partial", "ambiguous"}:
+        raise BlueprintError("invalid_observed_outcome")
+    if type(evidence_persisted) is not bool:
+        raise BlueprintError("invalid_evidence_status")
+    if outcome == "succeeded":
+        validator = Draft202012Validator({"$schema": BRIDGE_SCHEMA["$schema"],
+            "$defs": BRIDGE_SCHEMA["$defs"], "$ref": "#/$defs/canonical_result_identity"})
+        if not validator.is_valid(result_identity):
+            raise BlueprintError("invalid_result_identity")
+        if (result_identity["write_set_digest"] != transaction["write_set_digest"] or
+                result_identity["effect_digest"] != transaction["actual_effect_digest"]):
+            raise BlueprintError("effect_result_digest_mismatch")
+        if (result_identity["kind"] == "git_commit"
+                and result_identity["commit_sha"] != result_identity["repository_head_sha"]):
+            raise BlueprintError("commit_head_mismatch")
+        expected_post = {
+            "commit_sha": result_identity.get("commit_sha"),
+            "tree_sha": result_identity.get("tree_sha"),
+            "repository_head_sha": result_identity["repository_head_sha"],
+            "write_set_digest": result_identity["write_set_digest"],
+            "effect_digest": result_identity["effect_digest"],
+        }
+        if observed_post_state != expected_post:
+            raise BlueprintError("commit_tree_or_effect_observation_mismatch")
+    elif result_identity is not None:
+        raise BlueprintError("result_identity_for_non_success")
+    elif observed_post_state is not None:
+        raise BlueprintError("post_state_for_non_success")
+    if outcome == "partial":
+        state = "QUARANTINED"
+    elif outcome == "ambiguous":
+        state = "RECONCILIATION_REQUIRED"
+    elif not evidence_persisted:
+        state = "QUARANTINED"
+    elif outcome == "failed":
+        state = "QUARANTINED"
+    else:
+        state = "OBSERVED_SUCCEEDED"
+    receipt = {
+        "record_type": "EXACT_EFFECT_RECEIPT", "record_version": 2,
+        "transaction_id": transaction["transaction_id"],
+        "ticket_id": transaction["ticket_id"],
+        "ticket_state_digest": transaction["ticket_state_digest"],
+        "ticket_consumption_identity": transaction["ticket_consumption_identity"],
+        "admission_record_digest": transaction["admission_record_digest"],
+        "classification_digest": transaction["classification_digest"],
+        "mutation_target": deepcopy(transaction["mutation_target"]),
+        "write_set_digest": transaction["write_set_digest"],
+        "staged_patch_digest": transaction["staged_patch_digest"],
+        "actual_effect_digest": transaction["actual_effect_digest"],
+        "repository_pre_state_sha": observed_pre_state_sha,
+        "producer": deepcopy(transaction["producer"]),
+        "observer": {"principal_id": registered["principal_id"],
+                     "principal_generation": registered["principal_generation"],
+                     "independence_group": registered["independence_group"]},
+        "observer_provenance": deepcopy(registered["provenance"]),
+        "observation_generation": control["state_generation"] + 1,
+        "observed_at": observed_at,
+        "outcome": outcome, "result_identity": deepcopy(result_identity),
+        "observed_post_state": deepcopy(observed_post_state),
+        "evidence_persisted": evidence_persisted, "receipt_digest": "0" * 64,
+    }
+    receipt["receipt_digest"] = _digest({k: v for k, v in receipt.items()
+                                         if k != "receipt_digest"})
+    if not EFFECT_RECEIPT_VALIDATOR.is_valid(receipt):
+        raise BlueprintError("invalid_effect_receipt")
+    updated = deepcopy(transaction)
+    updated.update(
+        state=state, receipt=receipt, observer=deepcopy(receipt["observer"]),
+        observer_provenance=deepcopy(receipt["observer_provenance"]),
+        observation_generation=receipt["observation_generation"],
+        observed_at=receipt["observed_at"],
+    )
+    updated["transaction_digest"] = _digest({k: v for k, v in updated.items()
+                                              if k != "transaction_digest"})
+    txs = [updated if item["transaction_id"] == updated["transaction_id"] else item
+           for item in control["transactions"]]
+    return updated, _advance_v2(control, transactions=txs)
+
+
+def finalize_effect_transaction(transaction, *, ticket_finalization_succeeded,
+                                bridge_control_state, trusted_control_state_digest):
+    """Finalize only persisted success evidence; otherwise require reconciliation."""
+    control = _validate_v2_control(bridge_control_state, trusted_control_state_digest)
+    stored = [item for item in control["transactions"]
+              if item["transaction_id"] == transaction.get("transaction_id")]
+    if len(stored) != 1 or stored[0] != transaction:
+        raise BlueprintError("transaction_not_current")
+    if transaction["state"] != "OBSERVED_SUCCEEDED":
+        raise BlueprintError("transaction_not_finalizable")
+    updated = deepcopy(transaction)
+    if not ticket_finalization_succeeded:
+        updated["state"] = "RECONCILIATION_REQUIRED"
+    else:
+        receipt = transaction["receipt"]
+        result = {
+            "record_type": "MUTATION_RESULT", "record_version": 2,
+            "transaction_id": transaction["transaction_id"],
+            "ticket_id": transaction["ticket_id"],
+            "ticket_state_digest": transaction["ticket_state_digest"],
+            "ticket_consumption_identity": transaction["ticket_consumption_identity"],
+            "admission_record_digest": transaction["admission_record_digest"],
+            "classification_digest": transaction["classification_digest"],
+            "mutation_target": deepcopy(transaction["mutation_target"]),
+            "write_set_digest": transaction["write_set_digest"],
+            "staged_patch_digest": transaction["staged_patch_digest"],
+            "actual_effect_digest": transaction["actual_effect_digest"],
+            "effect_receipt_digest": receipt["receipt_digest"],
+            "producer": deepcopy(transaction["producer"]),
+            "observer": deepcopy(receipt["observer"]),
+            "observer_provenance": deepcopy(receipt["observer_provenance"]),
+            "observation_generation": receipt["observation_generation"],
+            "observed_at": receipt["observed_at"],
+            "result_identity": deepcopy(receipt["result_identity"]),
+            "authority_state": "EXECUTED_PENDING_VERIFICATION",
+        }
+        result["result_record_digest"] = _digest(result)
+        updated.update(state="FINALIZED", result=result)
+    updated["transaction_digest"] = _digest({k: v for k, v in updated.items()
+                                              if k != "transaction_digest"})
+    txs = [updated if item["transaction_id"] == updated["transaction_id"] else item
+           for item in control["transactions"]]
+    return updated.get("result"), updated, _advance_v2(control, transactions=txs)
+
+
+def _validate_v2_result(result):
+    if not MUTATION_RESULT_V2_VALIDATOR.is_valid(result):
+        raise BlueprintError("trusted_v2_mutation_result_required")
+    unsigned = deepcopy(result)
+    supplied = unsigned.pop("result_record_digest")
+    if _digest(unsigned) != supplied:
+        raise BlueprintError("invalid_mutation_result_digest")
+    return result
+
+
+def issue_verifier_claim(mutation_result, *, claim_id, verifier, task_id,
+                         evidence_refs, test_run_id, verification_generation,
+                         issued_at, expires_at, bridge_control_state,
+                         trusted_control_state_digest):
+    control = _validate_v2_control(bridge_control_state, trusted_control_state_digest)
+    _validate_v2_result(mutation_result)
+    registered = _v2_principal(control, verifier, "verifier")
+    producer = mutation_result.get("producer", {})
+    if registered["principal_id"] == producer.get("principal_id"):
+        raise BlueprintError("producer_cannot_verify_own_result")
+    if registered["independence_group"] == producer.get("independence_group"):
+        raise BlueprintError("verifier_not_independent")
+    observer = mutation_result["observer"]
+    if (registered["principal_id"] == observer["principal_id"]
+            or registered["independence_group"] == observer["independence_group"]):
+        raise BlueprintError("verifier_not_independent_from_observer")
+    if claim_id in control["issued_claim_ids"]:
+        raise BlueprintError("duplicate_verifier_claim")
+    if _time(expires_at) <= _time(issued_at):
+        raise BlueprintError("invalid_claim_window")
+    claim = {
+        "record_type": "VERIFIER_CLAIM", "record_version": 2,
+        "claim_id": claim_id, "mutation_result_digest": mutation_result["result_record_digest"],
+        "task_id": task_id, "ticket_id": mutation_result["ticket_id"],
+        "ticket_state_digest": mutation_result["ticket_state_digest"],
+        "ticket_consumption_identity": mutation_result["ticket_consumption_identity"],
+        "admission_record_digest": mutation_result["admission_record_digest"],
+        "classification_digest": mutation_result["classification_digest"],
+        "effect_receipt_digest": mutation_result["effect_receipt_digest"],
+        "actual_effect_digest": mutation_result["actual_effect_digest"],
+        "evidence_refs": list(_refs(evidence_refs, "verification_evidence_refs")),
+        "test_run_id": test_run_id,
+        "verification_generation": verification_generation,
+        "result_identity": deepcopy(mutation_result["result_identity"]),
+        "verifier": {"principal_id": registered["principal_id"],
+                     "principal_generation": registered["principal_generation"],
+                     "independence_group": registered["independence_group"]},
+        "governance_generation": control["governance_generation"],
+        "control_state_generation": control["state_generation"],
+        "issued_at": issued_at, "expires_at": expires_at, "claim_digest": "0" * 64,
+    }
+    claim["claim_digest"] = _digest({k: v for k, v in claim.items() if k != "claim_digest"})
+    if not VERIFIER_CLAIM_VALIDATOR.is_valid(claim):
+        raise BlueprintError("invalid_verifier_claim")
+    advanced = _advance_v2(
+        control,
+        issued_claim_ids=control["issued_claim_ids"] + [claim_id],
+        verifier_claims=control["verifier_claims"] + [claim],
+    )
+    return claim, advanced
+
+
+def record_verification_v2(mutation_result, claim, *, verdict, observed_result_identity,
+                           verified_at, bridge_control_state,
+                           trusted_control_state_digest):
+    control = _validate_v2_control(bridge_control_state, trusted_control_state_digest)
+    _validate_v2_result(mutation_result)
+    if not VERIFIER_CLAIM_VALIDATOR.is_valid(claim):
+        raise BlueprintError("trusted_verifier_claim_required")
+    unsigned_claim = deepcopy(claim)
+    supplied_claim_digest = unsigned_claim.pop("claim_digest")
+    if (_digest(unsigned_claim) != supplied_claim_digest
+            or claim["claim_id"] not in control["issued_claim_ids"]
+            or claim not in control["verifier_claims"]):
+        raise BlueprintError("trusted_verifier_claim_required")
+    if claim["claim_id"] in control["consumed_claim_ids"]:
+        raise BlueprintError("verification_claim_replay")
+    if (claim["governance_generation"] != control["governance_generation"]
+            or claim["control_state_generation"] >= control["state_generation"]
+            or _time(verified_at) > _time(claim["expires_at"])):
+        raise BlueprintError("stale_verifier_claim")
+    result_bindings = {
+        "mutation_result_digest": mutation_result["result_record_digest"],
+        "ticket_id": mutation_result["ticket_id"],
+        "ticket_state_digest": mutation_result["ticket_state_digest"],
+        "ticket_consumption_identity": mutation_result["ticket_consumption_identity"],
+        "admission_record_digest": mutation_result["admission_record_digest"],
+        "classification_digest": mutation_result["classification_digest"],
+        "effect_receipt_digest": mutation_result["effect_receipt_digest"],
+        "actual_effect_digest": mutation_result["actual_effect_digest"],
+    }
+    if (any(claim[field] != value for field, value in result_bindings.items())
+            or claim["result_identity"] != mutation_result.get("result_identity")
+            or observed_result_identity != mutation_result.get("result_identity")):
+        raise BlueprintError("verification_result_mismatch")
+    if verdict not in {"PASS", "FAIL"}:
+        raise BlueprintError("verification_record_required")
+    record = {
+        "record_type": "VERIFICATION_RECORD", "record_version": 2,
+        "claim_digest": claim["claim_digest"], "claim_id": claim["claim_id"],
+        "mutation_result_digest": mutation_result["result_record_digest"],
+        "task_id": claim["task_id"], "ticket_id": claim["ticket_id"],
+        "ticket_state_digest": claim["ticket_state_digest"],
+        "ticket_consumption_identity": claim["ticket_consumption_identity"],
+        "admission_record_digest": claim["admission_record_digest"],
+        "classification_digest": claim["classification_digest"],
+        "effect_receipt_digest": claim["effect_receipt_digest"],
+        "actual_effect_digest": claim["actual_effect_digest"],
+        "evidence_refs": deepcopy(claim["evidence_refs"]),
+        "test_run_id": claim["test_run_id"],
+        "verification_generation": claim["verification_generation"],
+        "result_identity": deepcopy(observed_result_identity), "verdict": verdict,
+        "verifier": deepcopy(claim["verifier"]), "verified_at": verified_at,
+        "verification_digest": "0" * 64,
+    }
+    record["verification_digest"] = _digest({k: v for k, v in record.items()
+                                             if k != "verification_digest"})
+    if not VERIFICATION_RECORD_V2_VALIDATOR.is_valid(record):
+        raise BlueprintError("invalid_verification_record")
+    advanced = _advance_v2(
+        control,
+        consumed_claim_ids=control["consumed_claim_ids"] + [claim["claim_id"]],
+        verification_records=control["verification_records"] + [record],
+    )
+    return record, advanced
+
+
+def _validate_verification_v2(record):
+    if not VERIFICATION_RECORD_V2_VALIDATOR.is_valid(record):
+        raise BlueprintError("verification_record_required")
+    unsigned = deepcopy(record)
+    supplied = unsigned.pop("verification_digest")
+    if _digest(unsigned) != supplied:
+        raise BlueprintError("invalid_verification_record_digest")
+    return record
+
+
+def issue_progress_token_v2(mutation_result, verification_record, *, token_id, nonce,
+                            task_id, destination_state, authority, gate_snapshot_digest,
+                            issue_refs=(), trust_anchor_status="UNRESOLVED",
+                            bridge_control_state, trusted_control_state_digest):
+    control = _validate_v2_control(bridge_control_state, trusted_control_state_digest)
+    _validate_v2_result(mutation_result)
+    registered = _v2_principal(control, authority, "progression_authority")
+    _validate_verification_v2(verification_record)
+    if verification_record not in control["verification_records"]:
+        raise BlueprintError("verification_record_not_current")
+    if verification_record.get("verdict") != "PASS":
+        raise BlueprintError("verification_record_required")
+    full_chain = {
+        "mutation_result_digest": mutation_result["result_record_digest"],
+        "ticket_id": mutation_result["ticket_id"],
+        "ticket_state_digest": mutation_result["ticket_state_digest"],
+        "ticket_consumption_identity": mutation_result["ticket_consumption_identity"],
+        "admission_record_digest": mutation_result["admission_record_digest"],
+        "classification_digest": mutation_result["classification_digest"],
+        "effect_receipt_digest": mutation_result["effect_receipt_digest"],
+        "actual_effect_digest": mutation_result["actual_effect_digest"],
+        "result_identity": mutation_result["result_identity"],
+    }
+    if any(verification_record.get(field) != value for field, value in full_chain.items()):
+        raise BlueprintError("verification_result_mismatch")
+    if (verification_record["claim_id"] not in control["consumed_claim_ids"]
+            or mutation_result["ticket_consumption_identity"] not in
+            control["consumed_ticket_identities"]):
+        raise BlueprintError("chain_not_current_or_not_consumed")
+    finalized = [item for item in control["transactions"]
+                 if item["transaction_id"] == mutation_result["transaction_id"]
+                 and item["state"] == "FINALIZED" and item["result"] == mutation_result]
+    if len(finalized) != 1:
+        raise BlueprintError("finalized_transaction_required")
+    if "issue:23" in set(issue_refs):
+        raise BlueprintError("issue_23_human_governance_gate")
+    if destination_state in {"RELEASED", "MERGED", "DEPLOYED"} and trust_anchor_status != "AVAILABLE":
+        raise BlueprintError("issue_31_trust_anchor_unresolved")
+    if destination_state in {"MERGED", "DEPLOYED"}:
+        raise BlueprintError("authorized_progress_is_not_merge_or_deploy")
+    if token_id in control["issued_progress_ids"] or nonce in control["issued_progress_nonces"]:
+        raise BlueprintError("duplicate_progress_identity")
+    token = {
+        "record_type": "PROGRESS_TOKEN", "record_version": 2,
+        "token_id": token_id, "nonce": nonce, "task_id": task_id,
+        "destination_state": destination_state,
+        "mutation_result_digest": mutation_result["result_record_digest"],
+        "transaction_id": mutation_result["transaction_id"],
+        "ticket_id": mutation_result["ticket_id"],
+        "ticket_state_digest": mutation_result["ticket_state_digest"],
+        "ticket_consumption_identity": mutation_result["ticket_consumption_identity"],
+        "admission_record_digest": mutation_result["admission_record_digest"],
+        "classification_digest": mutation_result["classification_digest"],
+        "mutation_target": deepcopy(mutation_result["mutation_target"]),
+        "write_set_digest": mutation_result["write_set_digest"],
+        "staged_patch_digest": mutation_result["staged_patch_digest"],
+        "actual_effect_digest": mutation_result["actual_effect_digest"],
+        "effect_receipt_digest": mutation_result["effect_receipt_digest"],
+        "claim_id": verification_record["claim_id"],
+        "claim_digest": verification_record["claim_digest"],
+        "verification_generation": verification_record["verification_generation"],
+        "test_run_id": verification_record["test_run_id"],
+        "evidence_refs": deepcopy(verification_record["evidence_refs"]),
+        "verification_digest": verification_record["verification_digest"],
+        "result_identity": deepcopy(mutation_result["result_identity"]),
+        "governance_generation": control["governance_generation"],
+        "control_state_generation": control["state_generation"] + 1,
+        "gate_snapshot_digest": gate_snapshot_digest,
+        "authorized_by": {"principal_id": registered["principal_id"],
+                          "principal_generation": registered["principal_generation"],
+                          "independence_group": registered["independence_group"]},
+        "token_digest": "0" * 64,
+    }
+    token["token_digest"] = _digest({k: v for k, v in token.items() if k != "token_digest"})
+    if not PROGRESS_TOKEN_V2_VALIDATOR.is_valid(token):
+        raise BlueprintError("invalid_progress_token")
+    advanced = _advance_v2(control,
+        issued_progress_ids=control["issued_progress_ids"] + [token_id],
+        issued_progress_nonces=control["issued_progress_nonces"] + [nonce],
+        progress_tokens=control["progress_tokens"] + [token])
+    return token, advanced
+
+
+def consume_progress_token_v2(token, *, task_id, destination_state,
+                              current_governance_generation, current_gate_snapshot_digest,
+                              bridge_control_state, trusted_control_state_digest):
+    control = _validate_v2_control(bridge_control_state, trusted_control_state_digest)
+    if not PROGRESS_TOKEN_V2_VALIDATOR.is_valid(token):
+        raise BlueprintError("trusted_progress_token_required")
+    unsigned = deepcopy(token)
+    supplied = unsigned.pop("token_digest")
+    if (_digest(unsigned) != supplied or token["token_id"] not in control["issued_progress_ids"]
+            or token["nonce"] not in control["issued_progress_nonces"]
+            or token not in control["progress_tokens"]):
+        raise BlueprintError("trusted_progress_token_required")
+    _v2_principal(control, token["authorized_by"], "progression_authority")
+    identity = _digest({"token_id": token["token_id"], "nonce": token["nonce"],
+                        "token_digest": token["token_digest"]})
+    if identity in control["consumed_progress_identities"]:
+        raise BlueprintError("progress_token_replay")
+    if token["task_id"] != task_id:
+        raise BlueprintError("progress_task_mismatch")
+    if token["destination_state"] != destination_state:
+        raise BlueprintError("progress_destination_mismatch")
+    if (token["governance_generation"] != current_governance_generation
+            or current_governance_generation != control["governance_generation"]
+            or token["control_state_generation"] != control["state_generation"]
+            or token["gate_snapshot_digest"] != current_gate_snapshot_digest):
+        raise BlueprintError("stale_progress_governance")
+    if (token["ticket_consumption_identity"] not in control["consumed_ticket_identities"]
+            or token["claim_id"] not in control["consumed_claim_ids"]):
+        raise BlueprintError("chain_not_current_or_not_consumed")
+    finalized = [item for item in control["transactions"]
+                 if item["transaction_id"] == token["transaction_id"]
+                 and item["state"] == "FINALIZED"
+                 and item["result"]["result_record_digest"] == token["mutation_result_digest"]
+                 and item["result"]["effect_receipt_digest"] == token["effect_receipt_digest"]]
+    if len(finalized) != 1:
+        raise BlueprintError("finalized_transaction_required")
+    advanced = _advance_v2(control,
+        consumed_progress_identities=control["consumed_progress_identities"] + [identity])
+    return BridgeDecision("AUTHORIZED_PROGRESS", "single_consumed_governance_transition_only"), advanced

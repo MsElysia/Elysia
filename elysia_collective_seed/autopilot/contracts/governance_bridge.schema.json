@@ -9,7 +9,14 @@
     {"$ref": "#/$defs/verification_evidence"},
     {"$ref": "#/$defs/trusted_task_record"},
     {"$ref": "#/$defs/progression_authorization"},
-    {"$ref": "#/$defs/bridge_control_state"}
+    {"$ref": "#/$defs/bridge_control_state"},
+    {"$ref": "#/$defs/governance_control_state_v2"},
+    {"$ref": "#/$defs/effect_transaction"},
+    {"$ref": "#/$defs/exact_effect_receipt"},
+    {"$ref": "#/$defs/mutation_result_v2"},
+    {"$ref": "#/$defs/verifier_claim"},
+    {"$ref": "#/$defs/verification_record_v2"},
+    {"$ref": "#/$defs/progress_token_v2"}
   ],
   "$defs": {
     "id": {"type": "string", "minLength": 1, "pattern": "^\\S(?:.*\\S)?$"},
@@ -309,6 +316,200 @@
         "bridge_control_state_digest": {"$ref": "#/$defs/digest"},
         "bridge_control_state_generation": {"type": "integer", "minimum": 1},
         "progression_authorization_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "principal_identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["principal_id", "principal_generation", "independence_group"],
+      "properties": {
+        "principal_id": {"$ref": "#/$defs/id"},
+        "principal_generation": {"type": "integer", "minimum": 1},
+        "independence_group": {"$ref": "#/$defs/id"}
+      }
+    },
+    "principal_registration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["principal_id", "principal_generation", "independence_group", "roles", "provenance"],
+      "properties": {
+        "principal_id": {"$ref": "#/$defs/id"},
+        "principal_generation": {"type": "integer", "minimum": 1},
+        "independence_group": {"$ref": "#/$defs/id"},
+        "roles": {"type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"enum": ["producer", "effect_observer", "verifier", "progression_authority"]}},
+        "provenance": {"$ref": "#/$defs/nonempty_refs"}
+      }
+    },
+    "canonical_result_identity": {
+      "oneOf": [{
+        "type": "object", "additionalProperties": false,
+        "required": ["kind", "commit_sha", "tree_sha", "repository_head_sha", "write_set_digest", "effect_digest"],
+        "properties": {
+          "kind": {"const": "git_commit"},
+          "commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "tree_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "repository_head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "write_set_digest": {"$ref": "#/$defs/digest"},
+          "effect_digest": {"$ref": "#/$defs/digest"}
+        }
+      }, {
+        "type": "object", "additionalProperties": false,
+        "required": ["kind", "patch_digest", "repository_head_sha", "write_set_digest", "effect_digest"],
+        "properties": {
+          "kind": {"const": "patch"}, "patch_digest": {"$ref": "#/$defs/digest"},
+          "repository_head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "write_set_digest": {"$ref": "#/$defs/digest"}, "effect_digest": {"$ref": "#/$defs/digest"}
+        }
+      }]
+    },
+    "nullable_result_identity": {"oneOf": [{"$ref": "#/$defs/canonical_result_identity"}, {"type": "null"}]},
+    "exact_effect_receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["record_type", "record_version", "transaction_id", "ticket_id", "ticket_state_digest", "ticket_consumption_identity", "admission_record_digest", "classification_digest", "mutation_target", "write_set_digest", "staged_patch_digest", "actual_effect_digest", "repository_pre_state_sha", "producer", "observer", "observer_provenance", "observation_generation", "observed_at", "outcome", "result_identity", "observed_post_state", "evidence_persisted", "receipt_digest"],
+      "properties": {
+        "record_type": {"const": "EXACT_EFFECT_RECEIPT"}, "record_version": {"const": 2},
+        "transaction_id": {"$ref": "#/$defs/id"}, "ticket_id": {"$ref": "#/$defs/id"},
+        "ticket_state_digest": {"$ref": "#/$defs/digest"}, "ticket_consumption_identity": {"$ref": "#/$defs/digest"},
+        "admission_record_digest": {"$ref": "#/$defs/digest"}, "classification_digest": {"$ref": "#/$defs/digest"},
+        "mutation_target": {"$ref": "#/$defs/mutation_target"},
+        "write_set_digest": {"$ref": "#/$defs/digest"}, "staged_patch_digest": {"$ref": "#/$defs/digest"},
+        "actual_effect_digest": {"$ref": "#/$defs/digest"},
+        "repository_pre_state_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "producer": {"$ref": "#/$defs/principal_identity"},
+        "observer": {"$ref": "#/$defs/principal_identity"},
+        "observer_provenance": {"$ref": "#/$defs/nonempty_refs"},
+        "observation_generation": {"type": "integer", "minimum": 1},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "outcome": {"enum": ["succeeded", "failed", "partial", "ambiguous"]},
+        "result_identity": {"$ref": "#/$defs/nullable_result_identity"},
+        "observed_post_state": {"type": ["object", "null"]},
+        "evidence_persisted": {"type": "boolean"}, "receipt_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "mutation_result_v2": {
+      "type": "object", "additionalProperties": false,
+      "required": ["record_type", "record_version", "transaction_id", "ticket_id", "ticket_state_digest", "ticket_consumption_identity", "admission_record_digest", "classification_digest", "mutation_target", "write_set_digest", "staged_patch_digest", "actual_effect_digest", "effect_receipt_digest", "producer", "observer", "observer_provenance", "observation_generation", "observed_at", "result_identity", "authority_state", "result_record_digest"],
+      "properties": {
+        "record_type": {"const": "MUTATION_RESULT"}, "record_version": {"const": 2},
+        "transaction_id": {"$ref": "#/$defs/id"}, "ticket_id": {"$ref": "#/$defs/id"},
+        "ticket_state_digest": {"$ref": "#/$defs/digest"}, "ticket_consumption_identity": {"$ref": "#/$defs/digest"},
+        "admission_record_digest": {"$ref": "#/$defs/digest"}, "classification_digest": {"$ref": "#/$defs/digest"},
+        "mutation_target": {"$ref": "#/$defs/mutation_target"},
+        "write_set_digest": {"$ref": "#/$defs/digest"}, "staged_patch_digest": {"$ref": "#/$defs/digest"},
+        "actual_effect_digest": {"$ref": "#/$defs/digest"}, "effect_receipt_digest": {"$ref": "#/$defs/digest"},
+        "producer": {"$ref": "#/$defs/principal_identity"}, "observer": {"$ref": "#/$defs/principal_identity"},
+        "observer_provenance": {"$ref": "#/$defs/nonempty_refs"},
+        "observation_generation": {"type": "integer", "minimum": 1}, "observed_at": {"type": "string", "format": "date-time"},
+        "result_identity": {"$ref": "#/$defs/canonical_result_identity"},
+        "authority_state": {"const": "EXECUTED_PENDING_VERIFICATION"}, "result_record_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "effect_transaction": {
+      "type": "object", "additionalProperties": false,
+      "required": ["record_type", "record_version", "transaction_id", "state", "ticket_id", "ticket_state_digest", "ticket_consumption_identity", "admission_record_digest", "classification_digest", "mutation_target", "write_set_digest", "staged_patch_digest", "producer", "observer", "observer_provenance", "observation_generation", "observed_at", "repository_pre_state_sha", "actual_effect_digest", "receipt", "result", "transaction_digest"],
+      "properties": {
+        "record_type": {"const": "EFFECT_TRANSACTION"}, "record_version": {"const": 2},
+        "transaction_id": {"$ref": "#/$defs/id"},
+        "state": {"enum": ["PREPARED", "OBSERVED_SUCCEEDED", "FINALIZED", "QUARANTINED", "RECONCILIATION_REQUIRED"]},
+        "ticket_id": {"$ref": "#/$defs/id"}, "ticket_state_digest": {"$ref": "#/$defs/digest"},
+        "ticket_consumption_identity": {"$ref": "#/$defs/digest"},
+        "admission_record_digest": {"$ref": "#/$defs/digest"},
+        "classification_digest": {"$ref": "#/$defs/digest"}, "mutation_target": {"$ref": "#/$defs/mutation_target"},
+        "write_set_digest": {"$ref": "#/$defs/digest"}, "staged_patch_digest": {"$ref": "#/$defs/digest"},
+        "producer": {"$ref": "#/$defs/principal_identity"},
+        "observer": {"oneOf": [{"$ref": "#/$defs/principal_identity"}, {"type": "null"}]},
+        "observer_provenance": {"oneOf": [{"$ref": "#/$defs/nonempty_refs"}, {"type": "null"}]},
+        "observation_generation": {"type": ["integer", "null"], "minimum": 1},
+        "observed_at": {"oneOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
+        "repository_pre_state_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "actual_effect_digest": {"$ref": "#/$defs/digest"},
+        "receipt": {"oneOf": [{"$ref": "#/$defs/exact_effect_receipt"}, {"type": "null"}]},
+        "result": {"type": ["object", "null"]}, "transaction_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "verifier_claim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["record_type", "record_version", "claim_id", "task_id", "mutation_result_digest", "ticket_id", "ticket_state_digest", "ticket_consumption_identity", "admission_record_digest", "classification_digest", "effect_receipt_digest", "actual_effect_digest", "evidence_refs", "test_run_id", "verification_generation", "result_identity", "verifier", "governance_generation", "control_state_generation", "issued_at", "expires_at", "claim_digest"],
+      "properties": {
+        "record_type": {"const": "VERIFIER_CLAIM"}, "record_version": {"const": 2},
+        "claim_id": {"$ref": "#/$defs/id"}, "task_id": {"$ref": "#/$defs/id"},
+        "mutation_result_digest": {"$ref": "#/$defs/digest"},
+        "ticket_id": {"$ref": "#/$defs/id"}, "ticket_state_digest": {"$ref": "#/$defs/digest"},
+        "ticket_consumption_identity": {"$ref": "#/$defs/digest"},
+        "admission_record_digest": {"$ref": "#/$defs/digest"}, "classification_digest": {"$ref": "#/$defs/digest"},
+        "effect_receipt_digest": {"$ref": "#/$defs/digest"}, "actual_effect_digest": {"$ref": "#/$defs/digest"},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_refs"}, "test_run_id": {"$ref": "#/$defs/id"},
+        "verification_generation": {"type": "integer", "minimum": 1},
+        "result_identity": {"$ref": "#/$defs/canonical_result_identity"}, "verifier": {"$ref": "#/$defs/principal_identity"},
+        "governance_generation": {"type": "integer", "minimum": 1}, "control_state_generation": {"type": "integer", "minimum": 1},
+        "issued_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
+        "claim_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "verification_record_v2": {
+      "type": "object", "additionalProperties": false,
+      "required": ["record_type", "record_version", "claim_digest", "claim_id", "task_id", "mutation_result_digest", "ticket_id", "ticket_state_digest", "ticket_consumption_identity", "admission_record_digest", "classification_digest", "effect_receipt_digest", "actual_effect_digest", "evidence_refs", "test_run_id", "verification_generation", "result_identity", "verdict", "verifier", "verified_at", "verification_digest"],
+      "properties": {
+        "record_type": {"const": "VERIFICATION_RECORD"}, "record_version": {"const": 2},
+        "claim_digest": {"$ref": "#/$defs/digest"}, "claim_id": {"$ref": "#/$defs/id"},
+        "task_id": {"$ref": "#/$defs/id"}, "mutation_result_digest": {"$ref": "#/$defs/digest"},
+        "ticket_id": {"$ref": "#/$defs/id"}, "ticket_state_digest": {"$ref": "#/$defs/digest"},
+        "ticket_consumption_identity": {"$ref": "#/$defs/digest"},
+        "admission_record_digest": {"$ref": "#/$defs/digest"}, "classification_digest": {"$ref": "#/$defs/digest"},
+        "effect_receipt_digest": {"$ref": "#/$defs/digest"}, "actual_effect_digest": {"$ref": "#/$defs/digest"},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_refs"}, "test_run_id": {"$ref": "#/$defs/id"},
+        "verification_generation": {"type": "integer", "minimum": 1},
+        "result_identity": {"$ref": "#/$defs/canonical_result_identity"},
+        "verdict": {"enum": ["PASS", "FAIL"]}, "verifier": {"$ref": "#/$defs/principal_identity"},
+        "verified_at": {"type": "string", "format": "date-time"}, "verification_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "progress_token_v2": {
+      "type": "object", "additionalProperties": false,
+      "required": ["record_type", "record_version", "token_id", "nonce", "task_id", "destination_state", "transaction_id", "mutation_result_digest", "ticket_id", "ticket_state_digest", "ticket_consumption_identity", "admission_record_digest", "classification_digest", "mutation_target", "write_set_digest", "staged_patch_digest", "actual_effect_digest", "effect_receipt_digest", "claim_id", "claim_digest", "verification_generation", "test_run_id", "evidence_refs", "verification_digest", "result_identity", "governance_generation", "control_state_generation", "gate_snapshot_digest", "authorized_by", "token_digest"],
+      "properties": {
+        "record_type": {"const": "PROGRESS_TOKEN"}, "record_version": {"const": 2},
+        "token_id": {"$ref": "#/$defs/id"}, "nonce": {"$ref": "#/$defs/id"}, "task_id": {"$ref": "#/$defs/id"},
+        "destination_state": {"enum": ["AUTHORIZED_PROGRESS", "RELEASED"]},
+        "transaction_id": {"$ref": "#/$defs/id"}, "mutation_result_digest": {"$ref": "#/$defs/digest"},
+        "ticket_id": {"$ref": "#/$defs/id"}, "ticket_state_digest": {"$ref": "#/$defs/digest"},
+        "ticket_consumption_identity": {"$ref": "#/$defs/digest"},
+        "admission_record_digest": {"$ref": "#/$defs/digest"}, "classification_digest": {"$ref": "#/$defs/digest"},
+        "mutation_target": {"$ref": "#/$defs/mutation_target"},
+        "write_set_digest": {"$ref": "#/$defs/digest"}, "staged_patch_digest": {"$ref": "#/$defs/digest"},
+        "actual_effect_digest": {"$ref": "#/$defs/digest"}, "effect_receipt_digest": {"$ref": "#/$defs/digest"},
+        "claim_id": {"$ref": "#/$defs/id"}, "claim_digest": {"$ref": "#/$defs/digest"},
+        "verification_generation": {"type": "integer", "minimum": 1}, "test_run_id": {"$ref": "#/$defs/id"},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_refs"}, "verification_digest": {"$ref": "#/$defs/digest"},
+        "result_identity": {"$ref": "#/$defs/canonical_result_identity"},
+        "governance_generation": {"type": "integer", "minimum": 1}, "gate_snapshot_digest": {"$ref": "#/$defs/digest"},
+        "control_state_generation": {"type": "integer", "minimum": 1},
+        "authorized_by": {"$ref": "#/$defs/principal_identity"}, "token_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "governance_control_state_v2": {
+      "type": "object", "additionalProperties": false,
+      "required": ["record_type", "record_version", "governance_generation", "state_generation", "previous_state_digest", "state_history", "source_refs", "principals", "issued_ticket_identities", "consumed_ticket_identities", "transactions", "issued_claim_ids", "verifier_claims", "consumed_claim_ids", "verification_records", "issued_progress_ids", "issued_progress_nonces", "progress_tokens", "consumed_progress_identities"],
+      "properties": {
+        "record_type": {"const": "BRIDGE_CONTROL_STATE"}, "record_version": {"const": 2},
+        "governance_generation": {"type": "integer", "minimum": 1}, "state_generation": {"type": "integer", "minimum": 1},
+        "previous_state_digest": {"$ref": "#/$defs/digest"},
+        "state_history": {"type": "array", "uniqueItems": true, "items": {
+          "type": "object", "additionalProperties": false,
+          "required": ["state_generation", "state_digest"],
+          "properties": {"state_generation": {"type": "integer", "minimum": 1}, "state_digest": {"$ref": "#/$defs/digest"}}
+        }},
+        "source_refs": {"$ref": "#/$defs/nonempty_refs"},
+        "principals": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/principal_registration"}},
+        "issued_ticket_identities": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/digest"}},
+        "consumed_ticket_identities": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/digest"}},
+        "transactions": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/effect_transaction"}},
+        "issued_claim_ids": {"$ref": "#/$defs/refs"},
+        "verifier_claims": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/verifier_claim"}},
+        "consumed_claim_ids": {"$ref": "#/$defs/refs"},
+        "verification_records": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/verification_record_v2"}},
+        "issued_progress_ids": {"$ref": "#/$defs/refs"}, "issued_progress_nonces": {"$ref": "#/$defs/refs"},
+        "progress_tokens": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/progress_token_v2"}},
+        "consumed_progress_identities": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/digest"}}
       }
     }
   }

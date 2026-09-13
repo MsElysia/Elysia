@@ -582,3 +582,66 @@ coverage of one surface does not change the other surfaces' classifications.
 Current cross-universe enforcement remains `NOT_IMPLEMENTED`.
 
 Issue #23 remains: `GATED — NO SEMANTIC WORK AUTHORIZED`.
+
+## Canonical result, verification, and progress repair
+
+The canonical downstream reference path is now the version-2 path in
+`blueprint.py`. Historical version-1 mutation, verification, and progression
+records remain readable test fixtures only; they cannot be presented to a v2
+transition. A worker report or an unmediated external result may be preserved as
+evidence, but it is never a trusted result or authorized progress.
+
+`BRIDGE_CONTROL_STATE` version 2 contains a pinned governance generation,
+append-only state generation, canonical principal registrations with roles and
+independence groups, issued/consumed identities, and the current transaction
+records. Every returned state appends the prior generation/digest to its history
+and pins `previous_state_digest`; discontinuous or spliced ancestry fails closed.
+Its normative lifecycle is:
+
+`PREPARED -> OBSERVED_SUCCEEDED -> FINALIZED -> verified -> AUTHORIZED_PROGRESS`
+
+Preparing consumes the exact ticket identity and binds the admission, ticket,
+classified write set, staged patch, exact effect digest, producer, and repository
+pre-state in one returned control-state transition. A trusted registered effect
+observer—not the worker—may append an `EXACT_EFFECT_RECEIPT`. The receipt binds
+that pre-state, the observed outcome, and a discriminated post-state identity.
+A Git commit identity carries both commit and tree SHA and requires the observed
+repository head to equal the commit SHA. The identity's write-set and effect
+digests must match the prepared transaction.
+
+Crash and partial-effect handling is normative. Partial/failed mutation or
+missing evidence persistence is `QUARANTINED`; persisted success evidence whose
+ticket finalization fails is `RECONCILIATION_REQUIRED`; an ambiguous crash is
+also `RECONCILIATION_REQUIRED`. None may replay its already consumed ticket.
+Only successful evidence plus ticket finalization creates the immutable v2
+`MUTATION_RESULT`.
+
+The transaction, receipt, and result each carry the ticket ID, ticket state and
+consumption identities, admission and classification digests, full repository /
+worktree / ref / expected-base / expected-head target, write-set and staged-patch
+digests, and exact-effect digest. Receipts and results also bind the registered
+observer's principal, provenance, observation generation, and observation time.
+
+Verification requires a fresh, single-consume `VERIFIER_CLAIM` for that exact
+result. The verifier is a current registered principal and must differ from the
+producer both by canonical principal identity and, where this path requires it,
+independence group. The immutable `VERIFICATION_RECORD` binds claim, result,
+identity, ticket/admission/classification/effect receipt, evidence and test-run
+identities, verification generation, verdict, verifier, and time. Issued claims
+and completed verification records remain in current control state; rehashed
+substitutions are not current records. A PASS boolean is not a record.
+
+Progression requires a single-use token bound to nonce, exact task, destination,
+result, verification record, governance generation, and gate snapshot digest.
+It repeats the full transaction/result/claim/verification chain and must resolve
+to the current consumed ticket, finalized transaction, consumed verifier claim,
+and recorded verification evidence in the pinned control state.
+Changing any binding, consuming twice, or changing the governance generation
+fails closed. Its only ordinary destination is `AUTHORIZED_PROGRESS`; that state
+does not confer merge, deploy, release, repository-write, credential, or gate
+authority. Release progression additionally requires the independently
+available Issue #31 trust anchor, which remains `UNRESOLVED`. Issue #23 remains
+human-governance gated regardless of technical PASS.
+
+This repair is `SPECIFICATION_AND_TEST_ONLY`. Production and cross-universe
+enforcement remain `NOT_IMPLEMENTED`; external writes remain `NOT_ENFORCED`.

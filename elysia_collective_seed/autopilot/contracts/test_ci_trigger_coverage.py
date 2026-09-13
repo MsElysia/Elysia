@@ -41,18 +41,12 @@ POSITIVE_GOVERNANCE_BRANCHES = (
 )
 NEGATIVE_BRANCHES = (
     "feature/random-ui-work",
+    "codex/unrelated-work",
+    "cursor/unrelated-work",
     "foo/governance-test",
     "team/governance-test",
     "team/codex/governance-test",
     "governance-unprefixed",
-)
-
-FORBIDDEN_WRITE_PERMISSION_SNIPPETS = (
-    "contents: write",
-    "pull-requests: write",
-    "actions: write",
-    "deployments: write",
-    "id-token: write",
 )
 
 
@@ -139,11 +133,9 @@ def test_arbitrary_one_segment_governance_prefix_absent(workflow: str) -> None:
 def test_unrelated_branch_negative_fixtures_excluded(workflow: str) -> None:
     push_patterns = _branch_patterns(_section_body(workflow, "push:"))
     pr_patterns = _branch_patterns(_section_body(workflow, "pull_request:"))
-    governance_push = [p for p in push_patterns if "governance" in p]
-    governance_pr = [p for p in pr_patterns if "governance" in p]
     for negative in NEGATIVE_BRANCHES:
-        assert not _matches_any(negative, governance_push), negative
-        assert not _matches_any(negative, governance_pr), negative
+        assert not _matches_any(negative, push_patterns), negative
+        assert not _matches_any(negative, pr_patterns), negative
         assert not _matches_any(negative, list(EXPLICIT_GOVERNANCE_FAMILIES)), negative
 
 
@@ -168,12 +160,11 @@ def test_permissions_remain_contents_read_only(workflow: str) -> None:
     block = _permissions_block(workflow)
     assert "contents: read" in block
     assert "permissions:\n  contents: read\n" in workflow
-    for snippet in FORBIDDEN_WRITE_PERMISSION_SNIPPETS:
-        assert snippet not in workflow, f"workflow must not grant {snippet!r}"
-        assert snippet.lower() not in workflow.lower()
-    for key in ("contents", "pull-requests", "actions", "deployments", "id-token"):
-        assert not re.search(rf"(?m)^\s*{re.escape(key)}\s*:\s*write\s*$", workflow)
-        assert f"{key}:write" not in workflow.replace(" ", "")
+    write_entries = re.findall(
+        r"(?mi)^\s*([a-z0-9-]+)\s*:\s*['\"]?write['\"]?\s*(?:#.*)?$",
+        workflow,
+    )
+    assert not write_entries, f"workflow must not grant write permissions: {write_entries}"
     for item in (
         "pull-requests:",
         "actions:",

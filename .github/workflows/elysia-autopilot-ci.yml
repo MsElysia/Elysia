@@ -6,12 +6,16 @@ on:
       - 'elysia-collective-*'
       - 'autopilot-*'
       - 'codex/governance-checkpoint-contract'
+      # One path segment + /governance-* (codex/governance-*, cursor/governance-*).
+      # GitHub branch globs: '*' does not cross '/', so this stays narrow.
+      - '*/governance-*'
   pull_request:
     branches:
       - main
       - 'elysia-collective-*'
       - 'autopilot-*'
       - 'codex/remote-fix-*'
+      - '*/governance-*'
   workflow_dispatch:
 
 permissions:
@@ -26,6 +30,19 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Assert exact candidate SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ github.event.pull_request.head.sha || github.sha }}"
+          actual="$(git rev-parse HEAD)"
+          echo "expected_candidate_sha=${expected}"
+          echo "actual_checked_out_sha=${actual}"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "Exact candidate SHA mismatch: checked-out HEAD must equal the candidate SHA."
+            exit 1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -64,6 +81,7 @@ jobs:
           tests/test_vega_evidence_binding.py
           tests/test_autopilot_evidence_binding.py
           tests/test_autopilot_claim_policy.py
+          breaker_tests/test_vega_v2_generation.py
 
       - name: Enforce no runtime-enable flag in seed prompt pack
         shell: python

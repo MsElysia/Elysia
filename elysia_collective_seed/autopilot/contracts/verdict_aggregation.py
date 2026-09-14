@@ -1,0 +1,117 @@
+"""Pure exact-SHA verifier verdict aggregation for AUTOPILOT-GOV #46.
+
+This module intentionally accepts only typed records already admitted by a trusted
+caller. It performs no GitHub ingestion, authentication, runtime activation, or
+external I/O. Invalidation/retraction/supersession is audit-only in this first
+product and can never change routing authority.
+"""
+from __future__ import annotations
+from dataclasses import dataclass
+from enum import Enum
+from typing import Iterable, Tuple, Union
+
+class Verdict(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    PENDING = "PENDING"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+
+class RoutingState(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    PENDING = "PENDING"
+    FAIL_CLOSED = "FAIL_CLOSED"
+
+@dataclass(frozen=True, slots=True)
+class VerdictRecord:
+    record_id: str
+    product_sha: str
+    contract: str
+    verifier_id: str
+    verdict: Verdict
+    evidence_ref: str
+
+@dataclass(frozen=True, slots=True)
+class AuditRecord:
+    record_id: str
+    product_sha: str
+    contract: str
+    action: str
+    target_record_id: str
+    evidence_ref: str
+
+Record = Union[VerdictRecord, AuditRecord]
+
+@dataclass(frozen=True, slots=True)
+class AggregationResult:
+    product_sha: str
+    contract: str
+    routing_state: RoutingState
+    conflict: bool
+    history: Tuple[Record, ...]
+    reasons: Tuple[str, ...]
+
+def _record_key(record: Record) -> tuple[str, str, str, str, str, str]:
+    if isinstance(record, VerdictRecord):
+        return (record.product_sha, record.contract, record.record_id, "verdict", record.verifier_id, f"{record.verdict.value}:{record.evidence_ref}")
+    return (record.product_sha, record.contract, record.record_id, "audit", record.action, f"{record.target_record_id}:{record.evidence_ref}")
+
+def _validate_record(record: Record) -> str | None:
+    if type(record) not in (VerdictRecord, AuditRecord):
+        return "untyped_or_unadmitted_record"
+    for value in (record.record_id, record.product_sha, record.contract, record.evidence_ref):
+        if not isinstance(value, str) or not value.strip():
+            return "malformed_record_identity"
+    if isinstance(record, VerdictRecord):
+        if not isinstance(record.verifier_id, str) or not record.verifier_id.strip():
+            return "malformed_verifier_identity"
+        if not isinstance(record.verdict, Verdict):
+            return "unknown_verdict"
+    else:
+        if not isinstance(record.action, str) or not record.action.strip():
+            return "malformed_audit_action"
+        if not isinstance(record.target_record_id, str) or not record.target_record_id.strip():
+            return "malformed_audit_target"
+    return None
+
+def aggregate_verdict(records: Iterable[Record], *, product_sha: str, contract: str) -> AggregationResult:
+    if not isinstance(product_sha, str) or not product_sha.strip():
+        raise ValueError("product_sha must be a non-empty exact SHA")
+    if not isinstance(contract, str) or not contract.strip():
+        raise ValueError("contract must be non-empty")
+    materialized = tuple(records)
+    reasons: list[str] = []
+    seen: dict[str, Record] = {}
+    for record in materialized:
+        problem = _validate_record(record)
+        if problem:
+            reasons.append(problem)
+            continue
+        prior = seen.get(record.record_id)
+        if prior is not None and prior != record:
+            reasons.append(f"conflicting_record_id:{record.record_id}")
+        else:
+            seen[record.record_id] = record
+    history = tuple(sorted(materialized, key=_record_key)) if not any(type(r) not in (VerdictRecord, AuditRecord) for r in materialized) else tuple(materialized)
+    if reasons:
+        return AggregationResult(product_sha, contract, RoutingState.FAIL_CLOSED, True, history, tuple(sorted(set(reasons))))
+    scoped = [r for r in materialized if isinstance(r, VerdictRecord) and r.product_sha == product_sha and r.contract == contract]
+    verdicts = {r.verdict for r in scoped}
+    if Verdict.FAIL in verdicts:
+        state = RoutingState.FAIL
+    elif Verdict.PASS in verdicts:
+        state = RoutingState.PASS
+    else:
+        state = RoutingState.PENDING
+    conflict = Verdict.FAIL in verdicts and any(v != Verdict.FAIL for v in verdicts)
+    return AggregationResult(product_sha, contract, state, conflict, history, ())
+
+def aggregate_candidate_gate(technical_results: Iterable[AggregationResult], *, human_governance_required: bool) -> str:
+    results = tuple(technical_results)
+    if human_governance_required:
+        return "BLOCKED_BY_HUMAN_GOVERNANCE"
+    if any(r.routing_state in (RoutingState.FAIL, RoutingState.FAIL_CLOSED) for r in results):
+        return "BLOCKED_BY_TECHNICAL_VERDICT"
+    if not results or any(r.routing_state is not RoutingState.PASS for r in results):
+        return "PENDING"
+    return "TECHNICALLY_PASSING_NOT_MERGE_AUTHORIZED"

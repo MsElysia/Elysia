@@ -1,9 +1,39 @@
 # Checkpoint governance admission contract
 
-Status: executable normative specification for GitHub Issues #29/#30/#31.
+Status: executable normative specification for GitHub Issues #29/#30/#31/#33.
 This package is not connected to TaskLedger, the scheduler, Guardian, Codex,
 Cursor, Git, or a repository policy service. Passing its tests does not close
 any of those issues or release the Issue #23 gate.
+
+`governance_bridge.schema.json` and `blueprint.py` repair the future integration
+blueprint after independent operational red-team review. They model trusted
+per-attempt admission issuance, content/effect-based authoritative classification,
+canonical exact write-set and staged-patch binding, single-use generation-fenced
+mutation tickets, task/admission ownership, immutable cycle context, mutation
+result and verification identities, unique ticket-consumption tuples, and trusted
+registries in one independently pinned, versioned bridge control state, fail-closed dual-failure handling,
+composed-boundary completeness and the separation between artifact existence,
+technical verification and authorized progress. The authority chain is Admission
+→ Classification → Ticket → Effect → Result → Verification → Authorized Progress,
+with every link referencing the prior immutable digest. They are pure executable
+specifications and do not reserve state, consume a production nonce, write a
+file, claim a task, intercept Git, or authorize an operation.
+
+`mutation_engine._direct_apply_mutation` is classified as `PARTIAL_BOUNDARY`, not
+the first sufficient choke point. The smallest credible future bridge is a
+`COMPOSED_MULTI_BOUNDARY_DESIGN`: admission issuance and objective attachment;
+task/claim and queue attachment; authoritative classification; fenced ticket;
+both live mutation and repository-adapter mediated write checks; evidence capture;
+and a distinct authorized-progress transition. Repository-side enforcement is a
+second required boundary for raw Git/GitHub and credentialed external agents.
+All of those paths remain unimplemented and unprotected here.
+
+The known Phase B inventory includes `mutation.py.apply`,
+`mutation_engine._direct_apply_mutation`,
+`implementer/repo_adapter.apply_patch`, `MutationPublisher.publish_mutation`
+(including its direct `Path.write_text` effects) and
+`MetaCoder.apply_mutation`. It is explicitly non-exhaustive. Every unknown or
+unintegrated mediated writer remains `NOT_ENFORCED`.
 
 ## Problem and authority boundary
 
@@ -21,7 +51,10 @@ contract without replacing, importing, modifying, or certifying that work.
 ## Inputs and decisions
 
 `checkpoint_snapshot.schema.json` defines a **complete** snapshot of gates and
-admitted entities. Gate scope identifies both objectives and branch/PR/SHA
+trusted admission records under `schema_version: 2`. See
+`GOVERNANCE_V2_ADMISSION.md` for versioning, migration, root authority, objective
+and action classification, and the Git-ancestry/governance-lineage distinction.
+Gate scope identifies both objectives and branch/PR/SHA
 lineages. Entity parent links represent task subdivision and restacking; all
 ancestor objective references, lineage references, and explicit gate references
 are unioned. Matching either objective or lineage, or an explicit inherited gate
@@ -127,9 +160,19 @@ write interception or deployment protection in this package. External writers
 must remain a separate blocked acceptance criterion; a required check alone
 would need careful distinction between blocking integration and blocking writes.
 
+Blueprint repair tests similarly validate only reference invariants. A reference
+ticket disposition explicitly says it is not production authority. Actual CAS,
+atomic check-plus-write, durable nonce consumption, restart-safe high-water marks,
+trusted classifier/issuer authentication, repository rules and the Issue #31
+human trust anchor remain `NOT_IMPLEMENTED` or `UNRESOLVED` as applicable.
+Effect-binding tests additionally validate path/operation/patch substitution,
+task/admission and result/verification swaps, partial/crashed evidence states,
+cycle identity and control-state continuity and mediated-writer inventory classification. They do
+not make ordinary filesystem or Git operations transactional.
+
 ## Source and lineage
 
-- [Current checkpoint](https://github.com/MsElysia/Elysia/issues/11#issuecomment-5636666687)
+- [Current checkpoint](https://github.com/MsElysia/Elysia/issues/11#issuecomment-5641159193)
 - [Gate packet](https://github.com/MsElysia/Elysia/issues/29#issuecomment-5638137343)
 - [Human-authenticity refinement](https://github.com/MsElysia/Elysia/issues/29#issuecomment-5638881866)
 - [Checkpoint consumption contract](https://github.com/MsElysia/Elysia/issues/30#issuecomment-5639605013)

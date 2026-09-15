@@ -8,44 +8,54 @@ from jsonschema import Draft202012Validator
 from .checkpoint_reference import SCHEMA, VALIDATOR, evaluate, snapshot_digest
 
 
-BLOCKED = ["claim", "repo_write", "semantic_write", "integration", "merge", "deploy", "external_write"]
+BLOCKED = ["semantic_code_write", "repo_write", "integration", "merge", "deploy", "external_write", "permission_change", "private_data_access"]
+AUTHORITY = {"authority_id": "control-plane", "authority_generation": 1}
 
 
 def machine_state():
     # Synthetic reconstruction of #28/#29 at 9b21e002; generation 1 is a fixture,
     # not an assertion that GitHub already contains a durable numbered gate.
     return {
-        "schema_version": 1, "revision": 1,
+        "schema_version": 2, "snapshot_generation": 1,
         "source_refs": ["https://github.com/MsElysia/Elysia/issues/11#issuecomment-5636666687"],
+        "admission_authorities": [{"authority_id": "control-plane", "authority_kind": "trusted_repository_control_plane", "authority_generation": 1, "source_refs": ["fixture:authority"]}],
         "gates": [{
             "gate_id": "fixture:github:MsElysia/Elysia:29", "generation": 1,
             "kind": "human_governance_required", "state": "active",
             "scope": {"objective_refs": ["github:MsElysia/Elysia:issue:23"],
-                      "lineage_refs": ["autopilot-003-issue23-restack"]},
+                      "lineage_refs": ["branch:autopilot-003-issue23-restack"]},
             "inherit_to_children": True, "blocked_actions": BLOCKED[:],
             "reason": "Unreleased lineage decision",
             "source_refs": ["https://github.com/MsElysia/Elysia/issues/29",
                             "commit:9b21e002a8d65735469e7038a22853a444ee7e1c"],
             "release": None,
         }],
-        "entities": [{
-            "entity_id": "root", "ancestry_kind": "root", "parent_refs": [],
+        "admissions": [{
+            "entity_id": "root", "entity_kind": "objective", "ancestry_kind": "root", "parent_refs": [],
             "objective_refs": ["github:MsElysia/Elysia:issue:23"],
-            "lineage_refs": ["autopilot-003-issue23-restack"],
+            "repository_lineage_refs": ["branch:autopilot-003-issue23-restack"],
+            "governance_lineage_refs": ["governance:issue-23"],
+            "action_classes": BLOCKED + ["static_read", "test_only", "docs_only", "schema_spec_write"],
+            "admission_generation": 1, "admitted_by": AUTHORITY,
+            "admission_source": ["fixture:source"], "admission_evidence": ["fixture:evidence"],
+            "admitted_at": "2026-09-11T00:00:00Z",
             "governance_gate_refs": [],
         }],
+        "migration_provenance": None,
     }
 
 
-def inspect(state, entity="root", action="semantic_write", checkpoint=None, pin=None):
+def inspect(state, entity="root", action="semantic_code_write", checkpoint=None, pin=None):
     return evaluate(state, {"entity_id": entity, "action": action},
                     trusted_current_digest=pin or snapshot_digest(state), checkpoint=checkpoint)
 
 
 def child(name, parents):
-    return {"entity_id": name, "ancestry_kind": "derived" if parents else "root", "parent_refs": parents,
-            "objective_refs": [f"objective:{name}"], "lineage_refs": [f"branch:{name}"],
-            "governance_gate_refs": []}
+    return {"entity_id": name, "entity_kind": "task", "ancestry_kind": "derived" if parents else "root", "parent_refs": parents,
+            "objective_refs": [f"objective:{name}"], "repository_lineage_refs": [f"branch:{name}"],
+            "governance_lineage_refs": [f"governance:{name}"], "action_classes": BLOCKED + ["static_read", "test_only", "docs_only", "schema_spec_write"],
+            "admission_generation": 1, "admitted_by": AUTHORITY, "admission_source": ["fixture:source"],
+            "admission_evidence": ["fixture:evidence"], "admitted_at": "2026-09-11T00:00:00Z", "governance_gate_refs": []}
 
 
 def release_claim(gate):
@@ -76,9 +86,9 @@ def test_checkpoint_omission_conflict_or_owner_claim_cannot_clear_gate(action, c
 def test_child_restack_and_salami_slices_inherit_all_ancestors():
     state = machine_state()
     for i in range(30):
-        state["entities"].append(child(f"slice-{i}", [f"slice-{i-1}" if i else "root"]))
+        state["admissions"].append(child(f"slice-{i}", [f"slice-{i-1}" if i else "root"]))
     # Unsorted storage and renamed child metadata cannot sever graph ancestry.
-    state["entities"].reverse()
+    state["admissions"].reverse()
     for i in range(30):
         assert inspect(state, f"slice-{i}").disposition == "BLOCKED_PENDING_HUMAN_RELEASE"
 
@@ -91,18 +101,18 @@ def test_multiple_parents_and_multiple_gates_union_without_newest_wins():
     state["gates"].append(extra)
     other = child("other-root", [])
     other["governance_gate_refs"] = ["second"]
-    state["entities"] += [other, child("combined", ["root", "other-root"])]
+    state["admissions"] += [other, child("combined", ["root", "other-root"])]
     result = inspect(state, "combined")
     assert result.effective_active_gates == (("fixture:github:MsElysia/Elysia:29", 1), ("second", 7))
 
 
-@pytest.mark.parametrize("preserved", ["objective_refs", "lineage_refs", "governance_gate_refs"])
+@pytest.mark.parametrize("preserved", ["objective_refs", "repository_lineage_refs", "governance_gate_refs"])
 def test_each_independent_scope_match_is_sufficient(preserved):
     state = machine_state()
     node = child("renamed", [])
-    node[preserved] = (state["entities"][0][preserved] if preserved != "governance_gate_refs"
+    node[preserved] = (state["admissions"][0][preserved] if preserved != "governance_gate_refs"
                        else [state["gates"][0]["gate_id"]])
-    state["entities"] = [node]
+    state["admissions"] = [node]
     assert inspect(state, "renamed").disposition == "BLOCKED_PENDING_HUMAN_RELEASE"
 
 
@@ -139,18 +149,18 @@ def test_new_generation_cannot_use_prior_release():
 @pytest.mark.parametrize("mutation", ["remove_gate", "replace_gate", "rename_objective", "erase_ancestry", "old_revision"])
 def test_snapshot_tampering_or_rollback_cannot_match_independent_current_pin(mutation):
     state = machine_state()
-    state["entities"].append(child("descendant", ["root"]))
+    state["admissions"].append(child("descendant", ["root"]))
     pin = snapshot_digest(state)
     if mutation == "remove_gate":
         state["gates"] = []
     elif mutation == "replace_gate":
         state["gates"][0]["generation"] += 1
     elif mutation == "rename_objective":
-        state["entities"][0]["objective_refs"] = ["unrelated"]
+        state["admissions"][0]["objective_refs"] = ["unrelated"]
     elif mutation == "erase_ancestry":
-        state["entities"][1]["parent_refs"] = []
+        state["admissions"][1]["parent_refs"] = []
     else:
-        state["revision"] += 1
+        state["snapshot_generation"] += 1
     assert inspect(state, "descendant", pin=pin).disposition == "BLOCKED_INVALID_STATE"
 
 
@@ -167,7 +177,7 @@ def test_fresh_worker_equivalence_and_inputs_unchanged(tmp_path):
     assert state == before
 
 
-@pytest.mark.parametrize("field", ["gates", "entities", "source_refs", "revision", "schema_version"])
+@pytest.mark.parametrize("field", ["gates", "admissions", "source_refs", "snapshot_generation", "schema_version"])
 @pytest.mark.parametrize("value", [None, "", {}, False])
 def test_malformed_snapshot_fails_closed(field, value):
     state = machine_state()
@@ -204,7 +214,7 @@ def test_snapshot_cannot_omit_a_required_blocked_action(action):
 def test_graph_inconsistency_including_disconnected_records_blocks(defect):
     state = machine_state()
     disconnected = child("disconnected", [])
-    state["entities"].append(disconnected)
+    state["admissions"].append(disconnected)
     if defect == "cycle":
         disconnected["parent_refs"] = ["disconnected"]
     elif defect == "missing_parent":
@@ -212,15 +222,15 @@ def test_graph_inconsistency_including_disconnected_records_blocks(defect):
     elif defect == "missing_gate":
         disconnected["governance_gate_refs"] = ["absent"]
     elif defect == "duplicate_node":
-        state["entities"].append(deepcopy(disconnected))
+        state["admissions"].append(deepcopy(disconnected))
     else:
         state["gates"].append(deepcopy(state["gates"][0]))
     assert inspect(state).disposition == "BLOCKED_INVALID_STATE"
 
 
 @pytest.mark.parametrize("proposal", [None, {}, {"entity_id": "root", "action": "execute"},
-    {"entity_id": "unknown", "action": "claim"}, {"entity_id": "root", "action": []},
-    {"entity_id": "root", "action": "claim", "released": True}])
+    {"entity_id": "unknown", "action": "repo_write"}, {"entity_id": "root", "action": []},
+    {"entity_id": "root", "action": "repo_write", "released": True}])
 def test_invalid_proposal_cannot_grant_authority(proposal):
     state = machine_state()
     assert evaluate(state, proposal, trusted_current_digest=snapshot_digest(state)).disposition == "BLOCKED_INVALID_STATE"
@@ -228,11 +238,11 @@ def test_invalid_proposal_cannot_grant_authority(proposal):
 
 def test_missing_machine_authority_is_blocked():
     assert evaluate(None, {}, trusted_current_digest=None).disposition == "BLOCKED_INVALID_STATE"
-    assert evaluate(machine_state(), {"entity_id": "root", "action": "claim"},
+    assert evaluate(machine_state(), {"entity_id": "root", "action": "repo_write"},
                     trusted_current_digest=None).disposition == "BLOCKED_INVALID_STATE"
 
 
-@pytest.mark.parametrize("action", ["read", "static_analysis", "specification", "test_design"])
+@pytest.mark.parametrize("action", ["static_read", "test_only", "docs_only", "schema_spec_write"])
 def test_nongated_action_is_not_an_execution_authorization(action):
     result = inspect(machine_state(), action=action)
     assert result.disposition == "NO_MATCHING_BLOCK_NOT_AUTHORIZATION"
@@ -243,7 +253,7 @@ def test_nongated_action_is_not_an_execution_authorization(action):
 
 def test_unrelated_scope_cannot_claim_external_enforcement():
     state = machine_state()
-    state["entities"].append(child("unrelated", []))
+    state["admissions"].append(child("unrelated", []))
     result = inspect(state, "unrelated")
     assert result.disposition == "NO_MATCHING_BLOCK_NOT_AUTHORIZATION"
     assert result.effective_active_gates == ()

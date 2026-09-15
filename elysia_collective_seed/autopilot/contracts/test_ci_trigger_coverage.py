@@ -15,7 +15,6 @@ import pytest
 
 WORKFLOW = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "elysia-autopilot-ci.yml"
 
-# Explicit currently supported governance families (not arbitrary one-segment prefixes).
 EXPLICIT_GOVERNANCE_FAMILIES = (
     "codex/governance-*",
     "cursor/governance-*",
@@ -66,7 +65,6 @@ def _section_body(text: str, heading: str) -> str:
 
 
 def _branch_patterns(section_body: str) -> list[str]:
-    # Accept both quoted and unquoted YAML list entries.
     return re.findall(r"^\s+-\s+'?([^'\s#]+)'?", section_body, flags=re.M)
 
 
@@ -93,6 +91,21 @@ def _permissions_block(text: str) -> str:
     match = re.search(r"(?m)^permissions:\n((?:  .*\n)+)", text)
     assert match, "missing top-level permissions block"
     return match.group(0)
+
+
+def _assert_no_write_permissions(text: str) -> None:
+    """Reject both permission maps and scalar `permissions: write-all` at any scope."""
+    write_all = re.findall(
+        r"(?mi)^\s*permissions\s*:\s*['\"]?write-all['\"]?\s*(?:#.*)?$",
+        text,
+    )
+    assert not write_all, "workflow must not grant scalar permissions: write-all"
+
+    write_entries = re.findall(
+        r"(?mi)^\s*([a-z0-9-]+)\s*:\s*['\"]?write['\"]?\s*(?:#.*)?$",
+        text,
+    )
+    assert not write_entries, f"workflow must not grant write permissions: {write_entries}"
 
 
 @pytest.fixture(scope="module")
@@ -160,11 +173,7 @@ def test_permissions_remain_contents_read_only(workflow: str) -> None:
     block = _permissions_block(workflow)
     assert "contents: read" in block
     assert "permissions:\n  contents: read\n" in workflow
-    write_entries = re.findall(
-        r"(?mi)^\s*([a-z0-9-]+)\s*:\s*['\"]?write['\"]?\s*(?:#.*)?$",
-        workflow,
-    )
-    assert not write_entries, f"workflow must not grant write permissions: {write_entries}"
+    _assert_no_write_permissions(workflow)
     for item in (
         "pull-requests:",
         "actions:",
@@ -174,6 +183,15 @@ def test_permissions_remain_contents_read_only(workflow: str) -> None:
         "security-events:",
     ):
         assert item not in block.lower()
+
+
+def test_scalar_write_all_rejected_at_workflow_and_job_scope() -> None:
+    with pytest.raises(AssertionError, match="permissions: write-all"):
+        _assert_no_write_permissions("permissions: write-all\njobs:\n  test:\n    runs-on: ubuntu-latest\n")
+    with pytest.raises(AssertionError, match="permissions: write-all"):
+        _assert_no_write_permissions(
+            "permissions:\n  contents: read\njobs:\n  test:\n    permissions: write-all\n    runs-on: ubuntu-latest\n"
+        )
 
 
 def test_preserved_generation_breaker_included_in_ci(workflow: str) -> None:

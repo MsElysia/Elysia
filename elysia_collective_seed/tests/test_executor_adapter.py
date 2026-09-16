@@ -1,0 +1,103 @@
+from dataclasses import replace
+from datetime import datetime, timezone
+
+from elysia_collective_seed.autopilot.executor_adapter import (
+    InvocationEnvelope,
+    TrustedExecutionState,
+    dry_run_executor,
+    reject_simulated_completion,
+)
+
+NOW = datetime(2026, 9, 16, 13, 0, tzinfo=timezone.utc)
+SHA = "a" * 40
+
+
+def pair():
+    envelope = InvocationEnvelope(
+        task_id="AUTOPILOT-004-X1", task_digest="digest-1", worker_id="worker-1",
+        provider_id="sandbox", claim_id="claim-1", lease_id="lease-1",
+        lease_expires_at="2026-09-16T14:00:00+00:00", repository="MsElysia/Elysia",
+        branch="chatgpt/autopilot-004-disabled-executor-contract", expected_start_sha=SHA,
+        requested_capabilities=("read_repo", "run_tests"), risk_class="low",
+        attempt_id="attempt-1",
+    )
+    state = TrustedExecutionState(
+        task_id=envelope.task_id, task_digest=envelope.task_digest, worker_id=envelope.worker_id,
+        provider_id=envelope.provider_id, claim_id=envelope.claim_id, lease_id=envelope.lease_id,
+        lease_expires_at=envelope.lease_expires_at, repository=envelope.repository,
+        branch=envelope.branch, current_sha=SHA,
+        approved_capabilities=("run_tests", "read_repo"), maximum_risk_class="medium",
+        attempt_id=envelope.attempt_id,
+    )
+    return envelope, state
+
+
+def test_valid_envelope_is_deterministic_and_only_would_execute():
+    envelope, state = pair()
+    first = dry_run_executor(envelope, state, now=NOW)
+    second = dry_run_executor(envelope, state, now=NOW)
+    assert first == second
+    assert first.outcome == "would_execute"
+    assert first.reason is None
+    assert first.approved_capabilities == ("read_repo", "run_tests")
+    assert "side_effects:none" in first.evidence
+
+
+def test_identity_and_authority_mismatches_fail_closed():
+    envelope, state = pair()
+    cases = [
+        (replace(envelope, task_digest="other"), state, "task_digest_mismatch"),
+        (replace(envelope, worker_id="other"), state, "worker_mismatch"),
+        (replace(envelope, provider_id="live"), state, "provider_mismatch"),
+        (replace(envelope, claim_id="other"), state, "claim_mismatch"),
+        (replace(envelope, lease_id="other"), state, "lease_mismatch"),
+        (replace(envelope, repository="other/repo"), state, "repository_mismatch"),
+        (replace(envelope, branch="other-branch"), state, "branch_mismatch"),
+        (replace(envelope, expected_start_sha="b" * 40), state, "start_sha_mismatch"),
+        (replace(envelope, attempt_id="other"), state, "attempt_mismatch"),
+        (envelope, replace(state, worker_registered=False), "unregistered_worker"),
+        (envelope, replace(state, claim_known=False), "unknown_claim"),
+        (envelope, replace(state, lease_known=False), "unknown_lease"),
+        (envelope, replace(state, attempt_unused=False), "attempt_reuse"),
+        (replace(envelope, requested_capabilities=("read_repo", "git_write")), state, "capability_expansion"),
+        (replace(envelope, risk_class="critical"), state, "risk_escalation"),
+    ]
+    for supplied, trusted, reason in cases:
+        result = dry_run_executor(supplied, trusted, now=NOW)
+        assert result.outcome == "refused", reason
+        assert result.reason == reason
+
+
+def test_stale_lease_nonisolated_branch_and_malformed_sha_refuse():
+    envelope, state = pair()
+    expired = replace(envelope, lease_expires_at="2026-09-16T12:00:00+00:00")
+    expired_state = replace(state, lease_expires_at=expired.lease_expires_at)
+    assert dry_run_executor(expired, expired_state, now=NOW).reason == "expired_lease"
+
+    main = replace(envelope, branch="main")
+    main_state = replace(state, branch="main")
+    assert dry_run_executor(main, main_state, now=NOW).reason == "non_isolated_branch"
+
+    bad_sha = replace(envelope, expected_start_sha="not-a-sha")
+    bad_sha_state = replace(state, current_sha="not-a-sha")
+    assert dry_run_executor(bad_sha, bad_sha_state, now=NOW).reason == "malformed_start_sha"
+
+
+def test_human_approval_is_blocking_and_exactly_bound():
+    envelope, state = pair()
+    state = replace(state, human_approval_required=True, human_approval_ref="approval-7")
+    blocked = dry_run_executor(envelope, state, now=NOW)
+    assert blocked.outcome == "blocked"
+    assert blocked.reason == "human_approval_missing_or_mismatched"
+
+    approved = dry_run_executor(replace(envelope, human_approval_ref="approval-7"), state, now=NOW)
+    assert approved.outcome == "would_execute"
+
+
+def test_dry_run_cannot_masquerade_as_completion_or_side_effect():
+    envelope, state = pair()
+    result = dry_run_executor(envelope, state, now=NOW)
+    forged = reject_simulated_completion(result, {"commit_sha": "b" * 40, "task_completed": True})
+    assert forged.outcome == "refused"
+    assert forged.reason == "forged_completion_or_side_effect"
+    assert "completion:forged_refused" in forged.evidence

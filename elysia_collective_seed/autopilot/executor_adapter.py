@@ -188,9 +188,13 @@ def dry_run_executor(envelope: InvocationEnvelope, state: TrustedExecutionState,
 
 
 def reject_simulated_completion(result: DryRunResult, completion_claim: Mapping[str, object]) -> DryRunResult:
-    """Refuse any attempt to turn a dry-run decision into side-effect/completion evidence."""
-    forbidden = {"files_changed", "commit_sha", "pull_request", "provider_output", "task_completed", "verification_pass"}
-    if any(key in completion_claim for key in forbidden):
+    """Fail closed on every non-empty completion/result claim in the disabled slice.
+
+    The dry-run adapter has no authority to attest completion or side effects, so it
+    intentionally defines no harmless completion metadata vocabulary. An empty
+    mapping is the only claim that can preserve a ``would_execute`` decision.
+    """
+    if completion_claim:
         return DryRunResult(
             task_id=result.task_id, worker_id=result.worker_id, claim_id=result.claim_id,
             lease_id=result.lease_id, attempt_id=result.attempt_id, outcome="refused",

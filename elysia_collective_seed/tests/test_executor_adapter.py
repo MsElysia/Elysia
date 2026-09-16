@@ -94,10 +94,29 @@ def test_human_approval_is_blocking_and_exactly_bound():
     assert approved.outcome == "would_execute"
 
 
-def test_dry_run_cannot_masquerade_as_completion_or_side_effect():
+def test_dry_run_rejects_every_nonempty_completion_or_side_effect_claim():
     envelope, state = pair()
     result = dry_run_executor(envelope, state, now=NOW)
-    forged = reject_simulated_completion(result, {"commit_sha": "b" * 40, "task_completed": True})
-    assert forged.outcome == "refused"
-    assert forged.reason == "forged_completion_or_side_effect"
-    assert "completion:forged_refused" in forged.evidence
+    claims = [
+        {"commit_sha": "b" * 40, "task_completed": True},
+        {"status": "completed"},
+        {"completed": True},
+        {"sha": "b" * 40},
+        {"changes": ["file.txt"]},
+        {"provider_success": True},
+        {"verdict": "PASS"},
+        {"unknown_future_completion_key": "anything"},
+    ]
+    for claim in claims:
+        forged = reject_simulated_completion(result, claim)
+        assert forged.outcome == "refused", claim
+        assert forged.reason == "forged_completion_or_side_effect", claim
+        assert "completion:forged_refused" in forged.evidence
+
+
+def test_empty_completion_claim_cannot_upgrade_dry_run_result():
+    envelope, state = pair()
+    result = dry_run_executor(envelope, state, now=NOW)
+    unchanged = reject_simulated_completion(result, {})
+    assert unchanged == result
+    assert unchanged.outcome == "would_execute"

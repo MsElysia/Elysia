@@ -86,6 +86,34 @@ def test_stale_lease_nonisolated_branch_and_malformed_sha_refuse():
     assert dry_run_executor(bad_sha, bad_sha_state, now=NOW).reason == "malformed_start_sha"
 
 
+def test_ambiguous_or_unsupported_branch_refs_fail_closed():
+    envelope, state = pair()
+    bad_refs = (
+        "refs/remotes/origin/main",
+        "refs/tags/main",
+        "refs/heads/refs/heads/master",
+        "refs/heads/refs/tags/topic",
+        "refs/heads/",
+        "refs/",
+    )
+    for branch in bad_refs:
+        supplied = replace(envelope, branch=branch)
+        trusted = replace(state, branch=branch)
+        result = dry_run_executor(supplied, trusted, now=NOW)
+        assert result.outcome == "refused", branch
+        assert result.reason == "non_isolated_branch", branch
+
+
+def test_plain_and_single_heads_ref_isolated_branches_are_accepted():
+    envelope, state = pair()
+    for branch in ("feature/sandbox-safe", "refs/heads/feature/sandbox-safe"):
+        supplied = replace(envelope, branch=branch)
+        trusted = replace(state, branch=branch)
+        result = dry_run_executor(supplied, trusted, now=NOW)
+        assert result.outcome == "would_execute", branch
+        assert result.reason is None, branch
+
+
 def test_human_approval_is_blocking_and_exactly_bound():
     envelope, state = pair()
     state = replace(state, human_approval_required=True, human_approval_ref="approval-7")

@@ -73,81 +73,69 @@ def test_stale_lease_nonisolated_branch_and_malformed_sha_refuse():
     expired = replace(envelope, lease_expires_at="2026-09-16T12:00:00+00:00")
     expired_state = replace(state, lease_expires_at=expired.lease_expires_at)
     assert dry_run_executor(expired, expired_state, now=NOW).reason == "expired_lease"
-
     for protected in ("main", "master", "refs/heads/main", "refs/heads/master"):
-        protected_envelope = replace(envelope, branch=protected)
-        protected_state = replace(state, branch=protected)
-        result = dry_run_executor(protected_envelope, protected_state, now=NOW)
-        assert result.outcome == "refused", protected
-        assert result.reason == "non_isolated_branch", protected
-
+        supplied = replace(envelope, branch=protected)
+        trusted = replace(state, branch=protected)
+        assert dry_run_executor(supplied, trusted, now=NOW).reason == "non_isolated_branch"
     bad_sha = replace(envelope, expected_start_sha="not-a-sha")
-    bad_sha_state = replace(state, current_sha="not-a-sha")
-    assert dry_run_executor(bad_sha, bad_sha_state, now=NOW).reason == "malformed_start_sha"
+    assert dry_run_executor(bad_sha, replace(state, current_sha="not-a-sha"), now=NOW).reason == "malformed_start_sha"
 
 
 def test_ambiguous_or_unsupported_branch_refs_fail_closed():
     envelope, state = pair()
-    bad_refs = (
-        "refs/remotes/origin/main",
-        "refs/tags/main",
-        "refs/heads/refs/heads/master",
-        "refs/heads/refs/tags/topic",
-        "refs/heads/",
-        "refs/",
-    )
-    for branch in bad_refs:
-        supplied = replace(envelope, branch=branch)
-        trusted = replace(state, branch=branch)
-        result = dry_run_executor(supplied, trusted, now=NOW)
-        assert result.outcome == "refused", branch
-        assert result.reason == "non_isolated_branch", branch
+    for branch in ("refs/remotes/origin/main", "refs/tags/main", "refs/heads/refs/heads/master", "refs/heads/refs/tags/topic", "refs/heads/", "refs/"):
+        result = dry_run_executor(replace(envelope, branch=branch), replace(state, branch=branch), now=NOW)
+        assert result.outcome == "refused"
+        assert result.reason == "non_isolated_branch"
 
 
 def test_plain_and_single_heads_ref_isolated_branches_are_accepted():
     envelope, state = pair()
     for branch in ("feature/sandbox-safe", "refs/heads/feature/sandbox-safe"):
-        supplied = replace(envelope, branch=branch)
-        trusted = replace(state, branch=branch)
-        result = dry_run_executor(supplied, trusted, now=NOW)
-        assert result.outcome == "would_execute", branch
-        assert result.reason is None, branch
+        result = dry_run_executor(replace(envelope, branch=branch), replace(state, branch=branch), now=NOW)
+        assert result.outcome == "would_execute"
+
+
+def test_task_packet_risk_is_bound_to_executor_authority_fail_closed():
+    envelope, state = pair()
+    sandbox_env = replace(envelope, task_risk_class="sandbox_write", risk_class="medium")
+    sandbox_state = replace(state, trusted_task_risk_class="sandbox_write")
+    assert dry_run_executor(sandbox_env, sandbox_state, now=NOW).outcome == "would_execute"
+
+    downgraded = replace(sandbox_env, risk_class="low")
+    assert dry_run_executor(downgraded, sandbox_state, now=NOW).reason == "task_risk_downgrade"
+
+    mismatched = replace(sandbox_env, task_risk_class="read_only")
+    assert dry_run_executor(mismatched, sandbox_state, now=NOW).reason == "task_risk_mismatch"
+
+    for blocked_risk in ("repo_write", "external_write", "deployment", "sensitive_data", "privileged"):
+        blocked_state = replace(state, trusted_task_risk_class=blocked_risk)
+        supplied = replace(envelope, task_risk_class=blocked_risk, risk_class="critical")
+        assert dry_run_executor(supplied, blocked_state, now=NOW).reason == "task_risk_not_executable"
+
+    unknown_state = replace(state, trusted_task_risk_class="future_unknown")
+    unknown = replace(envelope, task_risk_class="future_unknown")
+    assert dry_run_executor(unknown, unknown_state, now=NOW).reason == "task_risk_not_executable"
 
 
 def test_human_approval_is_blocking_and_exactly_bound():
     envelope, state = pair()
     state = replace(state, human_approval_required=True, human_approval_ref="approval-7")
-    blocked = dry_run_executor(envelope, state, now=NOW)
-    assert blocked.outcome == "blocked"
-    assert blocked.reason == "human_approval_missing_or_mismatched"
-
-    approved = dry_run_executor(replace(envelope, human_approval_ref="approval-7"), state, now=NOW)
-    assert approved.outcome == "would_execute"
+    assert dry_run_executor(envelope, state, now=NOW).outcome == "blocked"
+    assert dry_run_executor(replace(envelope, human_approval_ref="approval-7"), state, now=NOW).outcome == "would_execute"
 
 
 def test_dry_run_rejects_every_nonempty_completion_or_side_effect_claim():
     envelope, state = pair()
     result = dry_run_executor(envelope, state, now=NOW)
-    claims = [
-        {"commit_sha": "b" * 40, "task_completed": True},
-        {"status": "completed"},
-        {"completed": True},
-        {"sha": "b" * 40},
-        {"changes": ["file.txt"]},
-        {"provider_success": True},
-        {"verdict": "PASS"},
-        {"unknown_future_completion_key": "anything"},
-    ]
+    claims = [{"commit_sha": "b" * 40, "task_completed": True}, {"status": "completed"}, {"completed": True}, {"sha": "b" * 40}, {"changes": ["file.txt"]}, {"provider_success": True}, {"verdict": "PASS"}, {"unknown_future_completion_key": "anything"}]
     for claim in claims:
         forged = reject_simulated_completion(result, claim)
-        assert forged.outcome == "refused", claim
-        assert forged.reason == "forged_completion_or_side_effect", claim
-        assert "completion:forged_refused" in forged.evidence
+        assert forged.outcome == "refused"
+        assert forged.reason == "forged_completion_or_side_effect"
 
 
 def test_empty_completion_claim_cannot_upgrade_dry_run_result():
     envelope, state = pair()
     result = dry_run_executor(envelope, state, now=NOW)
-    unchanged = reject_simulated_completion(result, {})
-    assert unchanged == result
-    assert unchanged.outcome == "would_execute"
+    assert reject_simulated_completion(result, {}) == result

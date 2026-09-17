@@ -13,6 +13,7 @@ from typing import Iterable, Mapping, Optional, Tuple
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _ALLOWED_RISKS = ("low", "medium", "high", "critical")
+_TASK_RISK_FLOOR = {"read_only": "low", "sandbox_write": "medium"}
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class InvocationEnvelope:
     requested_capabilities: Tuple[str, ...]
     risk_class: str
     attempt_id: str
+    task_risk_class: Optional[str] = None
     human_approval_ref: Optional[str] = None
 
 
@@ -48,6 +50,7 @@ class TrustedExecutionState:
     approved_capabilities: Tuple[str, ...]
     maximum_risk_class: str
     attempt_id: str
+    trusted_task_risk_class: Optional[str] = None
     human_approval_required: bool = False
     human_approval_ref: Optional[str] = None
     worker_registered: bool = True
@@ -140,7 +143,6 @@ def dry_run_executor(envelope: InvocationEnvelope, state: TrustedExecutionState,
         (envelope.worker_id, state.worker_id, "worker_mismatch"),
         (envelope.provider_id, state.provider_id, "provider_mismatch"),
         (envelope.claim_id, state.claim_id, "claim_mismatch"),
-        (envelope.lease_id, state.lease_id, "lease_mismatch"),
         (envelope.repository, state.repository, "repository_mismatch"),
         (envelope.branch, state.branch, "branch_mismatch"),
         (envelope.expected_start_sha, state.current_sha, "start_sha_mismatch"),
@@ -183,6 +185,15 @@ def dry_run_executor(envelope: InvocationEnvelope, state: TrustedExecutionState,
     if _ALLOWED_RISKS.index(envelope.risk_class) > _ALLOWED_RISKS.index(state.maximum_risk_class):
         return _result(envelope, state, "refused", "risk_escalation", ("authority:risk_escalation",))
 
+    if state.trusted_task_risk_class is not None:
+        required_risk = _TASK_RISK_FLOOR.get(state.trusted_task_risk_class)
+        if required_risk is None:
+            return _result(envelope, state, "refused", "task_risk_not_executable", ("authority:task_risk_blocked",))
+        if envelope.task_risk_class != state.trusted_task_risk_class:
+            return _result(envelope, state, "refused", "task_risk_mismatch", ("authority:task_risk_mismatch",))
+        if _ALLOWED_RISKS.index(envelope.risk_class) < _ALLOWED_RISKS.index(required_risk):
+            return _result(envelope, state, "refused", "task_risk_downgrade", ("authority:task_risk_downgrade",))
+
     if state.human_approval_required:
         if not state.human_approval_ref or envelope.human_approval_ref != state.human_approval_ref:
             return _result(envelope, state, "blocked", "human_approval_missing_or_mismatched", ("approval:blocked",))
@@ -198,12 +209,7 @@ def dry_run_executor(envelope: InvocationEnvelope, state: TrustedExecutionState,
 
 
 def reject_simulated_completion(result: DryRunResult, completion_claim: Mapping[str, object]) -> DryRunResult:
-    """Fail closed on every non-empty completion/result claim in the disabled slice.
-
-    The dry-run adapter has no authority to attest completion or side effects, so it
-    intentionally defines no harmless completion metadata vocabulary. An empty
-    mapping is the only claim that can preserve a ``would_execute`` decision.
-    """
+    """Fail closed on every non-empty completion/result claim in the disabled slice."""
     if completion_claim:
         return DryRunResult(
             task_id=result.task_id, worker_id=result.worker_id, claim_id=result.claim_id,

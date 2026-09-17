@@ -85,7 +85,14 @@ def _parse_time(value: str) -> Optional[datetime]:
 def _isolated_branch(branch: str) -> bool:
     if not isinstance(branch, str) or not branch:
         return False
-    canonical = branch.removeprefix("refs/heads/")
+    if branch.startswith("refs/"):
+        if not branch.startswith("refs/heads/"):
+            return False
+        canonical = branch[len("refs/heads/"):]
+        if not canonical or canonical.startswith("refs/"):
+            return False
+    else:
+        canonical = branch
     return canonical not in {"main", "master"}
 
 

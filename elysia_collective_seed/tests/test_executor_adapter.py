@@ -74,9 +74,12 @@ def test_stale_lease_nonisolated_branch_and_malformed_sha_refuse():
     expired_state = replace(state, lease_expires_at=expired.lease_expires_at)
     assert dry_run_executor(expired, expired_state, now=NOW).reason == "expired_lease"
 
-    main = replace(envelope, branch="main")
-    main_state = replace(state, branch="main")
-    assert dry_run_executor(main, main_state, now=NOW).reason == "non_isolated_branch"
+    for protected in ("main", "master", "refs/heads/main", "refs/heads/master"):
+        protected_envelope = replace(envelope, branch=protected)
+        protected_state = replace(state, branch=protected)
+        result = dry_run_executor(protected_envelope, protected_state, now=NOW)
+        assert result.outcome == "refused", protected
+        assert result.reason == "non_isolated_branch", protected
 
     bad_sha = replace(envelope, expected_start_sha="not-a-sha")
     bad_sha_state = replace(state, current_sha="not-a-sha")

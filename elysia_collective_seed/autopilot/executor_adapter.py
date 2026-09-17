@@ -83,7 +83,10 @@ def _parse_time(value: str) -> Optional[datetime]:
 
 
 def _isolated_branch(branch: str) -> bool:
-    return bool(branch) and branch not in {"main", "master"} and not branch.startswith("refs/heads/main")
+    if not isinstance(branch, str) or not branch:
+        return False
+    canonical = branch.removeprefix("refs/heads/")
+    return canonical not in {"main", "master"}
 
 
 def _normalize_caps(values: Iterable[str]) -> Tuple[str, ...]:

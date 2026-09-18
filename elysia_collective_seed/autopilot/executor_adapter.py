@@ -99,17 +99,21 @@ def _isolated_branch(branch: str) -> bool:
     return canonical not in {"main", "master"}
 
 
-def _normalize_caps(values: Iterable[str]) -> Tuple[str, ...]:
+def _normalize_caps(values: Tuple[str, ...]) -> Tuple[str, ...]:
+    if not isinstance(values, tuple):
+        raise ValueError("malformed_capability")
     if any(not isinstance(value, str) or not value for value in values):
         raise ValueError("malformed_capability")
     return tuple(sorted(set(values)))
 
 
-def _safe_result_caps(values: Iterable[str]) -> Tuple[str, ...]:
-    """Keep refusal/result construction total even for malformed trusted state."""
+def _safe_result_caps(values: object) -> Tuple[str, ...]:
+    """Keep refusal/result construction total without consuming malformed containers."""
+    if not isinstance(values, tuple):
+        return ()
     try:
         return _normalize_caps(values)
-    except (TypeError, ValueError):
+    except ValueError:
         return ()
 
 
@@ -189,9 +193,6 @@ def dry_run_executor(envelope: InvocationEnvelope, state: TrustedExecutionState,
     if not set(requested).issubset(approved):
         return _result(envelope, state, "refused", "capability_expansion", ("authority:capability_expansion",))
 
-    # Authoritative task risk is mandatory before this disabled adapter may
-    # reach would_execute. Validate runtime shape before equality or map lookup
-    # so malformed values always fail closed instead of raising.
     supplied_task_risk = envelope.task_risk_class
     trusted_task_risk = state.trusted_task_risk_class
     supplied_valid = isinstance(supplied_task_risk, str) and bool(supplied_task_risk)
@@ -212,7 +213,6 @@ def dry_run_executor(envelope: InvocationEnvelope, state: TrustedExecutionState,
         return _result(envelope, state, "refused", "malformed_risk_class", ("risk:invalid",))
     if _ALLOWED_RISKS.index(envelope.risk_class) > _ALLOWED_RISKS.index(state.maximum_risk_class):
         return _result(envelope, state, "refused", "risk_escalation", ("authority:risk_escalation",))
-
     if _ALLOWED_RISKS.index(envelope.risk_class) < _ALLOWED_RISKS.index(required_risk):
         return _result(envelope, state, "refused", "task_risk_downgrade", ("authority:task_risk_downgrade",))
 
@@ -221,11 +221,8 @@ def dry_run_executor(envelope: InvocationEnvelope, state: TrustedExecutionState,
             return _result(envelope, state, "blocked", "human_approval_missing_or_mismatched", ("approval:blocked",))
 
     evidence = (
-        "mode:dry_run_only",
-        "side_effects:none",
-        "authority:trusted_state_only",
-        f"task_digest:{state.task_digest}",
-        f"start_sha:{state.current_sha}",
+        "mode:dry_run_only", "side_effects:none", "authority:trusted_state_only",
+        f"task_digest:{state.task_digest}", f"start_sha:{state.current_sha}",
     )
     return _result(envelope, state, "would_execute", None, evidence)
 

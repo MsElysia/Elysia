@@ -19,7 +19,7 @@ def pair():
         lease_expires_at="2026-09-16T14:00:00+00:00", repository="MsElysia/Elysia",
         branch="chatgpt/autopilot-004-disabled-executor-contract", expected_start_sha=SHA,
         requested_capabilities=("read_repo", "run_tests"), risk_class="low",
-        attempt_id="attempt-1",
+        attempt_id="attempt-1", task_risk_class="read_only",
     )
     state = TrustedExecutionState(
         task_id=envelope.task_id, task_digest=envelope.task_digest, worker_id=envelope.worker_id,
@@ -27,7 +27,7 @@ def pair():
         lease_expires_at=envelope.lease_expires_at, repository=envelope.repository,
         branch=envelope.branch, current_sha=SHA,
         approved_capabilities=("run_tests", "read_repo"), maximum_risk_class="medium",
-        attempt_id=envelope.attempt_id,
+        attempt_id=envelope.attempt_id, trusted_task_risk_class="read_only",
     )
     return envelope, state
 
@@ -116,6 +116,20 @@ def test_task_packet_risk_is_bound_to_executor_authority_fail_closed():
     unknown_state = replace(state, trusted_task_risk_class="future_unknown")
     unknown = replace(envelope, task_risk_class="future_unknown")
     assert dry_run_executor(unknown, unknown_state, now=NOW).reason == "task_risk_not_executable"
+
+
+def test_task_risk_binding_is_mandatory_before_would_execute():
+    envelope, state = pair()
+    cases = [
+        (replace(envelope, task_risk_class=None), replace(state, trusted_task_risk_class=None), "task_risk_binding_missing"),
+        (replace(envelope, task_risk_class=None), state, "task_risk_binding_incomplete"),
+        (envelope, replace(state, trusted_task_risk_class=None), "task_risk_binding_incomplete"),
+        (replace(envelope, task_risk_class="sandbox_write"), state, "task_risk_mismatch"),
+    ]
+    for supplied, trusted, reason in cases:
+        result = dry_run_executor(supplied, trusted, now=NOW)
+        assert result.outcome == "refused"
+        assert result.reason == reason
 
 
 def test_human_approval_is_blocking_and_exactly_bound():

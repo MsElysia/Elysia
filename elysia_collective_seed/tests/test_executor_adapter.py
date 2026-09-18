@@ -103,36 +103,23 @@ def test_capability_containers_must_be_tuples_and_are_not_consumed():
         yield "read_repo"
         yield "run_tests"
 
-    malformed = [
-        "read_reporun_tests",
-        {"read_repo": True, "run_tests": True},
-        ["read_repo", "run_tests"],
-        iter(("read_repo", "run_tests")),
-        generated(),
-    ]
+    malformed = ["read_reporun_tests", {"read_repo": True, "run_tests": True}, ["read_repo", "run_tests"], iter(("read_repo", "run_tests")), generated()]
     for value in malformed:
         result = dry_run_executor(replace(envelope, requested_capabilities=value), state, now=NOW)
         assert result.outcome == "refused"
         assert result.reason == "malformed_capability"
-
     for value in malformed:
         result = dry_run_executor(envelope, replace(state, approved_capabilities=value), now=NOW)
         assert result.outcome == "refused"
         assert result.reason == "malformed_capability"
         assert result.approved_capabilities == ()
-
     requested_gen = generated()
     approved_gen = generated()
-    result = dry_run_executor(
-        replace(envelope, requested_capabilities=requested_gen),
-        replace(state, approved_capabilities=approved_gen),
-        now=NOW,
-    )
+    result = dry_run_executor(replace(envelope, requested_capabilities=requested_gen), replace(state, approved_capabilities=approved_gen), now=NOW)
     assert result.outcome == "refused"
     assert result.reason == "malformed_capability"
     assert tuple(requested_gen) == ("read_repo", "run_tests")
     assert tuple(approved_gen) == ("read_repo", "run_tests")
-
     duplicate_tuple = replace(envelope, requested_capabilities=("run_tests", "read_repo", "run_tests"))
     assert dry_run_executor(duplicate_tuple, state, now=NOW).outcome == "would_execute"
 
@@ -179,6 +166,22 @@ def test_malformed_task_risk_bindings_fail_closed_without_raising():
     one_sided = dry_run_executor(replace(envelope, task_risk_class=[]), state, now=NOW)
     assert one_sided.outcome == "refused"
     assert one_sided.reason == "malformed_task_risk_binding"
+
+
+def test_trusted_authority_booleans_require_exact_bool_type():
+    envelope, state = pair()
+    fields = ("worker_registered", "claim_known", "lease_known", "attempt_unused", "human_approval_required")
+    malformed_values = ("false", "true", 0, 1, None, [], {})
+    for field in fields:
+        for value in malformed_values:
+            result = dry_run_executor(envelope, replace(state, **{field: value}), now=NOW)
+            assert result.outcome == "refused", (field, value)
+            assert result.reason == "malformed_trusted_boolean", (field, value)
+    assert dry_run_executor(envelope, replace(state, worker_registered=False), now=NOW).reason == "unregistered_worker"
+    assert dry_run_executor(envelope, replace(state, claim_known=False), now=NOW).reason == "unknown_claim"
+    assert dry_run_executor(envelope, replace(state, lease_known=False), now=NOW).reason == "unknown_lease"
+    assert dry_run_executor(envelope, replace(state, attempt_unused=False), now=NOW).reason == "attempt_reuse"
+    assert dry_run_executor(envelope, replace(state, human_approval_required=False), now=NOW).outcome == "would_execute"
 
 
 def test_human_approval_is_blocking_and_exactly_bound():

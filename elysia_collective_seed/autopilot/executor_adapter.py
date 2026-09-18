@@ -189,22 +189,28 @@ def dry_run_executor(envelope: InvocationEnvelope, state: TrustedExecutionState,
     if not set(requested).issubset(approved):
         return _result(envelope, state, "refused", "capability_expansion", ("authority:capability_expansion",))
 
-    # The authoritative task-risk gate is evaluated before generic caller risk
-    # escalation so a blocked/unknown task class cannot be masked by severity.
-    required_risk = None
-    if state.trusted_task_risk_class is not None:
-        required_risk = _TASK_RISK_FLOOR.get(state.trusted_task_risk_class)
-        if required_risk is None:
-            return _result(envelope, state, "refused", "task_risk_not_executable", ("authority:task_risk_blocked",))
-        if envelope.task_risk_class != state.trusted_task_risk_class:
-            return _result(envelope, state, "refused", "task_risk_mismatch", ("authority:task_risk_mismatch",))
+    # Authoritative task risk is mandatory before this disabled adapter may
+    # reach would_execute. Missing, one-sided, mismatched, unknown, and blocked
+    # task-risk bindings all fail closed rather than falling back to the legacy
+    # ordinal risk model.
+    supplied_task_risk = envelope.task_risk_class
+    trusted_task_risk = state.trusted_task_risk_class
+    if supplied_task_risk is None and trusted_task_risk is None:
+        return _result(envelope, state, "refused", "task_risk_binding_missing", ("authority:task_risk_missing",))
+    if supplied_task_risk is None or trusted_task_risk is None:
+        return _result(envelope, state, "refused", "task_risk_binding_incomplete", ("authority:task_risk_incomplete",))
+    if supplied_task_risk != trusted_task_risk:
+        return _result(envelope, state, "refused", "task_risk_mismatch", ("authority:task_risk_mismatch",))
+    required_risk = _TASK_RISK_FLOOR.get(trusted_task_risk)
+    if required_risk is None:
+        return _result(envelope, state, "refused", "task_risk_not_executable", ("authority:task_risk_blocked",))
 
     if envelope.risk_class not in _ALLOWED_RISKS or state.maximum_risk_class not in _ALLOWED_RISKS:
         return _result(envelope, state, "refused", "malformed_risk_class", ("risk:invalid",))
     if _ALLOWED_RISKS.index(envelope.risk_class) > _ALLOWED_RISKS.index(state.maximum_risk_class):
         return _result(envelope, state, "refused", "risk_escalation", ("authority:risk_escalation",))
 
-    if required_risk is not None and _ALLOWED_RISKS.index(envelope.risk_class) < _ALLOWED_RISKS.index(required_risk):
+    if _ALLOWED_RISKS.index(envelope.risk_class) < _ALLOWED_RISKS.index(required_risk):
         return _result(envelope, state, "refused", "task_risk_downgrade", ("authority:task_risk_downgrade",))
 
     if state.human_approval_required:

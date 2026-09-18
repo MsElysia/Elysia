@@ -190,15 +190,18 @@ def dry_run_executor(envelope: InvocationEnvelope, state: TrustedExecutionState,
         return _result(envelope, state, "refused", "capability_expansion", ("authority:capability_expansion",))
 
     # Authoritative task risk is mandatory before this disabled adapter may
-    # reach would_execute. Missing, one-sided, mismatched, unknown, and blocked
-    # task-risk bindings all fail closed rather than falling back to the legacy
-    # ordinal risk model.
+    # reach would_execute. Validate runtime shape before equality or map lookup
+    # so malformed values always fail closed instead of raising.
     supplied_task_risk = envelope.task_risk_class
     trusted_task_risk = state.trusted_task_risk_class
+    supplied_valid = isinstance(supplied_task_risk, str) and bool(supplied_task_risk)
+    trusted_valid = isinstance(trusted_task_risk, str) and bool(trusted_task_risk)
     if supplied_task_risk is None and trusted_task_risk is None:
         return _result(envelope, state, "refused", "task_risk_binding_missing", ("authority:task_risk_missing",))
     if supplied_task_risk is None or trusted_task_risk is None:
         return _result(envelope, state, "refused", "task_risk_binding_incomplete", ("authority:task_risk_incomplete",))
+    if not supplied_valid or not trusted_valid:
+        return _result(envelope, state, "refused", "malformed_task_risk_binding", ("authority:task_risk_malformed",))
     if supplied_task_risk != trusted_task_risk:
         return _result(envelope, state, "refused", "task_risk_mismatch", ("authority:task_risk_mismatch",))
     required_risk = _TASK_RISK_FLOOR.get(trusted_task_risk)

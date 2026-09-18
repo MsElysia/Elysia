@@ -105,6 +105,14 @@ def _normalize_caps(values: Iterable[str]) -> Tuple[str, ...]:
     return tuple(sorted(set(values)))
 
 
+def _safe_result_caps(values: Iterable[str]) -> Tuple[str, ...]:
+    """Keep refusal/result construction total even for malformed trusted state."""
+    try:
+        return _normalize_caps(values)
+    except (TypeError, ValueError):
+        return ()
+
+
 def _result(envelope: InvocationEnvelope, state: TrustedExecutionState, outcome: str, reason: Optional[str], evidence: Iterable[str]) -> DryRunResult:
     return DryRunResult(
         task_id=envelope.task_id,
@@ -117,7 +125,7 @@ def _result(envelope: InvocationEnvelope, state: TrustedExecutionState, outcome:
         repository=envelope.repository,
         branch=envelope.branch,
         expected_start_sha=envelope.expected_start_sha,
-        approved_capabilities=_normalize_caps(state.approved_capabilities),
+        approved_capabilities=_safe_result_caps(state.approved_capabilities),
         evidence=tuple(evidence),
     )
 
@@ -181,19 +189,23 @@ def dry_run_executor(envelope: InvocationEnvelope, state: TrustedExecutionState,
     if not set(requested).issubset(approved):
         return _result(envelope, state, "refused", "capability_expansion", ("authority:capability_expansion",))
 
-    if envelope.risk_class not in _ALLOWED_RISKS or state.maximum_risk_class not in _ALLOWED_RISKS:
-        return _result(envelope, state, "refused", "malformed_risk_class", ("risk:invalid",))
-    if _ALLOWED_RISKS.index(envelope.risk_class) > _ALLOWED_RISKS.index(state.maximum_risk_class):
-        return _result(envelope, state, "refused", "risk_escalation", ("authority:risk_escalation",))
-
+    # The authoritative task-risk gate is evaluated before generic caller risk
+    # escalation so a blocked/unknown task class cannot be masked by severity.
+    required_risk = None
     if state.trusted_task_risk_class is not None:
         required_risk = _TASK_RISK_FLOOR.get(state.trusted_task_risk_class)
         if required_risk is None:
             return _result(envelope, state, "refused", "task_risk_not_executable", ("authority:task_risk_blocked",))
         if envelope.task_risk_class != state.trusted_task_risk_class:
             return _result(envelope, state, "refused", "task_risk_mismatch", ("authority:task_risk_mismatch",))
-        if _ALLOWED_RISKS.index(envelope.risk_class) < _ALLOWED_RISKS.index(required_risk):
-            return _result(envelope, state, "refused", "task_risk_downgrade", ("authority:task_risk_downgrade",))
+
+    if envelope.risk_class not in _ALLOWED_RISKS or state.maximum_risk_class not in _ALLOWED_RISKS:
+        return _result(envelope, state, "refused", "malformed_risk_class", ("risk:invalid",))
+    if _ALLOWED_RISKS.index(envelope.risk_class) > _ALLOWED_RISKS.index(state.maximum_risk_class):
+        return _result(envelope, state, "refused", "risk_escalation", ("authority:risk_escalation",))
+
+    if required_risk is not None and _ALLOWED_RISKS.index(envelope.risk_class) < _ALLOWED_RISKS.index(required_risk):
+        return _result(envelope, state, "refused", "task_risk_downgrade", ("authority:task_risk_downgrade",))
 
     if state.human_approval_required:
         if not state.human_approval_ref or envelope.human_approval_ref != state.human_approval_ref:

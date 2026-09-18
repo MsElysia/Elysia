@@ -96,23 +96,60 @@ def test_plain_and_single_heads_ref_isolated_branches_are_accepted():
         assert result.outcome == "would_execute"
 
 
+def test_capability_containers_must_be_tuples_and_are_not_consumed():
+    envelope, state = pair()
+
+    def generated():
+        yield "read_repo"
+        yield "run_tests"
+
+    malformed = [
+        "read_reporun_tests",
+        {"read_repo": True, "run_tests": True},
+        ["read_repo", "run_tests"],
+        iter(("read_repo", "run_tests")),
+        generated(),
+    ]
+    for value in malformed:
+        result = dry_run_executor(replace(envelope, requested_capabilities=value), state, now=NOW)
+        assert result.outcome == "refused"
+        assert result.reason == "malformed_capability"
+
+    for value in malformed:
+        result = dry_run_executor(envelope, replace(state, approved_capabilities=value), now=NOW)
+        assert result.outcome == "refused"
+        assert result.reason == "malformed_capability"
+        assert result.approved_capabilities == ()
+
+    requested_gen = generated()
+    approved_gen = generated()
+    result = dry_run_executor(
+        replace(envelope, requested_capabilities=requested_gen),
+        replace(state, approved_capabilities=approved_gen),
+        now=NOW,
+    )
+    assert result.outcome == "refused"
+    assert result.reason == "malformed_capability"
+    assert tuple(requested_gen) == ("read_repo", "run_tests")
+    assert tuple(approved_gen) == ("read_repo", "run_tests")
+
+    duplicate_tuple = replace(envelope, requested_capabilities=("run_tests", "read_repo", "run_tests"))
+    assert dry_run_executor(duplicate_tuple, state, now=NOW).outcome == "would_execute"
+
+
 def test_task_packet_risk_is_bound_to_executor_authority_fail_closed():
     envelope, state = pair()
     sandbox_env = replace(envelope, task_risk_class="sandbox_write", risk_class="medium")
     sandbox_state = replace(state, trusted_task_risk_class="sandbox_write")
     assert dry_run_executor(sandbox_env, sandbox_state, now=NOW).outcome == "would_execute"
-
     downgraded = replace(sandbox_env, risk_class="low")
     assert dry_run_executor(downgraded, sandbox_state, now=NOW).reason == "task_risk_downgrade"
-
     mismatched = replace(sandbox_env, task_risk_class="read_only")
     assert dry_run_executor(mismatched, sandbox_state, now=NOW).reason == "task_risk_mismatch"
-
     for blocked_risk in ("repo_write", "external_write", "deployment", "sensitive_data", "privileged"):
         blocked_state = replace(state, trusted_task_risk_class=blocked_risk)
         supplied = replace(envelope, task_risk_class=blocked_risk, risk_class="critical")
         assert dry_run_executor(supplied, blocked_state, now=NOW).reason == "task_risk_not_executable"
-
     unknown_state = replace(state, trusted_task_risk_class="future_unknown")
     unknown = replace(envelope, task_risk_class="future_unknown")
     assert dry_run_executor(unknown, unknown_state, now=NOW).reason == "task_risk_not_executable"
@@ -136,17 +173,10 @@ def test_malformed_task_risk_bindings_fail_closed_without_raising():
     envelope, state = pair()
     malformed_values = ([], {}, "")
     for value in malformed_values:
-        result = dry_run_executor(
-            replace(envelope, task_risk_class=value),
-            replace(state, trusted_task_risk_class=value),
-            now=NOW,
-        )
+        result = dry_run_executor(replace(envelope, task_risk_class=value), replace(state, trusted_task_risk_class=value), now=NOW)
         assert result.outcome == "refused"
         assert result.reason == "malformed_task_risk_binding"
-
-    one_sided = dry_run_executor(
-        replace(envelope, task_risk_class=[]), state, now=NOW
-    )
+    one_sided = dry_run_executor(replace(envelope, task_risk_class=[]), state, now=NOW)
     assert one_sided.outcome == "refused"
     assert one_sided.reason == "malformed_task_risk_binding"
 

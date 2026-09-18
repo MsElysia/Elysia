@@ -165,6 +165,16 @@ def dry_run_executor(envelope: InvocationEnvelope, state: TrustedExecutionState,
         if supplied != trusted:
             return _result(envelope, state, "refused", reason, (f"refusal:{reason}",))
 
+    trusted_booleans = (
+        state.worker_registered,
+        state.claim_known,
+        state.lease_known,
+        state.attempt_unused,
+        state.human_approval_required,
+    )
+    if any(type(value) is not bool for value in trusted_booleans):
+        return _result(envelope, state, "refused", "malformed_trusted_boolean", ("authority:trusted_boolean_invalid",))
+
     if not state.worker_registered:
         return _result(envelope, state, "refused", "unregistered_worker", ("worker:unregistered",))
     if not state.claim_known:

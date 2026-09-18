@@ -132,6 +132,25 @@ def test_task_risk_binding_is_mandatory_before_would_execute():
         assert result.reason == reason
 
 
+def test_malformed_task_risk_bindings_fail_closed_without_raising():
+    envelope, state = pair()
+    malformed_values = ([], {}, "")
+    for value in malformed_values:
+        result = dry_run_executor(
+            replace(envelope, task_risk_class=value),
+            replace(state, trusted_task_risk_class=value),
+            now=NOW,
+        )
+        assert result.outcome == "refused"
+        assert result.reason == "malformed_task_risk_binding"
+
+    one_sided = dry_run_executor(
+        replace(envelope, task_risk_class=[]), state, now=NOW
+    )
+    assert one_sided.outcome == "refused"
+    assert one_sided.reason == "malformed_task_risk_binding"
+
+
 def test_human_approval_is_blocking_and_exactly_bound():
     envelope, state = pair()
     state = replace(state, human_approval_required=True, human_approval_ref="approval-7")

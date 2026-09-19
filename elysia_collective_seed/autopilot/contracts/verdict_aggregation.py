@@ -133,7 +133,7 @@ def aggregate_candidate_gate(
         return "BLOCKED_BY_TECHNICAL_VERDICT"
     try:
         required = tuple(required_contracts)
-    except TypeError:
+    except (TypeError, ValueError):
         return "BLOCKED_BY_TECHNICAL_VERDICT"
     if (
         not required
@@ -143,12 +143,19 @@ def aggregate_candidate_gate(
         return "BLOCKED_BY_TECHNICAL_VERDICT"
     required_set = set(required)
 
-    results = tuple(technical_results)
+    try:
+        results = tuple(technical_results)
+    except (TypeError, ValueError):
+        return "BLOCKED_BY_TECHNICAL_VERDICT"
     seen_contracts: set[str] = set()
     for result in results:
         if type(result) is not AggregationResult:
             return "BLOCKED_BY_TECHNICAL_VERDICT"
-        if result.product_sha != expected_product_sha:
+        if not _is_exact_sha(result.product_sha) or result.product_sha != expected_product_sha:
+            return "BLOCKED_BY_TECHNICAL_VERDICT"
+        if not isinstance(result.contract, str) or not result.contract.strip():
+            return "BLOCKED_BY_TECHNICAL_VERDICT"
+        if not isinstance(result.routing_state, RoutingState):
             return "BLOCKED_BY_TECHNICAL_VERDICT"
         if result.contract not in required_set or result.contract in seen_contracts:
             return "BLOCKED_BY_TECHNICAL_VERDICT"

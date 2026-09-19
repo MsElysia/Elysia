@@ -178,3 +178,23 @@ def test_malformed_result_product_sha_fails_closed_without_exception(bad_sha):
 def test_malformed_result_routing_state_fails_closed_without_exception(bad_state):
     bad = AggregationResult(CURRENT_SHA, "#39", bad_state, False, (), ())  # type: ignore[arg-type]
     assert gate([bad]) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+def test_pass_with_conflict_fails_closed():
+    results = passing_results()
+    results[0] = AggregationResult(CURRENT_SHA, "#39", RoutingState.PASS, True, (), ())
+    assert gate(results) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+def test_pass_with_failure_reason_fails_closed():
+    results = passing_results()
+    results[0] = AggregationResult(CURRENT_SHA, "#39", RoutingState.PASS, False, (), ("unknown_verdict",))
+    assert gate(results) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+@pytest.mark.parametrize("bad_conflict", [0, 1, None, "", [], {}])
+def test_malformed_result_conflict_fails_closed(bad_conflict):
+    bad = AggregationResult(CURRENT_SHA, "#39", RoutingState.PASS, bad_conflict, (), ())  # type: ignore[arg-type]
+    assert gate([bad]) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+@pytest.mark.parametrize("bad_reasons", [None, "", [], {}, (0,), ("",)])
+def test_malformed_result_reasons_fail_closed(bad_reasons):
+    bad = AggregationResult(CURRENT_SHA, "#39", RoutingState.PASS, False, (), bad_reasons)  # type: ignore[arg-type]
+    assert gate([bad]) == "BLOCKED_BY_TECHNICAL_VERDICT"

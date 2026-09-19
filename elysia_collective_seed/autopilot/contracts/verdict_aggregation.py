@@ -102,8 +102,6 @@ def aggregate_verdict(records: Iterable[Record], *, product_sha: str, contract: 
             reasons.append(f"conflicting_record_id:{record.record_id}")
         else:
             seen[record.record_id] = record
-    # Never dereference or sort malformed/unadmitted input. Invalid history is
-    # represented deterministically by the valid admitted subset plus reasons.
     history = tuple(sorted(valid_records, key=_record_key))
     if reasons:
         return AggregationResult(product_sha, contract, RoutingState.FAIL_CLOSED, True, history, tuple(sorted(set(reasons))))
@@ -118,17 +116,48 @@ def aggregate_verdict(records: Iterable[Record], *, product_sha: str, contract: 
     conflict = Verdict.FAIL in verdicts and any(v != Verdict.FAIL for v in verdicts)
     return AggregationResult(product_sha, contract, state, conflict, history, ())
 
-def aggregate_candidate_gate(technical_results: Iterable[AggregationResult], *, human_governance_required: bool) -> str:
-    # Governance is a zero-touch dominant gate: reject malformed or required
-    # governance state before consuming, materializing, or dereferencing any
-    # technical-result iterable.
-    if type(human_governance_required) is not bool:
+def aggregate_candidate_gate(
+    technical_results: Iterable[AggregationResult],
+    *,
+    human_governance_required: bool,
+    expected_product_sha: str,
+    required_contracts: Iterable[str],
+) -> str:
+    # Governance is zero-touch dominant over every technical input.
+    if type(human_governance_required) is not bool or human_governance_required:
         return "BLOCKED_BY_HUMAN_GOVERNANCE"
-    if human_governance_required:
-        return "BLOCKED_BY_HUMAN_GOVERNANCE"
+
+    # Trusted candidate identity/completeness inputs are validated before
+    # technical evidence can earn any PASS credit.
+    if not _is_exact_sha(expected_product_sha):
+        return "BLOCKED_BY_TECHNICAL_VERDICT"
+    try:
+        required = tuple(required_contracts)
+    except TypeError:
+        return "BLOCKED_BY_TECHNICAL_VERDICT"
+    if (
+        not required
+        or any(not isinstance(c, str) or not c.strip() for c in required)
+        or len(set(required)) != len(required)
+    ):
+        return "BLOCKED_BY_TECHNICAL_VERDICT"
+    required_set = set(required)
+
     results = tuple(technical_results)
+    seen_contracts: set[str] = set()
+    for result in results:
+        if type(result) is not AggregationResult:
+            return "BLOCKED_BY_TECHNICAL_VERDICT"
+        if result.product_sha != expected_product_sha:
+            return "BLOCKED_BY_TECHNICAL_VERDICT"
+        if result.contract not in required_set or result.contract in seen_contracts:
+            return "BLOCKED_BY_TECHNICAL_VERDICT"
+        seen_contracts.add(result.contract)
+
     if any(r.routing_state in (RoutingState.FAIL, RoutingState.FAIL_CLOSED) for r in results):
         return "BLOCKED_BY_TECHNICAL_VERDICT"
-    if not results or any(r.routing_state is not RoutingState.PASS for r in results):
+    if seen_contracts != required_set:
+        return "PENDING"
+    if any(r.routing_state is not RoutingState.PASS for r in results):
         return "PENDING"
     return "TECHNICALLY_PASSING_NOT_MERGE_AUTHORIZED"

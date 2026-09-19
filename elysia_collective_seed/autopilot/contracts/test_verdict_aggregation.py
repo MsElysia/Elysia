@@ -86,3 +86,30 @@ def test_human_gate_is_separate_and_dominant():
 def test_malformed_human_governance_flag_fails_closed(malformed):
     results = [aggregate_verdict([vr("39", CURRENT_SHA, "#39", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#39")]
     assert aggregate_candidate_gate(results, human_governance_required=malformed) == "BLOCKED_BY_HUMAN_GOVERNANCE"  # type: ignore[arg-type]
+
+class ExplodingTechnicalResults:
+    def __iter__(self):
+        raise AssertionError("technical results must not be consumed before governance")
+
+class CountingTechnicalResults:
+    def __init__(self):
+        self.consumed = 0
+
+    def __iter__(self):
+        self.consumed += 1
+        yield aggregate_verdict([vr("39", CURRENT_SHA, "#39", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#39")
+
+@pytest.mark.parametrize("governance", [True, None, 0, 1, "false", [], {}])
+def test_human_governance_blocks_before_throwing_technical_iterable(governance):
+    assert aggregate_candidate_gate(ExplodingTechnicalResults(), human_governance_required=governance) == "BLOCKED_BY_HUMAN_GOVERNANCE"  # type: ignore[arg-type]
+
+@pytest.mark.parametrize("governance", [True, None, 0, 1, "false", [], {}])
+def test_human_governance_blocks_with_zero_technical_consumption(governance):
+    results = CountingTechnicalResults()
+    assert aggregate_candidate_gate(results, human_governance_required=governance) == "BLOCKED_BY_HUMAN_GOVERNANCE"  # type: ignore[arg-type]
+    assert results.consumed == 0
+
+def test_false_human_governance_still_consumes_and_routes_technical_results():
+    results = CountingTechnicalResults()
+    assert aggregate_candidate_gate(results, human_governance_required=False) == "TECHNICALLY_PASSING_NOT_MERGE_AUTHORIZED"
+    assert results.consumed == 1

@@ -214,3 +214,64 @@ def test_falsey_tuple_subclass_failure_reasons_fail_closed():
         FalseyReasons(("unknown_verdict",)),
     )
     assert gate(results) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+
+class FalseyHistory(tuple):
+    def __bool__(self):
+        return False
+
+
+def test_candidate_pass_cannot_contradict_same_scope_fail_history():
+    results = passing_results()
+    contradictory_history = (
+        vr("39-pass-history", CURRENT_SHA, "#39", Verdict.PASS),
+        vr("39-fail-history", CURRENT_SHA, "#39", Verdict.FAIL, "integration-verifier"),
+    )
+    results[0] = AggregationResult(
+        CURRENT_SHA,
+        "#39",
+        RoutingState.PASS,
+        False,
+        contradictory_history,
+        (),
+    )
+    assert gate(results) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+
+def test_candidate_header_must_match_canonical_history_reduction():
+    results = passing_results()
+    pass_history = (vr("39-pass-history", CURRENT_SHA, "#39", Verdict.PASS),)
+    results[0] = AggregationResult(
+        CURRENT_SHA,
+        "#39",
+        RoutingState.PENDING,
+        False,
+        pass_history,
+        (),
+    )
+    assert gate(results) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+
+@pytest.mark.parametrize("bad_history", [None, [], {}, "history"])
+def test_malformed_candidate_history_container_fails_closed(bad_history):
+    bad = AggregationResult(
+        CURRENT_SHA,
+        "#39",
+        RoutingState.PASS,
+        False,
+        bad_history,  # type: ignore[arg-type]
+        (),
+    )
+    assert gate([bad]) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+
+def test_history_tuple_subclass_fails_closed():
+    bad = AggregationResult(
+        CURRENT_SHA,
+        "#39",
+        RoutingState.PASS,
+        False,
+        FalseyHistory((vr("39", CURRENT_SHA, "#39", Verdict.PASS),)),
+        (),
+    )
+    assert gate([bad]) == "BLOCKED_BY_TECHNICAL_VERDICT"

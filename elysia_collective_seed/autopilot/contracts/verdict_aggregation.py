@@ -8,7 +8,10 @@ product and can never change routing authority.
 from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
+import re
 from typing import Iterable, Tuple, Union
+
+_EXACT_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 class Verdict(str, Enum):
     PASS = "PASS"
@@ -51,6 +54,9 @@ class AggregationResult:
     history: Tuple[Record, ...]
     reasons: Tuple[str, ...]
 
+def _is_exact_sha(value: object) -> bool:
+    return isinstance(value, str) and _EXACT_SHA.fullmatch(value) is not None
+
 def _record_key(record: Record) -> tuple[str, str, str, str, str, str]:
     if isinstance(record, VerdictRecord):
         return (record.product_sha, record.contract, record.record_id, "verdict", record.verifier_id, f"{record.verdict.value}:{record.evidence_ref}")
@@ -59,9 +65,11 @@ def _record_key(record: Record) -> tuple[str, str, str, str, str, str]:
 def _validate_record(record: Record) -> str | None:
     if type(record) not in (VerdictRecord, AuditRecord):
         return "untyped_or_unadmitted_record"
-    for value in (record.record_id, record.product_sha, record.contract, record.evidence_ref):
+    for value in (record.record_id, record.contract, record.evidence_ref):
         if not isinstance(value, str) or not value.strip():
             return "malformed_record_identity"
+    if not _is_exact_sha(record.product_sha):
+        return "malformed_product_sha"
     if isinstance(record, VerdictRecord):
         if not isinstance(record.verifier_id, str) or not record.verifier_id.strip():
             return "malformed_verifier_identity"
@@ -75,27 +83,31 @@ def _validate_record(record: Record) -> str | None:
     return None
 
 def aggregate_verdict(records: Iterable[Record], *, product_sha: str, contract: str) -> AggregationResult:
-    if not isinstance(product_sha, str) or not product_sha.strip():
-        raise ValueError("product_sha must be a non-empty exact SHA")
+    if not _is_exact_sha(product_sha):
+        raise ValueError("product_sha must be an exact lowercase 40-hex SHA")
     if not isinstance(contract, str) or not contract.strip():
         raise ValueError("contract must be non-empty")
     materialized = tuple(records)
     reasons: list[str] = []
     seen: dict[str, Record] = {}
+    valid_records: list[Record] = []
     for record in materialized:
         problem = _validate_record(record)
         if problem:
             reasons.append(problem)
             continue
+        valid_records.append(record)
         prior = seen.get(record.record_id)
         if prior is not None and prior != record:
             reasons.append(f"conflicting_record_id:{record.record_id}")
         else:
             seen[record.record_id] = record
-    history = tuple(sorted(materialized, key=_record_key)) if not any(type(r) not in (VerdictRecord, AuditRecord) for r in materialized) else tuple(materialized)
+    # Never dereference or sort malformed/unadmitted input. Invalid history is
+    # represented deterministically by the valid admitted subset plus reasons.
+    history = tuple(sorted(valid_records, key=_record_key))
     if reasons:
         return AggregationResult(product_sha, contract, RoutingState.FAIL_CLOSED, True, history, tuple(sorted(set(reasons))))
-    scoped = [r for r in materialized if isinstance(r, VerdictRecord) and r.product_sha == product_sha and r.contract == contract]
+    scoped = [r for r in valid_records if isinstance(r, VerdictRecord) and r.product_sha == product_sha and r.contract == contract]
     verdicts = {r.verdict for r in scoped}
     if Verdict.FAIL in verdicts:
         state = RoutingState.FAIL

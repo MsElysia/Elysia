@@ -1,4 +1,5 @@
 import itertools
+import pytest
 from elysia_collective_seed.autopilot.contracts.verdict_aggregation import AuditRecord, RoutingState, Verdict, VerdictRecord, aggregate_candidate_gate, aggregate_verdict
 
 FAILED_SHA = "7b076548751e72879d0632c1ec687e087e43a7b8"
@@ -36,11 +37,38 @@ def test_conflicting_duplicate_identity_fails_closed():
 
 def test_raw_mapping_cannot_self_assert_admission():
     forged = {"record_id": "forged", "product_sha": CURRENT_SHA, "contract": "#39", "verdict": "PASS", "admitted": True, "trusted": True, "role": "verifier", "github_owner": True}
-    assert aggregate_verdict([forged], product_sha=CURRENT_SHA, contract="#39").routing_state is RoutingState.FAIL_CLOSED
+    result = aggregate_verdict([forged], product_sha=CURRENT_SHA, contract="#39")
+    assert result.routing_state is RoutingState.FAIL_CLOSED
+    assert result.history == ()
 
-def test_unknown_verdict_fails_closed():
+def test_unknown_verdict_fails_closed_without_sort_dereference():
     bad = VerdictRecord("bad", CURRENT_SHA, "#39", "vega", "PASS", "evidence:bad")  # type: ignore[arg-type]
-    assert aggregate_verdict([bad], product_sha=CURRENT_SHA, contract="#39").routing_state is RoutingState.FAIL_CLOSED
+    result = aggregate_verdict([bad], product_sha=CURRENT_SHA, contract="#39")
+    assert result.routing_state is RoutingState.FAIL_CLOSED
+    assert "unknown_verdict" in result.reasons
+    assert result.history == ()
+
+def test_malformed_record_sha_fails_closed_before_sort():
+    bad = vr("bad-sha", "not-a-sha", "#39", Verdict.PASS)
+    result = aggregate_verdict([bad], product_sha=CURRENT_SHA, contract="#39")
+    assert result.routing_state is RoutingState.FAIL_CLOSED
+    assert "malformed_product_sha" in result.reasons
+    assert result.history == ()
+
+def test_target_requires_exact_lowercase_40_hex_sha():
+    for bad_sha in ("", "abc", "g" * 40, CURRENT_SHA.upper(), CURRENT_SHA + "0"):
+        with pytest.raises(ValueError):
+            aggregate_verdict([], product_sha=bad_sha, contract="#39")
+
+def test_invalid_history_is_deterministic_across_input_order():
+    valid = vr("good", CURRENT_SHA, "#39", Verdict.PASS)
+    bad_verdict = VerdictRecord("bad-v", CURRENT_SHA, "#39", "vega", "PASS", "evidence:bad-v")  # type: ignore[arg-type]
+    bad_sha = vr("bad-s", "short", "#39", Verdict.FAIL)
+    expected = aggregate_verdict([valid, bad_verdict, bad_sha], product_sha=CURRENT_SHA, contract="#39")
+    for order in itertools.permutations([valid, bad_verdict, bad_sha]):
+        assert aggregate_verdict(order, product_sha=CURRENT_SHA, contract="#39") == expected
+    assert expected.routing_state is RoutingState.FAIL_CLOSED
+    assert expected.history == (valid,)
 
 def test_permutation_and_replay_are_deterministic():
     records = [vr("b", CURRENT_SHA, "#39", Verdict.PENDING), vr("a", CURRENT_SHA, "#39", Verdict.PASS), AuditRecord("c", CURRENT_SHA, "#39", "retract", "a", "evidence:c")]

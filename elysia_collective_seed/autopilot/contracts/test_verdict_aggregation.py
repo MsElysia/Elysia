@@ -163,3 +163,18 @@ def test_candidate_expected_sha_must_be_exact(bad_sha):
 @pytest.mark.parametrize("contracts", [(), ("",), ("#39", "#39")])
 def test_required_contract_set_must_be_nonempty_unique_and_well_formed(contracts):
     assert gate(passing_results(), contracts=contracts) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+@pytest.mark.parametrize("bad_contract", [[], {}, 0, None, ""])
+def test_malformed_result_contract_fails_closed_without_exception(bad_contract):
+    bad = AggregationResult(CURRENT_SHA, bad_contract, RoutingState.PASS, False, (), ())  # type: ignore[arg-type]
+    assert gate([bad]) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+@pytest.mark.parametrize("bad_sha", [[], {}, 0, None, "short"])
+def test_malformed_result_product_sha_fails_closed_without_exception(bad_sha):
+    bad = AggregationResult(bad_sha, "#39", RoutingState.PASS, False, (), ())  # type: ignore[arg-type]
+    assert gate([bad]) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+@pytest.mark.parametrize("bad_state", ["PASS", 0, None, [], {}])
+def test_malformed_result_routing_state_fails_closed_without_exception(bad_state):
+    bad = AggregationResult(CURRENT_SHA, "#39", bad_state, False, (), ())  # type: ignore[arg-type]
+    assert gate([bad]) == "BLOCKED_BY_TECHNICAL_VERDICT"

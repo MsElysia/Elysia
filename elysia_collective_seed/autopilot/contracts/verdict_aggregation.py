@@ -119,11 +119,14 @@ def aggregate_verdict(records: Iterable[Record], *, product_sha: str, contract: 
     return AggregationResult(product_sha, contract, state, conflict, history, ())
 
 def aggregate_candidate_gate(technical_results: Iterable[AggregationResult], *, human_governance_required: bool) -> str:
-    results = tuple(technical_results)
+    # Governance is a zero-touch dominant gate: reject malformed or required
+    # governance state before consuming, materializing, or dereferencing any
+    # technical-result iterable.
     if type(human_governance_required) is not bool:
         return "BLOCKED_BY_HUMAN_GOVERNANCE"
     if human_governance_required:
         return "BLOCKED_BY_HUMAN_GOVERNANCE"
+    results = tuple(technical_results)
     if any(r.routing_state in (RoutingState.FAIL, RoutingState.FAIL_CLOSED) for r in results):
         return "BLOCKED_BY_TECHNICAL_VERDICT"
     if not results or any(r.routing_state is not RoutingState.PASS for r in results):

@@ -227,7 +227,16 @@ def dry_run_executor(envelope: InvocationEnvelope, state: TrustedExecutionState,
         return _result(envelope, state, "refused", "task_risk_downgrade", ("authority:task_risk_downgrade",))
 
     if state.human_approval_required:
-        if not state.human_approval_ref or envelope.human_approval_ref != state.human_approval_ref:
+        supplied_approval = envelope.human_approval_ref
+        trusted_approval = state.human_approval_ref
+        if (
+            not isinstance(supplied_approval, str)
+            or not supplied_approval
+            or not isinstance(trusted_approval, str)
+            or not trusted_approval
+        ):
+            return _result(envelope, state, "blocked", "human_approval_malformed", ("approval:malformed",))
+        if supplied_approval != trusted_approval:
             return _result(envelope, state, "blocked", "human_approval_missing_or_mismatched", ("approval:blocked",))
 
     evidence = (

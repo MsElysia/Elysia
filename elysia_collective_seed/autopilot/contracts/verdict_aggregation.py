@@ -159,7 +159,7 @@ def aggregate_candidate_gate(
             return "BLOCKED_BY_TECHNICAL_VERDICT"
         if type(result.conflict) is not bool:
             return "BLOCKED_BY_TECHNICAL_VERDICT"
-        if not isinstance(result.reasons, tuple) or any(
+        if type(result.reasons) is not tuple or any(
             not isinstance(reason, str) or not reason.strip() for reason in result.reasons
         ):
             return "BLOCKED_BY_TECHNICAL_VERDICT"

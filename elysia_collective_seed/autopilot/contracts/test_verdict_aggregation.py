@@ -81,3 +81,8 @@ def test_human_gate_is_separate_and_dominant():
     results = [aggregate_verdict([vr("39", CURRENT_SHA, "#39", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#39"), aggregate_verdict([vr("40", CURRENT_SHA, "#40", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#40")]
     assert aggregate_candidate_gate(results, human_governance_required=True) == "BLOCKED_BY_HUMAN_GOVERNANCE"
     assert aggregate_candidate_gate(results, human_governance_required=False) == "TECHNICALLY_PASSING_NOT_MERGE_AUTHORIZED"
+
+@pytest.mark.parametrize("malformed", [0, 0.0, "", [], {}, None, 1, "false"])
+def test_malformed_human_governance_flag_fails_closed(malformed):
+    results = [aggregate_verdict([vr("39", CURRENT_SHA, "#39", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#39")]
+    assert aggregate_candidate_gate(results, human_governance_required=malformed) == "BLOCKED_BY_HUMAN_GOVERNANCE"  # type: ignore[arg-type]

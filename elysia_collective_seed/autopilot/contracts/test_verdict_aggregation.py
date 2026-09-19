@@ -198,3 +198,19 @@ def test_malformed_result_conflict_fails_closed(bad_conflict):
 def test_malformed_result_reasons_fail_closed(bad_reasons):
     bad = AggregationResult(CURRENT_SHA, "#39", RoutingState.PASS, False, (), bad_reasons)  # type: ignore[arg-type]
     assert gate([bad]) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+class FalseyReasons(tuple):
+    def __bool__(self):
+        return False
+
+def test_falsey_tuple_subclass_failure_reasons_fail_closed():
+    results = passing_results()
+    results[0] = AggregationResult(
+        CURRENT_SHA,
+        "#39",
+        RoutingState.PASS,
+        False,
+        (),
+        FalseyReasons(("unknown_verdict",)),
+    )
+    assert gate(results) == "BLOCKED_BY_TECHNICAL_VERDICT"

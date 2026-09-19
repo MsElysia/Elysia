@@ -163,6 +163,22 @@ def aggregate_candidate_gate(
             not isinstance(reason, str) or not reason.strip() for reason in result.reasons
         ):
             return "BLOCKED_BY_TECHNICAL_VERDICT"
+        if type(result.history) is not tuple:
+            return "BLOCKED_BY_TECHNICAL_VERDICT"
+        try:
+            canonical = aggregate_verdict(
+                result.history,
+                product_sha=result.product_sha,
+                contract=result.contract,
+            )
+        except (TypeError, ValueError, AttributeError):
+            return "BLOCKED_BY_TECHNICAL_VERDICT"
+        if (
+            canonical.routing_state is not result.routing_state
+            or canonical.conflict != result.conflict
+            or canonical.reasons != result.reasons
+        ):
+            return "BLOCKED_BY_TECHNICAL_VERDICT"
         if result.routing_state is RoutingState.PASS and (result.conflict or result.reasons):
             return "BLOCKED_BY_TECHNICAL_VERDICT"
         if result.contract not in required_set or result.contract in seen_contracts:

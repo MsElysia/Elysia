@@ -1,12 +1,21 @@
 import itertools
 import pytest
-from elysia_collective_seed.autopilot.contracts.verdict_aggregation import AuditRecord, RoutingState, Verdict, VerdictRecord, aggregate_candidate_gate, aggregate_verdict
+from elysia_collective_seed.autopilot.contracts.verdict_aggregation import AuditRecord, AggregationResult, RoutingState, Verdict, VerdictRecord, aggregate_candidate_gate, aggregate_verdict
 
 FAILED_SHA = "7b076548751e72879d0632c1ec687e087e43a7b8"
 CURRENT_SHA = "5d0824448656b7e066e8115c92d001a0d9b0237a"
+OTHER_SHA = "6" * 40
 
 def vr(record_id, sha, contract, verdict, verifier="vega"):
     return VerdictRecord(record_id, sha, contract, verifier, verdict, f"evidence:{record_id}")
+
+def gate(results, governance=False, sha=CURRENT_SHA, contracts=("#39", "#40")):
+    return aggregate_candidate_gate(
+        results,
+        human_governance_required=governance,
+        expected_product_sha=sha,
+        required_contracts=contracts,
+    )
 
 def test_7b_fail_dominates_prior_pass_in_every_order():
     records = [vr("old-pass", FAILED_SHA, "#40", Verdict.PASS), vr("later-fail", FAILED_SHA, "#40", Verdict.FAIL, "integration-verifier")]
@@ -23,7 +32,7 @@ def test_5d_pass_is_monotonic_per_contract():
 def test_contract_and_child_sha_isolation():
     parent = vr("39-pass", CURRENT_SHA, "#39", Verdict.PASS)
     assert aggregate_verdict([parent], product_sha=CURRENT_SHA, contract="#40").routing_state is RoutingState.PENDING
-    assert aggregate_verdict([parent], product_sha="6" * 40, contract="#39").routing_state is RoutingState.PENDING
+    assert aggregate_verdict([parent], product_sha=OTHER_SHA, contract="#39").routing_state is RoutingState.PENDING
 
 def test_unsupported_invalidation_is_audit_only():
     records = [vr("fail", FAILED_SHA, "#40", Verdict.FAIL), AuditRecord("erase", FAILED_SHA, "#40", "invalidate", "fail", "evidence:erase")]
@@ -77,15 +86,20 @@ def test_permutation_and_replay_are_deterministic():
         assert aggregate_verdict(order, product_sha=CURRENT_SHA, contract="#39") == expected
     assert aggregate_verdict(expected.history, product_sha=CURRENT_SHA, contract="#39") == expected
 
+def passing_results(sha=CURRENT_SHA):
+    return [
+        aggregate_verdict([vr("39", sha, "#39", Verdict.PASS)], product_sha=sha, contract="#39"),
+        aggregate_verdict([vr("40", sha, "#40", Verdict.PASS)], product_sha=sha, contract="#40"),
+    ]
+
 def test_human_gate_is_separate_and_dominant():
-    results = [aggregate_verdict([vr("39", CURRENT_SHA, "#39", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#39"), aggregate_verdict([vr("40", CURRENT_SHA, "#40", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#40")]
-    assert aggregate_candidate_gate(results, human_governance_required=True) == "BLOCKED_BY_HUMAN_GOVERNANCE"
-    assert aggregate_candidate_gate(results, human_governance_required=False) == "TECHNICALLY_PASSING_NOT_MERGE_AUTHORIZED"
+    results = passing_results()
+    assert gate(results, governance=True) == "BLOCKED_BY_HUMAN_GOVERNANCE"
+    assert gate(results, governance=False) == "TECHNICALLY_PASSING_NOT_MERGE_AUTHORIZED"
 
 @pytest.mark.parametrize("malformed", [0, 0.0, "", [], {}, None, 1, "false"])
 def test_malformed_human_governance_flag_fails_closed(malformed):
-    results = [aggregate_verdict([vr("39", CURRENT_SHA, "#39", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#39")]
-    assert aggregate_candidate_gate(results, human_governance_required=malformed) == "BLOCKED_BY_HUMAN_GOVERNANCE"  # type: ignore[arg-type]
+    assert gate(passing_results(), governance=malformed) == "BLOCKED_BY_HUMAN_GOVERNANCE"  # type: ignore[arg-type]
 
 class ExplodingTechnicalResults:
     def __iter__(self):
@@ -97,19 +111,55 @@ class CountingTechnicalResults:
 
     def __iter__(self):
         self.consumed += 1
-        yield aggregate_verdict([vr("39", CURRENT_SHA, "#39", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#39")
+        yield from passing_results()
 
 @pytest.mark.parametrize("governance", [True, None, 0, 1, "false", [], {}])
 def test_human_governance_blocks_before_throwing_technical_iterable(governance):
-    assert aggregate_candidate_gate(ExplodingTechnicalResults(), human_governance_required=governance) == "BLOCKED_BY_HUMAN_GOVERNANCE"  # type: ignore[arg-type]
+    assert gate(ExplodingTechnicalResults(), governance=governance) == "BLOCKED_BY_HUMAN_GOVERNANCE"  # type: ignore[arg-type]
 
 @pytest.mark.parametrize("governance", [True, None, 0, 1, "false", [], {}])
 def test_human_governance_blocks_with_zero_technical_consumption(governance):
     results = CountingTechnicalResults()
-    assert aggregate_candidate_gate(results, human_governance_required=governance) == "BLOCKED_BY_HUMAN_GOVERNANCE"  # type: ignore[arg-type]
+    assert gate(results, governance=governance) == "BLOCKED_BY_HUMAN_GOVERNANCE"  # type: ignore[arg-type]
     assert results.consumed == 0
 
-def test_false_human_governance_still_consumes_and_routes_technical_results():
+def test_false_human_governance_still_consumes_and_routes_complete_results():
     results = CountingTechnicalResults()
-    assert aggregate_candidate_gate(results, human_governance_required=False) == "TECHNICALLY_PASSING_NOT_MERGE_AUTHORIZED"
+    assert gate(results, governance=False) == "TECHNICALLY_PASSING_NOT_MERGE_AUTHORIZED"
     assert results.consumed == 1
+
+def test_mixed_product_pass_results_cannot_compose():
+    mixed = [
+        aggregate_verdict([vr("39", CURRENT_SHA, "#39", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#39"),
+        aggregate_verdict([vr("40", OTHER_SHA, "#40", Verdict.PASS)], product_sha=OTHER_SHA, contract="#40"),
+    ]
+    assert gate(mixed) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+def test_duplicate_contract_cannot_substitute_for_missing_required_contract():
+    one = aggregate_verdict([vr("39", CURRENT_SHA, "#39", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#39")
+    assert gate([one, one]) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+def test_unexpected_contract_fails_closed():
+    unexpected = aggregate_verdict([vr("41", CURRENT_SHA, "#41", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#41")
+    assert gate(passing_results() + [unexpected]) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+def test_missing_required_contract_remains_pending():
+    one = aggregate_verdict([vr("39", CURRENT_SHA, "#39", Verdict.PASS)], product_sha=CURRENT_SHA, contract="#39")
+    assert gate([one]) == "PENDING"
+
+def test_exact_identity_complete_unique_pass_set_routes_technical_pass():
+    assert gate(passing_results()) == "TECHNICALLY_PASSING_NOT_MERGE_AUTHORIZED"
+
+@pytest.mark.parametrize("state", [RoutingState.FAIL, RoutingState.FAIL_CLOSED])
+def test_fail_states_remain_dominant(state):
+    results = passing_results()
+    results[1] = AggregationResult(CURRENT_SHA, "#40", state, state is RoutingState.FAIL_CLOSED, (), ())
+    assert gate(results) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+@pytest.mark.parametrize("bad_sha", ["", "abc", "g" * 40, CURRENT_SHA.upper()])
+def test_candidate_expected_sha_must_be_exact(bad_sha):
+    assert gate(passing_results(), sha=bad_sha) == "BLOCKED_BY_TECHNICAL_VERDICT"
+
+@pytest.mark.parametrize("contracts", [(), ("",), ("#39", "#39")])
+def test_required_contract_set_must_be_nonempty_unique_and_well_formed(contracts):
+    assert gate(passing_results(), contracts=contracts) == "BLOCKED_BY_TECHNICAL_VERDICT"

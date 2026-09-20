@@ -253,6 +253,7 @@ def admit_verdict(
 
     if type(prior_decisions) is not tuple:
         return _reject("invalid_prior_decision_history", request=request, principal=principal, policy_generation=expected_policy_generation, request_digest=digest)
+    matching_prior: list[AdmissionDecision] = []
     for prior in prior_decisions:
         if not _prior_is_well_formed(prior):
             return _reject("invalid_prior_decision_history", request=request, principal=principal, policy_generation=expected_policy_generation, request_digest=digest)
@@ -277,7 +278,12 @@ def admit_verdict(
                 or record.evidence_ref != request.evidence_ref
             ):
                 return _reject("invalid_prior_decision_history", request=request, principal=principal, policy_generation=expected_policy_generation, request_digest=digest)
-        return prior
+        matching_prior.append(prior)
+    if matching_prior:
+        first = matching_prior[0]
+        if any(prior != first for prior in matching_prior[1:]):
+            return _reject("conflicting_prior_decisions", request=request, principal=principal, policy_generation=expected_policy_generation, request_digest=digest)
+        return first
 
     record = VerdictRecord(
         request.submission_id,

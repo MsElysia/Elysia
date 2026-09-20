@@ -1,4 +1,4 @@
-# Regression coverage for optional NumPy import behavior.
+# Regression coverage for importing and using memory_vector_search without NumPy.
 
 import os
 from pathlib import Path
@@ -6,11 +6,13 @@ import subprocess
 import sys
 
 
-def test_project_guardian_import_and_memory_vector_use_without_numpy():
+def test_memory_vector_module_import_and_fallback_without_numpy():
     repo_root = Path(__file__).resolve().parents[2]
+    module_path = repo_root / "project_guardian" / "memory_vector_search.py"
 
-    script = r"""
+    script = f"""
 import builtins
+import importlib.util
 
 _real_import = builtins.__import__
 
@@ -23,17 +25,21 @@ def _without_numpy(name, globals=None, locals=None, fromlist=(), level=0):
 
 builtins.__import__ = _without_numpy
 
-import project_guardian
-from project_guardian import memory_vector_search as mvs
+spec = importlib.util.spec_from_file_location(
+    "memory_vector_search_optional_numpy_regression",
+    {str(module_path)!r},
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
 
-assert mvs.HAS_NUMPY is False
+assert module.HAS_NUMPY is False
 
-embedder = mvs.SimpleEmbedder()
+embedder = module.SimpleEmbedder()
 embedding = embedder.embed("alpha beta", dimension=8)
 assert isinstance(embedding, list)
 assert len(embedding) == 8
 
-search = mvs.MemoryVectorSearch(use_faiss=False)
+search = module.MemoryVectorSearch(use_faiss=False)
 search.add_memory("memory-1", "alpha beta gamma")
 results = search.search_similar("alpha", limit=3)
 
@@ -42,13 +48,6 @@ assert results[0][0] == "memory-1"
 """
 
     env = os.environ.copy()
-    existing_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        str(repo_root)
-        if not existing_pythonpath
-        else str(repo_root) + os.pathsep + existing_pythonpath
-    )
-
     completed = subprocess.run(
         [sys.executable, "-c", script],
         cwd=repo_root,
@@ -59,8 +58,7 @@ assert results[0][0] == "memory-1"
     )
 
     assert completed.returncode == 0, (
-        "project_guardian should import and memory-vector fallback should work "
-        "when NumPy is unavailable.\n"
+        "memory_vector_search should import and use its fallback when NumPy is unavailable.\n"
         f"stdout:\n{completed.stdout}\n"
         f"stderr:\n{completed.stderr}"
     )

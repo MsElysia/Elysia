@@ -82,7 +82,7 @@ class SimpleEmbedder:
         for token, count in doc_counts.items():
             self.idf[token] = np.log(total_docs / (count + 1))
     
-    def embed(self, text: str, dimension: int = 384) -> np.ndarray:
+    def embed(self, text: str, dimension: int = 384) -> "np.ndarray":
         """Simple embedding using word frequencies."""
         if not HAS_NUMPY:
             # Fallback to hash-based embedding

@@ -55,7 +55,7 @@ class AggregationResult:
     reasons: Tuple[str, ...]
 
 def _is_exact_sha(value: object) -> bool:
-    return isinstance(value, str) and _EXACT_SHA.fullmatch(value) is not None
+    return type(value) is str and _EXACT_SHA.fullmatch(value) is not None
 
 def _record_key(record: Record) -> tuple[str, str, str, str, str, str]:
     if isinstance(record, VerdictRecord):
@@ -66,26 +66,26 @@ def _validate_record(record: Record) -> str | None:
     if type(record) not in (VerdictRecord, AuditRecord):
         return "untyped_or_unadmitted_record"
     for value in (record.record_id, record.contract, record.evidence_ref):
-        if not isinstance(value, str) or not value.strip():
+        if type(value) is not str or not value.strip():
             return "malformed_record_identity"
     if not _is_exact_sha(record.product_sha):
         return "malformed_product_sha"
     if isinstance(record, VerdictRecord):
-        if not isinstance(record.verifier_id, str) or not record.verifier_id.strip():
+        if type(record.verifier_id) is not str or not record.verifier_id.strip():
             return "malformed_verifier_identity"
         if not isinstance(record.verdict, Verdict):
             return "unknown_verdict"
     else:
-        if not isinstance(record.action, str) or not record.action.strip():
+        if type(record.action) is not str or not record.action.strip():
             return "malformed_audit_action"
-        if not isinstance(record.target_record_id, str) or not record.target_record_id.strip():
+        if type(record.target_record_id) is not str or not record.target_record_id.strip():
             return "malformed_audit_target"
     return None
 
 def aggregate_verdict(records: Iterable[Record], *, product_sha: str, contract: str) -> AggregationResult:
     if not _is_exact_sha(product_sha):
         raise ValueError("product_sha must be an exact lowercase 40-hex SHA")
-    if not isinstance(contract, str) or not contract.strip():
+    if type(contract) is not str or not contract.strip():
         raise ValueError("contract must be non-empty")
     materialized = tuple(records)
     reasons: list[str] = []
@@ -137,7 +137,7 @@ def aggregate_candidate_gate(
         return "BLOCKED_BY_TECHNICAL_VERDICT"
     if (
         not required
-        or any(not isinstance(c, str) or not c.strip() for c in required)
+        or any(type(c) is not str or not c.strip() for c in required)
         or len(set(required)) != len(required)
     ):
         return "BLOCKED_BY_TECHNICAL_VERDICT"
@@ -153,14 +153,14 @@ def aggregate_candidate_gate(
             return "BLOCKED_BY_TECHNICAL_VERDICT"
         if not _is_exact_sha(result.product_sha) or result.product_sha != expected_product_sha:
             return "BLOCKED_BY_TECHNICAL_VERDICT"
-        if not isinstance(result.contract, str) or not result.contract.strip():
+        if type(result.contract) is not str or not result.contract.strip():
             return "BLOCKED_BY_TECHNICAL_VERDICT"
         if not isinstance(result.routing_state, RoutingState):
             return "BLOCKED_BY_TECHNICAL_VERDICT"
         if type(result.conflict) is not bool:
             return "BLOCKED_BY_TECHNICAL_VERDICT"
         if type(result.reasons) is not tuple or any(
-            not isinstance(reason, str) or not reason.strip() for reason in result.reasons
+            type(reason) is not str or not reason.strip() for reason in result.reasons
         ):
             return "BLOCKED_BY_TECHNICAL_VERDICT"
         if type(result.history) is not tuple:
@@ -171,7 +171,7 @@ def aggregate_candidate_gate(
                 product_sha=result.product_sha,
                 contract=result.contract,
             )
-        except (TypeError, ValueError, AttributeError):
+        except Exception:
             return "BLOCKED_BY_TECHNICAL_VERDICT"
         if (
             canonical.routing_state is not result.routing_state

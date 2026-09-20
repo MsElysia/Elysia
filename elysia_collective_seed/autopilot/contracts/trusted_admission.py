@@ -100,8 +100,8 @@ def _reject(
     policy_generation: object,
     request_digest: str = "",
 ) -> AdmissionDecision:
-    submission_id = _safe_text(getattr(request, "submission_id", ""))
-    principal_id = _safe_text(getattr(principal, "principal_id", ""))
+    submission_id = _safe_text(request.submission_id) if type(request) is AdmissionRequest else ""
+    principal_id = _safe_text(principal.principal_id) if type(principal) is AuthenticatedPrincipal else ""
     generation = policy_generation if _exact_int(policy_generation) else -1
     audit = AdmissionAudit(
         submission_id,

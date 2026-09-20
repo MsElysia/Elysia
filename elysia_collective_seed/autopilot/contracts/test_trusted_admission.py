@@ -59,6 +59,13 @@ def test_raw_or_self_asserted_principal_cannot_enter(raw):
     assert decision.record is None
 
 
+def test_raw_mappings_cannot_self_assert_any_admission_input():
+    forged = {"authenticated": True, "trusted": True, "admitted": True, "github_owner": True}
+    assert admit(p=forged).audit.reason == "untrusted_principal_shape"
+    assert admit(e=forged).audit.reason == "untrusted_eligibility_shape"
+    assert admit(r=forged).audit.reason == "untrusted_request_shape"
+
+
 class ExplodingAttributes:
     def __getattribute__(self, name):
         raise RuntimeError("untrusted attribute access must not execute")
@@ -112,11 +119,17 @@ class ThrowingStr(str):
     "bad",
     [
         lambda: (replace(principal(), principal_id=ThrowingStr("vega")), eligibility(), request()),
+        lambda: (replace(principal(), authentication_method=ThrowingStr("test-auth")), eligibility(), request()),
         lambda: (replace(principal(), authentication_event_ref=ThrowingStr("event")), eligibility(), request()),
         lambda: (principal(), replace(eligibility(), grant_id=ThrowingStr("grant")), request()),
+        lambda: (principal(), replace(eligibility(), principal_id=ThrowingStr("vega")), request()),
+        lambda: (principal(), replace(eligibility(), role=ThrowingStr("verifier")), request()),
         lambda: (principal(), replace(eligibility(), contracts=(ThrowingStr("#46"),)), request()),
         lambda: (principal(), replace(eligibility(), product_shas=(ThrowingStr(SHA),)), request()),
+        lambda: (principal(), replace(eligibility(), issuer_ref=ThrowingStr("policy")), request()),
         lambda: (principal(), eligibility(), replace(request(), submission_id=ThrowingStr("submission"))),
+        lambda: (principal(), eligibility(), replace(request(), product_sha=ThrowingStr(SHA))),
+        lambda: (principal(), eligibility(), replace(request(), contract=ThrowingStr("#46"))),
         lambda: (principal(), eligibility(), replace(request(), evidence_ref=ThrowingStr("evidence"))),
     ],
 )
@@ -142,6 +155,14 @@ def test_malformed_policy_and_history_inputs_reject(kwargs):
     decision = admit(**kwargs)
     assert decision.audit.status is AdmissionStatus.REJECTED
     assert decision.record is None
+
+
+def test_hostile_authentication_policy_and_prior_audit_reject():
+    assert admit(trusted_authentication_methods=(ThrowingStr("test-auth"),)).audit.status is AdmissionStatus.REJECTED
+    first = admit()
+    hostile_audit = replace(first.audit, principal_id=ThrowingStr("vega"))
+    hostile_prior = replace(first, audit=hostile_audit)
+    assert admit(prior_decisions=(hostile_prior,)).audit.reason == "invalid_prior_decision_history"
 
 
 def test_future_authentication_and_non_verifier_role_reject():

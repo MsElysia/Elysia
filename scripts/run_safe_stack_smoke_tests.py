@@ -51,6 +51,8 @@ REQUIRED_TEST_PATHS: Tuple[str, ...] = (
     "project_guardian/tests/test_operator_confirmation_visibility.py",
 )
 
+OPTIONAL_NUMPY_REGRESSION_TEST = "scripts/tests/test_memory_vector_optional_numpy.py"
+
 OPTIONAL_ALTERNATIVES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     (
         "TDA trace naming",
@@ -147,11 +149,40 @@ def run_safe_stack_smoke_tests(
         _print_reminders()
         return 2
 
+    regression_path = root / OPTIONAL_NUMPY_REGRESSION_TEST
+    if not regression_path.is_file():
+        print("Safe stack smoke tests: FAILED (setup)", file=sys.stderr)
+        print(f"Missing optional-NumPy regression: {OPTIONAL_NUMPY_REGRESSION_TEST}", file=sys.stderr)
+        _print_reminders()
+        return 2
+
     if list_only:
+        print(OPTIONAL_NUMPY_REGRESSION_TEST)
         for path in test_paths:
             print(path)
         _print_reminders()
         return 0
+
+    regression_cmd = build_pytest_command([OPTIONAL_NUMPY_REGRESSION_TEST], python=python)
+    print("Optional NumPy regression")
+    print("=" * 50)
+    print(f"  {format_command(regression_cmd)}")
+    regression = subprocess.run(
+        regression_cmd,
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+    )
+    if regression.stdout:
+        print(regression.stdout.rstrip())
+    if regression.returncode != 0:
+        print("\n--- optional NumPy regression FAILED ---", file=sys.stderr)
+        if regression.stderr:
+            print(regression.stderr.rstrip(), file=sys.stderr)
+        print(f"\nExit code: {regression.returncode}", file=sys.stderr)
+        _print_reminders()
+        return int(regression.returncode)
+    print("\n--- optional NumPy regression PASSED ---\n")
 
     cmd = build_pytest_command(test_paths, python=python)
 

@@ -88,6 +88,15 @@ def test_identical_replay_is_idempotent_and_conflict_rejects():
     assert decision.record is None
 
 
+def test_conflicting_prior_history_fails_closed_in_every_order():
+    first = admit()
+    second = admit(r=replace(request(), verdict=Verdict.FAIL))
+    for history in ((first, second), (second, first)):
+        decision = admit(prior_decisions=history)
+        assert decision.audit.reason == "conflicting_submission_id"
+        assert decision.record is None
+
+
 class ThrowingStr(str):
     def strip(self, *args, **kwargs):
         raise RuntimeError("untrusted method must not execute")

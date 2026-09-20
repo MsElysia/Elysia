@@ -29,11 +29,14 @@ def request():
     return AdmissionRequest("submission-1", SHA, "#46", Verdict.PASS, "evidence:test")
 
 
-def admit(p=None, e=None, r=None, **kwargs):
+_UNSET = object()
+
+
+def admit(p=_UNSET, e=_UNSET, r=_UNSET, **kwargs):
     return admit_verdict(
-        principal() if p is None else p,
-        eligibility() if e is None else e,
-        request() if r is None else r,
+        principal() if p is _UNSET else p,
+        eligibility() if e is _UNSET else e,
+        request() if r is _UNSET else r,
         expected_policy_generation=kwargs.pop("expected_policy_generation", 7),
         now_epoch_s=kwargs.pop("now_epoch_s", NOW),
         trusted_authentication_methods=kwargs.pop("trusted_authentication_methods", ("test-auth",)),

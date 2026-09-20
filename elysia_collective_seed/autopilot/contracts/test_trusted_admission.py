@@ -56,6 +56,17 @@ def test_raw_or_self_asserted_principal_cannot_enter(raw):
     assert decision.record is None
 
 
+class ExplodingAttributes:
+    def __getattribute__(self, name):
+        raise RuntimeError("untrusted attribute access must not execute")
+
+
+def test_untrusted_objects_reject_without_attribute_access():
+    assert admit(p=ExplodingAttributes()).audit.reason == "untrusted_principal_shape"
+    assert admit(e=ExplodingAttributes()).audit.reason == "untrusted_eligibility_shape"
+    assert admit(r=ExplodingAttributes()).audit.reason == "untrusted_request_shape"
+
+
 def test_authentication_does_not_grant_wrong_contract_or_sha():
     assert admit(r=replace(request(), contract="#40")).audit.reason == "contract_not_eligible"
     assert admit(r=replace(request(), product_sha=OTHER_SHA)).audit.reason == "product_sha_not_eligible"

@@ -133,7 +133,7 @@ def aggregate_candidate_gate(
         return "BLOCKED_BY_TECHNICAL_VERDICT"
     try:
         required = tuple(required_contracts)
-    except (TypeError, ValueError):
+    except Exception:
         return "BLOCKED_BY_TECHNICAL_VERDICT"
     if (
         not required
@@ -145,7 +145,7 @@ def aggregate_candidate_gate(
 
     try:
         results = tuple(technical_results)
-    except (TypeError, ValueError):
+    except Exception:
         return "BLOCKED_BY_TECHNICAL_VERDICT"
     seen_contracts: set[str] = set()
     for result in results:

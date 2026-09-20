@@ -1,10 +1,13 @@
 """Pure, runtime-disconnected verifier-admission contract.
 
 This module does not authenticate credentials or ingest GitHub data. A future
-trusted authentication boundary must supply an exact ``AuthenticatedPrincipal``
-and policy inputs. The contract only validates their structural and scope
-bindings before constructing a typed ``VerdictRecord``. Nothing here grants
-merge, deployment, external-write, or human-governance authority.
+trusted authentication boundary must supply the principal, eligibility registry,
+policy inputs, and append-only prior-decision history. These freely constructible
+Python objects are normative representations, never credentials or trust tokens.
+The contract only validates their structural and scope bindings before
+constructing a typed ``VerdictRecord``. Nothing here grants merge, deployment,
+external-write, or human-governance authority. The separate governance-snapshot
+model in ``admission.py`` remains unchanged and equally runtime-disconnected.
 """
 from __future__ import annotations
 

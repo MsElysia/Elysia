@@ -136,6 +136,18 @@ def _valid_policy_tuple(values: object, *, sha_values: bool = False) -> bool:
     return all(validator(value) for value in values) and len(set(values)) == len(values)
 
 
+def _record_is_well_formed(record: object) -> bool:
+    return (
+        type(record) is VerdictRecord
+        and _exact_nonempty(record.record_id)
+        and _exact_sha(record.product_sha)
+        and _exact_nonempty(record.contract)
+        and _exact_nonempty(record.verifier_id)
+        and type(record.verdict) is Verdict
+        and _exact_nonempty(record.evidence_ref)
+    )
+
+
 def _prior_is_well_formed(decision: object) -> bool:
     if type(decision) is not AdmissionDecision or type(decision.audit) is not AdmissionAudit:
         return False
@@ -150,7 +162,7 @@ def _prior_is_well_formed(decision: object) -> bool:
     ):
         return False
     if audit.status is AdmissionStatus.ADMITTED:
-        return type(decision.record) is VerdictRecord
+        return _record_is_well_formed(decision.record)
     return decision.record is None
 
 
@@ -166,87 +178,35 @@ def admit_verdict(
 ) -> AdmissionDecision:
     """Admit one structurally bound request or return a fail-closed rejection."""
     if not _exact_int(expected_policy_generation) or not _exact_int(now_epoch_s):
-        return _reject(
-            "invalid_policy_context",
-            request=request,
-            principal=principal,
-            policy_generation=expected_policy_generation,
-        )
+        return _reject("invalid_policy_context", request=request, principal=principal, policy_generation=expected_policy_generation)
     if not _valid_policy_tuple(trusted_authentication_methods):
-        return _reject(
-            "invalid_authentication_policy",
-            request=request,
-            principal=principal,
-            policy_generation=expected_policy_generation,
-        )
+        return _reject("invalid_authentication_policy", request=request, principal=principal, policy_generation=expected_policy_generation)
     if type(principal) is not AuthenticatedPrincipal:
-        return _reject(
-            "untrusted_principal_shape",
-            request=request,
-            principal=principal,
-            policy_generation=expected_policy_generation,
-        )
+        return _reject("untrusted_principal_shape", request=request, principal=principal, policy_generation=expected_policy_generation)
     if type(eligibility) is not VerifierEligibility:
-        return _reject(
-            "untrusted_eligibility_shape",
-            request=request,
-            principal=principal,
-            policy_generation=expected_policy_generation,
-        )
+        return _reject("untrusted_eligibility_shape", request=request, principal=principal, policy_generation=expected_policy_generation)
     if type(request) is not AdmissionRequest:
-        return _reject(
-            "untrusted_request_shape",
-            request=request,
-            principal=principal,
-            policy_generation=expected_policy_generation,
-        )
+        return _reject("untrusted_request_shape", request=request, principal=principal, policy_generation=expected_policy_generation)
 
-    if (
-        not _exact_nonempty(principal.principal_id)
-        or not _exact_nonempty(principal.authentication_method)
-        or not _exact_nonempty(principal.authentication_event_ref)
-        or not _exact_int(principal.authenticated_at_epoch_s)
-        or not _exact_int(principal.policy_generation)
-    ):
+    if (not _exact_nonempty(principal.principal_id) or not _exact_nonempty(principal.authentication_method) or not _exact_nonempty(principal.authentication_event_ref) or not _exact_int(principal.authenticated_at_epoch_s) or not _exact_int(principal.policy_generation)):
         return _reject("malformed_principal", request=request, principal=principal, policy_generation=expected_policy_generation)
     if principal.authentication_method not in trusted_authentication_methods:
         return _reject("untrusted_authentication_method", request=request, principal=principal, policy_generation=expected_policy_generation)
     if principal.authenticated_at_epoch_s > now_epoch_s:
         return _reject("future_authentication_event", request=request, principal=principal, policy_generation=expected_policy_generation)
 
-    if (
-        not _exact_nonempty(eligibility.grant_id)
-        or not _exact_nonempty(eligibility.principal_id)
-        or not _exact_nonempty(eligibility.role)
-        or not _valid_policy_tuple(eligibility.contracts)
-        or not _valid_policy_tuple(eligibility.product_shas, sha_values=True)
-        or not _exact_int(eligibility.policy_generation)
-        or (
-            eligibility.expires_at_epoch_s is not None
-            and not _exact_int(eligibility.expires_at_epoch_s)
-        )
-        or not _exact_nonempty(eligibility.issuer_ref)
-    ):
+    if (not _exact_nonempty(eligibility.grant_id) or not _exact_nonempty(eligibility.principal_id) or not _exact_nonempty(eligibility.role) or not _valid_policy_tuple(eligibility.contracts) or not _valid_policy_tuple(eligibility.product_shas, sha_values=True) or not _exact_int(eligibility.policy_generation) or (eligibility.expires_at_epoch_s is not None and not _exact_int(eligibility.expires_at_epoch_s)) or not _exact_nonempty(eligibility.issuer_ref)):
         return _reject("malformed_eligibility", request=request, principal=principal, policy_generation=expected_policy_generation)
     if eligibility.principal_id != principal.principal_id:
         return _reject("principal_eligibility_mismatch", request=request, principal=principal, policy_generation=expected_policy_generation)
     if eligibility.role != "verifier":
         return _reject("ineligible_role", request=request, principal=principal, policy_generation=expected_policy_generation)
-    if (
-        principal.policy_generation != expected_policy_generation
-        or eligibility.policy_generation != expected_policy_generation
-    ):
+    if principal.policy_generation != expected_policy_generation or eligibility.policy_generation != expected_policy_generation:
         return _reject("stale_policy_generation", request=request, principal=principal, policy_generation=expected_policy_generation)
     if eligibility.expires_at_epoch_s is not None and eligibility.expires_at_epoch_s <= now_epoch_s:
         return _reject("expired_eligibility", request=request, principal=principal, policy_generation=expected_policy_generation)
 
-    if (
-        not _exact_nonempty(request.submission_id)
-        or not _exact_sha(request.product_sha)
-        or not _exact_nonempty(request.contract)
-        or type(request.verdict) is not Verdict
-        or not _exact_nonempty(request.evidence_ref)
-    ):
+    if (not _exact_nonempty(request.submission_id) or not _exact_sha(request.product_sha) or not _exact_nonempty(request.contract) or type(request.verdict) is not Verdict or not _exact_nonempty(request.evidence_ref)):
         return _reject("malformed_request", request=request, principal=principal, policy_generation=expected_policy_generation)
     digest = _request_digest(request)
     if request.contract not in eligibility.contracts:
@@ -264,22 +224,11 @@ def admit_verdict(
             continue
         if prior.audit.request_digest != digest:
             return _reject("conflicting_submission_id", request=request, principal=principal, policy_generation=expected_policy_generation, request_digest=digest)
-        if (
-            prior.audit.principal_id != principal.principal_id
-            or prior.audit.policy_generation != expected_policy_generation
-        ):
+        if prior.audit.principal_id != principal.principal_id or prior.audit.policy_generation != expected_policy_generation:
             return _reject("invalid_prior_decision_history", request=request, principal=principal, policy_generation=expected_policy_generation, request_digest=digest)
         if prior.audit.status is AdmissionStatus.ADMITTED:
             record = prior.record
-            if (
-                record is None
-                or record.record_id != request.submission_id
-                or record.product_sha != request.product_sha
-                or record.contract != request.contract
-                or record.verifier_id != principal.principal_id
-                or record.verdict is not request.verdict
-                or record.evidence_ref != request.evidence_ref
-            ):
+            if (record is None or record.record_id != request.submission_id or record.product_sha != request.product_sha or record.contract != request.contract or record.verifier_id != principal.principal_id or record.verdict is not request.verdict or record.evidence_ref != request.evidence_ref):
                 return _reject("invalid_prior_decision_history", request=request, principal=principal, policy_generation=expected_policy_generation, request_digest=digest)
         matching_prior.append(prior)
     if matching_prior:
@@ -288,20 +237,6 @@ def admit_verdict(
             return _reject("conflicting_prior_decisions", request=request, principal=principal, policy_generation=expected_policy_generation, request_digest=digest)
         return first
 
-    record = VerdictRecord(
-        request.submission_id,
-        request.product_sha,
-        request.contract,
-        principal.principal_id,
-        request.verdict,
-        request.evidence_ref,
-    )
-    audit = AdmissionAudit(
-        request.submission_id,
-        principal.principal_id,
-        expected_policy_generation,
-        digest,
-        AdmissionStatus.ADMITTED,
-        "all_bindings_valid",
-    )
+    record = VerdictRecord(request.submission_id, request.product_sha, request.contract, principal.principal_id, request.verdict, request.evidence_ref)
+    audit = AdmissionAudit(request.submission_id, principal.principal_id, expected_policy_generation, digest, AdmissionStatus.ADMITTED, "all_bindings_valid")
     return AdmissionDecision(audit, record)

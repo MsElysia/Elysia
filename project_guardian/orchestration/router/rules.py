@@ -256,7 +256,19 @@ class RulesRouter:
                 fanout.append(planner)
             reasons.append("openai_unavailable_local_fallback")
 
-        reviewer = _resolve_reviewer(executor, reviewer, planner)
+        if bool((request.metadata or {}).get("local_only")):
+            def _local_ref(ref: Optional[str]) -> str:
+                prov, _model = parse_model_ref(ref or "")
+                return ref if prov == "ollama" and ref else _ollama_default
+
+            planner = _local_ref(planner)
+            executor = _local_ref(executor)
+            reviewer = None
+            judge_m = None
+            fanout = [_local_ref(model) for model in fanout]
+            reasons.append("local_only")
+        else:
+            reviewer = _resolve_reviewer(executor, reviewer, planner)
 
         reason = "; ".join(reasons) if reasons else "yaml_defaults"
         decision = RouteDecision(

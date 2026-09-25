@@ -102,6 +102,13 @@ class TaskLedger:
         for name in ("completion_submission_json", "completion_submission_digest", "verification_supplemental_evidence_json", "verification_submission_digest"):
             if name not in existing:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} TEXT")
+        for name, definition in (
+            ("bridge_status", "TEXT"),
+            ("bridge_started_at", "TEXT"),
+            ("bridge_result_digest", "TEXT"),
+        ):
+            if name not in existing:
+                self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
         for name in ("execution_max_attempts", "verification_max_rejections"):
             if name not in existing:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} INTEGER")
@@ -139,6 +146,9 @@ class TaskLedger:
         result["completion_submission"] = json.loads(row["completion_submission_json"] or "null")
         result["completion_submission_digest"] = row["completion_submission_digest"]
         result["verification_supplemental_evidence"] = json.loads(row["verification_supplemental_evidence_json"] or "[]")
+        result["bridge_status"] = row["bridge_status"]
+        result["bridge_started_at"] = row["bridge_started_at"]
+        result["bridge_result_digest"] = row["bridge_result_digest"]
         return result
 
     def claim(self, task_id: str, worker_id: str, lease_seconds: int=900, now: datetime|None=None) -> ClaimResult:
@@ -155,7 +165,7 @@ class TaskLedger:
             if exhausted.rowcount == 1:
                 self._event(task_id, "retry_budget_exhausted", worker_id, {"status": "human_review"}, now_s)
                 return ClaimResult(False, task_id, worker_id, "attempt_limit_reached")
-            acquired=self.conn.execute("UPDATE tasks SET status='claimed',attempt=attempt+1,claimed_by=?,lease_expires_at=?,updated_at=? WHERE task_id=? AND ((status='queued' AND (claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=?)) OR (status IN ('claimed','running') AND lease_expires_at IS NOT NULL AND lease_expires_at<=?))",(worker_id,expires,now_s,task_id,now_s,now_s))
+            acquired=self.conn.execute("UPDATE tasks SET status='claimed',attempt=attempt+1,claimed_by=?,lease_expires_at=?,updated_at=?,bridge_status=NULL,bridge_started_at=NULL,bridge_result_digest=NULL WHERE task_id=? AND ((status='queued' AND (claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=?)) OR (status IN ('claimed','running') AND lease_expires_at IS NOT NULL AND lease_expires_at<=?))",(worker_id,expires,now_s,task_id,now_s,now_s))
             if acquired.rowcount==1:
                 self._event(task_id,"task_claimed",worker_id,{"expires":expires},now_s); return ClaimResult(True,task_id,worker_id,"claimed",expires)
             row=self.conn.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
@@ -410,6 +420,117 @@ class TaskLedger:
                     self._event(row["task_id"],"lease_expired",row["claimed_by"],{"status":status},now_s)
                     reaped.append(row["task_id"])
         return reaped
+
+    def record_bridge_started(self, task_id: str, worker_id: str, now: datetime|None=None) -> bool:
+        """Persist that the current execution attempt is about to invoke the broker."""
+        now=now or _utcnow(); now_s=_iso(now)
+        with self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row=self.conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if not row:
+                return False
+            if row["status"] not in ACTIVE_LEASE_STATES or row["claimed_by"] != worker_id:
+                return False
+            if not row["lease_expires_at"] or row["lease_expires_at"] <= now_s:
+                return False
+            if row["bridge_status"] is not None:
+                return False
+            cursor=self.conn.execute(
+                "UPDATE tasks SET bridge_status='started',bridge_started_at=?,bridge_result_digest=NULL,updated_at=? "
+                "WHERE task_id=? AND attempt=? AND claimed_by=? AND status IN ('claimed','running') AND lease_expires_at>?",
+                (now_s,now_s,task_id,row["attempt"],worker_id,now_s),
+            )
+            if cursor.rowcount!=1:
+                return False
+            self._event(task_id,"broker_execution_started",worker_id,{"attempt":row["attempt"]},now_s)
+            return True
+
+    def capture_bridge_result(self, task_id: str, worker_id: str, receipt: Mapping, now: datetime|None=None) -> str|None:
+        """Durably capture one broker result for the still-live execution attempt."""
+        now=now or _utcnow(); now_s=_iso(now)
+        try:
+            receipt_dict=dict(receipt)
+            canonical=json.dumps(receipt_dict,sort_keys=True,separators=(",",":"),allow_nan=False)
+        except (TypeError,ValueError):
+            return None
+        digest="sha256:"+hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        with self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row=self.conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if not row:
+                return None
+            if row["status"] not in ACTIVE_LEASE_STATES or row["claimed_by"] != worker_id:
+                return None
+            if not row["lease_expires_at"] or row["lease_expires_at"] <= now_s:
+                return None
+            if row["bridge_status"]!="started":
+                return None
+            if receipt_dict.get("task_id")!=task_id or receipt_dict.get("execution_attempt")!=row["attempt"]:
+                return None
+            cursor=self.conn.execute(
+                "UPDATE tasks SET bridge_status='result_captured',bridge_result_digest=?,updated_at=? "
+                "WHERE task_id=? AND attempt=? AND claimed_by=? AND status IN ('claimed','running') "
+                "AND lease_expires_at>? AND bridge_status='started'",
+                (digest,now_s,task_id,row["attempt"],worker_id,now_s),
+            )
+            if cursor.rowcount!=1:
+                return None
+            self._event(
+                task_id,
+                "broker_result_captured",
+                worker_id,
+                {"attempt":row["attempt"],"result_digest":digest,"receipt":receipt_dict},
+                now_s,
+            )
+            return digest
+
+    def get_bridge_receipt(self, task_id: str) -> dict|None:
+        """Return the current attempt's captured receipt after digest verification."""
+        row=self.conn.execute(
+            "SELECT attempt,bridge_status,bridge_result_digest FROM tasks WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        if not row or row["bridge_status"] not in {"result_captured","submitted"} or not row["bridge_result_digest"]:
+            return None
+        events=self.conn.execute(
+            "SELECT detail_json FROM events WHERE task_id=? AND event_type='broker_result_captured' ORDER BY event_id DESC",
+            (task_id,),
+        ).fetchall()
+        for event in events:
+            try:
+                detail=json.loads(event["detail_json"])
+                if detail.get("attempt")!=row["attempt"] or detail.get("result_digest")!=row["bridge_result_digest"]:
+                    continue
+                receipt=detail["receipt"]
+                canonical=json.dumps(receipt,sort_keys=True,separators=(",",":"),allow_nan=False)
+                digest="sha256:"+hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+                if digest==row["bridge_result_digest"]:
+                    return receipt
+            except (KeyError,TypeError,ValueError,AttributeError):
+                continue
+        return None
+
+    def mark_bridge_submitted(self, task_id: str, worker_id: str, attempt: int, result_digest: str, now: datetime|None=None) -> bool:
+        """Mark bridge current-state after authoritative verification submission commits."""
+        now_s=_iso(now or _utcnow())
+        with self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row=self.conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if not row:
+                return False
+            if row["status"]!="verifying" or row["produced_by"]!=worker_id:
+                return False
+            if row["attempt"]!=attempt or row["bridge_status"]!="result_captured" or row["bridge_result_digest"]!=result_digest:
+                return False
+            cursor=self.conn.execute(
+                "UPDATE tasks SET bridge_status='submitted',updated_at=? WHERE task_id=? AND attempt=? "
+                "AND status='verifying' AND produced_by=? AND bridge_result_digest=?",
+                (now_s,task_id,attempt,worker_id,result_digest),
+            )
+            if cursor.rowcount!=1:
+                return False
+            self._event(task_id,"broker_result_submitted",worker_id,{"attempt":attempt,"result_digest":result_digest},now_s)
+            return True
 
     def events(self, task_id: str) -> list[dict]:
         rows=self.conn.execute("SELECT event_type,actor,detail_json,created_at FROM events WHERE task_id=? ORDER BY event_id",(task_id,)).fetchall()

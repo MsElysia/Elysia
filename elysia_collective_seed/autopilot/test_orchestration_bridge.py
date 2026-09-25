@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import asyncio
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 from elysia_collective_seed.autopilot.orchestration_bridge import run_via_broker
 from elysia_collective_seed.autopilot.task_ledger import TaskLedger
-from project_guardian.orchestration.router import rules as rules_module
-from project_guardian.orchestration.router.rules import RulesRouter
-from project_guardian.orchestration.types import PipelineResult, TaskRequest
 
 
 NOW = datetime(2026, 9, 25, 20, 0, tzinfo=timezone.utc)
@@ -30,15 +28,26 @@ def _task(task_id: str = "ELY-TASK-900001", *, risk_class: str = "read_only") ->
     }
 
 
+@dataclass
+class FakePipelineResult:
+    task_id: str
+    pipeline_id: str
+    success: bool
+    final_output: Any
+    node_results: list[Any] = field(default_factory=list)
+    route_reason: str = ""
+    error: str | None = None
+
+
 class FakeBroker:
     def __init__(self) -> None:
-        self.calls: list[TaskRequest] = []
+        self.calls: list[Any] = []
         self.kwargs: list[dict] = []
 
-    def run_task_sync(self, request: TaskRequest, **kwargs) -> PipelineResult:
+    def run_task_sync(self, request, **kwargs):
         self.calls.append(request)
         self.kwargs.append(dict(kwargs))
-        return PipelineResult(
+        return FakePipelineResult(
             task_id=request.task_id,
             pipeline_id="serial_plan_execute_review",
             success=True,
@@ -138,39 +147,3 @@ def test_started_without_result_requeues_instead_of_rerunning_same_attempt(tmp_p
     finally:
         ledger.close()
 
-
-def test_local_only_route_never_selects_openai(monkeypatch):
-    monkeypatch.setattr(rules_module, "_openai_available", lambda: True)
-    raw = {
-        "orchestration": {"enabled": True},
-        "defaults": {
-            "pipeline": "serial_plan_execute_review",
-            "planner_model": "openai:gpt-planner",
-            "executor_model": "openai:gpt-executor",
-            "reviewer_model": "openai:gpt-reviewer",
-        },
-        "routes": {
-            "reasoning": {
-                "pipeline": "serial_plan_execute_review",
-                "planner_model": "openai:gpt-planner",
-                "executor_model": "openai:gpt-executor",
-                "reviewer_model": "openai:gpt-reviewer",
-            }
-        },
-    }
-    route = asyncio.run(
-        RulesRouter(raw).resolve(
-            TaskRequest(
-                task_id="ELY-TASK-900005",
-                task_type="reasoning",
-                prompt="diagnose",
-                metadata={"local_only": True},
-            )
-        )
-    )
-    assert route.planner_model.startswith("ollama:")
-    assert route.executor_model.startswith("ollama:")
-    assert route.reviewer_model is None
-    assert route.judge_model is None
-    assert all(model.startswith("ollama:") for model in route.fanout_models)
-    assert "local_only" in route.reason

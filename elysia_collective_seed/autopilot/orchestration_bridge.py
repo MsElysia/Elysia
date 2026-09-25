@@ -14,9 +14,17 @@ from datetime import datetime, timezone
 import json
 from typing import Any
 
-from project_guardian.orchestration import TaskRequest, get_orchestration_broker
-
 from .task_ledger import TaskLedger
+
+
+@dataclass(frozen=True)
+class _BrokerTaskRequest:
+    """TaskRequest-compatible shape without importing Guardian at seed-test time."""
+    task_id: str
+    task_type: str
+    prompt: str
+    context: dict[str, Any]
+    metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -178,7 +186,7 @@ def run_via_broker(
     if not ledger.record_bridge_started(task_id, worker_id, now=current):
         return BridgeRunResult(task_id, attempt, "refused", False, error="bridge_start_rejected")
 
-    request = TaskRequest(
+    request = _BrokerTaskRequest(
         task_id=task_id,
         task_type="reasoning",
         prompt=str(task.get("objective") or task.get("title") or ""),
@@ -190,7 +198,13 @@ def run_via_broker(
         metadata={"local_only": True},
     )
 
-    active_broker = broker or get_orchestration_broker()
+    if broker is None:
+        # Import the live Guardian orchestration stack only when the dormant
+        # bridge is explicitly invoked without a test/injected broker.
+        from project_guardian.orchestration import get_orchestration_broker
+        active_broker = get_orchestration_broker()
+    else:
+        active_broker = broker
     # Intentionally do not pass guardian=. This bridge has no capability path.
     result = active_broker.run_task_sync(request)
     finished = _now(now)

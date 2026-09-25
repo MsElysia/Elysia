@@ -186,24 +186,27 @@ def run_via_broker(
     if not ledger.record_bridge_started(task_id, worker_id, now=current):
         return BridgeRunResult(task_id, attempt, "refused", False, error="bridge_start_rejected")
 
-    request = _BrokerTaskRequest(
-        task_id=task_id,
-        task_type="reasoning",
-        prompt=str(task.get("objective") or task.get("title") or ""),
-        context={
+    request_fields = {
+        "task_id": task_id,
+        "task_type": "reasoning",
+        "prompt": str(task.get("objective") or task.get("title") or ""),
+        "context": {
             "source_task_id": task_id,
             "execution_attempt": attempt,
             "bridge_mode": "read_only_inference",
         },
-        metadata={"local_only": True},
-    )
+        "metadata": {"local_only": True},
+    }
 
     if broker is None:
         # Import the live Guardian orchestration stack only when the dormant
-        # bridge is explicitly invoked without a test/injected broker.
-        from project_guardian.orchestration import get_orchestration_broker
+        # bridge is explicitly invoked. Real execution uses the broker's
+        # authoritative TaskRequest type; tests can remain dependency-isolated.
+        from project_guardian.orchestration import TaskRequest, get_orchestration_broker
+        request = TaskRequest(**request_fields)
         active_broker = get_orchestration_broker()
     else:
+        request = _BrokerTaskRequest(**request_fields)
         active_broker = broker
     # Intentionally do not pass guardian=. This bridge has no capability path.
     result = active_broker.run_task_sync(request)

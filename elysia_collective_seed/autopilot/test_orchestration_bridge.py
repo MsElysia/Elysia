@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import importlib.util
+from pathlib import Path
+import sys
+import types
 from typing import Any
 
 from elysia_collective_seed.autopilot.orchestration_bridge import run_via_broker
@@ -147,3 +152,80 @@ def test_started_without_result_requeues_instead_of_rerunning_same_attempt(tmp_p
     finally:
         ledger.close()
 
+
+
+def _load_isolated_router_module(monkeypatch):
+    """Load router/rules.py without importing project_guardian.__init__."""
+    root = Path(__file__).resolve().parents[2]
+    package_names = (
+        "_bridge_router_testpkg",
+        "_bridge_router_testpkg.orchestration",
+        "_bridge_router_testpkg.orchestration.router",
+    )
+    for name in package_names:
+        module = types.ModuleType(name)
+        module.__path__ = []  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, name, module)
+
+    ollama = types.ModuleType("_bridge_router_testpkg.ollama_model_config")
+    ollama.ollama_provider_ref = lambda: "ollama:mistral:7b"
+    monkeypatch.setitem(sys.modules, ollama.__name__, ollama)
+
+    def load(name: str, path: Path):
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, name, module)
+        spec.loader.exec_module(module)
+        return module
+
+    orchestration = root / "project_guardian" / "orchestration"
+    task_types = load(
+        "_bridge_router_testpkg.orchestration.router.task_types",
+        orchestration / "router" / "task_types.py",
+    )
+    assert "reasoning" in task_types.TASK_TYPES
+    type_module = load(
+        "_bridge_router_testpkg.orchestration.types",
+        orchestration / "types.py",
+    )
+    rules = load(
+        "_bridge_router_testpkg.orchestration.router.rules",
+        orchestration / "router" / "rules.py",
+    )
+    return rules, type_module
+
+
+def test_local_only_router_rule_cannot_select_openai(monkeypatch):
+    rules, type_module = _load_isolated_router_module(monkeypatch)
+    monkeypatch.setattr(rules, "_openai_available", lambda: True)
+    raw = {
+        "orchestration": {"enabled": True},
+        "defaults": {
+            "pipeline": "serial_plan_execute_review",
+            "planner_model": "openai:gpt-planner",
+            "executor_model": "openai:gpt-executor",
+            "reviewer_model": "openai:gpt-reviewer",
+        },
+        "routes": {
+            "reasoning": {
+                "pipeline": "serial_plan_execute_review",
+                "planner_model": "openai:gpt-planner",
+                "executor_model": "openai:gpt-executor",
+                "reviewer_model": "openai:gpt-reviewer",
+            }
+        },
+    }
+    request = type_module.TaskRequest(
+        task_id="ELY-TASK-900005",
+        task_type="reasoning",
+        prompt="diagnose synthetic pytest output",
+        metadata={"local_only": True},
+    )
+    route = asyncio.run(rules.RulesRouter(raw).resolve(request))
+    assert route.planner_model.startswith("ollama:")
+    assert route.executor_model.startswith("ollama:")
+    assert route.reviewer_model is None
+    assert route.judge_model is None
+    assert all(model.startswith("ollama:") for model in route.fanout_models)
+    assert "local_only" in route.reason

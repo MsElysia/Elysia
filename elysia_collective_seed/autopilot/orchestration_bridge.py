@@ -14,8 +14,7 @@ from datetime import datetime, timezone
 import json
 from typing import Any
 
-from project_guardian.orchestration.broker import OrchestrationBroker, get_orchestration_broker
-from project_guardian.orchestration.types import PipelineResult, TaskRequest
+from project_guardian.orchestration import TaskRequest, get_orchestration_broker
 
 from .task_ledger import TaskLedger
 
@@ -129,7 +128,7 @@ def run_via_broker(
     task_id: str,
     worker_id: str,
     *,
-    broker: OrchestrationBroker | None = None,
+    broker: Any | None = None,
     now: datetime | None = None,
 ) -> BridgeRunResult:
     """Run one claimed read-only task through the existing broker and submit it.
@@ -193,7 +192,7 @@ def run_via_broker(
 
     active_broker = broker or get_orchestration_broker()
     # Intentionally do not pass guardian=. This bridge has no capability path.
-    result: PipelineResult = active_broker.run_task_sync(request)
+    result = active_broker.run_task_sync(request)
     finished = _now(now)
 
     receipt = {

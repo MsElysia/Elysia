@@ -210,6 +210,14 @@ def run_via_broker(
         active_broker = broker
     # Intentionally do not pass guardian=. This bridge has no capability path.
     result = active_broker.run_task_sync(request)
+    # Check the broker's identity before reading output or constructing a receipt.
+    # Keep the existing started/no-result recovery path on rejection; never
+    # relabel another task's output as this attempt's result.
+    returned_task_id = getattr(result, "task_id", None)
+    if (type(returned_task_id) is not str or not returned_task_id
+            or type(task_id) is not str or returned_task_id != task_id):
+        return BridgeRunResult(task_id, attempt, "result_identity_mismatch", False,
+                               error="broker_task_identity_mismatch")
     finished = _now(now)
 
     receipt = {

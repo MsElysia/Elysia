@@ -8,6 +8,9 @@ from pathlib import Path
 import sys
 import types
 from typing import Any
+from unittest.mock import Mock
+
+import pytest
 
 from elysia_collective_seed.autopilot.orchestration_bridge import run_via_broker
 from elysia_collective_seed.autopilot.task_ledger import TaskLedger
@@ -229,3 +232,163 @@ def test_local_only_router_rule_cannot_select_openai(monkeypatch):
     assert route.judge_model is None
     assert all(model.startswith("ollama:") for model in route.fanout_models)
     assert "local_only" in route.reason
+
+# Issue #83: broker identity must be validated before any result side effect.
+
+
+class HostileTaskId(str):
+    def __eq__(self, other):
+        return True
+
+    def __ne__(self, other):
+        return False
+
+    def __str__(self):
+        raise AssertionError('task identity must not be coerced')
+
+
+class ThrowingTaskId(str):
+    def __eq__(self, other):
+        raise AssertionError('task identity must not be compared')
+
+    def __ne__(self, other):
+        raise AssertionError('task identity must not be compared')
+
+
+@pytest.mark.parametrize('identity', [
+    'ELY-TASK-UNRELATED', '', ' ', None, False, 42, [], {},
+    HostileTaskId('ELY-TASK-UNRELATED'), HostileTaskId('ELY-TASK-900001'),
+    ThrowingTaskId('ELY-TASK-900001'),
+], ids=['wrong-task', 'empty', 'whitespace', 'null', 'bool', 'int', 'list', 'dict',
+        'spoofed-subclass', 'matching-subclass', 'throwing-subclass'])
+def test_invalid_broker_identity_has_zero_downstream_mutation(tmp_path, monkeypatch, identity):
+    from elysia_collective_seed.autopilot import orchestration_bridge as bridge
+
+    ledger = TaskLedger(tmp_path / 'ledger.db')
+    returned = FakePipelineResult(identity, 'serial_plan_execute_review', True,
+                                  'WRONG_TASK_OUTPUT_SENTINEL')
+    before_return = []
+
+    class Broker:
+        def run_task_sync(self, request):
+            assert request.task_id == 'ELY-TASK-900001'
+            before_return.append(list(ledger.conn.iterdump()))
+            return returned
+
+    capture = Mock(side_effect=AssertionError('capture must not be called'))
+    packet = Mock(side_effect=AssertionError('completion packet must not be built'))
+    submit = Mock(side_effect=AssertionError('verification must not be called'))
+    monkeypatch.setattr(ledger, 'capture_bridge_result', capture)
+    monkeypatch.setattr(bridge, '_completion_packet', packet)
+    monkeypatch.setattr(ledger, 'submit_for_verification', submit)
+    try:
+        ledger.put_task(_task())
+        assert ledger.claim('ELY-TASK-900001', 'producer', now=NOW).claimed
+        result = run_via_broker(ledger, 'ELY-TASK-900001', 'producer', broker=Broker(), now=NOW)
+        assert not result.submitted
+        assert result.error == 'broker_task_identity_mismatch'
+        assert result.result_digest is None
+        assert returned.task_id is identity  # no relabeling of the result
+        capture.assert_not_called()
+        packet.assert_not_called()
+        submit.assert_not_called()
+        assert list(ledger.conn.iterdump()) == before_return[0]
+        assert 'WRONG_TASK_OUTPUT_SENTINEL' not in '\n'.join(ledger.conn.iterdump())
+        assert ledger.get_bridge_receipt('ELY-TASK-900001') is None
+        assert ledger.get('ELY-TASK-900001')['completion_submission'] is None
+    finally:
+        ledger.close()
+
+
+def test_missing_identity_is_rejected_before_any_other_result_field(tmp_path):
+    class IdentitylessResult:
+        @property
+        def pipeline_id(self):
+            raise AssertionError('receipt construction began before identity validation')
+
+    class Broker:
+        def run_task_sync(self, request):
+            return IdentitylessResult()
+
+    ledger = TaskLedger(tmp_path / 'ledger.db')
+    try:
+        ledger.put_task(_task())
+        assert ledger.claim('ELY-TASK-900001', 'producer', now=NOW).claimed
+        result = run_via_broker(ledger, 'ELY-TASK-900001', 'producer', broker=Broker(), now=NOW)
+        assert result.error == 'broker_task_identity_mismatch'
+        assert ledger.get_bridge_receipt('ELY-TASK-900001') is None
+    finally:
+        ledger.close()
+
+
+def test_rejected_identity_reopens_without_capture_and_recovers_new_attempt(tmp_path):
+    path = tmp_path / 'ledger.db'
+    ledger = TaskLedger(path)
+    broker = FakeBroker()
+    broker.run_task_sync = lambda request: FakePipelineResult(
+        'task-B', 'serial_plan_execute_review', True, 'task-B-only-output')
+    ledger.put_task(_task())
+    assert ledger.claim('ELY-TASK-900001', 'producer', now=NOW).claimed
+    assert not run_via_broker(ledger, 'ELY-TASK-900001', 'producer', broker=broker, now=NOW).submitted
+    ledger.close()
+    ledger = TaskLedger(path)
+    try:
+        assert ledger.get_bridge_receipt('ELY-TASK-900001') is None
+        assert ledger.get('ELY-TASK-900001')['completion_submission'] is None
+        assert 'task-B-only-output' not in '\n'.join(ledger.conn.iterdump())
+        broker = FakeBroker()
+        recovery = run_via_broker(ledger, 'ELY-TASK-900001', 'producer', broker=broker, now=NOW)
+        assert recovery.state == 'unknown_requeued'
+        assert broker.calls == []
+        assert ledger.claim('ELY-TASK-900001', 'producer', now=NOW).claimed
+        assert ledger.get('ELY-TASK-900001')['attempt'] == 2
+        assert run_via_broker(ledger, 'ELY-TASK-900001', 'producer', broker=broker, now=NOW).submitted
+        assert ledger.get_bridge_receipt('ELY-TASK-900001')['task_id'] == 'ELY-TASK-900001'
+        events = [event['event_type'] for event in ledger.events('ELY-TASK-900001')]
+        assert events.count('broker_execution_started') == 2
+        assert events.count('broker_result_captured') == 1
+    finally:
+        ledger.close()
+
+
+def test_matching_identity_broker_failure_keeps_existing_behavior(tmp_path, monkeypatch):
+    ledger = TaskLedger(tmp_path / 'ledger.db')
+    class Broker:
+        def run_task_sync(self, request):
+            return FakePipelineResult(request.task_id, 'serial_plan_execute_review',
+                                      False, None, error='synthetic failure')
+    submit = Mock(side_effect=AssertionError('failed broker must not submit'))
+    monkeypatch.setattr(ledger, 'submit_for_verification', submit)
+    try:
+        ledger.put_task(_task())
+        assert ledger.claim('ELY-TASK-900001', 'producer', now=NOW).claimed
+        result = run_via_broker(ledger, 'ELY-TASK-900001', 'producer', broker=Broker(), now=NOW)
+        assert result.state == 'broker_failed_requeued'
+        assert result.error == 'synthetic failure'
+        assert result.result_digest is not None
+        assert not result.submitted
+        assert ledger.get('ELY-TASK-900001')['status'] == 'queued'
+        assert ledger.get_bridge_receipt('ELY-TASK-900001')['success'] is False
+        submit.assert_not_called()
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize('field,value', [
+    ('human_approval_required', True), ('required_capabilities', ['execute']),
+    ('required_checks', ['check']), ('required_review_roles', ['human']),
+])
+def test_identity_repair_preserves_authority_refusals(tmp_path, field, value):
+    ledger = TaskLedger(tmp_path / 'ledger.db')
+    broker = FakeBroker()
+    try:
+        task = _task()
+        task[field] = value
+        ledger.put_task(task)
+        assert ledger.claim(task['task_id'], 'producer', now=NOW).claimed
+        result = run_via_broker(ledger, task['task_id'], 'producer', broker=broker, now=NOW)
+        assert not result.submitted
+        assert broker.calls == []
+        assert ledger.get_bridge_receipt(task['task_id']) is None
+    finally:
+        ledger.close()

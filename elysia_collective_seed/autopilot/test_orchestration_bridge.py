@@ -392,3 +392,36 @@ def test_identity_repair_preserves_authority_refusals(tmp_path, field, value):
         assert ledger.get_bridge_receipt(task['task_id']) is None
     finally:
         ledger.close()
+
+@pytest.mark.parametrize('error_type', [RuntimeError, ValueError, TypeError])
+def test_throwing_identity_accessor_has_zero_downstream_mutation(tmp_path, monkeypatch, error_type):
+    from elysia_collective_seed.autopilot import orchestration_bridge as bridge
+
+    class Result:
+        @property
+        def task_id(self):
+            raise error_type('malformed identity accessor')
+
+    ledger = TaskLedger(tmp_path / 'ledger.db')
+    before_return = []
+    class Broker:
+        def run_task_sync(self, request):
+            before_return.append(list(ledger.conn.iterdump()))
+            return Result()
+
+    traps = [Mock(side_effect=AssertionError('downstream mutation')) for _ in range(3)]
+    monkeypatch.setattr(ledger, 'capture_bridge_result', traps[0])
+    monkeypatch.setattr(bridge, '_completion_packet', traps[1])
+    monkeypatch.setattr(ledger, 'submit_for_verification', traps[2])
+    try:
+        ledger.put_task(_task())
+        assert ledger.claim('ELY-TASK-900001', 'producer', now=NOW).claimed
+        result = run_via_broker(ledger, 'ELY-TASK-900001', 'producer', broker=Broker(), now=NOW)
+        assert not result.submitted
+        assert result.error == 'broker_task_identity_mismatch'
+        assert result.result_digest is None
+        for trap in traps:
+            trap.assert_not_called()
+        assert list(ledger.conn.iterdump()) == before_return[0]
+    finally:
+        ledger.close()

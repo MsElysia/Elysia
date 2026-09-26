@@ -213,7 +213,11 @@ def run_via_broker(
     # Check the broker's identity before reading output or constructing a receipt.
     # Keep the existing started/no-result recovery path on rejection; never
     # relabel another task's output as this attempt's result.
-    returned_task_id = getattr(result, "task_id", None)
+    try:
+        returned_task_id = getattr(result, "task_id", None)
+    except Exception:
+        # Malformed result accessors must reject through the same safe path.
+        returned_task_id = None
     if (type(returned_task_id) is not str or not returned_task_id
             or type(task_id) is not str or returned_task_id != task_id):
         return BridgeRunResult(task_id, attempt, "result_identity_mismatch", False,

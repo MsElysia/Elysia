@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import types
 from typing import Any
+import pytest
 
 from elysia_collective_seed.autopilot.orchestration_bridge import run_via_broker
 from elysia_collective_seed.autopilot.task_ledger import TaskLedger
@@ -127,6 +128,60 @@ def test_bridge_refuses_non_read_only_task_before_broker_call(tmp_path):
         assert not result.submitted
         assert result.error == "read_only_only"
         assert broker.calls == []
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("identity", ["ELY-TASK-UNRELATED", None, 42, [], "throwing", "subclass"])
+def test_broker_result_identity_fails_closed_and_reopens_cleanly(tmp_path, identity):
+    class ThrowingIdentity:
+        @property
+        def task_id(self):
+            raise RuntimeError("bad result identity")
+
+    class EqualString(str):
+        def __eq__(self, other):
+            return True
+
+    class IdentityBroker(FakeBroker):
+        def run_task_sync(self, request, **kwargs):
+            self.calls.append(request)
+            if identity == "throwing":
+                return ThrowingIdentity()
+            result = super().run_task_sync(request, **kwargs)
+            result.task_id = EqualString(request.task_id) if identity == "subclass" else identity
+            return result
+
+    path = tmp_path / "ledger.db"
+    ledger = TaskLedger(path)
+    task_id = "ELY-TASK-900006"
+    broker = IdentityBroker()
+    try:
+        ledger.put_task(_task(task_id))
+        assert ledger.claim(task_id, "ollama-worker", now=NOW).claimed
+        result = run_via_broker(ledger, task_id, "ollama-worker", broker=broker, now=NOW)
+        assert not result.submitted
+        assert result.error == "broker_result_identity_mismatch"
+        assert result.state == "broker_identity_mismatch_requeued"
+        assert ledger.get(task_id)["status"] == "queued"
+        assert ledger.get(task_id)["bridge_result_digest"] is None
+    finally:
+        ledger.close()
+
+    ledger = TaskLedger(path)
+    try:
+        row = ledger.get(task_id)
+        assert row["completion_submission"] is None
+        assert row["bridge_status"] == "started"
+        events = [event["event_type"] for event in ledger.events(task_id)]
+        assert "broker_result_captured" not in events
+        assert "producer_completion_submitted" not in events
+        assert ledger.claim(task_id, "ollama-worker", now=NOW).claimed
+        assert ledger.get(task_id)["attempt"] == 2
+        assert ledger.get(task_id)["bridge_status"] is None
+        recovered = run_via_broker(ledger, task_id, "ollama-worker", broker=FakeBroker(), now=NOW)
+        assert recovered.submitted
+        assert ledger.get(task_id)["status"] == "verifying"
     finally:
         ledger.close()
 

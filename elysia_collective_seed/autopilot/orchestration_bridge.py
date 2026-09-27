@@ -212,6 +212,21 @@ def run_via_broker(
     result = active_broker.run_task_sync(request)
     finished = _now(now)
 
+    # A broker result is not evidence for this ledger task until its own
+    # identity is bound. Read it once; do not allow custom equality or a
+    # throwing accessor to turn unrelated output into a captured receipt.
+    try:
+        returned_task_id = result.task_id
+    except Exception:
+        returned_task_id = None
+    if type(returned_task_id) is not str or returned_task_id != task_id:
+        released = ledger.release(task_id, worker_id, next_status="queued", now=finished)
+        return BridgeRunResult(
+            task_id, attempt,
+            "broker_identity_mismatch_requeued" if released else "broker_identity_mismatch_stale",
+            False, error="broker_result_identity_mismatch",
+        )
+
     receipt = {
         "version": 1,
         "task_id": task_id,

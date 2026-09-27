@@ -256,7 +256,21 @@ class RulesRouter:
                 fanout.append(planner)
             reasons.append("openai_unavailable_local_fallback")
 
-        reviewer = _resolve_reviewer(executor, reviewer, planner)
+        local_only = bool((request.metadata or {}).get("local_only"))
+
+        def _local_ref(ref: Optional[str]) -> str:
+            prov, _model = parse_model_ref(ref or "")
+            return ref if prov == "ollama" and ref else _ollama_default
+
+        if local_only:
+            planner = _local_ref(planner)
+            executor = _local_ref(executor)
+            reviewer = None
+            judge_m = None
+            fanout = [_local_ref(model) for model in fanout]
+            reasons.append("local_only")
+        else:
+            reviewer = _resolve_reviewer(executor, reviewer, planner)
 
         reason = "; ".join(reasons) if reasons else "yaml_defaults"
         decision = RouteDecision(
@@ -277,4 +291,21 @@ class RulesRouter:
                 telemetry=self._telemetry_store,
                 effective_task_type=tt,
             )
+            if local_only:
+                # Telemetry may recommend a cloud escalation after the initial
+                # YAML/rules decision. Local-only is an authority fence, not a
+                # preference, so re-apply it to the final route.
+                decision.planner_model = _local_ref(decision.planner_model)
+                decision.executor_model = _local_ref(decision.executor_model)
+                decision.reviewer_model = None
+                decision.judge_model = None
+                decision.fanout_models = [
+                    _local_ref(model) for model in decision.fanout_models
+                ]
+                if "local_only_post_telemetry_fence" not in decision.reason:
+                    decision.reason = (
+                        f"{decision.reason}; local_only_post_telemetry_fence"
+                        if decision.reason
+                        else "local_only_post_telemetry_fence"
+                    )
         return decision

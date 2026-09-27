@@ -709,3 +709,57 @@ def planner_context_for_snapshot(decision_cycle: int) -> Dict[str, Any]:
         "planner_gate_reason": reason,
         "latency": recent_planner_latency_summary(),
     }
+
+
+def _autonomy_routine_info_forced_when_ready() -> bool:
+    """
+    If set, routine autonomy/idle/exploration lines stay at INFO even when planner readiness is ``ready``.
+
+    ``ELYSIA_AUTONOMY_ROUTINE_INFO_WHEN_READY`` is the preferred name; ``ELYSIA_EXPLORATION_INFO_WHEN_READY``
+    is kept for backward compatibility (same effect).
+    """
+    for _key in (
+        "ELYSIA_AUTONOMY_ROUTINE_INFO_WHEN_READY",
+        "ELYSIA_EXPLORATION_INFO_WHEN_READY",
+    ):
+        try:
+            v = (os.environ.get(_key) or "").strip().lower()
+            if v in ("1", "true", "yes", "always", "force"):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def autonomy_exploration_log_use_debug() -> bool:
+    """
+    When planner readiness is ``ready``, routine autonomy chatter logs at DEBUG instead of INFO.
+
+    Set ``ELYSIA_AUTONOMY_ROUTINE_INFO_WHEN_READY=1`` (preferred) or ``ELYSIA_EXPLORATION_INFO_WHEN_READY=1``
+    to keep INFO level even when ready (operator troubleshooting).
+    """
+    if _autonomy_routine_info_forced_when_ready():
+        return False
+    try:
+        return compute_readiness_label() == "ready"
+    except Exception:
+        return False
+
+
+# Preferred public name (same behavior as :func:`autonomy_exploration_log_use_debug`).
+autonomy_routine_log_use_debug = autonomy_exploration_log_use_debug
+
+
+def log_autonomy_routine(
+    log: logging.Logger, fmt: str, *args: Any, **kwargs: Any
+) -> None:
+    """Routine autonomy chatter: INFO normally; DEBUG when planner readiness is ``ready``."""
+    lvl = logging.DEBUG if autonomy_exploration_log_use_debug() else logging.INFO
+    log.log(lvl, fmt, *args, **kwargs)
+
+
+def log_autonomy_exploration_routine(
+    log: logging.Logger, fmt: str, *args: Any, **kwargs: Any
+) -> None:
+    """Same as :func:`log_autonomy_routine` (``[Exploration]`` prefix convention)."""
+    log_autonomy_routine(log, fmt, *args, **kwargs)

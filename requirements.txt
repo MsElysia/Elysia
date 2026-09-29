@@ -26,6 +26,7 @@ psutil>=5.9.0; sys_platform != "darwin"  # Optional - better monitoring
 # faiss-cpu>=1.7.4  # Optional - for vector search
 
 # Web Reading & Scraping
+requests>=2.31.0  # WebReader core HTTP session
 httpx>=0.25.0  # Modern HTTP client for web fetching
 beautifulsoup4>=4.12.0  # HTML parsing
 lxml>=4.9.0  # Fast XML/HTML parser (optional but recommended)

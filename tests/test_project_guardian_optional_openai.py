@@ -17,13 +17,15 @@ _real_import = builtins.__import__
 def guarded_import(name, *args, **kwargs):
     if name == "openai" or name.startswith("openai."):
         raise ImportError("blocked optional OpenAI SDK")
+    if name == "pyttsx3" or name.startswith("pyttsx3."):
+        raise ImportError("blocked optional text-to-speech SDK")
     return _real_import(name, *args, **kwargs)
 
 builtins.__import__ = guarded_import
 import project_guardian
 from project_guardian.mutation import MutationEngine
 assert MutationEngine is not None
-print("OPENAI_OPTIONAL_IMPORT_OK")
+print("OPTIONAL_SDK_IMPORT_OK")
 """
     env = os.environ.copy()
     env["PYTHONPATH"] = str(repo_root)
@@ -36,4 +38,4 @@ print("OPENAI_OPTIONAL_IMPORT_OK")
         timeout=30,
     )
     assert proc.returncode == 0, proc.stdout + "\n" + proc.stderr
-    assert "OPENAI_OPTIONAL_IMPORT_OK" in proc.stdout
+    assert "OPTIONAL_SDK_IMPORT_OK" in proc.stdout

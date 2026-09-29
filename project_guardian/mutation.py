@@ -7,7 +7,10 @@ import json
 import datetime
 import logging
 import time
-import openai
+try:
+    import openai
+except ImportError:
+    openai = None
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -142,10 +145,11 @@ class MutationEngine:
             self.repo_root = Path(repo_root).resolve()
         
         # Initialize OpenAI if API key provided (deprecated - review_with_gpt is disabled)
-        if api_key:
-            openai.api_key = api_key
-        elif os.getenv("OPENAI_API_KEY"):
-            openai.api_key = os.getenv("OPENAI_API_KEY")
+        if openai is not None:
+            if api_key:
+                openai.api_key = api_key
+            elif os.getenv("OPENAI_API_KEY"):
+                openai.api_key = os.getenv("OPENAI_API_KEY")
     
     def _validate_and_resolve_path(self, rel_path: str) -> tuple[Path, str]:
         """
@@ -472,6 +476,9 @@ class MutationEngine:
         Requires OPENAI_API_KEY. Respects protected paths and path validation.
         """
         api_key = os.getenv("OPENAI_API_KEY")
+        if openai is None:
+            logger.info("[Mutation OpenAI] SDK not installed; skip generation")
+            return None
         if not api_key:
             logger.info("[Mutation OpenAI] OPENAI_API_KEY not set; skip generation")
             return None

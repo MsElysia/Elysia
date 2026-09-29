@@ -3,7 +3,10 @@
 
 import requests
 import threading
-import pyttsx3
+try:
+    import pyttsx3
+except ImportError:
+    pyttsx3 = None
 import json
 import urllib.request
 import urllib.parse

@@ -166,6 +166,7 @@ class MissionAutonomyStore:
         self._runtime.setdefault("recent_action_fingerprints", [])
         self._runtime.setdefault("campaign_priority_adjust", {})
         self._runtime.setdefault("action_priority_bias", {})
+        self._runtime.setdefault("outcome_receipts", [])
         self._runtime.setdefault("noop_streak", {})
         self._runtime.setdefault("execute_self_task_momentum", 0.0)
         self._runtime.setdefault("archetype_mission_bias", {})
@@ -561,6 +562,96 @@ class MissionAutonomyStore:
 
     def _noop_streak_reset(self, key: str) -> None:
         self._runtime.setdefault("noop_streak", {})[key] = 0
+
+    def record_outcome_receipt(
+        self,
+        *,
+        action: str,
+        objective: str,
+        success: bool,
+        useful: bool,
+        objective_advanced: bool,
+        evidence_ref: str = "",
+        cost: Optional[float] = None,
+        elapsed_sec: Optional[float] = None,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        """Persist one normalized outcome and update the existing action-bias signal."""
+        self.reload()
+        act = str(action or "").strip()
+        if not act:
+            raise ValueError("action is required")
+
+        default_cost = float(_ACTION_COST.get(act, 0.45))
+        try:
+            cost_value = default_cost if cost is None else float(cost)
+        except (TypeError, ValueError):
+            cost_value = default_cost
+        cost_value = max(0.0, min(1.0, cost_value))
+
+        elapsed_value: Optional[float] = None
+        if elapsed_sec is not None:
+            try:
+                elapsed_value = max(0.0, float(elapsed_sec))
+            except (TypeError, ValueError):
+                elapsed_value = None
+
+        receipt: Dict[str, Any] = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "action": act,
+            "objective": str(objective or "")[:300],
+            "success": bool(success),
+            "useful": bool(useful),
+            "objective_advanced": bool(objective_advanced),
+            "evidence_ref": str(evidence_ref or "")[:500],
+            "cost": round(cost_value, 4),
+            "elapsed_sec": round(elapsed_value, 4) if elapsed_value is not None else None,
+            "reason": str(reason or "")[:500],
+        }
+        if not self.enabled:
+            receipt["feedback_applied"] = False
+            return receipt
+
+        # Generic outcome learning only. No task/action names are special-cased here.
+        # Positive objective progress must outweigh mere success; failures and cost reduce preference.
+        delta = 0.0
+        if bool(success):
+            delta += 0.45
+            delta += 0.35 if bool(useful) else -0.20
+            delta += 0.45 if bool(objective_advanced) else -0.25
+        else:
+            delta -= 0.75
+            if not bool(useful):
+                delta -= 0.25
+            if not bool(objective_advanced):
+                delta -= 0.35
+        delta -= 0.35 * cost_value
+        delta = max(-1.5, min(1.25, delta))
+
+        biases = self._runtime.setdefault("action_priority_bias", {})
+        cur = float(biases.get(act, 0.0) or 0.0)
+        new = max(_ACTION_BIAS_MIN, min(_ACTION_BIAS_MAX, cur + delta))
+        biases[act] = round(new, 4)
+
+        receipt["feedback_applied"] = True
+        receipt["feedback_delta"] = round(new - cur, 4)
+        receipt["action_bias_after"] = round(new, 4)
+        receipts = self._runtime.setdefault("outcome_receipts", [])
+        receipts.append(receipt)
+        self._runtime["outcome_receipts"] = receipts[-80:]
+        self._save_runtime()
+        logger.info(
+            "[MissionDirector] outcome_feedback_applied action=%s delta=%+.3f bias=%.3f "
+            "success=%s useful=%s advanced=%s cost=%.2f",
+            act,
+            new - cur,
+            new,
+            bool(success),
+            bool(useful),
+            bool(objective_advanced),
+            cost_value,
+        )
+        return dict(receipt)
 
     def feedback_harvest_income_report(self, *, nonzero: bool) -> None:
         self.reload()

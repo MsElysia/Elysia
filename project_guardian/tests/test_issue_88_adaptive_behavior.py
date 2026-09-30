@@ -178,13 +178,14 @@ def _bind(obj, fn):
 
 def _safe_decision_guardian(monkeypatch, store):
     # Neutralize unrelated global adaptive/suppression state so the proof is deterministic.
+    monkeypatch.setattr(core_mod, "get_recent_findings", lambda *args, **kwargs: [])
+    monkeypatch.setattr(core_mod, "get_finding_priority_boost", lambda *args, **kwargs: 0.0)
     monkeypatch.setattr(core_mod, "get_execution_policy_effect", lambda guardian: {})
     monkeypatch.setattr(
         core_mod,
         "apply_execution_policy_to_candidates",
         lambda candidates, policy, log_fn=None: (candidates, []),
     )
-    monkeypatch.setattr(core_mod, "get_finding_priority_boost", lambda guardian, action: 0.0)
 
     monkeypatch.setattr(autonomy_antiloop, "apply_autonomy_antiloop_factors", lambda *args, **kwargs: None)
     monkeypatch.setattr(autonomy_antiloop, "compute_selection_override", lambda *args, **kwargs: None)

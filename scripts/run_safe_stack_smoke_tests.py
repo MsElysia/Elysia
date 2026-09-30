@@ -45,6 +45,7 @@ REQUIRED_TEST_PATHS: Tuple[str, ...] = (
     "project_guardian/tests/test_live_execution_guard.py",
     "project_guardian/tests/test_live_execution_guard_runtime_integration.py",
     "project_guardian/tests/test_dry_run_autonomy_phase1_contract.py",
+    "project_guardian/tests/test_issue_88_adaptive_behavior.py",
     "project_guardian/tests/test_operator_confirmation_context_plan.py",
     "project_guardian/tests/test_operator_confirmation_store.py",
     "project_guardian/tests/test_operator_confirmation_guard_integration.py",
@@ -69,7 +70,7 @@ OPTIONAL_ALTERNATIVES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
 )
 
 SAFETY_REMINDERS: Tuple[str, ...] = (
-    "Autonomy is not tested or enabled by this script.",
+    "Autonomy remains disabled; Issue #88 exercises decision-only dry-run machinery.",
     "Live execution is not tested or enabled by this script.",
     "This smoke slice is not full CI — run the full test suite separately.",
 )

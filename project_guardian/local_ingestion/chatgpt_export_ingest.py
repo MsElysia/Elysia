@@ -24,6 +24,11 @@ from .memory_candidates import (
     stage_memory_candidate,
 )
 
+from .memory_intelligence import (
+    MemoryIntelligenceError,
+    persist_source_intelligence,
+)
+
 CHATGPT_IMPORT_SESSIONS_SUBDIR = "chatgpt_import_sessions"
 PREVIEW_JSON = "chatgpt_export_preview.json"
 PREVIEW_MD = "chatgpt_export_preview.md"
@@ -462,6 +467,11 @@ def apply_chatgpt_export(
     staged_count = 0
     duplicate_count = 0
     skipped_count = 0
+    memory_intelligence_created = 0
+    memory_intelligence_unchanged = 0
+    memory_intelligence_updated = 0
+    memory_intelligence_chunk_count = 0
+    memory_intelligence_highlight_count = 0
     imported_at = _utc_now_iso()
 
     for entry in preview.get("conversations") or []:
@@ -520,6 +530,7 @@ def apply_chatgpt_export(
                     "reason": "Would stage memory candidate.",
                     "candidate_id": candidate_id,
                     "truncated": truncated,
+                    "memory_intelligence": intelligence.to_dict(),
                 }
             )
             continue
@@ -538,6 +549,34 @@ def apply_chatgpt_export(
             "candidate_id": candidate_id,
         }
         meta_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        try:
+            intelligence = persist_source_intelligence(
+                dest_dir=dest_dir,
+                raw_bytes=text.encode("utf-8"),
+                source_identity=original_filename,
+                canonical_tags=(
+                    SOURCE_TYPE_CHATGPT_EXPORT,
+                    SUGGESTED_MEMORY_TYPE_CONVERSATION,
+                ),
+                tag_hints=(
+                    SOURCE_TYPE_CHATGPT_EXPORT,
+                    SUGGESTED_MEMORY_TYPE_CONVERSATION,
+                    title,
+                ),
+            )
+        except MemoryIntelligenceError as exc:
+            raise ChatGPTExportIngestError(
+                f"Memory intelligence failed for {conversation_id}: {exc}"
+            ) from exc
+        if intelligence.status == "created":
+            memory_intelligence_created += 1
+        elif intelligence.status == "unchanged":
+            memory_intelligence_unchanged += 1
+        elif intelligence.status == "updated":
+            memory_intelligence_updated += 1
+        memory_intelligence_chunk_count += intelligence.chunk_count
+        memory_intelligence_highlight_count += intelligence.highlight_count
 
         staged_at = _utc_now_iso()
         status, _wrote = stage_memory_candidate(
@@ -574,6 +613,7 @@ def apply_chatgpt_export(
                     "action": "duplicate",
                     "reason": "Candidate already exists in review queue.",
                     "candidate_id": candidate_id,
+                    "memory_intelligence": intelligence.to_dict(),
                 }
             )
 
@@ -585,6 +625,11 @@ def apply_chatgpt_export(
         "staged_count": staged_count,
         "duplicate_count": duplicate_count,
         "skipped_count": skipped_count,
+        "memory_intelligence_created": memory_intelligence_created,
+        "memory_intelligence_unchanged": memory_intelligence_unchanged,
+        "memory_intelligence_updated": memory_intelligence_updated,
+        "memory_intelligence_chunk_count": memory_intelligence_chunk_count,
+        "memory_intelligence_highlight_count": memory_intelligence_highlight_count,
         "model_called": False,
         "embeddings_used": False,
         "live_memory_written": False,

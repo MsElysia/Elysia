@@ -530,7 +530,6 @@ def apply_chatgpt_export(
                     "reason": "Would stage memory candidate.",
                     "candidate_id": candidate_id,
                     "truncated": truncated,
-                    "memory_intelligence": intelligence.to_dict(),
                 }
             )
             continue
@@ -602,6 +601,7 @@ def apply_chatgpt_export(
                     "reason": "Memory candidate staged for review.",
                     "candidate_id": candidate_id,
                     "truncated": truncated,
+                    "memory_intelligence": intelligence.to_dict(),
                 }
             )
         else:

@@ -49,7 +49,7 @@ REQUIRED_TEST_PATHS: Tuple[str, ...] = (
     "project_guardian/tests/test_operator_confirmation_store.py",
     "project_guardian/tests/test_operator_confirmation_guard_integration.py",
     "project_guardian/tests/test_operator_confirmation_visibility.py",
-)
+    "project_guardian/tests/test_memory_intelligence_ingestion.py",\n    "project_guardian/tests/test_chatgpt_export_ingest.py",\n    "project_guardian/tests/test_approved_memory_search.py",\n    "project_guardian/tests/test_approved_memory_context.py",\n    "project_guardian/tests/test_local_memory_pipeline_smoke.py",\n)
 
 OPTIONAL_ALTERNATIVES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     (

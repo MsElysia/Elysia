@@ -2,6 +2,8 @@
 # Vector Memory System with FAISS Integration
 # Enhances MemoryCore with semantic search capabilities
 
+from __future__ import annotations
+
 import os
 import json
 import logging
@@ -9,7 +11,13 @@ import threading
 import tempfile
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
-import numpy as np
+
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    np = None
+    NUMPY_AVAILABLE = False
 
 try:
     import faiss
@@ -414,6 +422,9 @@ class VectorMemory:
         Returns:
             Embedding vector or None if all providers fail
         """
+        if not NUMPY_AVAILABLE:
+            logger.debug("Embedding unavailable: optional NumPy dependency is not installed")
+            return None
         try:
             from .memory_noise import is_embedding_entirely_skipped, is_low_value_memory_text
 
@@ -544,6 +555,8 @@ class VectorMemory:
             return None
     
     def _generate_hash_embedding(self, text: str) -> np.ndarray:
+        if not NUMPY_AVAILABLE:
+            raise RuntimeError("NumPy is required for vector embeddings")
         """
         Generate a simple hash-based embedding as last resort.
         

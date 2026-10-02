@@ -14,6 +14,9 @@ def test_project_guardian_imports_when_numpy_unavailable():
     script = r"""
 import builtins
 import importlib.util
+import json
+import tempfile
+from pathlib import Path
 
 _real_import = builtins.__import__
 
@@ -52,7 +55,53 @@ search.add_memory("memory-1", "alpha beta gamma")
 results = search.search_similar("alpha", limit=3)
 assert results
 assert results[0][0] == "memory-1"
+
+from project_guardian.local_ingestion.chatgpt_export_ingest import (
+    apply_chatgpt_export,
+    preview_chatgpt_export,
+)
+from project_guardian.local_ingestion.memory_intelligence import (
+    query_memory_intelligence,
+)
+
+with tempfile.TemporaryDirectory() as td:
+    root = Path(td)
+    export = root / "conversations.json"
+    dest = root / "dest"
+    export.write_text(
+        json.dumps(
+            [
+                {
+                    "title": "NumPy free memory test",
+                    "id": "conv-no-numpy",
+                    "current_node": "node-1",
+                    "mapping": {
+                        "node-1": {
+                            "id": "node-1",
+                            "message": {
+                                "author": {"role": "user"},
+                                "content": {"parts": ["Need a drywall quote from remembered context."]},
+                                "create_time": 1700000001,
+                            },
+                        }
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    preview = preview_chatgpt_export(export_json=export, dest_dir=dest)
+    applied = apply_chatgpt_export(preview_json=Path(preview.json_path), apply=True)
+    assert applied.report["memory_intelligence_created"] == 1
+    hits = query_memory_intelligence(dest, "drywall quote")
+    assert hits
+    assert any(
+        reason.get("type") == "text_relevance"
+        for reason in hits[0]["recall_reasons"]
+    )
+
 print("optional_numpy_package_import_ok")
+print("optional_numpy_memory_intelligence_ok")
 """
 
     completed = subprocess.run(
@@ -68,3 +117,4 @@ print("optional_numpy_package_import_ok")
         f"stderr:\n{completed.stderr}"
     )
     assert "optional_numpy_package_import_ok" in completed.stdout
+    assert "optional_numpy_memory_intelligence_ok" in completed.stdout

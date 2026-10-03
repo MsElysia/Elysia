@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 from typing import Any, Iterable, Sequence
@@ -510,6 +511,51 @@ def _query_terms(query: str) -> list[str]:
     return [term for term in _TAG_SEPARATORS.split(query.casefold()) if term]
 
 
+
+_TAG_DECISION_FIELDS = frozenset(
+    {
+        "normalized_tag",
+        "state",
+        "source_chunk_id",
+        "method",
+        "rule_version",
+        "confidence",
+    }
+)
+_TAG_DECISION_STATES = frozenset({"selected_existing", "candidate_proposed"})
+
+
+def _validated_tag_decision(payload: Any, chunk: SourceChunk) -> str:
+    """Validate persisted tag provenance before it can affect recall."""
+    if type(payload) is not dict or set(payload) != _TAG_DECISION_FIELDS:
+        raise MemoryIntelligenceError("malformed persisted tag decision")
+    for field in (
+        "normalized_tag",
+        "state",
+        "source_chunk_id",
+        "method",
+        "rule_version",
+    ):
+        if type(payload[field]) is not str:
+            raise MemoryIntelligenceError("malformed persisted tag decision")
+    normalized_tag = payload["normalized_tag"]
+    if not normalized_tag or normalize_tag(normalized_tag) != normalized_tag:
+        raise MemoryIntelligenceError("inconsistent persisted normalized tag")
+    if payload["state"] not in _TAG_DECISION_STATES:
+        raise MemoryIntelligenceError("unrecognized persisted tag state")
+    if payload["source_chunk_id"] != chunk.chunk_id:
+        raise MemoryIntelligenceError("persisted tag source linkage mismatch")
+    if not payload["method"].strip() or not payload["rule_version"].strip():
+        raise MemoryIntelligenceError("persisted tag provenance fields are required")
+    confidence = payload["confidence"]
+    if (
+        type(confidence) is not float
+        or not math.isfinite(confidence)
+        or not 0.0 <= confidence <= 1.0
+    ):
+        raise MemoryIntelligenceError("invalid persisted tag confidence")
+    return normalized_tag
+
 def query_memory_intelligence(
     dest_dir: Path,
     query: str,
@@ -535,12 +581,10 @@ def query_memory_intelligence(
             expand_chunk(source, chunk, context_bytes=0)
             text_blob = f"{chunk.text} {chunk_payload.get('summary') or ''}".casefold()
             text_matches = sorted({term for term in terms if term in text_blob})
-            decisions = chunk_payload.get("tag_decisions") or []
-            tags = [
-                normalize_tag(str(item.get("normalized_tag") or ""))
-                for item in decisions
-                if isinstance(item, dict)
-            ]
+            decisions = chunk_payload.get("tag_decisions")
+            if type(decisions) is not list:
+                raise MemoryIntelligenceError("malformed persisted tag decisions")
+            tags = [_validated_tag_decision(item, chunk) for item in decisions]
             tag_matches = sorted(
                 {tag for tag in tags if tag and any(term in tag for term in terms)}
             )

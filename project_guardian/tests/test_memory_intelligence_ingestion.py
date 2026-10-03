@@ -197,3 +197,19 @@ def test_tampered_raw_source_fails_closed_during_query(tmp_path):
 
     with pytest.raises(MemoryIntelligenceError, match="provenance mismatch"):
         query_memory_intelligence(dest, "drywall")
+
+
+def test_forged_tag_source_link_fails_closed_during_query(tmp_path):
+    persist_source_intelligence(
+        dest_dir=tmp_path,
+        raw_bytes=b"A source with no roofing content.",
+        source_identity="forged-tag-source-link",
+        tag_hints=("roofing",),
+    )
+    record_path = next((tmp_path / MEMORY_INTELLIGENCE_SUBDIR / "records").glob("*.json"))
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["chunks"][0]["tag_decisions"][0]["source_chunk_id"] = "forged-chunk-id"
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(MemoryIntelligenceError, match="source linkage"):
+        query_memory_intelligence(tmp_path, "roofing")

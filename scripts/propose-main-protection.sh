@@ -6,21 +6,33 @@ set -euo pipefail
 repo="${GITHUB_REPOSITORY:-MsElysia/Elysia}"
 context="${REQUIRED_CHECK_CONTEXT:-}"
 app_id="${REQUIRED_CHECK_APP_ID:-}"
-verified="${CHECK_VERIFIED_ON_MAIN_TARGETING_PR:-}"
+pr_number="${VERIFIED_MAIN_PR_NUMBER:-}"
 
-if [[ -z "$context" || ! "$app_id" =~ ^[0-9]+$ || "$verified" != "yes" ]]; then
+if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || -z "$context" || ! "$app_id" =~ ^[0-9]+$ || ! "$pr_number" =~ ^[0-9]+$ ]]; then
   cat >&2 <<'MSG'
-STOP: set REQUIRED_CHECK_CONTEXT, REQUIRED_CHECK_APP_ID, and
-CHECK_VERIFIED_ON_MAIN_TARGETING_PR=yes only after a successful run confirms
-that exact check on a pull request targeting main. Existing evidence shows
-seed-validation on #32 and safe-stack-smoke on #97, on different draft
-lineages; neither is yet verified for today's main.
+STOP: provide REQUIRED_CHECK_CONTEXT, REQUIRED_CHECK_APP_ID, and
+VERIFIED_MAIN_PR_NUMBER. The script will independently verify the PR base and
+the successful exact-head check before printing any proposed settings command.
 MSG
   exit 2
 fi
 context_pattern='^[A-Za-z0-9_.:/ -]+$'
 if [[ ! "$context" =~ $context_pattern ]]; then
   echo "STOP: check context contains characters this proposal generator does not accept." >&2
+  exit 2
+fi
+
+pr_payload=$(gh api "repos/$repo/pulls/$pr_number")
+read -r base_ref head_sha < <(python3 -c 'import json,sys; p=json.load(sys.stdin); print(p["base"]["ref"], p["head"]["sha"])' <<<"$pr_payload")
+if [[ "$base_ref" != "main" || ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "STOP: the selected PR does not target main or has no valid head SHA." >&2
+  exit 2
+fi
+
+checks_payload=$(gh api "repos/$repo/commits/$head_sha/check-runs?per_page=100")
+if ! CHECK_CONTEXT="$context" REQUIRED_CHECK_APP_ID="$app_id" EXPECTED_HEAD_SHA="$head_sha" \
+  python3 -c 'import json,os,sys; d=json.load(sys.stdin); c=os.environ["CHECK_CONTEXT"]; a=int(os.environ["REQUIRED_CHECK_APP_ID"]); h=os.environ["EXPECTED_HEAD_SHA"]; ok=any(r.get("name")==c and r.get("head_sha")==h and r.get("status")=="completed" and r.get("conclusion")=="success" and (r.get("app") or {}).get("id")==a for r in d.get("check_runs", [])); sys.exit(0 if ok else 1)' <<<"$checks_payload"; then
+  echo "STOP: exact successful check/context/App ID was not found on that main-targeting PR head." >&2
   exit 2
 fi
 

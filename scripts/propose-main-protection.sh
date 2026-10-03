@@ -18,7 +18,8 @@ lineages; neither is yet verified for today's main.
 MSG
   exit 2
 fi
-if [[ ! "$context" =~ ^[A-Za-z0-9_.:/ -]+$ ]]; then
+context_pattern='^[A-Za-z0-9_.:/ -]+$'
+if [[ ! "$context" =~ $context_pattern ]]; then
   echo "STOP: check context contains characters this proposal generator does not accept." >&2
   exit 2
 fi

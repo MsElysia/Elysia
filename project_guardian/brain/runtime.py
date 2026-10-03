@@ -125,7 +125,11 @@ def run_brain_pipeline_for_operator_event(
 
     from .pipeline import BrainPipeline
 
-    pipe = BrainPipeline(guardian=guardian)
+    intelligence_dir = merge.get("memory_intelligence_dir")
+    pipe_kwargs: Dict[str, Any] = {"guardian": guardian}
+    if intelligence_dir is not None:
+        pipe_kwargs["memory_intelligence_dir"] = intelligence_dir
+    pipe = BrainPipeline(**pipe_kwargs)
     trace, dashboard = pipe.run(observation, context=merge)
 
     guard_meta = merge.get("live_execution_guard")

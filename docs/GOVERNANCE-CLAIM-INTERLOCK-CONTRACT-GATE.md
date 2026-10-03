@@ -45,3 +45,7 @@ The smallest required human design decision is to designate a trusted admission/
 3. defines how immutable gate generations become the single unique-`gate_id` effective snapshot record without dropping inherited/effective gates.
 
 Until that decision is made and independently reviewed, Step 1 persistence/accessor work and Step 2 claim/dispatch wiring are intentionally not performed.
+
+## Post-audit authority note
+
+PR #98 later received an owner-attributed comment proposing a Guardian-owned admission store and highest-valid-generation projection. Per this task's trust boundary, a username, owner association, or connector comment is not proof of human authority. That comment is therefore recorded as design input only and does not retroactively authorize this product SHA, transfer a PASS, or cross the Phase 0 gate. A direct human instruction in the active task is still required before any Part B implementation.

@@ -67,7 +67,7 @@ For the latest bounded #76 product SHA with terminal PASS evidence, `8a61c49d3e8
 
 For #97 SHA `f67787dfb3ad277d2128d32dc0e41538d4b8458f`, the check-runs API returned `total_count: 1`; it was named `safe-stack-smoke`, used GitHub Actions App ID `15368`, and concluded `success` on run `37069697890`.
 
-The latest open PR at observation time was this audit PR #98, targeting `main` at exact head `dd5f90b940ea6cea9119151840580ea784520d4d`. Its exact-head check-runs response was `total_count: 0`, `check_runs: []`.
+This audit PR #98 targets `main`. Its pre-repair exact head `c2bda3fc2d57397e2eba91a47e11ba52c342de86` (parent `dd5f90b940ea6cea9119151840580ea784520d4d`) returned `total_count: 0`, `check_runs: []`. The exact final repair SHA, its parent, and its fresh exact-head CI/review status are recorded in the PR handoff because a commit cannot truthfully contain its own SHA.
 
 These are different check contexts on different draft lineages. Neither result proves that a CI check runs on a pull request targeting today's `main`; today's `main` tree has no workflow path. The correct required context must be verified on a PR targeting `main` before an owner enables it.
 
@@ -81,3 +81,7 @@ These are different check contexts on different draft lineages. Neither result p
 - There is no currently valid required-check candidate for `main`: exact `main` has no check runs, the recursive tree has no workflow, and the newest PR actually targeting `main` has no check run. The owner-side script therefore fails closed until a human establishes and verifies a check on a `main`-targeting PR.
 - Requiring a GitHub review is not, by itself, a human-presence trust anchor. Issue #31 remains open: automation may appear under an owner identity. A repository owner must ensure the approver's credentials cannot be exercised by the gated automation.
 - No settings mutation was attempted.
+
+## Verification contract
+
+The proposal generator is covered by `tests/test_propose_main_protection.py`. The tests stub every `gh` call and fail if a mutation is attempted. They cover invalid inputs, a closed or non-`main` PR, invalid head identity, stale/mismatched check name, SHA, status, conclusion, and App ID, plus the non-mutating success path. Exact invocation, count, product SHA, base/parent SHA, and fresh independent-verifier result are recorded in the PR handoff for the immutable final head.

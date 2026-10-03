@@ -23,9 +23,9 @@ if [[ ! "$context" =~ $context_pattern ]]; then
 fi
 
 pr_payload=$(gh api "repos/$repo/pulls/$pr_number")
-read -r base_ref head_sha < <(python3 -c 'import json,sys; p=json.load(sys.stdin); print(p["base"]["ref"], p["head"]["sha"])' <<<"$pr_payload")
-if [[ "$base_ref" != "main" || ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "STOP: the selected PR does not target main or has no valid head SHA." >&2
+read -r pr_state base_ref head_sha < <(python3 -c 'import json,sys; p=json.load(sys.stdin); print(p["state"], p["base"]["ref"], p["head"]["sha"])' <<<"$pr_payload")
+if [[ "$pr_state" != "open" || "$base_ref" != "main" || ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "STOP: the selected PR is not open, does not target main, or has no valid head SHA." >&2
   exit 2
 fi
 
@@ -56,6 +56,21 @@ body=$(cat <<JSON
 JSON
 )
 
-printf '%s\n' 'Proposed owner-only mutation (NOT executed):'
+printf '%s\n' 'Proposed owner-only mutation (NOT executed). This command revalidates the PR and check immediately before PUT:'
+printf 'repo=%q\ncontext=%q\napp_id=%q\npr_number=%q\n' "$repo" "$context" "$app_id" "$pr_number"
+cat <<'OWNER_REVALIDATION'
+pr_payload=$(gh api "repos/$repo/pulls/$pr_number")
+read -r pr_state base_ref head_sha < <(python3 -c 'import json,sys; p=json.load(sys.stdin); print(p["state"], p["base"]["ref"], p["head"]["sha"])' <<<"$pr_payload")
+if [[ "$pr_state" != "open" || "$base_ref" != "main" || ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "STOP: PR is no longer open against main with a valid head." >&2
+  exit 2
+fi
+checks_payload=$(gh api "repos/$repo/commits/$head_sha/check-runs?per_page=100")
+if ! CHECK_CONTEXT="$context" REQUIRED_CHECK_APP_ID="$app_id" EXPECTED_HEAD_SHA="$head_sha" \
+  python3 -c 'import json,os,sys; d=json.load(sys.stdin); c=os.environ["CHECK_CONTEXT"]; a=int(os.environ["REQUIRED_CHECK_APP_ID"]); h=os.environ["EXPECTED_HEAD_SHA"]; ok=any(r.get("name")==c and r.get("head_sha")==h and r.get("status")=="completed" and r.get("conclusion")=="success" and (r.get("app") or {}).get("id")==a for r in d.get("check_runs", [])); sys.exit(0 if ok else 1)' <<<"$checks_payload"; then
+  echo "STOP: current PR head lacks the required successful exact-head check." >&2
+  exit 2
+fi
+OWNER_REVALIDATION
 printf 'gh api --method PUT repos/%s/branches/main/protection --input - <<\047JSON\047\n%s\nJSON\n' "$repo" "$body"
 printf '\n%s\n' 'Before running it, the repository owner must inspect bypass actors and confirm the approver account is not usable by automation.'

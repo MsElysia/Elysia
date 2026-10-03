@@ -30,7 +30,7 @@ from .contracts import (
     ToolRouteDecision,
 )
 from .config import BrainPipelineConfig, clear_brain_pipeline_config_cache, get_brain_pipeline_config
-from .memory_module import GuardianMemoryFacade, InMemoryBrainStore
+from .memory_module import GuardianMemoryFacade, InMemoryBrainStore, MemoryIntelligenceBrainBridge
 from .pipeline import BrainPipeline, _TRACE_PATH
 from .runtime import run_brain_pipeline_for_operator_event
 from .trace_visibility import load_latest_brain_trace_summary, redact_sensitive, sanitize_brain_trace, summarize_trace
@@ -47,6 +47,7 @@ __all__ = [
     "ExecutionResult",
     "GuardianMemoryFacade",
     "InMemoryBrainStore",
+    "MemoryIntelligenceBrainBridge",
     "MemoryCompressionProposal",
     "MemoryRankingConfig",
     "MemoryRankingInput",

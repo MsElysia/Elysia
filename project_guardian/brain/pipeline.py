@@ -28,7 +28,7 @@ from .dashboard_module import DefaultDashboardModule
 from .execution_module import CapabilityExecutionFacade
 from .learning_module import DefaultLearningModule
 from .llm_router_module import UnifiedLLMRouterFacade
-from .memory_module import GuardianMemoryFacade, InMemoryBrainStore
+from .memory_module import GuardianMemoryFacade, InMemoryBrainStore, MemoryIntelligenceBrainBridge
 from .planner_module import HeuristicPlannerModule
 from .risk_module import KeywordRiskChecker
 from .self_improvement_module import JsonlSelfImprovementQueue
@@ -90,6 +90,9 @@ def _persist_trace(trace: BrainPipelineTrace, *, path: Optional[Path] = None) ->
             "dry_run": bool((trace.run_context or {}).get("dry_run")),
             "unified_export": unified,
         }
+        recall = (trace.run_context or {}).get("memory_intelligence_recall")
+        if recall:
+            payload["memory_intelligence_recall"] = recall
         apply_persisted_tda_fields(payload, trace)
         try:
             from project_guardian.prompt_contracts.controls import (
@@ -122,6 +125,7 @@ class BrainPipeline:
         learning: Optional[Any] = None,
         self_improvement: Optional[Any] = None,
         dashboard: Optional[Any] = None,
+        memory_intelligence_dir: Optional[Path] = None,
     ) -> None:
         self.guardian = guardian
         if memory is not None:
@@ -130,6 +134,11 @@ class BrainPipeline:
             self.memory = GuardianMemoryFacade(guardian.memory)
         else:
             self.memory = InMemoryBrainStore()
+        ctx_dir = memory_intelligence_dir
+        if ctx_dir is None and guardian is not None:
+            ctx_dir = getattr(guardian, "memory_intelligence_dir", None)
+        if ctx_dir is not None:
+            self.memory = MemoryIntelligenceBrainBridge(self.memory, Path(ctx_dir))
 
         self.context_builder = context_builder or default_context_builder(guardian)
         self.planner = planner or HeuristicPlannerModule()
@@ -233,6 +242,20 @@ class BrainPipeline:
 
         snippets = self.memory.retrieve(observation.text[:800], limit=10)
         trace.memory_snippets = snippets
+        recall_evidence = getattr(self.memory, "recall_evidence", None)
+        if callable(recall_evidence):
+            evidence = recall_evidence()
+            trace.run_context["memory_intelligence_recall"] = evidence
+            ctx["memory_intelligence_recall"] = evidence
+            linked_ids = [
+                f"memory-intelligence:{item.get('source_id')}:{item.get('chunk_id')}"
+                for item in evidence
+                if isinstance(item, dict) and item.get("source_id") and item.get("chunk_id")
+            ]
+            if linked_ids:
+                ctx["relevant_context_ids"] = list(
+                    dict.fromkeys([*(ctx.get("relevant_context_ids") or []), *linked_ids])
+                )
         _transition(trace, "memory_retrieved", f"n={len(snippets)}")
 
         if ctx.get("rank_memory"):

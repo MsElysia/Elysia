@@ -562,12 +562,15 @@ def query_memory_intelligence(
     *,
     limit: int = 5,
     context_bytes: int = _DEFAULT_CONTEXT_BYTES,
+    validate_summaries: bool = False,
 ) -> list[dict[str, Any]]:
     """Read-only deterministic query with machine-readable recall reasons."""
     if type(query) is not str or not query.strip():
         raise MemoryIntelligenceError("query is required")
     if type(limit) is not int or limit < 0:
         raise MemoryIntelligenceError("invalid query limit")
+    if type(validate_summaries) is not bool:
+        raise MemoryIntelligenceError("invalid summary validation mode")
     terms = _query_terms(query)
     dest = Path(dest_dir).expanduser().resolve()
     results: list[dict[str, Any]] = []
@@ -579,6 +582,8 @@ def query_memory_intelligence(
                 raise MemoryIntelligenceError("malformed persisted chunk")
             chunk = _chunk_from_payload(chunk_payload)
             expand_chunk(source, chunk, context_bytes=0)
+            if validate_summaries and chunk_payload.get("summary") != summarize_chunk(chunk):
+                raise MemoryIntelligenceError("persisted summary does not match validated source chunk")
             text_blob = f"{chunk.text} {chunk_payload.get('summary') or ''}".casefold()
             text_matches = sorted({term for term in terms if term in text_blob})
             decisions = chunk_payload.get("tag_decisions")

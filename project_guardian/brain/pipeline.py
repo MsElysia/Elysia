@@ -17,7 +17,9 @@ from typing import Any, Dict, Optional, Tuple
 from .contracts import (
     BrainPipelineTrace,
     ExecutionResult,
+    LearningOutcome,
     Observation,
+    PlanStep,
     RiskAssessment,
     RiskLevel,
     StructuredCommand,
@@ -29,6 +31,7 @@ from .execution_module import CapabilityExecutionFacade
 from .learning_module import DefaultLearningModule
 from .llm_router_module import UnifiedLLMRouterFacade
 from .memory_module import GuardianMemoryFacade, InMemoryBrainStore
+from .memory_intelligence_bridge import OfflineRetrievalRouter, ReadOnlyMemoryIntelligenceBridge
 from .planner_module import HeuristicPlannerModule
 from .risk_module import KeywordRiskChecker
 from .self_improvement_module import JsonlSelfImprovementQueue
@@ -122,7 +125,19 @@ class BrainPipeline:
         learning: Optional[Any] = None,
         self_improvement: Optional[Any] = None,
         dashboard: Optional[Any] = None,
+        read_only_retrieval: Optional[ReadOnlyMemoryIntelligenceBridge] = None,
     ) -> None:
+        self.read_only_retrieval = read_only_retrieval
+        if read_only_retrieval is not None:
+            if type(read_only_retrieval) is not ReadOnlyMemoryIntelligenceBridge:
+                raise ValueError("exact read-only retrieval bridge required")
+            if any(item is not None for item in (
+                guardian, memory, context_builder, planner, llm_router, tool_router,
+                risk_checker, execution, learning, self_improvement, dashboard,
+            )):
+                raise ValueError("read-only retrieval cannot bind live or overridden modules")
+            memory = read_only_retrieval
+            llm_router = OfflineRetrievalRouter()
         self.guardian = guardian
         if memory is not None:
             self.memory = memory
@@ -138,7 +153,10 @@ class BrainPipeline:
         self.risk_checker = risk_checker or KeywordRiskChecker()
         self.execution = execution or CapabilityExecutionFacade()
         self.learning = learning or DefaultLearningModule()
-        self.self_improvement = self_improvement or JsonlSelfImprovementQueue()
+        self.self_improvement = (
+            None if read_only_retrieval is not None
+            else self_improvement or JsonlSelfImprovementQueue()
+        )
         self.dashboard = dashboard or DefaultDashboardModule()
 
     def _abort_strict_planner_contract(
@@ -200,6 +218,12 @@ class BrainPipeline:
     ) -> Tuple[BrainPipelineTrace, Dict[str, Any]]:
         trace = BrainPipelineTrace()
         ctx = dict(context or {})
+        if self.read_only_retrieval is not None:
+            # This v1 lane has no authority to persist, execute, bind a Guardian,
+            # accept operator approvals, or consume caller-supplied TDA hooks.
+            required = {"dry_run": True, "persist_trace": False, "use_think_decide_act": True}
+            if set(ctx) != set(required) or any(ctx[key] is not value for key, value in required.items()):
+                raise ValueError("read-only retrieval requires the fixed non-persistent TDA dry-run context")
         trace.brain_pipeline_id = uuid.uuid4().hex
         trace.started_at = datetime.now(timezone.utc).isoformat()
         trace.input_source = observation.source
@@ -234,6 +258,11 @@ class BrainPipeline:
         snippets = self.memory.retrieve(observation.text[:800], limit=10)
         trace.memory_snippets = snippets
         _transition(trace, "memory_retrieved", f"n={len(snippets)}")
+        if self.read_only_retrieval is not None:
+            evidence = self.read_only_retrieval.recall_evidence()
+            trace.run_context["memory_intelligence_recall"] = evidence
+            ctx["relevant_context_ids"] = evidence["relevant_context_ids"]
+            _transition(trace, "source_linked_memory_recalled", f"n={len(evidence['hits'])}")
 
         if ctx.get("rank_memory"):
             try:
@@ -265,6 +294,24 @@ class BrainPipeline:
                 trace.run_context["memory_ranking"] = {"enabled": True, "error": str(e)[:200]}
 
         plan = self.planner.plan(observation, snippets, bctx)
+        if self.read_only_retrieval is not None and evidence["hits"]:
+            # Descriptive evidence-review step only. Recalled content is never
+            # reinterpreted as a tool route, permission, or executable payload.
+            plan.steps.insert(0, PlanStep(
+                "Review recalled source evidence before selecting a capability",
+                None,
+                {"source_evidence": [
+                    {"source_id": row["source_id"], "chunk_id": row["chunk_id"],
+                     "recall_reasons": row["recall_reasons"],
+                     "highlight_ids": [item["highlight_id"] for item in row["highlights"]]}
+                    for row in evidence["hits"]
+                ]},
+            ))
+            trace.run_context["memory_intelligence_plan_effect"] = {
+                "effect": "source_evidence_review_step_added",
+                "step_index": 0,
+                "source_evidence": plan.steps[0].payload["source_evidence"],
+            }
         trace.plan = plan
         _transition(trace, "planner_finished", f"steps={len(plan.steps)}")
 
@@ -405,7 +452,11 @@ class BrainPipeline:
             except Exception:
                 pass
         try:
-            if adapter_used and tda_trace is not None:
+            if self.read_only_retrieval is not None:
+                learn = LearningOutcome(
+                    False, "Read-only recall preview: no execution, memory write, or learning persistence", []
+                )
+            elif adapter_used and tda_trace is not None:
                 from .think_decide_act_adapter import tda_trace_to_learning_outcome
 
                 learn = tda_trace_to_learning_outcome(tda_trace, trace.brain_pipeline_id)
@@ -436,8 +487,11 @@ class BrainPipeline:
             add_prompt_contract_result_to_trace(trace, "learning_reviewer", res_lv)
         _transition(trace, "learning_finished", learn.lesson[:160])
 
-        self.self_improvement.enqueue(learn, trace)
-        _transition(trace, "self_improvement_enqueued", "")
+        if self.read_only_retrieval is None:
+            self.self_improvement.enqueue(learn, trace)
+            _transition(trace, "self_improvement_enqueued", "")
+        else:
+            _transition(trace, "read_only_learning_persistence_skipped", "")
 
         dash = self.dashboard.snapshot(trace)
         _transition(trace, "dashboard_snapshot", "")

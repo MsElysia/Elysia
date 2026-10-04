@@ -2,6 +2,8 @@ import datetime
 import json
 from types import MethodType
 
+import pytest
+
 import project_guardian.autonomy_antiloop as autonomy_antiloop
 import project_guardian.core as core_mod
 import project_guardian.mission_autonomy as mission_autonomy
@@ -279,51 +281,135 @@ def _safe_decision_guardian(monkeypatch, store):
     return guardian
 
 
+class _NoLiveHarvest:
+    def generate_income_report(self, *args, **kwargs):
+        raise AssertionError("safe decision-only dry-run must not execute Harvest/provider")
+
+
 def test_safe_dry_run_reaches_normal_candidate_governance_selection_and_persistence(monkeypatch, tmp_path):
     state_path = _configure_temp_store(monkeypatch, tmp_path)
     store = mission_autonomy.MissionAutonomyStore()
+    # A prior downrank lets a nonzero report demonstrate the legacy recovery signal.
+    store._runtime["action_priority_bias"]["harvest_income_report"] = -2.0
+    store._save_runtime()
     guardian = _safe_decision_guardian(monkeypatch, store)
+    guardian.missions.missions = []
+    guardian._modules = {"harvest_engine": _NoLiveHarvest()}
 
-    # Selection-only dry-run: real core candidate generation -> MissionDirector governance -> selector.
+    # Real candidate generation -> MissionDirector governance -> selector; no executor.
     decision = GuardianCore._get_next_action_impl(guardian)
-
     assert guardian._running is False
-    assert decision["action"] == "continue_mission"
-    assert decision["source"] == "missions"
+    assert guardian._load_autonomy_config()["enabled"] is False
+    assert guardian._load_autonomy_config()["auto_execute"] is False
+    assert decision["action"] == "harvest_income_report"
+    assert decision["source"] == "harvest_engine"
     assert "planner_runtime" not in decision
     selected = next(row for row in decision["candidates"] if row["action"] == decision["action"])
     assert "_mission_governance" in selected
+    before_score = selected["priority_score"]
+    before_bias = json.loads(state_path.read_text())["action_priority_bias"][decision["action"]]
 
-    # Simulated bounded outcome: no action handler or live executor is called.
-    receipt = store.record_outcome_receipt(
-        action=decision["action"],
-        objective=decision["metadata"]["mission"],
-        success=True,
-        useful=True,
-        objective_advanced=True,
-        evidence_ref="dry-run://issue-88/normal-decision-pipeline",
-        cost=0.0,
-        elapsed_sec=0.0,
-        reason="simulated test outcome; live execution disabled",
-    )
-    assert receipt["feedback_applied"] is True
-
+    # Simulated report signal delivered only through the existing production callback.
+    mission_autonomy.mission_autonomy_feedback_harvest(nonzero=True)
     persisted = json.loads(state_path.read_text(encoding="utf-8"))
-    assert persisted["outcome_receipts"][-1]["evidence_ref"].startswith("dry-run://")
-    assert persisted["action_priority_bias"]["continue_mission"] > 0.0
+    assert len(persisted["outcome_receipts"]) == 1
+    receipt = persisted["outcome_receipts"][0]
+    assert _REQUIRED_RECEIPT_KEYS <= set(receipt)
+    assert receipt["action"] == decision["action"]
+    assert receipt["evidence_ref"] == "callback://mission_autonomy_feedback_harvest?nonzero=true"
+    assert receipt["elapsed_sec"] is None
+    assert receipt["feedback_applied"] is True
+    expected_bias = round(before_bias * 0.45, 4)
+    assert persisted["action_priority_bias"][decision["action"]] == expected_bias
+    assert receipt["feedback_delta"] == round(expected_bias - before_bias, 4)
 
     restarted = mission_autonomy.MissionAutonomyStore()
-    rescored = restarted.apply_governance(
-        [
-            {
-                "action": "continue_mission",
-                "source": "missions",
-                "reason": "Issue 88 safe dry-run mission",
-                "priority_score": 7.0,
-                "can_auto_execute": True,
-                "metadata": {"mission": "Issue 88 safe dry-run mission"},
-            }
-        ],
-        recent_actions=[],
-    )
-    assert rescored[0]["_mission_governance"]["feedback_bias"] > 0.0
+    assert restarted._runtime["outcome_receipts"] == [receipt]
+    assert restarted._runtime["action_priority_bias"][decision["action"]] == expected_bias
+    fresh_guardian = _safe_decision_guardian(monkeypatch, restarted)
+    fresh_guardian.missions.missions = []
+    fresh_guardian._modules = {"harvest_engine": _NoLiveHarvest()}
+    rescored = GuardianCore._get_next_action_impl(fresh_guardian)
+    selected_after = next(row for row in rescored["candidates"] if row["action"] == decision["action"])
+    assert selected_after["priority_score"] > before_score
+    assert selected_after["_mission_governance"]["feedback_bias"] > selected["_mission_governance"]["feedback_bias"]
+    assert len(json.loads(state_path.read_text())["outcome_receipts"]) == 1
+
+
+@pytest.mark.parametrize(
+    "nonzero,initial_bias,initial_streak,expected_bias,expected_streak,revenue,execution",
+    [
+        (True, 0.0, 0, 0.0, 0, 0.05, 0.0),  # Vega's exact preserved breaker.
+        (True, -2.0, 3, -0.9, 0, 0.05, 0.0),
+        (True, 2.0, 3, 2.0, 0, 0.05, 0.0),
+        (False, 0.0, 0, -1.7, 1, -0.09, 0.06),
+        (False, -2.0, 2, -4.8, 3, -0.15, 0.10),
+        (False, -5.9, 5, -6.0, 6, -0.18, 0.10),
+    ],
+)
+def test_production_harvest_persists_one_receipt_and_one_legacy_feedback(
+    monkeypatch, tmp_path, nonzero, initial_bias, initial_streak,
+    expected_bias, expected_streak, revenue, execution,
+):
+    state_path = _configure_temp_store(monkeypatch, tmp_path)
+    store = mission_autonomy.MissionAutonomyStore()
+    action = "harvest_income_report"
+    store._runtime["action_priority_bias"][action] = initial_bias
+    store._runtime["noop_streak"][action] = initial_streak
+    store._save_runtime()
+    saves = []
+    original_save = mission_autonomy.MissionAutonomyStore._save_runtime
+
+    def counted_save(self):
+        saves.append(True)
+        original_save(self)
+
+    monkeypatch.setattr(mission_autonomy.MissionAutonomyStore, "_save_runtime", counted_save)
+    assert mission_autonomy.mission_autonomy_feedback_harvest(nonzero=nonzero) is None
+    assert len(saves) == 1
+    persisted = json.loads(state_path.read_text())
+    assert len(persisted["outcome_receipts"]) == 1
+    receipt = persisted["outcome_receipts"][0]
+    assert _REQUIRED_RECEIPT_KEYS <= set(receipt)
+    assert receipt["action"] == action
+    assert receipt["objective"] == "Assess reported sales or earned-total signal"
+    assert receipt["success"] is True  # Report completed; zero is no progress, not an exception.
+    assert receipt["useful"] is nonzero
+    assert receipt["objective_advanced"] is nonzero
+    assert receipt["evidence_ref"] == "callback://mission_autonomy_feedback_harvest?nonzero=" + str(nonzero).lower()
+    assert receipt["cost"] == 0.35  # Existing cost tier, not an invented measurement.
+    assert receipt["elapsed_sec"] is None
+    assert receipt["reason"] == ("harvest_nonzero_sales_or_total" if nonzero else "zero_total_zero_sales")
+    assert receipt["feedback_applied"] is True
+    assert receipt["feedback_delta"] == round(expected_bias - initial_bias, 4)
+    assert receipt["action_bias_after"] == expected_bias
+    assert persisted["action_priority_bias"][action] == expected_bias
+    assert persisted["noop_streak"][action] == expected_streak
+    assert persisted["campaign_priority_adjust"]["cmp_revenue_intel"] == revenue
+    assert persisted["campaign_priority_adjust"].get("cmp_execution", 0.0) == execution
+    reconstructed = mission_autonomy.MissionAutonomyStore()._runtime
+    assert reconstructed["outcome_receipts"] == [receipt]
+    assert reconstructed["action_priority_bias"][action] == expected_bias
+
+
+def test_disabled_harvest_feedback_does_not_persist_or_apply_feedback(monkeypatch, tmp_path):
+    state_path = _configure_temp_store(monkeypatch, tmp_path)
+    cfg_path = mission_autonomy.CONFIG_PATH
+    cfg = json.loads(cfg_path.read_text())
+    cfg["enabled"] = False
+    cfg_path.write_text(json.dumps(cfg))
+    mission_autonomy.mission_autonomy_feedback_harvest(nonzero=True)
+    mission_autonomy.mission_autonomy_feedback_harvest(nonzero=False)
+    assert not state_path.exists()
+
+
+def test_harvest_receipt_retention_and_feedback_remain_bounded(monkeypatch, tmp_path):
+    state_path = _configure_temp_store(monkeypatch, tmp_path)
+    for _ in range(81):
+        mission_autonomy.mission_autonomy_feedback_harvest(nonzero=False)
+    persisted = json.loads(state_path.read_text())
+    assert len(persisted["outcome_receipts"]) == 80
+    assert persisted["noop_streak"]["harvest_income_report"] == 81
+    assert persisted["action_priority_bias"]["harvest_income_report"] == -6.0
+    assert persisted["campaign_priority_adjust"] == {"cmp_revenue_intel": -0.22, "cmp_execution": 0.22}
+    assert persisted["outcome_receipts"][-1]["feedback_delta"] == 0.0

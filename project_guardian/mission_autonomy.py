@@ -563,7 +563,7 @@ class MissionAutonomyStore:
     def _noop_streak_reset(self, key: str) -> None:
         self._runtime.setdefault("noop_streak", {})[key] = 0
 
-    def record_outcome_receipt(
+    def _normalize_outcome_receipt(
         self,
         *,
         action: str,
@@ -576,8 +576,7 @@ class MissionAutonomyStore:
         elapsed_sec: Optional[float] = None,
         reason: str = "",
     ) -> Dict[str, Any]:
-        """Persist one normalized outcome and update the existing action-bias signal."""
-        self.reload()
+        """Normalize observed outcome fields without applying feedback or saving state."""
         act = str(action or "").strip()
         if not act:
             raise ValueError("action is required")
@@ -604,10 +603,35 @@ class MissionAutonomyStore:
             "useful": bool(useful),
             "objective_advanced": bool(objective_advanced),
             "evidence_ref": str(evidence_ref or "")[:500],
-            "cost": round(cost_value, 4),
+            "cost": cost_value,
             "elapsed_sec": round(elapsed_value, 4) if elapsed_value is not None else None,
             "reason": str(reason or "")[:500],
         }
+        return receipt
+
+    def record_outcome_receipt(
+        self,
+        *,
+        action: str,
+        objective: str,
+        success: bool,
+        useful: bool,
+        objective_advanced: bool,
+        evidence_ref: str = "",
+        cost: Optional[float] = None,
+        elapsed_sec: Optional[float] = None,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        """Persist one normalized outcome and update the existing action-bias signal."""
+        self.reload()
+        receipt = self._normalize_outcome_receipt(
+            action=action, objective=objective, success=success, useful=useful,
+            objective_advanced=objective_advanced, evidence_ref=evidence_ref,
+            cost=cost, elapsed_sec=elapsed_sec, reason=reason,
+        )
+        act = receipt["action"]
+        cost_value = receipt["cost"]
+        receipt["cost"] = round(cost_value, 4)
         if not self.enabled:
             receipt["feedback_applied"] = False
             return receipt
@@ -633,8 +657,22 @@ class MissionAutonomyStore:
         new = max(_ACTION_BIAS_MIN, min(_ACTION_BIAS_MAX, cur + delta))
         biases[act] = round(new, 4)
 
+        return self._persist_outcome_receipt(receipt, bias_before=cur, bias_after=new)
+
+    def _persist_outcome_receipt(
+        self, receipt: Dict[str, Any], *, bias_before: float, bias_after: float
+    ) -> Dict[str, Any]:
+        """Save a normalized receipt with the feedback already applied, exactly once.
+
+        Both generic outcomes and the harvest callback use this persistence path.
+        Do not reload or apply generic learning here: harvest keeps its existing
+        campaign, streak and action-bias semantics in the same state write.
+        """
+        act = receipt["action"]
+        new = bias_after
+        receipt["cost"] = round(receipt["cost"], 4)
         receipt["feedback_applied"] = True
-        receipt["feedback_delta"] = round(new - cur, 4)
+        receipt["feedback_delta"] = round(new - bias_before, 4)
         receipt["action_bias_after"] = round(new, 4)
         receipts = self._runtime.setdefault("outcome_receipts", [])
         receipts.append(receipt)
@@ -643,13 +681,8 @@ class MissionAutonomyStore:
         logger.info(
             "[MissionDirector] outcome_feedback_applied action=%s delta=%+.3f bias=%.3f "
             "success=%s useful=%s advanced=%s cost=%.2f",
-            act,
-            new - cur,
-            new,
-            bool(success),
-            bool(useful),
-            bool(objective_advanced),
-            cost_value,
+            act, new - bias_before, new, receipt["success"], receipt["useful"],
+            receipt["objective_advanced"], receipt["cost"],
         )
         return dict(receipt)
 
@@ -657,24 +690,38 @@ class MissionAutonomyStore:
         self.reload()
         if not self.enabled:
             return
+        action = "harvest_income_report"
+        biases = self._runtime.setdefault("action_priority_bias", {})
+        bias_before = float(biases.get(action, 0) or 0)
         if nonzero:
-            self._noop_streak_reset("harvest_income_report")
+            self._noop_streak_reset(action)
             self._adjust_campaign_delta("cmp_revenue_intel", 0.05, "harvest_nonzero_sales_or_total")
-            # soften prior harvest downrank
-            biases = self._runtime.setdefault("action_priority_bias", {})
-            cur = float(biases.get("harvest_income_report", 0) or 0)
-            if cur < 0:
-                biases["harvest_income_report"] = round(max(_ACTION_BIAS_MIN, cur * 0.45), 4)
-            self._save_runtime()
-            return
-        n = self._noop_streak_inc("harvest_income_report")
-        # First zero hits immediately (aggressive vs cooldown-only); ramp with streak
-        pen = 1.15 + 0.55 * min(n, 5)
-        self._adjust_action_bias("harvest_income_report", -pen, reason="zero_total_zero_sales", streak=n)
-        self._adjust_campaign_delta("cmp_revenue_intel", -0.06 - 0.03 * min(n, 4), "repeated_zero_harvest")
-        # Shift emphasis toward execution / artifacts
-        self._adjust_campaign_delta("cmp_execution", 0.04 + 0.02 * min(n, 3), "compensate_for_zero_revenue_reads")
-        self._save_runtime()
+            # Soften prior harvest downrank; do not add generic outcome learning.
+            if bias_before < 0:
+                biases[action] = round(max(_ACTION_BIAS_MIN, bias_before * 0.45), 4)
+        else:
+            n = self._noop_streak_inc(action)
+            # First zero hits immediately; ramp with streak (unchanged legacy feedback).
+            pen = 1.15 + 0.55 * min(n, 5)
+            self._adjust_action_bias(action, -pen, reason="zero_total_zero_sales", streak=n)
+            self._adjust_campaign_delta("cmp_revenue_intel", -0.06 - 0.03 * min(n, 4), "repeated_zero_harvest")
+            self._adjust_campaign_delta("cmp_execution", 0.04 + 0.02 * min(n, 3), "compensate_for_zero_revenue_reads")
+
+        # The callback attests only to a completed report and its nonzero signal,
+        # not newly earned revenue. No artifact, measured cost or duration is known.
+        receipt = self._normalize_outcome_receipt(
+            action=action,
+            objective="Assess reported sales or earned-total signal",
+            success=True,
+            useful=bool(nonzero),
+            objective_advanced=bool(nonzero),
+            evidence_ref="callback://mission_autonomy_feedback_harvest?nonzero=" + str(bool(nonzero)).lower(),
+            reason="harvest_nonzero_sales_or_total" if nonzero else "zero_total_zero_sales",
+        )
+        self._persist_outcome_receipt(
+            receipt, bias_before=bias_before,
+            bias_after=float(biases.get(action, 0.0) or 0.0),
+        )
 
     def feedback_income_modules_pulse(self, *, all_zero: bool, same_signature: bool) -> None:
         self.reload()

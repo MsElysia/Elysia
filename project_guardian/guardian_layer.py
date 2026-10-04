@@ -37,22 +37,43 @@ class GuardianLayer:
         rebuild_log_path: str = "data/guardian_rebuild.log"
     ):
         self.config_path = Path(config_path)
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
         self.rebuild_log_path = Path(rebuild_log_path)
         
         # Thread-safe operations
         self._lock = RLock()
         
-        # Guardian state
+        # Guardian state. Construction is intentionally inspection-only:
+        # load existing state, but do not probe the host, write files, or send alerts.
         self.fingerprint: Optional[str] = None
         self.contact_email: Optional[str] = None
         self.smtp_config: Dict[str, Any] = {}
+        self._activated = False
         
-        # Load existing state
+        # Reading existing persisted state is safe during construction.
         self.load()
-        
-        # Generate/verify fingerprint
-        self._update_fingerprint()
+
+    def activate(self) -> bool:
+        """Explicitly enable fingerprint verification and its permitted side effects.
+
+        Activation is idempotent. Host fingerprint probes, first-run persistence,
+        rebuild logging, and alert transport are all deferred until this method.
+        """
+        with self._lock:
+            if self._activated:
+                return True
+
+        try:
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            self.rebuild_log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._update_fingerprint()
+        except Exception as exc:
+            logger.error("GuardianLayer activation failed: %s", exc)
+            return False
+
+        with self._lock:
+            self._activated = True
+        logger.info("GuardianLayer activated")
+        return True
     
     def _generate_system_fingerprint(self) -> str:
         """
@@ -116,6 +137,7 @@ class GuardianLayer:
         }
         
         # Append to rebuild log
+        self.rebuild_log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.rebuild_log_path, 'a') as f:
             f.write(json.dumps(event) + "\n")
         
@@ -278,6 +300,7 @@ class GuardianLayer:
         
         # Append to a silent log file
         silent_log_path = self.config_path.parent / "guardian_silent.log"
+        silent_log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(silent_log_path, 'a') as f:
             f.write(json.dumps(log_entry) + "\n")
         
@@ -286,10 +309,23 @@ class GuardianLayer:
     def verify_identity(self) -> Dict[str, Any]:
         """
         Verify current system identity matches stored fingerprint.
+
+        Before explicit activation this method remains inspection-safe and does
+        not invoke host fingerprint providers.
         
         Returns:
             Verification result dictionary
         """
+        if not self._activated:
+            return {
+                "identity_verified": None,
+                "current_fingerprint": None,
+                "stored_fingerprint": self.fingerprint,
+                "fingerprint_match": None,
+                "activated": False,
+                "timestamp": datetime.now().isoformat(),
+            }
+
         current_fingerprint = self._generate_system_fingerprint()
         matches = current_fingerprint == self.fingerprint
         
@@ -298,6 +334,7 @@ class GuardianLayer:
             "current_fingerprint": current_fingerprint,
             "stored_fingerprint": self.fingerprint,
             "fingerprint_match": matches,
+            "activated": True,
             "timestamp": datetime.now().isoformat()
         }
     
@@ -329,6 +366,7 @@ class GuardianLayer:
         rebuild_history = self.get_rebuild_history(limit=10)
         
         return {
+            "activated": self._activated,
             "fingerprint": self.fingerprint,
             "fingerprint_short": self.fingerprint[:16] + "..." if self.fingerprint else None,
             "identity_verified": verification["identity_verified"],
@@ -340,6 +378,7 @@ class GuardianLayer:
     
     def save(self):
         """Save guardian state."""
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
             data = {
                 "fingerprint": self.fingerprint,

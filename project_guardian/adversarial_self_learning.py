@@ -374,6 +374,27 @@ def _inject_finding_from_event(finding: AdversarialFinding, guardian, context: D
     return finding
 
 
+def _event_memory_persistence_enabled(guardian) -> bool:
+    """Allow event-driven finding persistence only when autonomy is explicitly enabled.
+
+    Legacy/test guardians without an autonomy loader retain prior behavior. Guardians
+    that expose the loader fail closed if the config is malformed or unreadable.
+    Explicit adversarial cycles do not use this gate.
+    """
+    loader = getattr(guardian, "_load_autonomy_config", None)
+    if not callable(loader):
+        return True
+    try:
+        cfg = loader()
+    except Exception as exc:
+        logger.debug("[Adversarial] Autonomy config unavailable for event persistence: %s", exc)
+        return False
+    if not isinstance(cfg, dict):
+        logger.debug("[Adversarial] Malformed autonomy config; suppressing event memory persistence")
+        return False
+    return cfg.get("enabled") is True
+
+
 def trigger_adversarial_on_event(
     guardian,
     triggered_by: str,
@@ -468,7 +489,18 @@ def trigger_adversarial_on_event(
     if not findings:
         return None
 
-    return _apply_findings(guardian, findings, triggered_by)
+    persist_memory = _event_memory_persistence_enabled(guardian)
+    if not persist_memory:
+        logger.info(
+            "[Adversarial] Event %s retained in registry/status; long-term memory persistence suppressed while autonomy is disabled or unconfirmed",
+            triggered_by,
+        )
+    return _apply_findings(
+        guardian,
+        findings,
+        triggered_by,
+        persist_memory=persist_memory,
+    )
 
 
 def _run_verification_pass(guardian) -> int:
@@ -485,8 +517,14 @@ def _run_verification_pass(guardian) -> int:
     return verified_count
 
 
-def _apply_findings(guardian, findings: List[AdversarialFinding], triggered_by: str) -> Dict[str, Any]:
-    """Apply findings: dedup/escalation, memory, tasks, downstream consumers, registry."""
+def _apply_findings(
+    guardian,
+    findings: List[AdversarialFinding],
+    triggered_by: str,
+    *,
+    persist_memory: bool = True,
+) -> Dict[str, Any]:
+    """Apply findings while allowing event diagnostics to suppress only memory persistence."""
     memory = getattr(guardian, "memory", None)
     tasks_engine = getattr(guardian, "tasks", None)
     reg = _ensure_registry(guardian)
@@ -573,7 +611,7 @@ def _apply_findings(guardian, findings: List[AdversarialFinding], triggered_by: 
         auto = f.auto_actionable
         created_tasks = f.created_task_ids
 
-        if memory and not is_update:
+        if memory and not is_update and persist_memory:
             try:
                 memory.remember(
                     f"[Adversarial Finding] {ftype}: {summ}",

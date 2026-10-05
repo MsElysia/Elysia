@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
-from .completion_validator import validate_completion
+from .completion_validator import CHECK_RESULTS, validate_completion
 from .dispatcher import Worker
 from .verifier import select_verifier
 
@@ -211,6 +211,19 @@ class TaskLedger:
             return False
         if not isinstance(evidence_refs, list) or any(not isinstance(ref, str) or not ref.strip() for ref in evidence_refs):
             return False
+        # Direct callers bypass packet validation. Validate check structure before
+        # surrendering the producer lease; only None means omitted checks.
+        if completion_checks is None:
+            completion_checks = []
+        if not isinstance(completion_checks, list) or any(
+            not isinstance(check, Mapping)
+            or not isinstance(check.get("name"), str)
+            or not check["name"].strip()
+            or not isinstance(check.get("result"), str)
+            or check["result"] not in CHECK_RESULTS
+            for check in completion_checks
+        ):
+            return False
         now=now or _utcnow(); now_s=_iso(now); evidence_json=json.dumps(list(evidence_refs),sort_keys=True)
         with self.conn:
             self.conn.execute("BEGIN IMMEDIATE")
@@ -225,7 +238,7 @@ class TaskLedger:
                 "version": 1, "task_id": task_id, "producer": producer_worker_id,
                 "attempt": lease["attempt"], "producer_lease_expires_at": lease["lease_expires_at"],
                 "packet_id": packet_id, "evidence_refs": list(evidence_refs),
-                "checks": completion_checks or [], "packet": dict(completion_packet) if completion_packet is not None else None,
+                "checks": completion_checks, "packet": dict(completion_packet) if completion_packet is not None else None,
                 "evidence_sources": evidence_sources,
                 "policy": json.loads(lease["payload_json"]),
                 "execution_max_attempts": lease["execution_max_attempts"],
@@ -244,7 +257,7 @@ class TaskLedger:
             cursor=self.conn.execute("UPDATE tasks SET status='verifying',produced_by=?,completion_packet_id=?,completion_evidence_json=?,claimed_by=NULL,lease_expires_at=NULL,verification_claimed_by=NULL,verification_lease_expires_at=NULL,updated_at=? WHERE task_id=? AND claimed_by=? AND status IN ('claimed','running') AND lease_expires_at IS NOT NULL AND lease_expires_at>?",(producer_worker_id,packet_id,evidence_json,now_s,task_id,producer_worker_id,now_s))
             if cursor.rowcount!=1: return False
             self.conn.execute("UPDATE tasks SET completion_submission_json=?,completion_submission_digest=?,verification_supplemental_evidence_json=NULL,verification_submission_digest=NULL WHERE task_id=?", (submission_json,submission_digest,task_id))
-            self._event(task_id,"producer_completion_submitted",producer_worker_id,{"packet_id":packet_id,"evidence_refs":list(evidence_refs),"attempt":lease["attempt"],"producer_lease_expires_at":lease["lease_expires_at"],"checks":completion_checks or []},now_s); return True
+            self._event(task_id,"producer_completion_submitted",producer_worker_id,{"packet_id":packet_id,"evidence_refs":list(evidence_refs),"attempt":lease["attempt"],"producer_lease_expires_at":lease["lease_expires_at"],"checks":completion_checks},now_s); return True
 
     def claim_verification(
         self,

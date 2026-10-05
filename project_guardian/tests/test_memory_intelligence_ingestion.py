@@ -129,7 +129,7 @@ def test_repeat_apply_is_store_idempotent_with_no_duplicate_intelligence_records
     assert second.report["memory_intelligence_created"] == 0
     assert second.report["memory_intelligence_unchanged"] == 1
     assert len(list((dest / MEMORY_INTELLIGENCE_SUBDIR / "records").glob("*.json"))) == 1
-    assert len(list((dest / MEMORY_INTELLIGENCE_SUBDIR / "raw_sources").glob("*.bin"))) == 1
+    assert len(list((dest / MEMORY_INTELLIGENCE_SUBDIR / "raw_sources").glob("*.bin"))) == 2
     assert record_path.read_bytes() == record_before
     assert raw_path.read_bytes() == raw_before
 
@@ -213,3 +213,126 @@ def test_forged_tag_source_link_fails_closed_during_query(tmp_path):
 
     with pytest.raises(MemoryIntelligenceError, match="source linkage"):
         query_memory_intelligence(tmp_path, "roofing")
+
+
+def test_original_export_survives_truncation_and_repeat_apply(tmp_path):
+    export = tmp_path / "original.json"
+    payload = _sample_export()
+    payload[0]["mapping"]["node-2"]["message"]["content"]["parts"] = ["tail evidence café 🛠 " * 1000]
+    original = (json.dumps(payload, ensure_ascii=False, indent=3) + "\r\n").encode("utf-8")
+    export.write_bytes(original)
+    dest = tmp_path / "dest"
+    preview = preview_chatgpt_export(export_json=export, dest_dir=dest, max_conversation_chars=160)
+    first = apply_chatgpt_export(preview_json=Path(preview.json_path), apply=True)
+    record = load_memory_intelligence_records(dest)[0]
+    origin = record["origin_source"]
+    assert (dest / origin["raw_source_path"]).read_bytes() == original
+    result = query_memory_intelligence(dest, "drywall")[0]
+    for highlight in result["highlights"]:
+        expansion = expand_persisted_highlight(dest, highlight["highlight_id"])
+        assert expansion["original_raw_source"].encode("utf-8") == original
+        assert "[truncated for safety]" in expansion["raw_source"]
+    before = {p.relative_to(dest): p.read_bytes() for p in (dest / MEMORY_INTELLIGENCE_SUBDIR).rglob("*") if p.is_file()}
+    second = apply_chatgpt_export(preview_json=Path(preview.json_path), apply=True)
+    after = {p.relative_to(dest): p.read_bytes() for p in (dest / MEMORY_INTELLIGENCE_SUBDIR).rglob("*") if p.is_file()}
+    assert before == after
+    assert first.report["staged_count"] == 1
+    assert second.report["staged_count"] == 0
+    assert second.report["memory_intelligence_unchanged"] == 1
+    export.unlink()
+    assert expand_persisted_highlight(dest, result["highlights"][0]["highlight_id"])["original_raw_source"].encode("utf-8") == original
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_same_size_export_edit_rejected_before_ingestion_writes(tmp_path, apply):
+    export = tmp_path / "conversations.json"
+    _write_export(export)
+    dest = tmp_path / "dest"
+    preview = preview_chatgpt_export(export_json=export, dest_dir=dest)
+    before = {p.relative_to(dest): p.read_bytes() for p in dest.rglob("*") if p.is_file()}
+    export.write_bytes(export.read_bytes().replace(b"kitchen", b"bedroom"))
+    from project_guardian.local_ingestion.chatgpt_export_ingest import ChatGPTExportIngestError
+    with pytest.raises(ChatGPTExportIngestError, match="hash changed"):
+        apply_chatgpt_export(preview_json=Path(preview.json_path), apply=apply)
+    assert before == {p.relative_to(dest): p.read_bytes() for p in dest.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("field,value", [
+    ("conversation_index", -1), ("conversation_index", True),
+    ("conversation_index", 999), ("conversation_id", "forged"),
+    ("max_conversation_chars", 41), ("max_conversation_chars", False),
+])
+def test_origin_segment_tampering_fails_closed(tmp_path, field, value):
+    dest, _, _, _, report = _apply_once(tmp_path)
+    record_path = Path(report.report["conversations"][0]["memory_intelligence"]["record_path"])
+    record = json.loads(record_path.read_text())
+    highlight_id = record["chunks"][0]["highlights"][0]["highlight_id"]
+    record["origin_source"]["segment"][field] = value
+    record_path.write_text(json.dumps(record))
+    with pytest.raises(MemoryIntelligenceError):
+        query_memory_intelligence(dest, "drywall")
+    with pytest.raises(MemoryIntelligenceError):
+        expand_persisted_highlight(dest, highlight_id)
+
+
+def test_original_raw_source_tampering_fails_closed(tmp_path):
+    dest, _, _, _, _ = _apply_once(tmp_path)
+    record = load_memory_intelligence_records(dest)[0]
+    path = dest / record["origin_source"]["raw_source_path"]
+    path.write_bytes(path.read_bytes().replace(b"kitchen", b"bedroom"))
+    with pytest.raises(MemoryIntelligenceError, match="provenance mismatch"):
+        query_memory_intelligence(dest, "drywall")
+
+
+def test_old_unhashed_preview_requires_fresh_preview(tmp_path):
+    export = tmp_path / "conversations.json"
+    _write_export(export)
+    dest = tmp_path / "dest"
+    preview = preview_chatgpt_export(export_json=export, dest_dir=dest)
+    path = Path(preview.json_path)
+    data = json.loads(path.read_text())
+    del data["export_sha256"]
+    path.write_text(json.dumps(data))
+    from project_guardian.local_ingestion.chatgpt_export_ingest import ChatGPTExportIngestError
+    with pytest.raises(ChatGPTExportIngestError, match="fresh preview"):
+        apply_chatgpt_export(preview_json=path, apply=True)
+    assert not (dest / MEMORY_INTELLIGENCE_SUBDIR).exists()
+
+
+@pytest.mark.parametrize("tamper", ["path", "identity", "missing", "nested"])
+def test_origin_source_reference_tampering_fails_closed(tmp_path, tamper):
+    dest, _, _, _, report = _apply_once(tmp_path)
+    record_path = Path(report.report["conversations"][0]["memory_intelligence"]["record_path"])
+    record = json.loads(record_path.read_text())
+    if tamper == "path":
+        record["origin_source"]["raw_source_path"] = "../outside.json"
+    elif tamper == "identity":
+        record["origin_source"]["source_identity"] = "forged.json"
+    elif tamper == "missing":
+        (dest / record["origin_source"]["raw_source_path"]).unlink()
+    else:
+        record["origin_source"]["origin_source"] = {}
+    record_path.write_text(json.dumps(record))
+    with pytest.raises(MemoryIntelligenceError):
+        query_memory_intelligence(dest, "drywall")
+
+
+def test_multiple_conversations_share_one_original_artifact(tmp_path):
+    export = tmp_path / "conversations.json"
+    payload = _sample_export()
+    second = json.loads(json.dumps(payload[0]))
+    second["id"] = "second-conversation"
+    second["title"] = "Separate Job"
+    payload.append(second)
+    export.write_text(json.dumps(payload))
+    dest = tmp_path / "dest"
+    preview = preview_chatgpt_export(export_json=export, dest_dir=dest)
+    first = apply_chatgpt_export(preview_json=Path(preview.json_path), apply=True)
+    records = load_memory_intelligence_records(dest)
+    assert len(records) == first.report["memory_intelligence_created"] == 2
+    assert len({r["origin_source"]["raw_source_path"] for r in records}) == 1
+    assert {r["origin_source"]["segment"]["conversation_index"] for r in records} == {0, 1}
+    assert len(list((dest / MEMORY_INTELLIGENCE_SUBDIR / "raw_sources").glob("*.bin"))) == 3
+    second = apply_chatgpt_export(preview_json=Path(preview.json_path), apply=True)
+    assert second.report["memory_intelligence_unchanged"] == 2
+    assert second.report["staged_count"] == 0

@@ -357,20 +357,15 @@ def persist_source_intelligence(
     canonical_tags: Sequence[str] = (),
     tag_hints: Sequence[str] = (),
     max_chunk_bytes: int = 4096,
+    origin_source: RawSource | None = None,
+    origin_segment: dict[str, Any] | None = None,
+    origin_identity: str | None = None,
 ) -> MemoryIntelligenceWriteReport:
     """Persist deterministic source-linked artifacts under an existing ingestion destination."""
     dest = Path(dest_dir).expanduser().resolve()
     source = preserve_raw_source(raw_bytes, source_identity=source_identity)
     chunks = chunk_utf8_source(source, max_bytes=max_chunk_bytes)
     raw_path, record_path = _paths(dest, source.source_id)
-
-    raw_path.parent.mkdir(parents=True, exist_ok=True)
-    record_path.parent.mkdir(parents=True, exist_ok=True)
-    if raw_path.exists():
-        if raw_path.read_bytes() != source.raw_bytes:
-            raise MemoryIntelligenceError("existing raw source bytes do not match source identity")
-    else:
-        raw_path.write_bytes(source.raw_bytes)
 
     canonical_normalized = sorted(
         {normalize_tag(tag) for tag in canonical_tags if normalize_tag(tag)}
@@ -419,6 +414,37 @@ def persist_source_intelligence(
         "embeddings_used": False,
         "live_memory_written": False,
     }
+    if origin_source is not None:
+        if type(origin_source) is not RawSource or type(origin_segment) is not dict:
+            raise MemoryIntelligenceError("invalid origin source or segment")
+        if preserve_raw_source(origin_source.raw_bytes, source_identity=origin_identity) != origin_source:
+            raise MemoryIntelligenceError("origin source identity or hash mismatch")
+        # Reuse the existing immutable raw artifact directory, without another memory record.
+        origin_path, _ = _paths(dest, origin_source.source_id)
+        _relative_artifact_path(dest, origin_path)
+        if origin_path.exists() and origin_path.read_bytes() != origin_source.raw_bytes:
+            raise MemoryIntelligenceError("existing origin source bytes mismatch")
+        record["origin_source"] = {
+            "source_id": origin_source.source_id,
+            "source_sha256": origin_source.sha256,
+            "raw_source_path": _relative_artifact_path(dest, origin_path),
+            "source_identity": origin_identity,
+            "segment": origin_segment,
+        }
+        # Validate exact rendered-text linkage before persisting the original export.
+        _validate_origin_segment(origin_source.raw_bytes, record, source)
+    elif origin_segment is not None or origin_identity is not None:
+        raise MemoryIntelligenceError("origin metadata requires an origin source")
+    # Check artifact containment and immutable bytes before writing anything.
+    _relative_artifact_path(dest, record_path)
+    if raw_path.exists() and raw_path.read_bytes() != source.raw_bytes:
+        raise MemoryIntelligenceError("existing raw source bytes do not match source identity")
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    if not raw_path.exists():
+        raw_path.write_bytes(source.raw_bytes)
+    if origin_source is not None and not origin_path.exists():
+        origin_path.write_bytes(origin_source.raw_bytes)
     encoded = json.dumps(record, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     status = "created"
     if record_path.exists():
@@ -459,7 +485,41 @@ def _raw_source_from_record(dest: Path, record: dict[str, Any]) -> RawSource:
     )
     if source.source_id != record.get("source_id") or source.sha256 != record.get("source_sha256"):
         raise MemoryIntelligenceError("persisted source provenance mismatch")
+    if "origin_source" in record:
+        origin = record["origin_source"]
+        if type(origin) is not dict or "origin_source" in origin:
+            raise MemoryIntelligenceError("malformed origin source")
+        original = _raw_source_from_record(dest, origin)
+        _validate_origin_segment(original.raw_bytes, record, source)
     return source
+
+
+def _validate_origin_segment(raw_bytes: bytes, record: dict[str, Any], source: RawSource) -> None:
+    # Lazy import avoids the ingestion module's import-time dependency on these primitives.
+    from .chatgpt_export_ingest import _parse_conversations, _conversation_id, conversation_to_text
+
+    origin = record["origin_source"]
+    segment = origin.get("segment")
+    if type(segment) is not dict or set(segment) != {
+        "conversation_index", "conversation_id", "max_conversation_chars"
+    }:
+        raise MemoryIntelligenceError("malformed origin segment")
+    index = segment["conversation_index"]
+    max_chars = segment["max_conversation_chars"]
+    if type(index) is not int or index < 0 or type(max_chars) is not int or max_chars < 40:
+        raise MemoryIntelligenceError("malformed origin segment bounds")
+    try:
+        conversations = _parse_conversations(json.loads(raw_bytes.decode("utf-8")))
+        conv = conversations[index]
+        if _conversation_id(conv, index) != segment["conversation_id"]:
+            raise MemoryIntelligenceError("origin conversation linkage mismatch")
+        text, _, _ = conversation_to_text(conv, max_chars=max_chars)
+    except (ValueError, IndexError, KeyError, TypeError, AttributeError) as exc:
+        raise MemoryIntelligenceError("invalid origin conversation segment") from exc
+    if text.encode("utf-8") != source.raw_bytes:
+        raise MemoryIntelligenceError("origin rendered source mismatch")
+    if record["source_identity"] != f"{origin['source_identity']}#{segment['conversation_id']}":
+        raise MemoryIntelligenceError("origin source identity mismatch")
 
 
 def _chunk_from_payload(payload: dict[str, Any]) -> SourceChunk:
@@ -671,7 +731,7 @@ def expand_persisted_highlight(
                     highlight,
                     context_bytes=context_bytes,
                 )
-                return {
+                result = {
                     "highlight_id": highlight.highlight_id,
                     "chunk_id": chunk.chunk_id,
                     "source_id": source.source_id,
@@ -679,4 +739,9 @@ def expand_persisted_highlight(
                     "surrounding_context": expanded["context"].decode("utf-8", errors="replace"),
                     "raw_source": expanded["raw_source"].decode("utf-8"),
                 }
+                if "origin_source" in record:
+                    original = _raw_source_from_record(dest, record["origin_source"])
+                    result["original_raw_source"] = original.raw_bytes.decode("utf-8")
+                    result["original_source_id"] = original.source_id
+                return result
     raise MemoryIntelligenceError("highlight not found")

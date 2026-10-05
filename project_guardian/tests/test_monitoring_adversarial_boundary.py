@@ -114,4 +114,3 @@ def test_shutdown_completion_logs_without_memory_append(caplog):
     assert calls == []
     assert "task_completed_unverified" in caplog.text
     assert guardian._adversarial_registry["findings_by_id"]["fid-1"]["state"] == "task_completed_unverified"
-

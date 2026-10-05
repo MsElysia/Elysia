@@ -156,4 +156,3 @@ def test_startup_diagnostic_goes_to_log_not_memory(memory, monkeypatch, caplog):
         core._initialize_system()
     assert memory.get_memory_count() == before
     assert "[Guardian Core] System initialized" in caplog.text
-

@@ -8,6 +8,32 @@ from tests.test_vega_verifier_boundaries import NOW, open_ledger, task
 from tests.evidence_fixture import attest_local_submission
 
 
+@pytest.mark.parametrize("checks", [False, 0, "", {}, (), "pass", [None], [{}],
+    [{"name": "", "result": "pass"}], [{"name": "unit", "result": "unknown"}]])
+@pytest.mark.parametrize("reopen", [False, True])
+def test_malformed_direct_checks_preserve_producer_lease(tmp_path, checks, reopen):
+    path = tmp_path / "ledger.db"
+    ledger = open_ledger(path)
+    try:
+        ledger.put_task(task())
+        assert ledger.claim("vega", "writer", now=NOW).claimed
+        before = ledger.get("vega")
+        events = ledger.events("vega")
+        assert not ledger.submit_for_verification("vega", "writer", "packet:A",
+            ["artifact:A"], now=NOW, completion_checks=checks)
+        if reopen:
+            ledger.close()
+            ledger = open_ledger(path)
+        assert ledger.get("vega") == before
+        assert ledger.events("vega") == events
+        # Refusal must leave the live producer able to submit corrected evidence.
+        assert ledger.submit_for_verification("vega", "writer", "packet:A",
+            ["artifact:A"], now=NOW,
+            completion_checks=[{"name": "unit", "result": "pass"}])
+    finally:
+        ledger.close()
+
+
 def submitted(tmp_path, **policy):
     ledger = open_ledger(tmp_path / "ledger.db")
     ledger.put_task(task(max_attempts=3, required_checks=["unit"], **policy))

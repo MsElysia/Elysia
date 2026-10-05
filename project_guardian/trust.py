@@ -2,10 +2,13 @@
 # Trust Management System for Project Guardian
 
 import datetime
+import logging
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from dataclasses import dataclass
 from .memory import MemoryCore
+
+logger = logging.getLogger(__name__)
 
 # Action constants - single source of truth for action names
 # Used by all gateways to ensure consistent action strings
@@ -86,34 +89,18 @@ class TrustMatrix:
                 # Initialize Trust Consultation System
                 initial_trust = 0.8178  # 81.78% post-tuning from conversations
                 self.consultation_system = TrustConsultationSystem(initial_trust=initial_trust)
-                self.memory.remember(
-                    "[Guardian Trust] Trust Consultation System initialized",
-                    category="trust",
-                    priority=0.8
-                )
+                logger.info("[Guardian Trust] Trust Consultation System initialized")
             except Exception as e:
                 self.consultation_system = None
-                self.memory.remember(
-                    f"[Guardian Trust] Failed to initialize Trust Consultation System: {e}",
-                    category="trust",
-                    priority=0.5
-                )
+                logger.warning("[Guardian Trust] Failed to initialize Trust Consultation System: %s", e)
             
             try:
                 # Initialize Adversarial AI Self-Improvement
                 self.adversarial_system = AdversarialAISelfImprovement(initial_trust=0.75)
-                self.memory.remember(
-                    "[Guardian Trust] Adversarial AI Self-Improvement System initialized",
-                    category="trust",
-                    priority=0.8
-                )
+                logger.info("[Guardian Trust] Adversarial AI Self-Improvement System initialized")
             except Exception as e:
                 self.adversarial_system = None
-                self.memory.remember(
-                    f"[Guardian Trust] Failed to initialize Adversarial AI System: {e}",
-                    category="trust",
-                    priority=0.5
-                )
+                logger.warning("[Guardian Trust] Failed to initialize Adversarial AI System: %s", e)
         else:
             self.consultation_system = None
             self.adversarial_system = None
@@ -148,11 +135,10 @@ class TrustMatrix:
         }
         self.trust_history.append(entry)
         
-        # Remember in memory
-        self.memory.remember(
-            f"[Guardian Trust] {name}: {old_trust:.3f} -> {new_trust:.3f} ({delta:+.3f}) - {reason}",
-            category="trust",
-            priority=0.7
+        # Trust bookkeeping is observable without appending to user memory.
+        logger.info(
+            "[Guardian Trust] %s: %.3f -> %.3f (%+.3f) - %s",
+            name, old_trust, new_trust, delta, reason,
         )
         
         return new_trust
@@ -206,10 +192,9 @@ class TrustMatrix:
             new_trust = self.trust[component]
             
             if old_trust != new_trust:
-                self.memory.remember(
-                    f"[Guardian Trust Decay] {component}: {old_trust:.3f} -> {new_trust:.3f}",
-                    category="trust",
-                    priority=0.5
+                logger.info(
+                    "[Guardian Trust Decay] %s: %.3f -> %.3f",
+                    component, old_trust, new_trust,
                 )
                 
     def get_high_trust_components(self, threshold: float = 0.7) -> List[str]:

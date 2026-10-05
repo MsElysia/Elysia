@@ -2,8 +2,11 @@
 # Task Management System for Project Guardian
 
 import datetime
+import logging
 from typing import List, Dict, Any, Optional
 from .memory import MemoryCore
+
+logger = logging.getLogger(__name__)
 
 class TaskEngine:
     """
@@ -49,11 +52,7 @@ class TaskEngine:
         }
         
         self.tasks.append(task)
-        self.memory.remember(
-            f"[Guardian Task] Created: {name} - {description}",
-            category="task",
-            priority=priority
-        )
+        logger.info("[Guardian Task] Created: %s - %s", name, description)
         return task
         
     def get_task(self, task_id: int) -> Optional[Dict[str, Any]]:
@@ -154,12 +153,8 @@ class TaskEngine:
         # Move to history
         self.task_history.append(task)
         self.tasks.remove(task)
-        
-        self.memory.remember(
-            f"[Guardian Task] Completed: {task['name']}",
-            category="task",
-            priority=task["priority"]
-        )
+
+        logger.info("[Guardian Task] Completed: %s", task["name"])
         if self._on_task_complete:
             try:
                 self._on_task_complete(task_id, task)

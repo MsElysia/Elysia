@@ -194,19 +194,7 @@ class Heartbeat:
         self.thread = threading.Thread(target=self._beat, daemon=True)
         self.thread.start()
         
-        # Queue memory write if cleanup in progress, otherwise write directly
-        if self.system_monitor:
-            self.system_monitor._queue_or_write_memory(
-                f"[Heartbeat] Started monitoring (interval: {self.interval}s)",
-                category="monitoring",
-                priority=0.7
-            )
-        else:
-            self.memory.remember(
-                f"[Heartbeat] Started monitoring (interval: {self.interval}s)",
-                category="monitoring",
-                priority=0.7
-            )
+        logger.info("[Heartbeat] Started monitoring (interval: %ss)", self.interval)
         
     def stop(self) -> None:
         """Stop the heartbeat monitoring."""
@@ -214,37 +202,13 @@ class Heartbeat:
         if self.thread:
             self.thread.join(timeout=1)
         
-        # Queue memory write if cleanup in progress, otherwise write directly
-        if self.system_monitor:
-            self.system_monitor._queue_or_write_memory(
-                "[Heartbeat] Stopped monitoring",
-                category="monitoring",
-                priority=0.6
-            )
-        else:
-            self.memory.remember(
-                "[Heartbeat] Stopped monitoring",
-                category="monitoring",
-                priority=0.6
-            )
+        logger.info("[Heartbeat] Stopped monitoring")
         
     def _beat(self) -> None:
         """Main heartbeat loop."""
         while self.running:
             try:
-                # Queue memory write if cleanup in progress, otherwise write directly
-                if self.system_monitor:
-                    self.system_monitor._queue_or_write_memory(
-                        "[Heartbeat] Pulse",
-                        category="monitoring",
-                        priority=0.3
-                    )
-                else:
-                    self.memory.remember(
-                        "[Heartbeat] Pulse",
-                        category="monitoring",
-                        priority=0.3
-                    )
+                logger.info("[Heartbeat] Pulse")
                 
                 # Update health metrics
                 self._update_health_metrics()
@@ -292,7 +256,8 @@ class Heartbeat:
                         "skipping count-based cleanup threshold until loaded"
                     )
                 
-                # Auto-cleanup if memory count is high (runs every heartbeat if needed)
+                # High memory count can request ephemeral cache reclamation only.
+                # A heartbeat is not authority to consolidate durable records.
                 # Base threshold (high watermark) before hysteresis
                 base_threshold = 4000
                 
@@ -330,18 +295,9 @@ class Heartbeat:
                 if needs_full_cleanup:
                     self._cleanup_active = True
                     if self.system_monitor:
-                        self.system_monitor._perform_cleanup(
-                            self._high_water,
-                            reason=CLEANUP_REASON_MEMORY_COUNT_THRESHOLD,
-                        )
+                        self.system_monitor._perform_light_cleanup()
                     else:
-                        logger.warning(f"[Auto-Cleanup] High memory ({memory_count} memories), triggering cleanup...")
                         try:
-                            memory_obj = self.memory
-                            if hasattr(self.memory, "json_memory"):
-                                memory_obj = self.memory.json_memory
-                            if hasattr(memory_obj, "consolidate"):
-                                memory_obj.consolidate(max_memories=self._high_water, keep_recent_days=30)
                             import gc
                             gc.collect()
                         except Exception as e:
@@ -391,20 +347,7 @@ class Heartbeat:
                 time.sleep(self.interval)
                 
             except Exception as e:
-                # Check if cleanup is in progress - suppress memory writes during cleanup
-                # Queue memory write if cleanup in progress, otherwise write directly
-                if self.system_monitor:
-                    self.system_monitor._queue_or_write_memory(
-                        f"[Heartbeat] Error: {str(e)}",
-                        category="error",
-                        priority=0.8
-                    )
-                else:
-                    self.memory.remember(
-                        f"[Heartbeat] Error: {str(e)}",
-                        category="error",
-                        priority=0.8
-                    )
+                logger.exception("[Heartbeat] Error: %s", e)
                 time.sleep(self.interval)
                 
     def _update_health_metrics(self) -> None:
@@ -627,12 +570,7 @@ class SystemMonitor:
                 logger.debug("First autonomy delay: %s", e)
         threading.Thread(target=_run_first_autonomy, daemon=True).start()
         
-        # Queue memory write if cleanup in progress, otherwise write directly
-        self._queue_or_write_memory(
-            "[SystemMonitor] Monitoring started",
-            category="monitoring",
-            priority=0.8
-        )
+        logger.info("[SystemMonitor] Monitoring started")
         
     def stop_monitoring(self) -> None:
         """Stop system monitoring."""
@@ -640,12 +578,7 @@ class SystemMonitor:
         self.monitoring_active = False
         self._started = False
         
-        # Queue memory write if cleanup in progress, otherwise write directly
-        self._queue_or_write_memory(
-            "[SystemMonitor] Monitoring stopped",
-            category="monitoring",
-            priority=0.8
-        )
+        logger.info("[SystemMonitor] Monitoring stopped")
         
     def get_system_health(self) -> Dict[str, Any]:
         """
@@ -906,15 +839,15 @@ class SystemMonitor:
         return f"(delta: {sign}{delta_mb:.2f}MB)"
     
     def _perform_light_cleanup(self) -> None:
-        """Light cleanup when system memory high but our memory count is OK. Clears caches + gc only."""
+        """Automatic pressure relief: ephemeral caches and GC, never durable records."""
         try:
             memory_obj = self.memory
             if hasattr(self.memory, "json_memory"):
                 memory_obj = self.memory.json_memory
             cleared = self._clear_caches(memory_obj)
+            import gc
+            gc.collect()
             if cleared:
-                import gc
-                gc.collect()
                 logger.debug(f"[Auto-Cleanup] Light cleanup: cleared caches {list(cleared.keys())}")
         except Exception as e:
             logger.debug(f"[Auto-Cleanup] Light cleanup failed: {e}")
@@ -927,7 +860,9 @@ class SystemMonitor:
         consolidation_threshold: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Perform cleanup with full instrumentation and truth guarantees.
+        Explicit durable maintenance with full instrumentation and truth guarantees.
+        Caller must supply an authorized runtime trigger. Startup and automatic
+        monitoring use _perform_light_cleanup instead.
         
         reason: Why cleanup was triggered (memory_count_threshold, system_memory_pressure, manual, etc.)
         system_memory_percent: Host RAM usage 0.0-1.0 when reason=system_memory_pressure

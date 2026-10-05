@@ -27,6 +27,7 @@ from .memory_candidates import (
 from .memory_intelligence import (
     MemoryIntelligenceError,
     persist_source_intelligence,
+    preserve_raw_source,
 )
 
 CHATGPT_IMPORT_SESSIONS_SUBDIR = "chatgpt_import_sessions"
@@ -162,17 +163,23 @@ def conversation_to_text(
     return body, truncated, len(messages)
 
 
-def _load_export_json(export_path: Path) -> Any:
+def _load_export_bytes(export_path: Path) -> bytes:
     path = Path(export_path)
     _reject_symlink(path, label="export JSON")
     if not path.is_file():
         raise ChatGPTExportIngestError(f"Export JSON not found: {path}")
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        raw = path.read_bytes()
+        json.loads(raw.decode("utf-8"))
+        return raw
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ChatGPTExportIngestError(f"Malformed export JSON: {path}") from exc
     except OSError as exc:
         raise ChatGPTExportIngestError(f"Export JSON unreadable: {path}") from exc
+
+
+def _load_export_json(export_path: Path) -> Any:
+    return json.loads(_load_export_bytes(export_path).decode("utf-8"))
 
 
 def _parse_conversations(data: Any) -> List[Dict[str, Any]]:
@@ -286,7 +293,8 @@ def preview_chatgpt_export(
 ) -> ChatGPTExportPreviewReport:
     export_path = _safe_resolve(export_json, label="export JSON")
     dest = _safe_resolve(dest_dir, label="destination directory")
-    data = _load_export_json(export_path)
+    export_bytes = _load_export_bytes(export_path)
+    data = json.loads(export_bytes.decode("utf-8"))
     conversations = _parse_conversations(data)
     if limit is not None:
         conversations = conversations[: max(0, limit)]
@@ -329,18 +337,14 @@ def preview_chatgpt_export(
     eligible = [e for e in entries if e.import_action_available]
     skipped = [e for e in entries if not e.import_action_available]
 
-    try:
-        file_size = int(export_path.stat().st_size)
-    except OSError:
-        file_size = 0
-
     preview: Dict[str, Any] = {
         "session_id": session_id,
         "created_at": _utc_now_iso(),
         "dest_dir": str(dest),
         "export_path": str(export_path),
         "export_filename": export_path.name,
-        "file_size_bytes": file_size,
+        "file_size_bytes": len(export_bytes),
+        "export_sha256": hashlib.sha256(export_bytes).hexdigest(),
         "limit": limit,
         "max_conversation_chars": max_conversation_chars,
         "conversation_count": len(entries),
@@ -455,16 +459,24 @@ def apply_chatgpt_export(
     )
 
     _validate_export_unchanged(export_path, int(preview["file_size_bytes"]))
-    data = _load_export_json(export_path)
+    export_bytes = _load_export_bytes(export_path)
+    expected_hash = preview.get("export_sha256")
+    if type(expected_hash) is not str or not expected_hash:
+        raise ChatGPTExportIngestError("Preview lacks source hash; create a fresh preview.")
+    if hashlib.sha256(export_bytes).hexdigest() != expected_hash:
+        raise ChatGPTExportIngestError("Export source hash changed after preview.")
+    data = json.loads(export_bytes.decode("utf-8"))
     conversations = _parse_conversations(data)
     limit = preview.get("limit")
     if limit is not None:
         conversations = conversations[: max(0, int(limit))]
 
     conv_by_id: Dict[str, Dict[str, Any]] = {}
+    index_by_id: Dict[str, int] = {}
     for index, conv in enumerate(conversations):
         if isinstance(conv, dict):
             conv_by_id[_conversation_id(conv, index)] = conv
+            index_by_id[_conversation_id(conv, index)] = index
 
     known_ids = read_known_candidate_ids(review_queue_path(dest_dir)) if apply else set()
     results: List[Dict[str, Any]] = []
@@ -558,6 +570,13 @@ def apply_chatgpt_export(
                 dest_dir=dest_dir,
                 raw_bytes=text.encode("utf-8"),
                 source_identity=original_filename,
+                origin_source=preserve_raw_source(export_bytes, source_identity=export_path.name),
+                origin_identity=export_path.name,
+                origin_segment={
+                    "conversation_index": index_by_id[conversation_id],
+                    "conversation_id": conversation_id,
+                    "max_conversation_chars": max_chars,
+                },
                 canonical_tags=(
                     SOURCE_TYPE_CHATGPT_EXPORT,
                     SUGGESTED_MEMORY_TYPE_CONVERSATION,

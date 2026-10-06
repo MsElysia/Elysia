@@ -582,3 +582,39 @@ coverage of one surface does not change the other surfaces' classifications.
 Current cross-universe enforcement remains `NOT_IMPLEMENTED`.
 
 Issue #23 remains: `GATED — NO SEMANTIC WORK AUTHORIZED`.
+
+## Issue #33 branch aliases at the v2 admission boundary
+
+The exact preserved recurrence is `4ff2dc92dd7d9bc393225bce35de9239a9cad6a5`
+to `cursor/autopilot-003-issue23-restack-cwa` to
+`7374820642fad52a6264c86df8632c3a630df592`. PR #34 and its documentation
+descendant `881608c83fc0ec19261924034eea6e809b4b6ede` remain
+`UNAUTHORIZED_BUT_PRESERVED_EVIDENCE`; an unchanged staging branch, technical
+PASS, or candidate label cannot authorize them.
+
+`test_issue_33_v2_admission.py` reuses the existing exact fixture through
+`evaluate_admitted`, rather than creating a second gate evaluator. Its normative
+acceptance requirements are:
+
+- Objective, repository lineage, governance lineage, and explicit gate references
+  each independently preserve the applicable gate through derived admissions.
+  A match in any one route is sufficient; branch-name equality is unnecessary.
+- All parents contribute inherited scope, regardless of parent order. An unrelated
+  first parent cannot conceal a gated detached ancestor on a later parent.
+- Authoritative action classification controls the proposed effect. Worker branch,
+  root, docs-only, technical-success, and owner/App claims cannot narrow it.
+- JSON serialization/reload preserves the same blocked result under the same
+  independently trusted pin; evaluation leaves the evidence snapshot unchanged.
+  This tests model reconstruction, not database durability or restart enforcement.
+- Severed/missing ancestry, stale authority generation, and a stale state pin
+  fail closed. Trusted admission must establish ancestry and semantic descent;
+  schema-valid fixture metadata is not proof that an external writer did so.
+
+These tests add v2 entry-point coverage to the existing #35/#38 contract, not
+production interception. A future boundary must derive admission from trusted
+repository/control-plane evidence and reject the exact semantic effect before
+mutation in the same admission transaction. Until that boundary exists, external
+Cursor/Codex/Git paths remain `NOT_ENFORCED`, and gated output cannot be promoted
+to authorized progress. #29/#30/#31/#33 remain unreleased; human-release validation
+is `UNAVAILABLE`. No new human authentication, runtime wiring, or gate release is
+defined by this extension.

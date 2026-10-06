@@ -2,9 +2,12 @@
 # Consensus and Decision Making System for Project Guardian
 
 import datetime
+import logging
 from typing import Dict, Any, List, Optional, Callable
 from pathlib import Path
 from .memory import MemoryCore
+
+logger = logging.getLogger(__name__)
 
 # Import extracted decision making layer if available
 try:
@@ -40,18 +43,10 @@ class ConsensusEngine:
         if DECISION_LAYER_AVAILABLE and DecisionMakingLayer:
             try:
                 self.decision_layer = DecisionMakingLayer()
-                self.memory.remember(
-                    "[Guardian Consensus] Decision Making Layer initialized",
-                    category="consensus",
-                    priority=0.8
-                )
+                logger.info("[Guardian Consensus] Decision Making Layer initialized")
             except Exception as e:
                 self.decision_layer = None
-                self.memory.remember(
-                    f"[Guardian Consensus] Failed to initialize Decision Layer: {e}",
-                    category="consensus",
-                    priority=0.5
-                )
+                logger.warning("[Guardian Consensus] Failed to initialize Decision Layer: %s", e)
         else:
             self.decision_layer = None
         
@@ -81,11 +76,7 @@ class ConsensusEngine:
             "vote_count": 0
         }
         
-        self.memory.remember(
-            f"[Guardian Consensus] Registered agent: {agent_name} ({agent_type})",
-            category="consensus",
-            priority=0.6
-        )
+        logger.info("[Guardian Consensus] Registered agent: %s (%s)", agent_name, agent_type)
         return True
         
     def cast_vote(self, voter: str, action: str, confidence: float = 1.0, 
@@ -302,22 +293,14 @@ class ConsensusEngine:
             if action in self.votes:
                 cleared_count = len(self.votes[action])
                 del self.votes[action]
-                self.memory.remember(
-                    f"[Guardian Consensus] Cleared {cleared_count} votes for {action}",
-                    category="consensus",
-                    priority=0.5
-                )
+                logger.info("[Guardian Consensus] Cleared %s votes for %s", cleared_count, action)
                 return cleared_count
             return 0
         else:
             # Clear all votes
             total_cleared = sum(len(votes) for votes in self.votes.values())
             self.votes.clear()
-            self.memory.remember(
-                f"[Guardian Consensus] Cleared all {total_cleared} votes",
-                category="consensus",
-                priority=0.5
-            )
+            logger.info("[Guardian Consensus] Cleared all %s votes", total_cleared)
             return total_cleared
     
     def make_structured_decision(

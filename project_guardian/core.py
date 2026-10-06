@@ -352,10 +352,11 @@ class GuardianCore:
                     for fid, f in reg.get("findings_by_id", {}).items():
                         if task_id in f.get("created_task_ids", []):
                             record_task_completed(self, fid)
-                            self.memory.remember(
-                                f"[Adversarial] Finding {fid} -> task_completed_unverified (task {task_id} done; awaiting verification)",
-                                category="adversarial_finding",
-                                priority=0.6,
+                            logger.info(
+                                "[Adversarial] Finding %s -> task_completed_unverified "
+                                "(task %s done; awaiting verification)",
+                                fid,
+                                task_id,
                             )
                             break
                 except Exception as e:
@@ -389,18 +390,19 @@ class GuardianCore:
         
         # Start resource monitoring if enabled (defer thread until Phase B when defer_heavy_startup)
         if config.get("enable_resource_monitoring", True):
-            # When memory limit exceeded, trigger aggressive cleanup (throttled to avoid thrashing)
+            # Resource pressure is not authority to discard durable memories.
+            # Automatic callbacks reclaim only ephemeral caches; explicit runtime
+            # maintenance retains the separate consolidation operation.
             self._last_resource_triggered_cleanup: Optional[float] = None
             _RESOURCE_CLEANUP_COOLDOWN = 180  # seconds; don't run again within 3 minutes
             from .resource_limits import ResourceType
             def _on_memory_limit_exceeded(violation):
                 try:
-                    from project_guardian.monitoring import CLEANUP_REASON_SYSTEM_MEMORY_PRESSURE, _load_memory_pressure_config
+                    from project_guardian.monitoring import _load_memory_pressure_config
                     now = datetime.datetime.now().timestamp()
                     last = getattr(self, "_last_resource_triggered_cleanup", None) or 0
                     if now - last < _RESOURCE_CLEANUP_COOLDOWN:
                         return
-                    consolidation_threshold = self.config.get("memory_cleanup_threshold", 3500)
                     pressure_cfg = _load_memory_pressure_config()
                     # Align resource-monitor callbacks with pressure policy trigger so 80% memory-limit
                     # alerts do not spam pressure cleanups when pressure mode is configured higher.
@@ -411,9 +413,6 @@ class GuardianCore:
                     except (TypeError, ValueError):
                         pressure_trigger = 0.88
                     pressure_trigger = max(0.5, min(0.99, pressure_trigger))
-                    # Under high memory pressure, trim to lower watermark (1600) to break pressure loop
-                    target = pressure_cfg.get("pressure_trim_target", max(1000, int(consolidation_threshold * 0.5)))
-                    target = max(1000, int(target))
                     usage = violation.get("usage_percent")
                     if isinstance(usage, (int, float)) and float(usage) < pressure_trigger:
                         logger.debug(
@@ -422,13 +421,8 @@ class GuardianCore:
                             pressure_trigger * 100.0,
                         )
                         return
-                    if hasattr(self, "monitor") and self.monitor and hasattr(self.monitor, "_perform_cleanup"):
-                        self.monitor._perform_cleanup(
-                            target,
-                            reason=CLEANUP_REASON_SYSTEM_MEMORY_PRESSURE,
-                            system_memory_percent=usage,
-                            consolidation_threshold=consolidation_threshold,
-                        )
+                    if hasattr(self, "monitor") and self.monitor and hasattr(self.monitor, "_perform_light_cleanup"):
+                        self.monitor._perform_light_cleanup()
                         self._last_resource_triggered_cleanup = now
                 except Exception as e:
                     logger.debug(f"Resource limit cleanup callback: {e}")
@@ -703,11 +697,7 @@ class GuardianCore:
 
     def _initialize_system(self) -> None:
         """Initialize the Guardian system."""
-        self.memory.remember(
-            "[Guardian Core] System initialized",
-            category="system",
-            priority=0.9
-        )
+        logger.info("[Guardian Core] System initialized")
         
         # Create initial system tasks
         self.tasks.create_task(
@@ -780,7 +770,6 @@ class GuardianCore:
         self._init_runtime_health_monitoring()
         
         if not getattr(self, "_defer_heavy_startup", False):
-            self._check_and_cleanup_memory()
             self.deferred_init_started = True
             self.deferred_init_running = False
             self.deferred_init_complete = True
@@ -790,7 +779,7 @@ class GuardianCore:
         else:
             logger.info(
                 "[Startup] Phase A end — dashboard path ready; "
-                "JSON/FAISS load and startup cleanup deferred"
+                "JSON/FAISS load deferred; memory maintenance requires an explicit runtime trigger"
             )
         
     def _ensure_resource_monitor_started_after_deferred(self) -> None:
@@ -812,7 +801,8 @@ class GuardianCore:
 
     def start_deferred_initialization(self) -> None:
         """
-        Phase B: load full JSON history, FAISS/metadata, embeddings, startup cleanup.
+        Phase B: load full JSON history, FAISS/metadata, and enable embeddings.
+        Durable memory maintenance is a separate explicit runtime operation.
         Idempotent; safe from a background thread. Call after dashboard is ready.
         Always resolves to a terminal state: complete or failed.
         """
@@ -850,7 +840,6 @@ class GuardianCore:
                 mem.json_memory.load_if_needed()
             if getattr(mem, "vector_memory", None) and hasattr(mem.vector_memory, "load_if_needed"):
                 mem.vector_memory.load_if_needed()
-            self._check_and_cleanup_memory()
             root = mem.json_memory if hasattr(mem, "json_memory") else mem
             if hasattr(root, "enable_embeddings"):
                 root.enable_embeddings()
@@ -7704,8 +7693,9 @@ class GuardianCore:
     def _check_and_cleanup_memory(self) -> None:
         """
         Check memory usage and cleanup if needed.
-        Automatically consolidates memories if count exceeds threshold.
-        Runs at startup and can be called periodically.
+        Explicit runtime maintenance: consolidate if count exceeds threshold.
+        Call only from an authorized maintenance trigger, never initialization
+        or an automatically started resource/heartbeat monitor.
         """
         try:
             if hasattr(self.memory, "get_memory_count"):
@@ -7793,11 +7783,7 @@ class GuardianCore:
         """
         Safely shutdown the Guardian system.
         """
-        self.memory.remember(
-            "[Guardian Core] System shutdown initiated",
-            category="system",
-            priority=0.9
-        )
+        logger.info("[Guardian Core] System shutdown initiated")
         
         # Stop UI Control Panel
         self.stop_ui_panel()
@@ -7829,11 +7815,7 @@ class GuardianCore:
         # Apply trust decay
         self.trust.decay_all(0.05)
         
-        self.memory.remember(
-            "[Guardian Core] System shutdown complete",
-            category="system",
-            priority=0.9
-        )
+        logger.info("[Guardian Core] System shutdown complete")
         
         self._running = False
         with GuardianCore._initialization_lock:

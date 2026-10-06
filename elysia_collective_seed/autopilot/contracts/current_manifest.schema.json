@@ -1,0 +1,376 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_schema_version",
+    "control_plane_ref",
+    "repository",
+    "manifest_generation",
+    "predecessor",
+    "checkpoint_ref",
+    "governance_snapshot",
+    "coverage",
+    "routing_records",
+    "retained_boundaries"
+  ],
+  "properties": {
+    "manifest_schema_version": {
+      "const": 1
+    },
+    "control_plane_ref": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S(?:.*\\S)?$"
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S(?:.*\\S)?$"
+    },
+    "manifest_generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "predecessor": {
+      "$ref": "#/$defs/pointer"
+    },
+    "checkpoint_ref": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S(?:.*\\S)?$"
+    },
+    "governance_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "digest",
+        "snapshot_generation"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "snapshot_generation": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inventory_ref",
+        "inventory_digest",
+        "item_ids",
+        "unresolved_sources"
+      ],
+      "properties": {
+        "inventory_ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "inventory_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "item_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\S(?:.*\\S)?$"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "unresolved_sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\S(?:.*\\S)?$"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      }
+    },
+    "routing_records": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/record"
+      },
+      "minItems": 1
+    },
+    "retained_boundaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_digest",
+        "archive_reconciliation",
+        "closed_paths",
+        "production_enforcement",
+        "external_write_enforcement",
+        "human_trust_anchor",
+        "release_validation"
+      ],
+      "properties": {
+        "snapshot_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "archive_reconciliation": {
+          "const": "REQUIRED"
+        },
+        "closed_paths": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "runtime",
+              "provider",
+              "autonomy",
+              "live_memory",
+              "taskledger",
+              "executor",
+              "merge",
+              "deploy",
+              "permission",
+              "private_data",
+              "credential",
+              "gate_release"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 12,
+          "maxItems": 12
+        },
+        "production_enforcement": {
+          "const": "NOT_IMPLEMENTED"
+        },
+        "external_write_enforcement": {
+          "const": "NOT_ENFORCED"
+        },
+        "human_trust_anchor": {
+          "const": "UNRESOLVED"
+        },
+        "release_validation": {
+          "const": "UNAVAILABLE"
+        }
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Issue 43 coordination manifest \u2014 synthetic normative specification only",
+  "$defs": {
+    "pointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pointer_schema_version",
+        "control_plane_ref",
+        "repository",
+        "manifest_generation",
+        "manifest_digest"
+      ],
+      "properties": {
+        "pointer_schema_version": {
+          "const": 1
+        },
+        "control_plane_ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "manifest_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "manifest_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "scope",
+        "state",
+        "evidence_refs"
+      ],
+      "properties": {
+        "claim_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "state": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "PARTIAL",
+            "UNPROVEN",
+            "BLOCKED",
+            "UNAUTHORIZED_BUT_PRESERVED_EVIDENCE"
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\S(?:.*\\S)?$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "item_id",
+        "item_ref",
+        "entity_id",
+        "action",
+        "product_sha",
+        "head_sha",
+        "base_sha",
+        "acceptance_contract",
+        "claims",
+        "blockers",
+        "disposition"
+      ],
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "item_ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "entity_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "action": {
+          "enum": [
+            "static_read",
+            "test_only",
+            "docs_only",
+            "schema_spec_write",
+            "semantic_code_write",
+            "repo_write",
+            "integration",
+            "merge",
+            "deploy",
+            "external_write",
+            "permission_change",
+            "private_data_access"
+          ]
+        },
+        "product_sha": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          ]
+        },
+        "head_sha": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          ]
+        },
+        "base_sha": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          ]
+        },
+        "acceptance_contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "digest"
+          ],
+          "properties": {
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:.*\\S)?$"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/claim"
+          },
+          "minItems": 1
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\S(?:.*\\S)?$"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "disposition": {
+          "enum": [
+            "BLOCKED",
+            "REVIEW_ONLY_NOT_AUTHORIZATION"
+          ]
+        }
+      }
+    }
+  }
+}

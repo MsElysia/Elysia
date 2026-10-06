@@ -170,7 +170,37 @@ task/admission and result/verification swaps, partial/crashed evidence states,
 cycle identity and control-state continuity and mediated-writer inventory classification. They do
 not make ordinary filesystem or Git operations transactional.
 
-## Source and lineage
+## Issue #43 synthetic current-manifest slice
+
+`current_manifest.schema.json`, `manifest_reference.py`, and
+`test_issue_43_manifest.py` model an immutable routing manifest and a
+predecessor/source-fenced coordination pointer inside this existing package.
+Issue #11 remains the control plane. The model reuses `evaluate_admitted` and
+never grants execution authority, publishes a live pointer, or calls runtime,
+TaskLedger, network, filesystem persistence, or repository adapters.
+
+The fixture-owned complete inventory and snapshot pins are independent inputs
+only within the test model. Hashes are content identity, not authentication.
+The model lock is a simulated atomic linearization point, not evidence of
+production CAS, crash durability, source acquisition, or real process restart.
+Missing/corrupt dependencies and non-atomic model stores fail closed.
+
+This deliberately narrow implementation permits routing-only successors with
+the **same gate snapshot**, immutable existing record bindings/dispositions,
+retained claims/blockers, and additions. It does not implement gate updates,
+blocker retraction, authenticated supersession, exhaustive live inventory,
+automatic checkpoint generation, bootstrap, or any human release. Model
+bootstrap is a preinstalled synthetic fixture, not a public acceptance path.
+
+M01–M20 are exercised with parametrized hostile inputs and deterministic
+two-writer schedules. JSON reconstruction and interrupted model schedules
+remain explicitly distinct from physical storage/restart proof. All inherited
+human/runtime/provider/autonomy/merge/deployment/permission gates stay closed.
+
+Source specification: `Issue43-current-state-manifest-spec.md`, 2026-10-06;
+base draft PR #105 exact `a5d61acfd9606b9090acebe5a049c3305e02a890`.
+
+## Historical source and lineage
 
 - [Current checkpoint](https://github.com/MsElysia/Elysia/issues/11#issuecomment-5641159193)
 - [Gate packet](https://github.com/MsElysia/Elysia/issues/29#issuecomment-5638137343)

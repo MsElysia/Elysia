@@ -16,7 +16,7 @@ from project_guardian.local_ingestion.chatgpt_export_ingest import (
     apply_chatgpt_export,
     preview_chatgpt_export,
 )
-from project_guardian.local_ingestion.memory_candidates import REVIEW_QUEUE_FILENAME
+from project_guardian.local_ingestion.memory_candidates import REVIEW_QUEUE_FILENAME, review_queue_path
 
 
 def _sample_export() -> list[dict]:
@@ -327,3 +327,191 @@ def test_apply_rejects_stored_export_symlink_before_read_monkeypatch(tmp_path, m
 
     with pytest.raises(ChatGPTExportIngestError, match="Symlinks are not followed"):
         apply_chatgpt_export(preview_json=preview_path, apply=False)
+
+
+def _serialization_fixture(tmp_path):
+    export = tmp_path / 'export.json'
+    export.write_text(json.dumps(_sample_export()), encoding='utf-8')
+    dest = tmp_path / 'dest'
+    preview = preview_chatgpt_export(export_json=export, dest_dir=dest)
+    return dest, Path(preview.json_path)
+
+
+def _destination_bytes(dest):
+    return {str(p.relative_to(dest)): p.read_bytes() for p in dest.rglob('*') if p.is_file()}
+
+
+def _paused_apply_process(preview, ready):
+    """Pause a real second interpreter after reading candidate IDs inside apply."""
+    import subprocess
+    import sys
+    import time
+
+    code = '''
+import json, sys
+from pathlib import Path
+from project_guardian.local_ingestion import chatgpt_export_ingest as ingest
+original = ingest.read_known_candidate_ids
+def paused(path):
+    known = original(path)
+    Path(sys.argv[2]).write_text('ready')
+    if sys.stdin.readline().strip() != 'continue':
+        raise RuntimeError('interrupted before staging')
+    return known
+ingest.read_known_candidate_ids = paused
+result = ingest.apply_chatgpt_export(preview_json=Path(sys.argv[1]), apply=True)
+print('RESULT=' + json.dumps(result.report))
+'''
+    process = subprocess.Popen(
+        [sys.executable, '-c', code, str(preview), str(ready)],
+        cwd=Path(__file__).resolve().parents[2],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    deadline = time.monotonic() + 10
+    while not ready.exists():
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            pytest.fail(f'paused apply exited early: {stdout}\n{stderr}')
+        if time.monotonic() >= deadline:
+            process.kill()
+            process.communicate()
+            pytest.fail('paused apply did not reach protected candidate read')
+        time.sleep(0.01)
+    return process
+
+
+@pytest.mark.skipif(__import__('os').name != 'posix', reason='POSIX directory locking')
+def test_two_process_overlap_refuses_without_writes_then_rechecks_candidate_ids(tmp_path):
+    dest, preview = _serialization_fixture(tmp_path)
+    process = _paused_apply_process(preview, tmp_path / 'ready')
+    try:
+        before = _destination_bytes(dest)
+        with pytest.raises(ChatGPTExportIngestError, match='lock refused'):
+            apply_chatgpt_export(preview_json=preview, apply=True)
+        assert _destination_bytes(dest) == before
+        stdout, stderr = process.communicate('continue\n', timeout=10)
+        assert process.returncode == 0, (stdout, stderr)
+        first = json.loads(next(line[7:] for line in stdout.splitlines() if line.startswith('RESULT=')))
+        assert first['staged_count'] == 1
+        intelligence_before = _destination_bytes(dest / 'memory_intelligence')
+        retry = apply_chatgpt_export(preview_json=preview, apply=True)
+        assert retry.report['staged_count'] == 0
+        assert retry.report['duplicate_count'] == 1
+        assert retry.report['memory_intelligence_unchanged'] == 1
+        assert _destination_bytes(dest / 'memory_intelligence') == intelligence_before
+        rows = [json.loads(line) for line in review_queue_path(dest).read_text().splitlines()]
+        assert len(rows) == len({row['candidate_id'] for row in rows}) == 1
+        assert retry.report['model_called'] is False
+        assert retry.report['embeddings_used'] is False
+        assert retry.report['live_memory_written'] is False
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+
+@pytest.mark.skipif(__import__('os').name != 'posix', reason='POSIX directory locking')
+def test_killed_apply_process_releases_destination_lock(tmp_path):
+    dest, preview = _serialization_fixture(tmp_path)
+    before = _destination_bytes(dest)
+    process = _paused_apply_process(preview, tmp_path / 'ready')
+    process.kill()
+    process.communicate(timeout=10)
+    # An interrupted stage is private and recovered before destination reads.
+    from project_guardian.local_ingestion.memory_intelligence import load_memory_intelligence_records
+    assert load_memory_intelligence_records(dest) == []
+    assert _destination_bytes(dest) == before
+    assert apply_chatgpt_export(preview_json=preview, apply=True).report['staged_count'] == 1
+    assert len(review_queue_path(dest).read_text().splitlines()) == 1
+
+
+@pytest.mark.skipif(__import__('os').name != 'posix', reason='POSIX directory locking')
+def test_apply_exception_releases_lock_for_recovery(tmp_path):
+    from project_guardian.local_ingestion import chatgpt_export_ingest as ingest
+    dest, preview = _serialization_fixture(tmp_path)
+    with patch.object(ingest, 'stage_memory_candidate', side_effect=OSError('injected staging failure')):
+        with pytest.raises(OSError, match='injected staging failure'):
+            apply_chatgpt_export(preview_json=preview, apply=True)
+    retry = apply_chatgpt_export(preview_json=preview, apply=True)
+    assert retry.report['staged_count'] == 1
+    assert len(review_queue_path(dest).read_text().splitlines()) == 1
+
+
+@pytest.mark.parametrize('failure', ['open', 'flock', 'platform'])
+def test_lock_failure_is_closed_and_destination_bytes_unchanged(tmp_path, failure):
+    import builtins
+    from project_guardian.local_ingestion import chatgpt_export_ingest as ingest
+    dest, preview = _serialization_fixture(tmp_path)
+    before = _destination_bytes(dest)
+    if failure == 'open':
+        context = patch.object(ingest.os, 'open', side_effect=PermissionError('refused'))
+    elif failure == 'flock':
+        fcntl = pytest.importorskip('fcntl')
+        context = patch.object(fcntl, 'flock', side_effect=OSError('unsupported filesystem'))
+    else:
+        original = builtins.__import__
+        def unavailable(name, *args, **kwargs):
+            if name == 'fcntl':
+                raise ImportError('unsupported platform')
+            return original(name, *args, **kwargs)
+        context = patch.object(builtins, '__import__', side_effect=unavailable)
+    with context:
+        with pytest.raises(ChatGPTExportIngestError, match='lock'):
+            apply_chatgpt_export(preview_json=preview, apply=True)
+    assert _destination_bytes(dest) == before
+    assert not (dest / 'memory_intelligence').exists()
+    assert not review_queue_path(dest).exists()
+
+
+@pytest.mark.skipif(__import__('os').name != 'posix', reason='POSIX directory locking')
+def test_destination_lock_scope_and_default_dry_run(tmp_path):
+    from project_guardian.local_ingestion.chatgpt_export_ingest import _destination_apply_lock
+    first = tmp_path / 'first'
+    second = tmp_path / 'second'
+    first.mkdir()
+    second.mkdir()
+    dest, preview = _serialization_fixture(first)
+    other, other_preview = _serialization_fixture(second)
+    with _destination_apply_lock(dest):
+        dry = apply_chatgpt_export(preview_json=preview)
+        assert dry.report['dry_run'] is True
+        assert not (dest / 'memory_intelligence').exists()
+        assert not review_queue_path(dest).exists()
+        assert apply_chatgpt_export(preview_json=other_preview, apply=True).report['staged_count'] == 1
+    assert apply_chatgpt_export(preview_json=preview, apply=True).report['staged_count'] == 1
+
+
+@pytest.mark.parametrize('flag', [None, 0, 1, '', 'true', [], {}, object()])
+def test_malformed_apply_flag_rejected_before_preview_access(tmp_path, monkeypatch, flag):
+    from project_guardian.local_ingestion import chatgpt_export_ingest as ingest
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('malformed flag must be rejected before file access')
+
+    monkeypatch.setattr(ingest, '_safe_resolve', forbidden)
+    with pytest.raises(ChatGPTExportIngestError, match='apply must be a boolean'):
+        apply_chatgpt_export(preview_json=tmp_path / 'missing.json', apply=flag)
+
+
+@pytest.mark.skipif(__import__('os').name != 'posix', reason='POSIX directory locking')
+def test_stateful_apply_flag_cannot_bypass_held_destination_lock(tmp_path):
+    from project_guardian.local_ingestion.chatgpt_export_ingest import _destination_apply_lock
+
+    class StatefulFlag:
+        calls = 0
+
+        def __bool__(self):
+            self.calls += 1
+            return self.calls > 1
+
+    dest, preview = _serialization_fixture(tmp_path)
+    before = _destination_bytes(dest)
+    flag = StatefulFlag()
+    with _destination_apply_lock(dest):
+        with pytest.raises(ChatGPTExportIngestError, match='apply must be a boolean'):
+            apply_chatgpt_export(preview_json=preview, apply=flag)
+        assert flag.calls == 0
+        assert _destination_bytes(dest) == before
+        with pytest.raises(ChatGPTExportIngestError, match='lock refused'):
+            apply_chatgpt_export(preview_json=preview, apply=True)
+    assert apply_chatgpt_export(preview_json=preview, apply=True).report['staged_count'] == 1

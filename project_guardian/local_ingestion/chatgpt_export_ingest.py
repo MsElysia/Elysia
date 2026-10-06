@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +31,7 @@ from .memory_intelligence import (
     persist_source_intelligence,
     preserve_raw_source,
 )
+from .apply_transaction import ApplyTransaction, ApplyTransactionError, destination_lock
 
 CHATGPT_IMPORT_SESSIONS_SUBDIR = "chatgpt_import_sessions"
 PREVIEW_JSON = "chatgpt_export_preview.json"
@@ -437,17 +440,65 @@ def _render_apply_markdown(report: Dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+@contextmanager
+def _destination_apply_lock(dest: Path, *, write=True):
+    """Serialize cooperating apply writers without creating a lock artifact.
+
+    Lock the existing destination directory itself. Never unlink/replace a lock
+    file, wait indefinitely, or continue when the platform/filesystem refuses.
+    The OS releases the advisory lock when the descriptor/process closes.
+    """
+    try:
+        with destination_lock(dest, write=write):
+            yield
+    except ApplyTransactionError as exc:
+        raise ChatGPTExportIngestError(str(exc)) from exc
+
+
 def apply_chatgpt_export(
     *,
     preview_json: Path,
     apply: bool = False,
     max_conversation_chars: Optional[int] = None,
 ) -> ChatGPTExportApplyReport:
+    if type(apply) is not bool:
+        raise ChatGPTExportIngestError("apply must be a boolean.")
     preview_path = _safe_resolve(preview_json, label="preview JSON")
     preview = _load_preview_json(preview_path)
+    dest_dir = _safe_resolve(Path(str(preview["dest_dir"])), label="destination directory")
+    # The loaded preview is reused inside the lock; a second preview read could
+    # otherwise switch destinations after acquiring a different directory lock.
+    with _destination_apply_lock(dest_dir, write=apply):
+        transaction = ApplyTransaction(dest_dir) if apply else None
+        try:
+            result = _apply_chatgpt_export(
+                preview_path=preview_path,
+                preview=preview,
+                dest_dir=dest_dir,
+                apply=apply,
+                max_conversation_chars=max_conversation_chars,
+                transaction=transaction,
+            )
+            if transaction:
+                transaction.commit()
+            return result
+        except BaseException:
+            if transaction:
+                transaction.abort()
+            raise
+
+
+def _apply_chatgpt_export(
+    *,
+    preview_path: Path,
+    preview: Dict[str, Any],
+    dest_dir: Path,
+    apply: bool,
+    max_conversation_chars: Optional[int],
+    transaction=None,
+) -> ChatGPTExportApplyReport:
     session_dir = preview_path.parent
     session_id = str(preview["session_id"])
-    dest_dir = Path(str(preview["dest_dir"]))
     export_path = Path(str(preview["export_path"]))
     _reject_symlink(export_path, label="export JSON")
     export_path = export_path.resolve()
@@ -478,7 +529,16 @@ def apply_chatgpt_export(
             conv_by_id[_conversation_id(conv, index)] = conv
             index_by_id[_conversation_id(conv, index)] = index
 
-    known_ids = read_known_candidate_ids(review_queue_path(dest_dir)) if apply else set()
+    queue = review_queue_path(dest_dir)
+    if apply and queue.exists():
+        try:
+            rows = [json.loads(line) for line in queue.read_text(encoding="utf-8").splitlines() if line.strip()]
+            ids = [row["candidate_id"] for row in rows]
+            if any(type(cid) is not str or not cid.strip() for cid in ids) or len(set(ids)) != len(ids):
+                raise ValueError("invalid or duplicate candidate IDs")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise ChatGPTExportIngestError("Existing candidate queue is unreadable or invalid; apply refused.") from exc
+    known_ids = read_known_candidate_ids(queue) if apply else set()
     results: List[Dict[str, Any]] = []
     staged_count = 0
     duplicate_count = 0
@@ -550,9 +610,7 @@ def apply_chatgpt_export(
             )
             continue
 
-        text_path.parent.mkdir(parents=True, exist_ok=True)
-        meta_path.parent.mkdir(parents=True, exist_ok=True)
-        text_path.write_text(text + "\n", encoding="utf-8", newline="\n")
+        transaction.write(text_path, (text + "\n").encode("utf-8"))
         metadata = {
             "conversation_id": conversation_id,
             "title": title,
@@ -563,10 +621,11 @@ def apply_chatgpt_export(
             "source_sha256": source_sha256,
             "candidate_id": candidate_id,
         }
-        meta_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        transaction.write(meta_path, (json.dumps(metadata, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
 
         try:
             intelligence = persist_source_intelligence(
+                transaction=transaction,
                 dest_dir=dest_dir,
                 raw_bytes=text.encode("utf-8"),
                 source_identity=original_filename,
@@ -603,6 +662,7 @@ def apply_chatgpt_export(
         staged_at = _utc_now_iso()
         status, _wrote = stage_memory_candidate(
             dest_dir,
+            transaction=transaction,
             source_text_path=text_path,
             source_metadata_path=meta_path,
             source_sha256=source_sha256,
@@ -664,8 +724,12 @@ def apply_chatgpt_export(
 
     json_path = session_dir / APPLY_REPORT_JSON
     md_path = session_dir / APPLY_REPORT_MD
-    json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    md_path.write_text(_render_apply_markdown(payload), encoding="utf-8")
+    if transaction:
+        transaction.write(json_path, (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+        transaction.write(md_path, _render_apply_markdown(payload).encode("utf-8"))
+    else:
+        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        md_path.write_text(_render_apply_markdown(payload), encoding="utf-8")
 
     return ChatGPTExportApplyReport(
         session_id=session_id,

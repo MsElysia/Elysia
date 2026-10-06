@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 import re
 from typing import Any, Iterable, Sequence
+from .apply_transaction import consistent_reader
 
 _TAG_SEPARATORS = re.compile(r"[^a-z0-9]+")
 _WS = re.compile(r"\s+")
@@ -360,6 +361,7 @@ def persist_source_intelligence(
     origin_source: RawSource | None = None,
     origin_segment: dict[str, Any] | None = None,
     origin_identity: str | None = None,
+    transaction=None,
 ) -> MemoryIntelligenceWriteReport:
     """Persist deterministic source-linked artifacts under an existing ingestion destination."""
     dest = Path(dest_dir).expanduser().resolve()
@@ -439,12 +441,19 @@ def persist_source_intelligence(
     _relative_artifact_path(dest, record_path)
     if raw_path.exists() and raw_path.read_bytes() != source.raw_bytes:
         raise MemoryIntelligenceError("existing raw source bytes do not match source identity")
-    raw_path.parent.mkdir(parents=True, exist_ok=True)
-    record_path.parent.mkdir(parents=True, exist_ok=True)
+    if transaction is None:
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.parent.mkdir(parents=True, exist_ok=True)
     if not raw_path.exists():
-        raw_path.write_bytes(source.raw_bytes)
+        if transaction:
+            transaction.write(raw_path, source.raw_bytes)
+        else:
+            raw_path.write_bytes(source.raw_bytes)
     if origin_source is not None and not origin_path.exists():
-        origin_path.write_bytes(origin_source.raw_bytes)
+        if transaction:
+            transaction.write(origin_path, origin_source.raw_bytes)
+        else:
+            origin_path.write_bytes(origin_source.raw_bytes)
     encoded = json.dumps(record, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     status = "created"
     if record_path.exists():
@@ -452,10 +461,16 @@ def persist_source_intelligence(
         if existing == encoded:
             status = "unchanged"
         else:
-            record_path.write_text(encoded, encoding="utf-8", newline="\n")
+            if transaction:
+                transaction.write(record_path, encoded.encode("utf-8"))
+            else:
+                record_path.write_text(encoded, encoding="utf-8", newline="\n")
             status = "updated"
     else:
-        record_path.write_text(encoded, encoding="utf-8", newline="\n")
+        if transaction:
+            transaction.write(record_path, encoded.encode("utf-8"))
+        else:
+            record_path.write_text(encoded, encoding="utf-8", newline="\n")
 
     return MemoryIntelligenceWriteReport(
         status=status,
@@ -550,6 +565,7 @@ def _highlight_from_payload(payload: dict[str, Any]) -> SourceHighlight:
         raise MemoryIntelligenceError("malformed persisted highlight") from exc
 
 
+@consistent_reader
 def load_memory_intelligence_records(dest_dir: Path) -> list[dict[str, Any]]:
     dest = Path(dest_dir).expanduser().resolve()
     records_dir = dest / MEMORY_INTELLIGENCE_SUBDIR / RECORDS_SUBDIR
@@ -616,6 +632,7 @@ def _validated_tag_decision(payload: Any, chunk: SourceChunk) -> str:
         raise MemoryIntelligenceError("invalid persisted tag confidence")
     return normalized_tag
 
+@consistent_reader
 def query_memory_intelligence(
     dest_dir: Path,
     query: str,
@@ -703,6 +720,7 @@ def query_memory_intelligence(
     return results[:limit]
 
 
+@consistent_reader
 def expand_persisted_highlight(
     dest_dir: Path,
     highlight_id: str,

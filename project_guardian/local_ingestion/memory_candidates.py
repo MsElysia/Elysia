@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Set, Tuple
+from .apply_transaction import destination_lock
 
 MEMORY_CANDIDATES_SUBDIR = "memory_candidates"
 REVIEW_QUEUE_FILENAME = "review_queue.jsonl"
@@ -36,6 +37,12 @@ def text_preview(text: str, *, max_len: int = TEXT_PREVIEW_MAX) -> str:
 
 
 def read_known_candidate_ids(queue_path: Path) -> Set[str]:
+    queue_path = Path(queue_path)
+    with destination_lock(queue_path.parent.parent):
+        return _read_known_candidate_ids(queue_path)
+
+
+def _read_known_candidate_ids(queue_path: Path) -> Set[str]:
     if not queue_path.is_file():
         return set()
     ids: Set[str] = set()
@@ -101,6 +108,7 @@ def stage_memory_candidate(
     known_candidate_ids: Optional[Set[str]] = None,
     source_type: str = SOURCE_TYPE_PHONE_TRANSCRIPTION,
     suggested_memory_type: str = DEFAULT_SUGGESTED_MEMORY_TYPE,
+    transaction=None,
 ) -> Tuple[str, bool]:
     """
     Append one memory candidate to the review queue.
@@ -125,8 +133,12 @@ def stage_memory_candidate(
         source_type=source_type,
         suggested_memory_type=suggested_memory_type,
     )
-    queue_path.parent.mkdir(parents=True, exist_ok=True)
-    with queue_path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    encoded = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+    if transaction:
+        transaction.append(queue_path, encoded)
+    else:
+        queue_path.parent.mkdir(parents=True, exist_ok=True)
+        with queue_path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(encoded.decode("utf-8"))
     known.add(candidate_id)
     return "staged", True

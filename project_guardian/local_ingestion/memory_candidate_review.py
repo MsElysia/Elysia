@@ -135,6 +135,12 @@ def _read_jsonl(path: Path, *, label: str) -> List[Dict[str, Any]]:
 
 
 def load_queue_candidates(queue_path: Path) -> List[Dict[str, Any]]:
+    from .apply_transaction import destination_lock
+    with destination_lock(Path(queue_path).parent.parent):
+        return _load_queue_candidates(queue_path)
+
+
+def _load_queue_candidates(queue_path: Path) -> List[Dict[str, Any]]:
     if not queue_path.is_file():
         raise MemoryCandidateReviewError(f"Review queue not found: {queue_path}")
     records = _read_jsonl(queue_path, label=str(queue_path))

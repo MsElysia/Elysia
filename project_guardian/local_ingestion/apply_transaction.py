@@ -78,7 +78,16 @@ def _target(dest, relative):
     return path
 
 
-def recover(dest):
+def _manifest_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate manifest key")
+        result[key] = value
+    return result
+
+
+def recover(dest, *, verify_only=False):
     """Called only with the destination lock held; repeatable after interruption."""
     root = dest / TRANSACTION_DIR
     garbage = dest / (TRANSACTION_DIR + "_cleanup")
@@ -100,15 +109,25 @@ def recover(dest):
     try:
         if manifest.is_symlink():
             raise ValueError("symlink manifest")
-        state = json.loads(manifest.read_text(encoding="utf-8"))
+        state = json.loads(manifest.read_text(encoding="utf-8"), object_pairs_hook=_manifest_object)
         if (type(state) is not dict or set(state) != {"version", "entries"}
-                or type(state["version"]) is not int or state["version"] != 1
+                or type(state["version"]) is not int or state["version"] not in (1, 2)
                 or type(state["entries"]) is not list):
             raise ValueError("invalid manifest")
         targets = set()
         validated = []
+        committed = root / "committed"
+        if committed.is_symlink():
+            raise ValueError("symlink commit marker")
+        is_committed = committed.exists()
+        if is_committed:
+            if committed.is_symlink() or committed.read_bytes() != b"committed\n":
+                raise ValueError("invalid commit marker")
         for i, entry in enumerate(state["entries"]):
-            if (type(entry) is not dict or set(entry) != {"target", "existed"}
+            fields = {"target", "existed"}
+            if state["version"] == 2:
+                fields |= {"backup_size", "backup_sha256"}
+            if (type(entry) is not dict or set(entry) != fields
                     or type(entry["existed"]) is not bool):
                 raise ValueError("invalid entry")
             path = _target(dest, entry["target"])
@@ -118,15 +137,31 @@ def recover(dest):
             backup = root / f"backup-{i}"
             if entry["existed"] and (backup.is_symlink() or not backup.is_file()):
                 raise ValueError("missing backup")
-            validated.append((path, entry["existed"], backup))
-        committed = root / "committed"
-        if committed.exists():
-            if committed.is_symlink() or committed.read_bytes() != b"committed\n":
-                raise ValueError("invalid commit marker")
-        else:
-            for path, existed, backup in reversed(validated):
+            data = None
+            if state["version"] == 2:
+                size, digest = entry["backup_size"], entry["backup_sha256"]
+                if entry["existed"]:
+                    if (type(size) is not int or size < 0 or type(digest) is not str
+                            or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)):
+                        raise ValueError("invalid backup integrity metadata")
+                    data = backup.read_bytes()
+                    if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+                        raise ValueError("backup integrity mismatch")
+                elif size is not None or digest is not None:
+                    raise ValueError("unexpected backup integrity metadata")
+            elif entry["existed"] and not is_committed:
+                # v1 has no trusted digest. Never infer integrity from readable
+                # bytes or from a target which may already be partly published.
+                raise ValueError("legacy rollback backup integrity unavailable")
+            validated.append((path, entry["existed"], data))
+        if verify_only:
+            return
+        if not is_committed:
+            # Keep the verified bytes: no backup is reopened after validation,
+            # and no destination changes until every entry has passed.
+            for path, existed, data in reversed(validated):
                 if existed:
-                    _replace_bytes(path, backup.read_bytes())
+                    _replace_bytes(path, data)
                 elif path.exists():
                     path.unlink()
                     _sync_directory(path.parent)
@@ -288,12 +323,17 @@ class ApplyTransaction:
         for relative, i in self.entries.items():
             path = _target(self.dest, relative)
             existed = path.exists()
+            data = path.read_bytes() if existed else None
             if existed:
-                _durable_write(self.root / f"backup-{i}", path.read_bytes())
-            entries.append({"target": relative, "existed": existed})
-        _durable_write(self.root / "manifest.tmp", json.dumps({"version": 1, "entries": entries}).encode())
+                _durable_write(self.root / f"backup-{i}", data)
+            entries.append({"target": relative, "existed": existed,
+                            "backup_size": len(data) if existed else None,
+                            "backup_sha256": hashlib.sha256(data).hexdigest() if existed else None})
+        _durable_write(self.root / "manifest.tmp", json.dumps({"version": 2, "entries": entries}).encode())
         os.replace(self.root / "manifest.tmp", self.root / "manifest.json")
         _sync_directory(self.root)
+        # Refuse publication if storage did not preserve the original bytes.
+        recover(self.dest, verify_only=True)
         try:
             for relative, i in self.entries.items():
                 path = _target(self.dest, relative)

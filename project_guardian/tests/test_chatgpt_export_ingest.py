@@ -380,7 +380,7 @@ print('RESULT=' + json.dumps(result.report))
     return process
 
 
-@pytest.mark.skipif(__import__('os').name != 'posix', reason='POSIX directory locking')
+@pytest.mark.skipif(__import__('os').name not in ('posix', 'nt'), reason='supported OS locking required')
 def test_two_process_overlap_refuses_without_writes_then_rechecks_candidate_ids(tmp_path):
     dest, preview = _serialization_fixture(tmp_path)
     process = _paused_apply_process(preview, tmp_path / 'ready')
@@ -410,7 +410,7 @@ def test_two_process_overlap_refuses_without_writes_then_rechecks_candidate_ids(
             process.communicate()
 
 
-@pytest.mark.skipif(__import__('os').name != 'posix', reason='POSIX directory locking')
+@pytest.mark.skipif(__import__('os').name not in ('posix', 'nt'), reason='supported OS locking required')
 def test_killed_apply_process_releases_destination_lock(tmp_path):
     dest, preview = _serialization_fixture(tmp_path)
     before = _destination_bytes(dest)
@@ -425,7 +425,7 @@ def test_killed_apply_process_releases_destination_lock(tmp_path):
     assert len(review_queue_path(dest).read_text().splitlines()) == 1
 
 
-@pytest.mark.skipif(__import__('os').name != 'posix', reason='POSIX directory locking')
+@pytest.mark.skipif(__import__('os').name not in ('posix', 'nt'), reason='supported OS locking required')
 def test_apply_exception_releases_lock_for_recovery(tmp_path):
     from project_guardian.local_ingestion import chatgpt_export_ingest as ingest
     dest, preview = _serialization_fixture(tmp_path)
@@ -437,6 +437,7 @@ def test_apply_exception_releases_lock_for_recovery(tmp_path):
     assert len(review_queue_path(dest).read_text().splitlines()) == 1
 
 
+@pytest.mark.skipif(__import__('os').name != 'posix', reason='POSIX backend failure injection')
 @pytest.mark.parametrize('failure', ['open', 'flock', 'platform'])
 def test_lock_failure_is_closed_and_destination_bytes_unchanged(tmp_path, failure):
     import builtins
@@ -463,7 +464,7 @@ def test_lock_failure_is_closed_and_destination_bytes_unchanged(tmp_path, failur
     assert not review_queue_path(dest).exists()
 
 
-@pytest.mark.skipif(__import__('os').name != 'posix', reason='POSIX directory locking')
+@pytest.mark.skipif(__import__('os').name not in ('posix', 'nt'), reason='supported OS locking required')
 def test_destination_lock_scope_and_default_dry_run(tmp_path):
     from project_guardian.local_ingestion.chatgpt_export_ingest import _destination_apply_lock
     first = tmp_path / 'first'
@@ -493,7 +494,7 @@ def test_malformed_apply_flag_rejected_before_preview_access(tmp_path, monkeypat
         apply_chatgpt_export(preview_json=tmp_path / 'missing.json', apply=flag)
 
 
-@pytest.mark.skipif(__import__('os').name != 'posix', reason='POSIX directory locking')
+@pytest.mark.skipif(__import__('os').name not in ('posix', 'nt'), reason='supported OS locking required')
 def test_stateful_apply_flag_cannot_bypass_held_destination_lock(tmp_path):
     from project_guardian.local_ingestion.chatgpt_export_ingest import _destination_apply_lock
 

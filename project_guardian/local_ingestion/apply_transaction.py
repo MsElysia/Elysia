@@ -1,11 +1,14 @@
 """Recoverable destination-scoped publication for local ChatGPT apply only.
 
-POSIX advisory locking; readers must participate. No runtime or memory approval.
+OS locking; readers must participate. No runtime or memory approval.
 An unfinished publication is rolled back before cooperating readers/writers run.
+Windows uses a global named mutex; directory fsync is POSIX-only. Neither
+platform is certified for physical power-loss or noncooperating writers.
 """
 from contextlib import contextmanager
 from functools import wraps
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -13,6 +16,7 @@ import threading
 
 
 TRANSACTION_DIR = ".chatgpt_apply_transaction"
+_PLATFORM = os.name
 _held = threading.local()
 
 
@@ -21,6 +25,11 @@ class ApplyTransactionError(ValueError):
 
 
 def _sync_directory(path):
+    if _PLATFORM == "nt":
+        # Windows has no os.open/fsync directory equivalent. File bytes are
+        # still flushed before publication; process-death recovery is the
+        # contract, not persisted directory entries after physical power loss.
+        return
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         os.fsync(fd)
@@ -49,6 +58,15 @@ def _target(dest, relative):
     if type(relative) is not str or not relative:
         raise ApplyTransactionError("invalid transaction target")
     raw = Path(relative)
+    if _PLATFORM == "nt":
+        from pathlib import PureWindowsPath
+        windows = PureWindowsPath(relative)
+        if (not windows.parts or windows.drive or windows.root or ".." in windows.parts
+                or windows.parts[0].casefold() in (TRANSACTION_DIR, TRANSACTION_DIR + "_cleanup")
+                or any(PureWindowsPath(p).is_reserved() or p.endswith((".", " "))
+                       or any(c in p for c in '<>:"|?*')
+                       or any(ord(c) < 32 for c in p) for p in windows.parts)):
+            raise ApplyTransactionError("invalid Windows transaction target")
     if (not raw.parts or raw.is_absolute() or ".." in raw.parts
             or raw.parts[0] in (TRANSACTION_DIR, TRANSACTION_DIR + "_cleanup")):
         raise ApplyTransactionError("transaction target escaped destination")
@@ -121,27 +139,66 @@ def recover(dest):
     shutil.rmtree(garbage)
 
 
+def _windows_mutex_name(dest):
+    # File identity also unifies case, junction, short-name and drive aliases.
+    # Do not key by user/session: all cooperating workers must share one lock.
+    try:
+        stat = dest.stat()
+        if not dest.is_dir() or not stat.st_ino:
+            raise OSError("destination directory identity unavailable")
+    except OSError as exc:
+        raise ApplyTransactionError("Destination apply lock identity unavailable.") from exc
+    identity = f"{stat.st_dev}:{stat.st_ino}".encode("ascii")
+    return "Global\\Elysia.ChatGPTApply.v1." + hashlib.sha256(identity).hexdigest()
+
+
+def _windows_api():
+    import ctypes
+    from ctypes import wintypes
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    api.CreateMutexW.restype = wintypes.HANDLE
+    api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    api.WaitForSingleObject.restype = wintypes.DWORD
+    api.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    api.ReleaseMutex.restype = wintypes.BOOL
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.CloseHandle.restype = wintypes.BOOL
+    return api
+
+
 @contextmanager
-def destination_lock(dest, *, write=False):
-    dest = Path(dest).resolve()
-    if getattr(_held, "pid", None) != os.getpid():
-        _held.pid = os.getpid()
-        _held.destinations = set()
-    held = getattr(_held, "destinations", set())
-    if dest in held:
-        if write:
-            raise ApplyTransactionError("Destination apply lock refused: nested apply is not allowed.")
+def _windows_mutex(name):
+    try:
+        api = _windows_api()
+    except (ImportError, AttributeError, OSError) as exc:
+        raise ApplyTransactionError("Destination apply locking is unavailable on Windows.") from exc
+    # Default ACL, no inheritable handle, no privilege/permission changes.
+    handle = api.CreateMutexW(None, False, name)
+    if not handle:
+        raise ApplyTransactionError("Destination apply lock refused or unavailable on Windows.")
+    acquired = False
+    try:
+        status = api.WaitForSingleObject(handle, 0)
+        if status not in (0, 0x80):  # WAIT_OBJECT_0 / WAIT_ABANDONED
+            raise ApplyTransactionError("Destination apply lock refused or unavailable; retry after the other import finishes.")
+        # Abandonment grants ownership; always recover before serving bytes.
+        acquired = True
         yield
-        return
-    if not dest.exists() and not write:
-        yield
-        return
+    finally:
+        try:
+            if acquired and not api.ReleaseMutex(handle):
+                raise ApplyTransactionError("Destination apply lock release failed on Windows.")
+        finally:
+            if not api.CloseHandle(handle):
+                raise ApplyTransactionError("Destination apply lock handle close failed on Windows.")
+
+
+@contextmanager
+def _posix_lock(dest):
     try:
         import fcntl
     except ImportError as exc:
-        if not write and not (dest / TRANSACTION_DIR).exists():
-            yield
-            return
         raise ApplyTransactionError("Destination apply locking is unavailable on this platform.") from exc
     if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
         raise ApplyTransactionError("Safe destination directory locking is unavailable.")
@@ -153,13 +210,41 @@ def destination_lock(dest, *, write=False):
         if descriptor is not None:
             os.close(descriptor)
         raise ApplyTransactionError("Destination apply lock refused or unavailable; retry after the other import finishes.") from exc
-    _held.destinations = held | {dest}
     try:
-        recover(dest)
         yield
     finally:
-        _held.destinations = held
         os.close(descriptor)
+
+
+@contextmanager
+def destination_lock(dest, *, write=False):
+    dest = Path(dest).resolve()
+    if not dest.exists() and not write:
+        yield
+        return
+    if getattr(_held, "pid", None) != os.getpid():
+        _held.pid = os.getpid()
+        _held.destinations = set()
+    held = getattr(_held, "destinations", set())
+    key = _windows_mutex_name(dest) if _PLATFORM == "nt" else dest
+    if key in held:
+        if write:
+            raise ApplyTransactionError("Destination apply lock refused: nested apply is not allowed.")
+        yield
+        return
+    if _PLATFORM == "nt":
+        lock = _windows_mutex(key)
+    elif _PLATFORM == "posix":
+        lock = _posix_lock(dest)
+    else:
+        raise ApplyTransactionError("Destination apply locking is unavailable on this platform.")
+    with lock:
+        _held.destinations = held | {key}
+        try:
+            recover(dest)
+            yield
+        finally:
+            _held.destinations = held
 
 
 def consistent_reader(function):

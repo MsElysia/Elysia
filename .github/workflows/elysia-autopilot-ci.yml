@@ -20,6 +20,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Assert exact event head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -50,7 +58,8 @@ jobs:
       - name: Run Elysia Collective seed tests
         run: |
           python -m pytest -q \
-            elysia_collective_seed/test_*.py
+            elysia_collective_seed/autopilot/task_state_machine_tests.py \
+            elysia_collective_seed/autopilot/test_integration.py
 
       - name: Enforce no runtime-enable flag in seed prompt pack
         shell: python

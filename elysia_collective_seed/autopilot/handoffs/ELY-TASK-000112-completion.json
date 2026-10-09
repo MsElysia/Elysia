@@ -1,0 +1,41 @@
+{
+  "task_id": "ELY-TASK-000112",
+  "worker": {"provider": "OpenAI", "role": "implementation"},
+  "outcome": "partial",
+  "summary": "Reusable bounded integration glue implemented on isolated seed child; synthetic tests pass. Draft implementation awaits hosted exact-head CI and independent acceptance. Production composition was not executed.",
+  "files_read": [
+    "AGENTS.md",
+    "elysia_collective_seed/autopilot/task_packet_schema.json",
+    "elysia_collective_seed/autopilot/completion_packet_schema.json",
+    "elysia_collective_seed/autopilot/orchestrator_spec.md",
+    "elysia_collective_seed/autopilot/task_state_machine.py",
+    ".github/workflows/elysia-autopilot-ci.yml",
+    "PR #110 .github/workflows/safe-stack-smoke.yml and scripts/run_safe_stack_smoke_tests.py",
+    "autopilot-004-github-sync-contract: disabled GitHub synchronization contract"
+  ],
+  "files_changed": [
+    "elysia_collective_seed/autopilot/integration.py",
+    "elysia_collective_seed/autopilot/test_integration.py",
+    "elysia_collective_seed/autopilot/integration.md",
+    ".github/workflows/bounded-integration.yml",
+    ".github/workflows/integration-tool-tests.yml",
+    ".github/workflows/elysia-autopilot-ci.yml",
+    "elysia_collective_seed/autopilot/handoffs/ELY-TASK-000112-task.json",
+    "elysia_collective_seed/autopilot/handoffs/ELY-TASK-000112-completion.json"
+  ],
+  "claims": [
+    {"claim": "Production #110 + #101 composition remains unexecuted and requires fresh independent authenticated PASS.", "evidence": ["integration.py source_gate precedes compose; no production trust/receipts or executable production plan shipped."]},
+    {"claim": "No new authoritative scheduler/control plane or merge/runtime action.", "evidence": ["integration.py command surface; unchanged task/ledger/governance/runtime contracts."]}
+  ],
+  "checks": [
+    {"name": "synthetic integration adversarial tests", "result": "pass", "details": "36 passed on native Windows; real SSH PASS/tamper, real required suite, provenance/history/path/freshness/mandatory-job checks."},
+    {"name": "existing Autopilot state-machine regression", "result": "pass", "details": "6 passed; existing seed CI's nonexistent root glob adapted to these named tests and the integration tests with exact-head checkout."},
+    {"name": "hosted exact-head implementation CI", "result": "not_run", "details": "Pending draft PR publication."},
+    {"name": "independent exact-head acceptance", "result": "not_run", "details": "Requested independent read-only adversarial review; final acceptance remains gated."},
+    {"name": "production composition", "result": "not_run", "details": "Intentionally blocked under Issue #11/#112."}
+  ],
+  "uncertainties": ["Production verifier trust is deliberately unconfigured; this does not solve the project's human/governance trust-anchor defects."],
+  "risks": ["Hosted candidate tests assume already independently reviewed bounded code, not an arbitrary hostile-code sandbox.", "Operator must provision independent verifier keys/groups and current Issue #11 checkpoint outside producer-controlled plans.", "Known failed candidate verdicts must be carried forward by the canonical Issue #11 coordination adapter; signed evidence is not governance authority."],
+  "blockers": ["PR #110 fresh independent exact-SHA PASS remains pending for first production consolidation."],
+  "next_recommendation": {"action": "verify", "preferred_role": "independent verifier", "task_title": "Verify Issue #112 integration tool on exact draft head", "task_objective": "Attack SHA pinning, source substitution, smuggling, omitted/duplicate ports, test/verdict bypass, accidental merge paths and retry idempotency. Keep production composition blocked."}
+}

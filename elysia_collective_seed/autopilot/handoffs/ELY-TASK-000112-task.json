@@ -1,0 +1,36 @@
+{
+  "task_id": "ELY-TASK-000112",
+  "title": "Issue #112 bounded integration pipeline",
+  "objective": "Implement exact-SHA patch/provenance, draft PR, hosted CI and independent verification glue under Issue #11; stop at READY_FOR_MERGE_REVIEW.",
+  "status": "review",
+  "task_class": "integration",
+  "risk_class": "repo_write",
+  "source_refs": [
+    "https://github.com/MsElysia/Elysia/issues/11#issuecomment-6089305304",
+    "https://github.com/MsElysia/Elysia/issues/112"
+  ],
+  "files_in_scope": [
+    "elysia_collective_seed/autopilot/integration.py",
+    "elysia_collective_seed/autopilot/test_integration.py",
+    "elysia_collective_seed/autopilot/integration.md",
+    ".github/workflows/bounded-integration.yml",
+    ".github/workflows/integration-tool-tests.yml",
+    ".github/workflows/elysia-autopilot-ci.yml",
+    "elysia_collective_seed/autopilot/handoffs/ELY-TASK-000112-task.json",
+    "elysia_collective_seed/autopilot/handoffs/ELY-TASK-000112-completion.json"
+  ],
+  "files_out_of_scope": ["project_guardian", "elysia_collective_seed/autopilot/task_ledger.py"],
+  "acceptance_criteria": [
+    "Explicit exact-base/source/patch/scope/test plan and trusted independent receipts precede isolated composition.",
+    "Single exact-base child imports only declared unique patch bytes, preserving provenance and refusing smuggled content/history.",
+    "Exactly one matching draft PR; retry/resume refuses conflicts and reuses matching evidence requests.",
+    "Linux and Windows exact-candidate required tests and independently authenticated composed PASS precede READY_FOR_MERGE_REVIEW.",
+    "Issue #11 stays authoritative; no merge/deploy/runtime/providers/autonomy/live-memory/permissions/governance/local-sync authority.",
+    "Production #110 + #101 composition remains blocked pending fresh independent exact-SHA #110 PASS."
+  ],
+  "required_checks": ["integration-tool-tests", "independent exact-head review"],
+  "required_review_roles": ["independent verifier"],
+  "human_approval_required": true,
+  "branch_hint": "codex/issue112-integration-pipeline",
+  "notes": ["READY_FOR_MERGE_REVIEW is a result in task review status, not a new authoritative lifecycle or governance release."]
+}

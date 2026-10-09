@@ -18,7 +18,7 @@ from project_guardian.local_ingestion.memory_intelligence import (
 from project_guardian.local_ingestion.memory_candidates import review_queue_path, read_known_candidate_ids
 from project_guardian.local_ingestion.memory_candidate_review import load_queue_candidates
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX directory locking")
+pytestmark = pytest.mark.skipif(os.name not in ("posix", "nt"), reason="supported OS locking required")
 ROOT = Path(__file__).resolve().parents[2]
 
 

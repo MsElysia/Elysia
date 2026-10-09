@@ -54,6 +54,7 @@ REQUIRED_TEST_PATHS: Tuple[str, ...] = (
     "tests/test_project_guardian_optional_numpy.py",
     "project_guardian/tests/test_chatgpt_export_ingest.py",
     "project_guardian/tests/test_chatgpt_apply_transaction.py",
+    "project_guardian/tests/test_windows_apply_lock.py",
     "project_guardian/tests/test_approved_memory_search.py",
     "project_guardian/tests/test_approved_memory_context.py",
     "project_guardian/tests/test_local_memory_pipeline_smoke.py",

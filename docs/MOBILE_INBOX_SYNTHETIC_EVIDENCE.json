@@ -1,0 +1,66 @@
+{
+  "platform": "win32",
+  "python": "3.13.15",
+  "synthetic_only": true,
+  "verified_date": "2026-10-10",
+  "test_command": "python -B -m unittest discover -s scripts/tests -p test_mobile_inbox.py -v",
+  "tests_run": 35,
+  "tests_passed": 34,
+  "tests_skipped": 1,
+  "skip_reason": "Real Windows symlink creation unavailable without additional privileges; simulated symlink and real junction tests passed.",
+  "command": "python -I scripts/mobile_inbox.py --inbox <synthetic-inbox> --archive <synthetic-archive> --memory-root <synthetic-memory> --stable-seconds 0.1",
+  "runs": [
+    {
+      "stage": "first",
+      "exit_code": 0,
+      "counts": {
+        "archived": 1,
+        "duplicate": 1,
+        "already_recorded": 0,
+        "ignored_transport": 1,
+        "deferred": 0,
+        "rejected": 0,
+        "error": 0
+      }
+    },
+    {
+      "stage": "restart",
+      "exit_code": 0,
+      "counts": {
+        "archived": 0,
+        "duplicate": 0,
+        "already_recorded": 2,
+        "ignored_transport": 1,
+        "deferred": 0,
+        "rejected": 0,
+        "error": 0
+      }
+    },
+    {
+      "stage": "renamed",
+      "exit_code": 0,
+      "counts": {
+        "archived": 0,
+        "duplicate": 1,
+        "already_recorded": 1,
+        "ignored_transport": 1,
+        "deferred": 0,
+        "rejected": 0,
+        "error": 0
+      }
+    }
+  ],
+  "source_bytes": 67,
+  "sha256": "b1d86b510b43c0139829629476592495a54ffbd8903a98be4067e9d0a2e8e3ad",
+  "byte_preservation": true,
+  "source_files_unchanged": true,
+  "memory_sentinel_unchanged": true,
+  "archived_objects": 1,
+  "provenance_receipts": 3,
+  "origin_names": [
+    "duplicate.txt",
+    "note.txt",
+    "renamed.txt"
+  ],
+  "fixtures_removed": "Disposable synthetic fixture directory removed after verification."
+}

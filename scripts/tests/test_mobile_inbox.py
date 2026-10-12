@@ -174,6 +174,95 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(self.run_intake()["counts"]["rejected"], 1)
         self.assertEqual(receipt.read_text(), "{}")
 
+    def assert_receipt_rejected_unchanged(self, receipt, blob):
+        evidence = receipt.read_bytes(), blob.read_bytes()
+        report = self.run_intake()
+        self.assertEqual(report["counts"]["rejected"], 1, report)
+        self.assertEqual(report["counts"]["already_recorded"], 0)
+        self.assertEqual((receipt.read_bytes(), blob.read_bytes()), evidence)
+
+    def test_receipt_provenance_tampering(self):
+        self.write("evidence.txt")
+        self.run_intake()
+        receipt = next((self.archive / "receipts").iterdir())
+        blob = next((self.archive / "objects").iterdir())
+        original = json.loads(receipt.read_bytes())
+        changes = [
+            {"source_name": "forged-provenance.txt", "archived_at": "1900-01-01T00:00:00+00:00",
+             "unexpected_trusted_field": True},
+            {"source_name": "forged-provenance.txt"},
+            {"source_ctime_ns": original["source_ctime_ns"] + 1},
+            {"source_mtime_ns": original["source_mtime_ns"] + 1},
+            {"archived_at": "1900-01-01T00:00:00+00:00"},
+            {"archived_at": "9999-01-01T00:00:00+00:00"},
+            {"unexpected_trusted_field": True},
+        ]
+        for change in changes:
+            with self.subTest(change=change):
+                receipt.write_text(json.dumps({**original, **change}))
+                self.assert_receipt_rejected_unchanged(receipt, blob)
+
+    def test_receipt_exact_schema_and_field_types(self):
+        self.write()
+        self.run_intake()
+        receipt = next((self.archive / "receipts").iterdir())
+        blob = next((self.archive / "objects").iterdir())
+        original = json.loads(receipt.read_bytes())
+        for key, value in original.items():
+            for wrong in (None, [], {}, True, 1.0, str(value)):
+                if type(wrong) is type(value):
+                    continue
+                with self.subTest(key=key, wrong=wrong):
+                    receipt.write_text(json.dumps({**original, key: wrong}))
+                    self.assert_receipt_rejected_unchanged(receipt, blob)
+            with self.subTest(missing=key):
+                receipt.write_text(json.dumps({k: v for k, v in original.items() if k != key}))
+                self.assert_receipt_rejected_unchanged(receipt, blob)
+        for key in ("source_path", "sha256", "object_path", "trust"):
+            with self.subTest(altered=key):
+                receipt.write_text(json.dumps({**original, key: "forged"}))
+                self.assert_receipt_rejected_unchanged(receipt, blob)
+        receipt.write_text(json.dumps({**original, "size_bytes": original["size_bytes"] + 1}))
+        self.assert_receipt_rejected_unchanged(receipt, blob)
+
+    def test_receipt_invalid_timestamp_and_duplicate_json_fields(self):
+        self.write()
+        self.run_intake()
+        receipt = next((self.archive / "receipts").iterdir())
+        blob = next((self.archive / "objects").iterdir())
+        original = json.loads(receipt.read_bytes())
+        for value in ("", "nonsense", "2026-02-30T00:00:00+00:00", "2026-01-01",
+                      "2026-01-01T00:00:00", "2026-01-01T00:00:00+01:00"):
+            with self.subTest(value=value):
+                receipt.write_text(json.dumps({**original, "archived_at": value}))
+                self.assert_receipt_rejected_unchanged(receipt, blob)
+        for raw in (b"{", b"\xff", b"[]", (json.dumps(original)[:-1] + ', "schema": 1}').encode()):
+            with self.subTest(raw=raw):
+                receipt.write_bytes(raw)
+                self.assert_receipt_rejected_unchanged(receipt, blob)
+
+    def test_receipt_plausible_archived_at_is_not_authenticated(self):
+        self.write()
+        self.run_intake()
+        receipt = next((self.archive / "receipts").iterdir())
+        record = json.loads(receipt.read_bytes())
+        record["archived_at"] = "2021-01-01T00:00:00+00:00"
+        receipt.write_text(json.dumps(record))
+        before = receipt.read_bytes()
+        self.assertEqual(self.run_intake()["counts"]["already_recorded"], 1)
+        self.assertEqual(receipt.read_bytes(), before)
+
+    def test_receipt_with_missing_blob_does_not_publish_replacement(self):
+        self.write()
+        self.run_intake()
+        receipt = next((self.archive / "receipts").iterdir())
+        blob = next((self.archive / "objects").iterdir())
+        blob.unlink()
+        before = receipt.read_bytes()
+        self.assertEqual(self.run_intake()["counts"]["rejected"], 1)
+        self.assertFalse(blob.exists())
+        self.assertEqual(receipt.read_bytes(), before)
+
     def test_filename_validation(self):
         for name in ("../escape.txt", "..", "CON.txt", "LPT1.md", "note.txt ",
                      "bad:stream.txt", "a\\b.txt", "bad\n.txt", ".syncthing.x.tmp", "NUL", "a" * 201,
@@ -314,6 +403,8 @@ m.run_once(inbox=pathlib.Path(sys.argv[2]),archive=pathlib.Path(sys.argv[3]),
             self.assertEqual(report["counts"]["error"], 1)
             self.assertEqual(len(self.records()), 0)
             writer.write(b"completed")
+        # Exercise sharing recovery independently of the recent-write quiet interval.
+        os.utime(p, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
         self.assertEqual(self.run_intake()["counts"]["archived"], 1)
 
     def test_hardlinks_refused(self):

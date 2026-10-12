@@ -212,3 +212,29 @@ Real Windows symlink creation requires privileges unavailable in this account;
 that one test skips, while simulated symlink mode, reparse and real junction tests
 run. No permissions were changed to bypass that limitation. A real Android
 Syncthing transfer and independent exact-SHA review remain later verification.
+
+## Receipt validation and limits (Issue #116)
+
+Replay requires exactly the eleven schema-1 fields emitted by this command,
+with exact JSON types (booleans cannot stand in for integers), no missing,
+unknown or duplicate keys, and valid JSON. Source path/name, SHA-256, byte count,
+mtime and ctime must match the verified source snapshot. Object path, schema,
+trust label and memory-write flag must match their expected values. Windows ctime
+is compared using the same path `lstat` snapshot used to create the receipt;
+the existing cross-handle ctime exception for copy stability remains unchanged.
+A changed ctime with otherwise identical version identity is rejected for
+investigation rather than silently relabeling provenance.
+
+`archived_at` must be a valid UTC timestamp in the command's emitted format,
+at or after source mtime and no later than the current local clock. These are
+syntax and consistency checks only: neither the local clock nor filesystem
+metadata is an independently trusted historical record. A plausible altered
+`archived_at` can still pass, as an explicit regression demonstrates. SHA-256
+verifies byte identity; it does not authenticate receipt metadata or its author.
+No MAC, signature or authenticated timestamp is claimed. Clock rollback or a
+restored/replaced source can therefore require manual investigation.
+
+Rejected receipts and existing objects are preserved byte-for-byte. A receipt
+whose object is missing is rejected without publishing replacement bytes.
+Object-without-receipt interrupted-operation recovery still creates the receipt
+on retry after verifying the existing object.

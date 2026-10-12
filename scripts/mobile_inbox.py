@@ -234,6 +234,40 @@ def verify_blob(path, digest, size):
             raise InboxError("archived bytes failed integrity verification; preserve and investigate")
 
 
+def receipt_fields(pairs):
+    record = {}
+    for key, value in pairs:
+        if key in record:
+            raise InboxError("duplicate receipt field")
+        record[key] = value
+    return record
+
+
+def validate_receipt(prior, identity, path, info):
+    expected = {**identity, "schema": 1, "source_name": path.name,
+                "source_ctime_ns": info.st_ctime_ns,
+                "object_path": "objects/" + identity["sha256"],
+                "trust": "untrusted-data", "live_memory_written": False}
+    if (type(prior) is not dict or set(prior) != set(expected) | {"archived_at"}
+            or any(type(prior[k]) is not type(v) or prior[k] != v
+                   for k, v in expected.items())):
+        raise InboxError("receipt integrity/schema mismatch; preserve and investigate")
+    # This is a local clock assertion, not authenticated historical metadata.
+    value = prior["archived_at"]
+    if (type(value) is not str or re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{6})?\+00:00", value) is None):
+        raise InboxError("invalid receipt archived_at")
+    try:
+        archived_at = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise InboxError("invalid receipt archived_at") from exc
+    # Integer arithmetic avoids rounding nanosecond source timestamps.
+    delta = archived_at - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    archived_ns = ((delta.days * 86400 + delta.seconds) * 1000000 + delta.microseconds) * 1000
+    if archived_ns < info.st_mtime_ns or archived_ns > time.time_ns():
+        raise InboxError("receipt archived_at inconsistent with source/time")
+
+
 def intake_file(path, archive, initial, max_bytes):
     if signature(checked(path)) != signature(initial):
         raise Deferred("source changed during stability interval")
@@ -265,8 +299,6 @@ def intake_file(path, archive, initial, max_bytes):
         duplicate = os.path.lexists(blob)
         if duplicate:
             verify_blob(blob, sha, size)
-        else:
-            publish(temp, blob)
         identity = {"source_path": str(path), "sha256": sha, "size_bytes": size,
                     "source_mtime_ns": info.st_mtime_ns}
         receipt_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
@@ -275,14 +307,17 @@ def intake_file(path, archive, initial, max_bytes):
             with read_only(receipt) as (stream, receipt_info):
                 if receipt_info.st_size > 65536:
                     raise InboxError("oversized receipt")
-                prior = json.load(stream)
-            if (type(prior) is not dict or any(prior.get(k) != v for k, v in identity.items())
-                    or prior.get("object_path") != "objects/" + sha
-                    or prior.get("schema") != 1 or prior.get("trust") != "untrusted-data"
-                    or prior.get("live_memory_written") is not False):
-                raise InboxError("receipt integrity mismatch")
+                try:
+                    prior = json.load(stream, object_pairs_hook=receipt_fields)
+                except (ValueError, UnicodeError) as exc:
+                    raise InboxError("invalid receipt JSON; preserve and investigate") from exc
+            validate_receipt(prior, identity, path, info)
+            if not duplicate:
+                raise InboxError("receipt object missing; preserve and investigate")
             status = "already_recorded"
         else:
+            if not duplicate:
+                publish(temp, blob)
             save_receipt(archive, receipt, {
                 **identity, "schema": 1, "source_name": path.name,
                 "source_ctime_ns": info.st_ctime_ns, "archived_at": utc_now(),

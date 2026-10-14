@@ -201,18 +201,25 @@ def recall_offline_research(dest_dir: Path, question: str, *, limit: int = 10) -
             type(limit) is int and 1 <= limit <= 20):
         raise OfflineResearchError("invalid recall query")
     from project_guardian.local_ingestion.memory_intelligence import (
-        load_memory_intelligence_records, query_memory_intelligence,
+        expand_persisted_highlight, load_memory_intelligence_records,
+        query_memory_intelligence,
     )
     records = load_memory_intelligence_records(dest_dir)
     linked = {rec["source_id"]: (meta, rec)
               for rec in records if (meta := _metadata(rec))}
     hits = query_memory_intelligence(dest_dir, question, limit=100, validate_summaries=True)
     results = []
+    observed = []
+    seen_sources = set()
     for hit in hits:
         info = linked.get(hit["source_id"])
         if not info:
             continue
         meta, record = info
+        if hit["source_id"] not in seen_sources and hit["highlights"]:
+            original = expand_persisted_highlight(dest_dir, hit["highlights"][0]["highlight_id"])
+            observed.append({"url": meta["url"], "text": original["raw_source"]})
+            seen_sources.add(hit["source_id"])
         results.append({
             "source_id": hit["source_id"], "url": meta["url"],
             "retrieved_at": meta["retrieved_at"],
@@ -224,4 +231,5 @@ def recall_offline_research(dest_dir: Path, question: str, *, limit: int = 10) -
         })
         if len(results) == limit:
             break
-    return {"status": "source_evidence" if results else "unavailable", "results": results}
+    return {"status": "source_evidence" if results else "unavailable",
+            "results": results, "conflicts": _conflicts(observed)}

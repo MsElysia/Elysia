@@ -87,6 +87,8 @@ def test_research_to_persistent_recall_with_conflicting_source_claims(tmp_path):
     assert answer["results"]
     assert all(x["url"].startswith("https://fixtures.example/") for x in answer["results"])
     assert all(x["status"] == "source_evidence_not_verified_fact" for x in answer["results"])
+    assert any(c["claim_label"] == "protective treatment" and
+               len(c["alternatives"]) == 2 for c in answer["conflicts"])
     highlight = next((h for r in records for c in r["chunks"] for h in c["highlights"]), None)
     assert highlight
     expanded = expand_persisted_highlight(tmp_path, highlight["highlight_id"])

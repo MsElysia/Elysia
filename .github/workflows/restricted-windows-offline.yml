@@ -1,0 +1,45 @@
+# Restricted synthetic Elysia pilot: exact-head native Windows CI.
+# No credentials, live providers, background autonomy, or production activation.
+name: Restricted Windows offline pilot
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-windows:
+    name: Windows synthetic runtime and regressions
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact source head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Assert exact event SHA
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = git rev-parse HEAD
+          if ($actual -ne $env:EXPECTED_SHA) { throw "Wrong source SHA: $actual" }
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: python -m pip install "pytest>=7.4,<9" "PyYAML>=6,<7" "httpx>=0.25,<1" "cryptography>=41" "psutil>=5.9"
+
+      - name: Run restricted Windows application and preserved regressions
+        env:
+          PYTHONUTF8: "1"
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -B scripts/run_windows_offline_tests.py

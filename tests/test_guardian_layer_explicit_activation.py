@@ -182,3 +182,206 @@ def test_activation_failure_releases_lock_and_allows_explicit_retry(tmp_path, mo
     assert layer.activate() is True
     assert len(calls) == 2
     assert layer._activated is True
+
+
+def _competing_activation(layer, entered, release):
+    """Start caller two while caller one is blocked inside a guarded effect."""
+    from threading import Event, Thread
+
+    results, errors = [], []
+    second_started = Event()
+
+    def call(index):
+        if index == 2:
+            second_started.set()
+        try:
+            results.append((index, layer.activate()))
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = Thread(target=call, args=(1,))
+    second = Thread(target=call, args=(2,))
+    first.start()
+    try:
+        assert entered.wait(timeout=5), "first activation did not reach injected boundary"
+        second.start()
+        assert second_started.wait(timeout=5)
+        second.join(timeout=0.1)
+        assert second.is_alive(), "second caller passed while first activation was in flight"
+    finally:
+        release.set()
+        first.join(timeout=5)
+        if second.ident is not None:
+            second.join(timeout=5)
+    assert not first.is_alive() and not second.is_alive()
+    assert not errors
+    return dict(results)
+
+
+def test_failed_persistence_during_overlapping_activation(tmp_path, monkeypatch):
+    """Vega failure #1: rejected save must not create a phantom fingerprint."""
+    from threading import Event
+
+    layer = GuardianLayer(
+        config_path=str(tmp_path / "state" / "guardian.json"),
+        rebuild_log_path=str(tmp_path / "state" / "guardian_rebuild.log"),
+    )
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: "f" * 64)
+    actual_save = layer.save
+    entered, release = Event(), Event()
+    calls = []
+
+    def fail_once_after_assignment():
+        calls.append(layer.fingerprint)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(timeout=5)
+            raise OSError("synthetic persistence denied")
+        return actual_save()
+
+    monkeypatch.setattr(layer, "save", fail_once_after_assignment)
+    results = _competing_activation(layer, entered, release)
+    assert results == {1: False, 2: True}
+    assert calls == ["f" * 64, "f" * 64]
+    assert layer._activated is True
+    assert layer.fingerprint == "f" * 64
+    assert json.loads(layer.config_path.read_text(encoding="utf-8"))["fingerprint"] == "f" * 64
+    assert not layer.rebuild_log_path.exists()
+
+
+def test_atomic_persistence_failure_keeps_prior_file_and_single_notification(tmp_path, monkeypatch):
+    """Failed atomic replace preserves the old bytes; only a successful retry alerts."""
+    import project_guardian.guardian_layer as guardian_module
+    from threading import Event
+
+    path = tmp_path / "state" / "guardian.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"fingerprint": "a" * 64,
+                    "contact_email": "operator@example.invalid",
+                    "smtp_config": {"server": "smtp.invalid"}}),
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+    layer = GuardianLayer(
+        config_path=str(path),
+        rebuild_log_path=str(tmp_path / "state" / "guardian_rebuild.log"),
+    )
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: "b" * 64)
+    notifications = []
+    monkeypatch.setattr(layer, "send_alert_email",
+                        lambda **kwargs: notifications.append(kwargs) or True)
+
+    original_replace = guardian_module.os.replace
+    entered, release = Event(), Event()
+    calls = []
+
+    def fail_replace_once(src, dst):
+        calls.append((src, dst))
+        if len(calls) == 1:
+            # Atomic publication has not occurred; original config is intact.
+            assert path.read_bytes() == before
+            entered.set()
+            assert release.wait(timeout=5)
+            raise OSError("synthetic replace denied")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(guardian_module.os, "replace", fail_replace_once)
+    results = _competing_activation(layer, entered, release)
+    assert results == {1: False, 2: True}
+    assert len(calls) == 2
+    assert len(notifications) == 1
+    assert layer.fingerprint == "b" * 64
+    assert json.loads(path.read_text(encoding="utf-8"))["fingerprint"] == "b" * 64
+    events = [json.loads(line) for line in layer.rebuild_log_path.read_text().splitlines()]
+    assert len(events) == 1
+    assert events[0]["old_fingerprint"] == "a" * 64
+    assert events[0]["new_fingerprint"] == "b" * 64
+    assert not list(path.parent.glob(".guardian-*.tmp"))
+
+
+def test_post_alert_failure_does_not_retry_completed_side_effects(tmp_path, monkeypatch):
+    """Vega failure #2: an alert that lands must not be emitted twice on retry."""
+    from threading import Event
+
+    path = tmp_path / "state" / "guardian.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "fingerprint": "a" * 64,
+        "contact_email": "operator@example.invalid",
+        "smtp_config": {"server": "smtp.invalid"}
+    }), encoding="utf-8")
+    layer = GuardianLayer(
+        config_path=str(path),
+        rebuild_log_path=str(tmp_path / "state" / "guardian_rebuild.log"),
+    )
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: "z" * 64)
+    entered, release = Event(), Event()
+    notifications = []
+
+    def send_and_pause(**kwargs):
+        notifications.append(kwargs)
+        entered.set()
+        assert release.wait(timeout=5)
+        return True
+
+    monkeypatch.setattr(layer, "send_alert_email", send_and_pause)
+    original_check = layer._check_and_alert
+
+    def raise_after_alert(*args, **kwargs):
+        original_check(*args, **kwargs)
+        raise OSError("synthetic error after alert already sent")
+
+    monkeypatch.setattr(layer, "_check_and_alert", raise_after_alert)
+    results = _competing_activation(layer, entered, release)
+    assert results == {1: True, 2: True}
+    assert len(notifications) == 1
+    assert layer._activated is True
+    assert json.loads(path.read_text(encoding="utf-8"))["fingerprint"] == "z" * 64
+    events = [json.loads(line) for line in layer.rebuild_log_path.read_text().splitlines()]
+    assert len(events) == 1
+    assert events[0]["old_fingerprint"] == "a" * 64
+    assert events[0]["new_fingerprint"] == "z" * 64
+
+
+def test_post_rebuild_write_exception_cannot_double_record(tmp_path, monkeypatch):
+    path = tmp_path / "state" / "guardian.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "fingerprint": "a" * 64,
+        "contact_email": "operator@example.invalid",
+        "smtp_config": {"server": "smtp.invalid"}
+    }), encoding="utf-8")
+    layer = GuardianLayer(
+        config_path=str(path),
+        rebuild_log_path=str(tmp_path / "state" / "guardian_rebuild.log"),
+    )
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: "c" * 64)
+    recorded = layer._log_rebuild_event
+    notifications = []
+    monkeypatch.setattr(layer, "send_alert_email",
+                        lambda **kw: notifications.append(kw) or True)
+
+    def fail_after_record(*args, **kwargs):
+        recorded(*args, **kwargs)
+        raise OSError("synthetic interruption after rebuild append")
+
+    monkeypatch.setattr(layer, "_log_rebuild_event", fail_after_record)
+    assert layer.activate() is True
+    assert layer.activate() is True
+    assert layer._activated is True
+    assert len(notifications) == 1
+    assert len(layer.rebuild_log_path.read_text().splitlines()) == 1
+
+
+def test_noop_save_is_not_mistaken_for_successful_activation(tmp_path, monkeypatch):
+    layer = GuardianLayer(
+        config_path=str(tmp_path / "state" / "guardian.json"),
+        rebuild_log_path=str(tmp_path / "state" / "guardian_rebuild.log"),
+    )
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: "n" * 64)
+    monkeypatch.setattr(layer, "save", lambda: None)
+    assert layer.activate() is False
+    assert layer._activated is False
+    assert layer.fingerprint is None
+    assert not layer.config_path.exists()

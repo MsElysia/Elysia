@@ -190,11 +190,13 @@ def test_other_thread_refuses_same_destination_while_owner_holds_it(tmp_path):
 def test_native_exact_parent_refuses_then_current_apply_succeeds(tmp_path):
     from project_guardian.tests.test_chatgpt_apply_transaction import fixture, bytes_at, assert_complete
     from project_guardian.local_ingestion.chatgpt_export_ingest import apply_chatgpt_export
-    parent = "931576224432b6db6f4290eee0ea4c0aa9bd9c73"
-    result = subprocess.run(["git", "show", parent + ":project_guardian/local_ingestion/apply_transaction.py"],
-                            cwd=ROOT, capture_output=True, check=True, timeout=15)
+    # Exact regression baseline from 931576224432b6db6f4290eee0ea4c0aa9bd9c73.
+    # A clean main-based clone must not depend on unrelated local Git objects.
+    import hashlib
+    baseline = (Path(__file__).parent / "fixtures/apply_transaction_posix_parent.py").read_bytes()
+    assert hashlib.sha256(baseline).hexdigest() == "e9efffc06d54af782d68123f7e28e049b511dcc3ae7e4d0884eb50877baf8bba"
     source = tmp_path / "parent_transaction.py"
-    source.write_bytes(result.stdout)
+    source.write_bytes(baseline)
     spec = importlib.util.spec_from_file_location("parent_transaction", source)
     old = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(old)

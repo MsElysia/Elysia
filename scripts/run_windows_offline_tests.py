@@ -79,7 +79,7 @@ def main() -> int:
                if k.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "PATHEXT"}}
         env.update(TEMP=str(scratch), TMP=str(scratch), PYTHONUTF8="1",
                    PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1",
-                   PYTHONPATH=str(guard) + os.pathsep + str(ROOT),
+                   PYTHONPATH=os.pathsep.join((str(guard), str(ROOT), str(ROOT / "tests"))),
                    ELYSIA_FORBIDDEN_LEARNING_CONFIG=str(ROOT / "config/auto_learning.json"),
                    ELYSIA_ORCH_TELEMETRY_MIRROR_SEC="0", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
         if receipts:

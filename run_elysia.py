@@ -1,3 +1,10 @@
+
+# Draft restricted startup: dispatch before legacy configuration and logging.
+import sys
+if __name__ == "__main__":
+    from elysia_offline import main as offline_main
+    raise SystemExit(offline_main(sys.argv[1:]))
+
 # run_elysia.py
 # Main entry point to run the Elysia system
 

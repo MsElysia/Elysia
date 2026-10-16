@@ -8,6 +8,13 @@ By default this entrypoint starts the **full backend** (same as Start_Elysia_Bac
 - Sets ELYSIA_FORCE_FULL_BACKEND so a stray /status on 8888 does not trigger attach-only.
 Opt-in attach-only shortcut: set ELYSIA_UNIFIED_ATTACH_IF_BACKEND_UP=1 before running.
 """
+
+# Draft restricted startup: dispatch before legacy configuration and logging.
+import sys
+if __name__ == "__main__":
+    from elysia_offline import main as offline_main
+    raise SystemExit(offline_main(sys.argv[1:]))
+
 import os
 import sys
 import runpy

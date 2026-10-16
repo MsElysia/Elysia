@@ -16,6 +16,21 @@ class LessonCandidateError(ValueError):
     """A task receipt cannot be admitted as even a synthetic learning candidate."""
 
 
+def _distinct_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous keys, including Unicode-escaped and nested duplicates."""
+    obj: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError("duplicate JSON receipt field")
+        obj[key] = value
+    return obj
+
+
+def _reject_json_constant(_value: str) -> None:
+    """Reject NaN and Infinity, which are not standard JSON values."""
+    raise ValueError("non-finite JSON receipt field")
+
+
 def prepare_synthetic_lesson_candidate(receipt_bytes: bytes) -> dict[str, Any]:
     """Return source-memory writer inputs, not permission or an accepted fact.
 
@@ -25,7 +40,11 @@ def prepare_synthetic_lesson_candidate(receipt_bytes: bytes) -> dict[str, Any]:
     if type(receipt_bytes) is not bytes or not (1 <= len(receipt_bytes) <= 8192):
         raise LessonCandidateError("expected bounded exact synthetic receipt bytes")
     try:
-        receipt = json.loads(receipt_bytes.decode("utf-8"))
+        receipt = json.loads(
+            receipt_bytes.decode("utf-8"),
+            object_pairs_hook=_distinct_json_object,
+            parse_constant=_reject_json_constant,
+        )
     except (UnicodeError, ValueError) as exc:
         raise LessonCandidateError("invalid UTF-8 JSON receipt") from exc
     if type(receipt) is not dict or receipt.get("schema") != "elysia-synthetic-outcome-v1":

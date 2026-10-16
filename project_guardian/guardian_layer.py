@@ -58,22 +58,25 @@ class GuardianLayer:
         Activation is idempotent. Host fingerprint probes, first-run persistence,
         rebuild logging, and alert transport are all deferred until this method.
         """
+        # Hold the existing reentrant lock across the entire activation
+        # transition.  _update_fingerprint() also takes this RLock, so another
+        # caller cannot duplicate probes, writes, rebuild logs or alerts.
+        # On failure the flag stays false and a later explicit call may retry.
         with self._lock:
             if self._activated:
                 return True
 
-        try:
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            self.rebuild_log_path.parent.mkdir(parents=True, exist_ok=True)
-            self._update_fingerprint()
-        except Exception as exc:
-            logger.error("GuardianLayer activation failed: %s", exc)
-            return False
+            try:
+                self.config_path.parent.mkdir(parents=True, exist_ok=True)
+                self.rebuild_log_path.parent.mkdir(parents=True, exist_ok=True)
+                self._update_fingerprint()
+            except Exception as exc:
+                logger.error("GuardianLayer activation failed: %s", exc)
+                return False
 
-        with self._lock:
             self._activated = True
-        logger.info("GuardianLayer activated")
-        return True
+            logger.info("GuardianLayer activated")
+            return True
     
     def _generate_system_fingerprint(self) -> str:
         """

@@ -630,6 +630,8 @@ def _apply_findings(
                 result["memory_entries_written"] += 1
             except Exception as e:
                 logger.debug("Adversarial memory write: %s", e)
+        elif not persist_memory:
+            logger.warning("[Adversarial Finding] %s: %s; evidence=%s", ftype, summ, ev)
 
         duplicate_task = _active_adversarial_task_exists(tasks_engine, rec, ftype)
         if auto and duplicate_task and not created_tasks:

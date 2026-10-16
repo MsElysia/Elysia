@@ -338,7 +338,7 @@ def create_guardian_health_checks(guardian_core) -> Dict[str, Callable[[], Healt
             return HealthCheck("resources", HealthStatus.UNKNOWN, f"Resource check error: {e}")
     
     def check_memory_count():
-        """Check memory count and trigger cleanup if needed."""
+        """Observe memory count; health checks do not authorize durable maintenance."""
         try:
             if not hasattr(guardian_core, 'memory') or not guardian_core.memory:
                 return HealthCheck("memory_count", HealthStatus.UNKNOWN, "Memory system not available")
@@ -360,24 +360,6 @@ def create_guardian_health_checks(guardian_core) -> Dict[str, Callable[[], Healt
                 memory_threshold = getattr(guardian_core, 'config', {}).get("memory_cleanup_threshold", 3500)
 
                 if memory_count > memory_threshold:
-                    # Trigger automatic cleanup
-                    try:
-                        if hasattr(guardian_core.memory, 'consolidate'):
-                            result = guardian_core.memory.consolidate(
-                                max_memories=memory_threshold,
-                                keep_recent_days=getattr(guardian_core, 'config', {}).get("memory_keep_recent_days", 30)
-                            )
-                            if "error" not in result:
-                                final_count = result.get('final_count', memory_count)
-                                removed = result.get('removed', 0)
-                                return HealthCheck(
-                                    "memory_count", HealthStatus.HEALTHY,
-                                    f"Memory cleanup completed: {memory_count} -> {final_count} (removed {removed})",
-                                    details={"original": memory_count, "final": final_count, "removed": removed}
-                                )
-                    except Exception as e:
-                        logger.warning(f"Auto-cleanup in health check failed: {e}")
-
                     return HealthCheck(
                         "memory_count", HealthStatus.WARNING,
                         f"High memory count: {memory_count} (threshold: {memory_threshold})",

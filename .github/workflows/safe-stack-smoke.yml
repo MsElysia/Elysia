@@ -73,6 +73,11 @@ jobs:
           project_guardian/tests/test_chatgpt_export_ingest.py
           project_guardian/tests/test_memory_intelligence_ingestion.py
           project_guardian/tests/test_memory_intelligence_brain_bridge.py
+          project_guardian/tests/test_issue91_disabled_autonomy_event_memory.py
+          project_guardian/tests/test_startup_maintenance_boundary.py
+          project_guardian/tests/test_startup_diagnostic_routing.py
+          project_guardian/tests/test_monitoring_adversarial_boundary.py
+          tests/test_guardian_layer_explicit_activation.py
           project_guardian/tests/test_memory_candidate_review.py
           project_guardian/tests/test_approved_memory_store.py
           project_guardian/tests/test_approved_memory_search.py

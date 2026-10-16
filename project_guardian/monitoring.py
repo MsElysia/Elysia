@@ -270,9 +270,10 @@ class Heartbeat:
                         system_memory_high = True
                         # Use even lower base threshold if system memory is high
                         base_threshold = 3000
-                except (AttributeError, ImportError, RuntimeError):
-                    # psutil not available or error accessing memory info - use defaults
-                    pass
+                except Exception as e:
+                    # Optional telemetry may be denied by an isolated runtime or
+                    # fail with psutil.Error; neither should abort the heartbeat.
+                    logger.debug("[Heartbeat] Host memory metrics unavailable: %s", e)
                 
                 # Initialize hysteresis bounds if needed
                 if self._high_water is None or self._low_water is None:
@@ -735,8 +736,9 @@ class SystemMonitor:
             rss_bytes = process.memory_info().rss
             metrics["rss_bytes"] = rss_bytes  # Store raw bytes
             metrics["rss_mb"] = round(rss_bytes / (1024 * 1024), 2)  # Also store MB for convenience
-        except (AttributeError, ImportError, RuntimeError):
-            # psutil not available or error accessing process info - use None
+        except Exception as e:
+            # Optional RSS telemetry cannot block explicit memory maintenance.
+            logger.debug("[Auto-Cleanup] Process memory metrics unavailable: %s", e)
             metrics["rss_bytes"] = None
             metrics["rss_mb"] = None
         

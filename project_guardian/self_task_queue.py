@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -45,18 +46,38 @@ class SelfTaskQueue:
             return {"tasks": [], "dedupe_last_ts": {}, "archetype_bias": {}, "updated_at": _iso()}
         try:
             with open(self.path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.debug("self_task_queue load: %s", e)
-            return {"tasks": [], "dedupe_last_ts": {}, "archetype_bias": {}, "updated_at": _iso()}
+                loaded = json.load(f)
+            if (
+                not isinstance(loaded, dict)
+                or not isinstance(loaded.get("tasks"), list)
+                or not isinstance(loaded.get("dedupe_last_ts", {}), dict)
+                or not isinstance(loaded.get("archetype_bias", {}), dict)
+            ):
+                raise ValueError("Invalid self-task queue document")
+            return loaded
+        except (OSError, ValueError, TypeError) as exc:
+            logger.error("self_task_queue unreadable: %s", exc)
+            raise RuntimeError("Self-task queue unreadable; refusing to reset existing tasks") from exc
 
     def _save(self) -> None:
+        """Publish atomically or raise; never report a durable task write that failed."""
+        previous_updated = self._data.get("updated_at")
         self._data["updated_at"] = _iso()
+        temp_path = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
         try:
-            with open(self.path, "w", encoding="utf-8") as f:
+            with temp_path.open("x", encoding="utf-8") as f:
                 json.dump(self._data, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.debug("self_task_queue save: %s", e)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self.path)
+        except BaseException:
+            if previous_updated is None:
+                self._data.pop("updated_at", None)
+            else:
+                self._data["updated_at"] = previous_updated
+            raise
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def dedupe_recent(self, key: str, cooldown_sec: float) -> bool:
         """True if key should be skipped (still in cooldown)."""
@@ -183,10 +204,16 @@ class SelfTaskQueue:
         t = self.get_by_id(task_id)
         if not t or t.get("status") != "pending":
             return None
+        original = dict(t)
         t["status"] = "in_progress"
         t["started_at"] = _iso()
         t["updated_at"] = _iso()
-        self._save()
+        try:
+            self._save()
+        except BaseException:
+            t.clear()
+            t.update(original)
+            raise
         return t
 
     def complete(

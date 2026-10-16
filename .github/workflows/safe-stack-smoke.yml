@@ -84,3 +84,6 @@ jobs:
           project_guardian/tests/test_approved_memory_search.py
           project_guardian/tests/test_approved_memory_context.py
           project_guardian/tests/test_local_memory_pipeline_smoke.py
+
+      - name: Verify real disabled-autonomy startup preserves 4200 fictional records
+        run: python -B project_guardian/tests/startup_side_effect_probe.py --scenario degraded --cycles 2

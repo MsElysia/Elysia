@@ -120,3 +120,63 @@ def test_explicit_memory_write_and_consolidation_remain_available(tmp_path):
     result = memory.consolidate(max_memories=1)
     assert result["action"] == "no_action_needed"
     assert len(json.loads(path.read_text())) == 1
+
+
+def test_voice_engine_init_error_is_log_only_and_preserves_seeded_memory(
+    tmp_path, monkeypatch, caplog
+):
+    """Reproduce Issue #123 with the actual VoiceThread and durable MemoryCore."""
+    from types import SimpleNamespace
+    import project_guardian.external as external
+
+    path = tmp_path / "voice-user-memory.json"
+    seed = [
+        {"time": "2020-01-01", "thought": f"fictional memory {i}",
+         "category": "user", "priority": 0.5, "metadata": {"source_id": i}}
+        for i in range(4200)
+    ]
+    path.write_text(json.dumps(seed), encoding="utf-8")
+    before = path.read_bytes()
+    memory = MemoryCore(str(path), enable_timeline_logging=False)
+    remember = Mock(wraps=memory.remember)
+    monkeypatch.setattr(memory, "remember", remember)
+    monkeypatch.setattr(
+        external, "pyttsx3",
+        SimpleNamespace(init=Mock(side_effect=RuntimeError("synthetic voice failure")))
+    )
+
+    with caplog.at_level(logging.WARNING, logger="project_guardian.external"):
+        first = external.VoiceThread(memory)
+        second = external.VoiceThread(memory)
+
+    assert first.engine is None and second.engine is None
+    remember.assert_not_called()
+    assert path.read_bytes() == before
+    assert memory.get_memory_count() == 4200
+    warnings = [
+        record for record in caplog.records
+        if record.name == "project_guardian.external"
+        and "Failed to initialize: synthetic voice failure" in record.getMessage()
+    ]
+    assert len(warnings) == 2
+
+
+def test_voice_engine_success_retains_explicit_mode_memory_behavior(
+    tmp_path, monkeypatch
+):
+    """Diagnostic fencing does not disable explicitly requested voice actions."""
+    from types import SimpleNamespace
+    import project_guardian.external as external
+
+    path = tmp_path / "voice-explicit-memory.json"
+    memory = MemoryCore(str(path), enable_timeline_logging=False)
+    engine = Mock()
+    engine.getProperty.return_value = []
+    monkeypatch.setattr(external, "pyttsx3", SimpleNamespace(init=lambda: engine))
+    voice = external.VoiceThread(memory)
+    assert voice.engine is engine
+    assert memory.get_memory_count() == 0
+    voice.set_mode("sharp_analyst")
+    assert voice.mode == "sharp_analyst"
+    assert memory.get_memory_count() == 1
+    assert "Mode changed to: sharp_analyst" in json.loads(path.read_text())[0]["thought"]

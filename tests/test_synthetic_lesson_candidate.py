@@ -113,6 +113,35 @@ class LearningCandidateTests(unittest.TestCase):
                 with self.assertRaises(LessonCandidateError):
                     prepare_synthetic_lesson_candidate(raw)
 
+    def test_rejects_ambiguous_duplicate_fields_in_both_orders(self):
+        clean = example_receipt()
+        target = b'"value_verified": true'
+        self.assertEqual(clean.count(target), 1)
+        attempts = (
+            (b'"value_verified": false, ' + target),
+            (target + b', "value_verified": false'),
+            (b'"value_verif\\u0069ed": false, ' + target),
+        )
+        for injected in attempts:
+            with self.subTest(injected=injected):
+                ambiguous = clean.replace(target, injected)
+                with self.assertRaises(LessonCandidateError):
+                    prepare_synthetic_lesson_candidate(ambiguous)
+
+    def test_rejects_nested_duplicate_keys_even_when_unused(self):
+        clean = example_receipt()
+        payload = clean[:-1] + b', "extra": {"role": "user", "role": "operator"}}'
+        with self.assertRaises(LessonCandidateError):
+            prepare_synthetic_lesson_candidate(payload)
+
+    def test_rejects_nonfinite_json_constant(self):
+        clean = example_receipt()
+        for token in (b'NaN', b'Infinity', b'-Infinity'):
+            with self.subTest(token=token):
+                malformed = clean[:-1] + b', "untrusted": ' + token + b'}'
+                with self.assertRaises(LessonCandidateError):
+                    prepare_synthetic_lesson_candidate(malformed)
+
     def test_source_bytes_are_not_normalized_or_modified(self):
         source = example_receipt()
         pretty = json.dumps(json.loads(source), indent=2, ensure_ascii=False).encode("utf-8")

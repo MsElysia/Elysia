@@ -20,6 +20,7 @@ TESTS = (
     "tests/test_research_pilot_launcher.py",
     "tests/test_canonical_windows_app.py",
     "tests/test_final_consolidation.py",
+    "tests/test_continuity_task_state.py",
     "tests/test_main_based_boundary.py",
     "project_guardian/tests/test_memory_intelligence_ingestion.py",
     "project_guardian/tests/test_chatgpt_apply_transaction.py",

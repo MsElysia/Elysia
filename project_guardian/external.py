@@ -3,6 +3,10 @@
 
 import requests
 import threading
+import logging
+
+logger = logging.getLogger(__name__)
+
 try:
     import pyttsx3
 except ImportError:
@@ -788,11 +792,9 @@ class VoiceThread:
             if 0 <= voice_index < len(voices):
                 self.engine.setProperty('voice', voices[voice_index].id)
         except Exception as e:
-            self.memory.remember(
-                f"[VoiceThread] Failed to initialize: {str(e)}",
-                category="error",
-                priority=0.6
-            )
+            # Startup diagnostics belong to operational logs, not durable
+            # user memory. An unavailable voice engine must not mutate memory.
+            logger.warning("[VoiceThread] Failed to initialize: %s", e)
             self.engine = None
             
     def set_mode(self, mode: str) -> None:

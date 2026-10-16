@@ -1,25 +1,21 @@
 @echo off
-REM Always full backend boot — see ELYSIA_FORCE_FULL_BACKEND in elysia.py main().
-set ELYSIA_FORCE_FULL_BACKEND=1
+REM No arguments opens the synthetic interactive pilot; explicit modes stay intact.
+setlocal
 cd /d "%~dp0"
-title Elysia Backend Server
-echo [Elysia Backend] Working directory: %CD%
-echo [Elysia Backend] ELYSIA_FORCE_FULL_BACKEND=%ELYSIA_FORCE_FULL_BACKEND% (full boot, not attach-only probe^)
-if not exist "%~dp0elysia.py" (
-  echo [Elysia Backend] ERROR: elysia.py not found in %CD%
-  echo Fix shortcut "Start in" / Working directory to the Project Guardian folder.
-  pause
-  exit /b 1
-)
-echo [Elysia Backend] Starting elysia.py (full server^)...
-echo.
-where python >nul 2>&1
-if errorlevel 1 (
-  echo Using Windows Python launcher: py -3
-  py -3 elysia.py
-) else (
-  python elysia.py
-)
-echo.
-echo Backend process ended (exit code %errorlevel%).
-pause
+if exist "%~dp0.venv\Scripts\python.exe" goto local_python
+if "%~1"=="" goto global_interactive
+python -S -B "%~dp0elysia.py" %*
+exit /b %errorlevel%
+
+:local_python
+if "%~1"=="" goto local_interactive
+"%~dp0.venv\Scripts\python.exe" -S -B "%~dp0elysia.py" %*
+exit /b %errorlevel%
+
+:global_interactive
+python -S -B "%~dp0elysia.py" --interactive
+exit /b %errorlevel%
+
+:local_interactive
+"%~dp0.venv\Scripts\python.exe" -S -B "%~dp0elysia.py" --interactive
+exit /b %errorlevel%

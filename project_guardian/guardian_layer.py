@@ -8,6 +8,7 @@ import hashlib
 import platform
 import os
 import sys
+import tempfile
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from pathlib import Path
@@ -112,29 +113,51 @@ class GuardianLayer:
         new_fingerprint = self._generate_system_fingerprint()
         
         with self._lock:
-            if self.fingerprint is None:
-                # First time - store fingerprint
-                self.fingerprint = new_fingerprint
+            previous = self.fingerprint
+            if previous == new_fingerprint:
+                return
+
+            # Persist and verify the new identity BEFORE any rebuild record or
+            # alert is emitted. A failed save cannot poison a later retry with
+            # an unpersisted in-memory fingerprint.
+            self.fingerprint = new_fingerprint
+            try:
                 self.save()
+                with self.config_path.open(encoding="utf-8") as stream:
+                    persisted = json.load(stream)
+                if persisted.get("fingerprint") != new_fingerprint:
+                    raise OSError("Guardian fingerprint was not persisted")
+            except BaseException:
+                self.fingerprint = previous
+                raise
+
+            if previous is None:
                 logger.info("Generated initial system fingerprint")
-            elif self.fingerprint != new_fingerprint:
-                # Fingerprint changed - potential rebuild/hijack
-                logger.warning(f"System fingerprint changed!")
-                logger.warning(f"  Old: {self.fingerprint[:16]}...")
-                logger.warning(f"  New: {new_fingerprint[:16]}...")
-                
-                self._log_rebuild_event(new_fingerprint)
-                self._check_and_alert()
-                
-                # Update to new fingerprint
-                self.fingerprint = new_fingerprint
-                self.save()
+                return
+
+            logger.warning("System fingerprint changed!")
+            logger.warning("  Old: %s...", previous[:16])
+            logger.warning("  New: %s...", new_fingerprint[:16])
+
+            # Persistence has committed. A diagnostic/alert failure after an
+            # externally visible effect must not turn activation into a retry
+            # that emits the same rebuild record or alert a second time.
+            try:
+                self._log_rebuild_event(new_fingerprint, old_fingerprint=previous)
+            except Exception:
+                logger.exception("Guardian rebuild diagnostic failed after fingerprint persistence")
+            try:
+                self._check_and_alert(
+                    old_fingerprint=previous, new_fingerprint=new_fingerprint
+                )
+            except Exception:
+                logger.exception("Guardian identity alert failed after fingerprint persistence")
     
-    def _log_rebuild_event(self, new_fingerprint: str):
+    def _log_rebuild_event(self, new_fingerprint: str, *, old_fingerprint: Optional[str] = None):
         """Log a rebuild/change event."""
         event = {
             "timestamp": datetime.now().isoformat(),
-            "old_fingerprint": self.fingerprint,
+            "old_fingerprint": old_fingerprint if old_fingerprint is not None else self.fingerprint,
             "new_fingerprint": new_fingerprint,
             "detected_as": "system_rebuild_or_change"
         }
@@ -146,7 +169,10 @@ class GuardianLayer:
         
         logger.info(f"Rebuild event logged to {self.rebuild_log_path}")
     
-    def _check_and_alert(self):
+    def _check_and_alert(
+        self, *, old_fingerprint: Optional[str] = None,
+        new_fingerprint: Optional[str] = None
+    ):
         """Check for anomalies and send alerts if configured."""
         if not self.contact_email:
             logger.info("No contact email configured, skipping alert")
@@ -160,8 +186,8 @@ class GuardianLayer:
                        "- System rebuild or reset\n"
                        "- Environment change\n"
                        "- Potential security issue\n\n"
-                       f"Old fingerprint: {self.fingerprint[:32]}...\n"
-                       f"New fingerprint: {self._generate_system_fingerprint()[:32]}...\n\n"
+                       f"Old fingerprint: {(old_fingerprint or self.fingerprint)[:32]}...\n"
+                       f"New fingerprint: {(new_fingerprint or self._generate_system_fingerprint())[:32]}...\n\n"
                        f"Timestamp: {datetime.now().isoformat()}"
             )
         except Exception as e:
@@ -390,8 +416,23 @@ class GuardianLayer:
                 "updated_at": datetime.now().isoformat()
             }
             
-            with open(self.config_path, 'w') as f:
-                json.dump(data, f, indent=2)
+            # Atomic replacement prevents a failed/truncated write from
+            # destroying the last known-good identity and credentials.
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8",
+                    dir=self.config_path.parent, prefix=".guardian-", suffix=".tmp",
+                    delete=False,
+                ) as stream:
+                    temp_path = Path(stream.name)
+                    json.dump(data, stream, indent=2)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp_path, self.config_path)
+            finally:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
     
     def load(self):
         """Load guardian state."""

@@ -204,6 +204,24 @@ def test_spurious_callback_conflict_cannot_survive_source_bound_recall(tmp_path)
     assert reopened["status"] == "source_evidence"
     assert reopened["conflicts"] == []
 
+    # This assertion must hold after a genuinely fresh interpreter, not only
+    # after re-reading records in the same process.
+    code = (
+        "import json,sys; from pathlib import Path; "
+        "from project_guardian.offline_research_recovery import recall_offline_research; "
+        "print(json.dumps(recall_offline_research(Path(sys.argv[1]), "
+        "'Skylark coating protection')))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-B", "-c", code, str(tmp_path)],
+        capture_output=True, text=True, timeout=30,
+        cwd=Path(__file__).resolve().parents[2],
+    )
+    assert proc.returncode == 0, proc.stderr
+    fresh = json.loads(proc.stdout)
+    assert fresh["status"] == "source_evidence"
+    assert fresh["conflicts"] == []
+
 
 def test_exact_bytes_preexisting_under_other_identity_are_not_duplicated(tmp_path):
     from project_guardian.local_ingestion.memory_intelligence import (

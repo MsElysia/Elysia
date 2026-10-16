@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,18 +34,34 @@ class ObjectiveStore:
             return {"objectives": [], "updated_at": _iso()}
         try:
             with open(self.path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.debug("objective_store load: %s", e)
-            return {"objectives": [], "updated_at": _iso()}
+                loaded = json.load(f)
+            if not isinstance(loaded, dict) or not isinstance(loaded.get("objectives"), list):
+                raise ValueError("Invalid objective-store document")
+            return loaded
+        except (OSError, ValueError, TypeError) as exc:
+            logger.error("objective_store unreadable: %s", exc)
+            # Existing history must not be treated as an empty store.
+            raise RuntimeError("Objective store unreadable; refusing to reset existing objectives") from exc
 
     def _save(self) -> None:
+        """Publish a complete objective-state revision or raise without clobbering old bytes."""
+        previous_updated = self._data.get("updated_at")
         self._data["updated_at"] = _iso()
+        temp_path = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
         try:
-            with open(self.path, "w", encoding="utf-8") as f:
+            with temp_path.open("x", encoding="utf-8") as f:
                 json.dump(self._data, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.debug("objective_store save: %s", e)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self.path)
+        except BaseException:
+            if previous_updated is None:
+                self._data.pop("updated_at", None)
+            else:
+                self._data["updated_at"] = previous_updated
+            raise
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def list_all(self) -> List[Dict[str, Any]]:
         return list(self._data.get("objectives", []))

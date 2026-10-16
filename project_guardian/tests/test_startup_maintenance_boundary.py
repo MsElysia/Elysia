@@ -137,6 +137,53 @@ def test_explicit_maintenance_remains_available(memory):
     assert len(json.loads(Path(memory.filepath).read_text())) < 4200
 
 
+class ProcessMetricsUnavailable(Exception):
+    """Model psutil.Error, which does not inherit from OSError/RuntimeError."""
+
+
+@pytest.mark.parametrize("error", [PermissionError("metrics denied"), ProcessMetricsUnavailable("process unavailable")])
+def test_unavailable_host_metrics_do_not_abort_heartbeat(memory, monkeypatch, caplog, error):
+    import sys
+    from pathlib import Path
+
+    before = Path(memory.filepath).read_bytes()
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(virtual_memory=Mock(side_effect=error)))
+    guardian = SimpleNamespace(
+        _load_autonomy_config=Mock(return_value={"enabled": False}),
+        run_autonomous_cycle=Mock(),
+    )
+    monitor = SystemMonitor(memory, guardian)
+    beat = monitor.heartbeat
+    beat.running = True
+
+    def stop(_):
+        beat.running = False
+
+    monkeypatch.setattr("project_guardian.monitoring.time.sleep", stop)
+    beat._beat()
+    # This work occurs after the optional host-metrics read in the real beat.
+    guardian._load_autonomy_config.assert_called_once_with()
+    guardian.run_autonomous_cycle.assert_not_called()
+    assert "[Heartbeat] Error:" not in caplog.text
+    assert Path(memory.filepath).read_bytes() == before
+
+
+@pytest.mark.parametrize("error", [PermissionError("metrics denied"), ProcessMetricsUnavailable("process unavailable")])
+def test_unavailable_process_metrics_do_not_block_explicit_maintenance(memory, monkeypatch, error):
+    import sys
+    from pathlib import Path
+
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=Mock(side_effect=error)))
+    monitor = SystemMonitor(memory, SimpleNamespace(config={}))
+    metrics = monitor._get_cleanup_metrics()
+    assert metrics["memory_count"] == 4200
+    assert metrics["rss_bytes"] is None
+    assert metrics["rss_mb"] is None
+    result = monitor._perform_cleanup(1000, reason="manual")
+    assert result["action_taken"] is True
+    assert len(json.loads(Path(memory.filepath).read_text())) < 4200
+
+
 def test_runtime_health_check_observes_without_consolidating(memory):
     from pathlib import Path
     from project_guardian.runtime_health import create_guardian_health_checks, HealthStatus

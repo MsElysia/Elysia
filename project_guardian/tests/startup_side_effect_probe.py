@@ -85,6 +85,10 @@ def profile_heartbeat(frame, event, arg):
     if event == "c_call" and arg is time.sleep and not heartbeat_complete.is_set():
         guardian = getattr(beat.system_monitor, "guardian", None)
         record("first_heartbeat_complete", getattr(guardian, "_adversarial_registry", {}))
+        record("active_memory", {
+            "path": guardian.config.get("memory_filepath"),
+            "count": guardian.memory.get_memory_count(load_if_needed=True),
+        })
         heartbeat_complete.set()
 threading.setprofile(profile_heartbeat)
 def watch():
@@ -128,7 +132,10 @@ def main():
         shutil.copy2(Path(__file__).with_name(name), root / "project_guardian" / "tests" / name)
     profile = root / "profile"
     local = profile / "AppData" / "Local"
-    memory = local / "ElysiaGuardian" / "memory" / "guardian_memory.json"
+    # Match external_storage's platform fallback; otherwise Linux checks an
+    # unused Windows fixture instead of the memory opened by real startup.
+    memory_dir = local / "ElysiaGuardian" / "memory" if os.name == "nt" else profile / ".elysia_guardian" / "memory"
+    memory = memory_dir / "guardian_memory.json"
     memory.parent.mkdir(parents=True)
     seed = [{"time": "2020-01-01", "thought": f"synthetic-source-{i}",
              "category": "fixture", "priority": 0.5, "metadata": {"source_id": i}}
@@ -185,6 +192,7 @@ def run_cycle(root, env, memory, before, seed, autonomy, auto_before, cycle, sce
     logs = stdout.read_text(encoding="utf-8", errors="replace") + stderr.read_text(encoding="utf-8", errors="replace")
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8")[event_offset:].splitlines()]
     beats = [e for e in events if e["kind"] == "first_heartbeat_complete"]
+    active = [e["detail"] for e in events if e["kind"] == "active_memory"]
     types = {f["type"] for e in beats for f in e["detail"].get("findings_by_id", {}).values()}
     expected = set() if scenario == "clean" else {"repeated_failure"}
     if scenario == "degraded":
@@ -203,12 +211,17 @@ def run_cycle(root, env, memory, before, seed, autonomy, auto_before, cycle, sce
               "before_count": len(seed), "after_count": len(rows),
               "source_records_preserved": all(row in rows for row in seed),
               "byte_unchanged": before == after,
+              "seeded_memory_is_active": bool(active) and all(
+                  item.get("path") and Path(item["path"]).resolve() == memory.resolve()
+                  and item.get("count") == len(seed) for item in active
+              ),
               "before_sha256": hashlib.sha256(before).hexdigest(),
               "after_sha256": hashlib.sha256(after).hexdigest(),
               "autonomy_unchanged": auto_before == autonomy.read_bytes()}
     result["memory_boundary_pass"] = (
         code == 0 and result["guardian_ready"] and result["ready"] and result["goodbye"]
         and result["byte_unchanged"] and result["before_count"] == result["after_count"]
+        and result["seeded_memory_is_active"]
         and not result["consolidation_logged"] and result["autonomy_unchanged"]
         and result["first_heartbeat_complete"] and result["expected_findings_in_registry_and_logs"]
         and not result["heartbeat_error"]

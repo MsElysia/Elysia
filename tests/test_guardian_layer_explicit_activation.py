@@ -645,3 +645,27 @@ def test_replace_commits_then_raises_reconciles_without_duplicate_alert(
     assert layer.fingerprint == json.loads(path.read_text())["fingerprint"] == "z" * 64
     assert len(delivered) == 1
     assert len(layer.rebuild_log_path.read_text().splitlines()) == 1
+
+
+def test_corrupt_state_blocks_configuration_setters_and_direct_save(
+    tmp_path
+):
+    """No alternate setter may overwrite a malformed durable state artifact."""
+    import pytest
+
+    path = tmp_path / "guardian.json"
+    path.write_bytes(b'{"fingerprint": "truncated"')
+    raw = path.read_bytes()
+    layer = GuardianLayer(config_path=str(path),
+                          rebuild_log_path=str(tmp_path / "events.jsonl"))
+    assert layer._state_load_error is True
+    with pytest.raises(RuntimeError, match="configuration invalid"):
+        layer.set_contact_email("new@example.invalid")
+    with pytest.raises(RuntimeError, match="configuration invalid"):
+        layer.configure_smtp("smtp.invalid", smtp_port=2525)
+    with pytest.raises(RuntimeError, match="configuration invalid"):
+        layer.save()
+    assert path.read_bytes() == raw
+    assert layer.contact_email is None
+    assert layer.smtp_config == {}
+    assert layer._activated is False

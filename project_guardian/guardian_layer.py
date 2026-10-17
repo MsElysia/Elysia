@@ -51,38 +51,49 @@ class GuardianLayer:
         self.contact_email: Optional[str] = None
         self.smtp_config: Dict[str, Any] = {}
         self._activated = False
+        self._state_load_error = False
         
         # Reading existing persisted state is safe during construction.
         self.load()
 
     def activate(self) -> bool:
-        """Single-flight explicit activation; publish alerts without holding the state lock.
+        """Explicit single-flight activation with a separate notification phase.
 
-        The condition keeps overlapping activate() calls serialized through
-        persistence and post-commit notifications. Other Guardian state methods
-        may proceed while a notification callback executes.
+        Another caller may observe a completed durable activation without
+        waiting on a callback that could itself request Guardian services.
         """
         with self._activation_condition:
-            while self._activating_thread is not None:
-                # Avoid waiting on our own callback reentering activate().
-                if self._activating_thread == get_ident():
-                    logger.warning("Recursive Guardian activation refused")
-                    return False
-                self._activation_condition.wait()
+            if self._state_load_error:
+                logger.error("Guardian activation refused: persisted state is unverified")
+                return False
             if self._activated:
                 return True
+            while self._activating_thread is not None:
+                if self._activating_thread == get_ident():
+                    logger.warning("Recursive activation before commit refused")
+                    return False
+                self._activation_condition.wait()
+                if self._state_load_error:
+                    return False
+                if self._activated:
+                    return True
+            # An existing invalid file may never be treated as a fresh install.
+            if self.config_path.exists() and self.fingerprint is None:
+                self.load()
+                if self._state_load_error:
+                    return False
             self._activating_thread = get_ident()
 
         try:
             with self._lock:
                 self.config_path.parent.mkdir(parents=True, exist_ok=True)
                 self.rebuild_log_path.parent.mkdir(parents=True, exist_ok=True)
-                # Return the persisted old/new pair only for an identity change.
                 notification = self._update_fingerprint()
+                # Durable data is now verified. Commit this *before* invoking
+                # external callbacks, so their cross-thread activate() calls
+                # can safely observe an already-completed activation.
+                self._activated = True
 
-            # Never hold the Guardian lock during an external alert callback.
-            # If the persisted change succeeded, an alert transport exception
-            # is diagnostic only; it cannot trigger another identity rewrite.
             if notification is not None:
                 old_fingerprint, new_fingerprint = notification
                 try:
@@ -95,8 +106,6 @@ class GuardianLayer:
                         "Guardian identity alert failed after fingerprint persistence"
                     )
 
-            with self._lock:
-                self._activated = True
             logger.info("GuardianLayer activated")
             return True
         except Exception as exc:
@@ -145,19 +154,50 @@ class GuardianLayer:
             if previous == new_fingerprint:
                 return
 
-            # Persist and verify the new identity BEFORE any rebuild record or
-            # alert is emitted. A failed save cannot poison a later retry with
-            # an unpersisted in-memory fingerprint.
+            # First persist the complete payload; a write exception may occur
+            # after atomic replacement, so verify the durable bytes rather than
+            # blindly reverting to the old in-memory identity.
             self.fingerprint = new_fingerprint
+            intended = {
+                "fingerprint": new_fingerprint,
+                "contact_email": self.contact_email,
+                "smtp_config": self.smtp_config,
+            }
+            save_error = None
             try:
                 self.save()
-                with self.config_path.open(encoding="utf-8") as stream:
-                    persisted = json.load(stream)
-                if persisted.get("fingerprint") != new_fingerprint:
-                    raise OSError("Guardian fingerprint was not persisted")
-            except BaseException:
+            except Exception as exc:
+                save_error = exc
+
+            try:
+                # Older valid config files did not include updated_at. A
+                # failed pre-commit save must still be retriable from that
+                # intact old record, while a newly committed record needs it.
+                persisted = self._read_persisted_config(retries=2)
+            except (OSError, ValueError):
+                # If an artifact exists but cannot be validated, never retry
+                # activation as a fresh install or overwrite its raw evidence.
+                if self.config_path.exists():
+                    self._state_load_error = True
                 self.fingerprint = previous
                 raise
+
+            if (persisted["fingerprint"] == new_fingerprint
+                    and not isinstance(persisted.get("updated_at"), str)):
+                self._state_load_error = True
+                self.fingerprint = previous
+                raise OSError("Guardian new record has no commit timestamp")
+
+            if any(persisted[key] != value for key, value in intended.items()):
+                if persisted["fingerprint"] == new_fingerprint:
+                    # A save published a partial/mismatched record. Refuse
+                    # future writes rather than silently dropping settings.
+                    self._state_load_error = True
+                self.fingerprint = previous
+                raise OSError("Guardian persisted state does not match full payload")
+
+            if save_error is not None:
+                logger.warning("Guardian commit verified after write exception: %s", save_error)
 
             if previous is None:
                 logger.info("Generated initial system fingerprint")
@@ -220,6 +260,8 @@ class GuardianLayer:
     def set_contact_email(self, email: str):
         """Set contact email for alerts."""
         with self._lock:
+            if self._state_load_error:
+                raise RuntimeError("Guardian configuration invalid; refusing update")
             self.contact_email = email
             self.save()
         logger.info(f"Contact email set: {email}")
@@ -234,6 +276,8 @@ class GuardianLayer:
     ):
         """Configure SMTP settings for email alerts."""
         with self._lock:
+            if self._state_load_error:
+                raise RuntimeError("Guardian configuration invalid; refusing update")
             self.smtp_config = {
                 "server": smtp_server,
                 "port": smtp_port,
@@ -431,8 +475,10 @@ class GuardianLayer:
     
     def save(self):
         """Save guardian state."""
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
+            if self._state_load_error:
+                raise RuntimeError("Guardian configuration invalid; refusing save")
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
             data = {
                 "fingerprint": self.fingerprint,
                 "contact_email": self.contact_email,
@@ -468,23 +514,47 @@ class GuardianLayer:
                         else:
                             raise
     
+    def _read_persisted_config(
+        self, *, retries: int = 0, require_updated_at: bool = False
+    ) -> Dict[str, Any]:
+        """Read and validate all security-relevant fields, never only fingerprint."""
+        for attempt in range(retries + 1):
+            try:
+                with self.config_path.open(encoding="utf-8") as stream:
+                    data = json.load(stream)
+                break
+            except OSError:
+                if attempt == retries:
+                    raise
+        if not isinstance(data, dict):
+            raise ValueError("Guardian configuration is not an object")
+        if not all(key in data for key in ("fingerprint", "contact_email", "smtp_config")):
+            raise ValueError("Guardian configuration has missing protected fields")
+        if data["fingerprint"] is not None and not isinstance(data["fingerprint"], str):
+            raise ValueError("Guardian fingerprint has invalid type")
+        if data["contact_email"] is not None and not isinstance(data["contact_email"], str):
+            raise ValueError("Guardian contact email has invalid type")
+        if not isinstance(data["smtp_config"], dict):
+            raise ValueError("Guardian SMTP configuration has invalid type")
+        if require_updated_at and not isinstance(data.get("updated_at"), str):
+            raise ValueError("Guardian configuration has no commit timestamp")
+        return data
+
     def load(self):
-        """Load guardian state."""
+        """Load existing configuration; never accept malformed state as absent."""
         if not self.config_path.exists():
             return
-        
         try:
-            with open(self.config_path, 'r') as f:
-                data = json.load(f)
-            
+            data = self._read_persisted_config()
             with self._lock:
-                self.fingerprint = data.get("fingerprint")
-                self.contact_email = data.get("contact_email")
-                self.smtp_config = data.get("smtp_config", {})
-            
+                self.fingerprint = data["fingerprint"]
+                self.contact_email = data["contact_email"]
+                self.smtp_config = data["smtp_config"]
+                self._state_load_error = False
             logger.info("Guardian state loaded")
-        except Exception as e:
-            logger.error(f"Error loading guardian state: {e}")
+        except (OSError, ValueError) as exc:
+            self._state_load_error = True
+            logger.error("Guardian persisted state invalid, activation refused: %s", exc)
 
 
 # Example usage

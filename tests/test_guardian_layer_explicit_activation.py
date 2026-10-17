@@ -184,7 +184,7 @@ def test_activation_failure_releases_lock_and_allows_explicit_retry(tmp_path, mo
     assert layer._activated is True
 
 
-def _competing_activation(layer, entered, release):
+def _competing_activation(layer, entered, release, *, allow_committed_early_return=False):
     """Start caller two while caller one is blocked inside a guarded effect."""
     from threading import Event, Thread
 
@@ -207,7 +207,16 @@ def _competing_activation(layer, entered, release):
         second.start()
         assert second_started.wait(timeout=5)
         second.join(timeout=0.1)
-        assert second.is_alive(), "second caller passed while first activation was in flight"
+        if allow_committed_early_return:
+            # Once the complete durable state has committed, returning during
+            # notification is safe and is required to avoid callback re-entry
+            # deadlocks. No caller may return early with uncommitted state.
+            if not second.is_alive():
+                assert layer._activated is True
+                persisted = json.loads(layer.config_path.read_text(encoding="utf-8"))
+                assert persisted["fingerprint"] == layer.fingerprint
+        else:
+            assert second.is_alive(), "second caller passed before durable commit"
     finally:
         release.set()
         first.join(timeout=5)
@@ -333,7 +342,9 @@ def test_post_alert_failure_does_not_retry_completed_side_effects(tmp_path, monk
         raise OSError("synthetic error after alert already sent")
 
     monkeypatch.setattr(layer, "_check_and_alert", raise_after_alert)
-    results = _competing_activation(layer, entered, release)
+    results = _competing_activation(
+        layer, entered, release, allow_committed_early_return=True
+    )
     assert results == {1: True, 2: True}
     assert len(notifications) == 1
     assert layer._activated is True
@@ -465,3 +476,196 @@ def test_alert_callback_can_wait_for_other_guardian_state_update(
         "alert callback held Guardian lock while awaiting a different thread "
         "which needs that same lock; a synchronous wait could deadlock"
     )
+
+
+def test_cross_thread_activate_from_alert_callback_uses_durable_commit(
+    tmp_path, monkeypatch
+):
+    """Vega #134: alert may synchronously await another thread's activate()."""
+    from threading import Thread
+
+    path = tmp_path / "guardian.json"
+    path.write_text(json.dumps({
+        "fingerprint": "a" * 64,
+        "contact_email": "owner@example.invalid",
+        "smtp_config": {"server": "smtp.invalid"},
+    }), encoding="utf-8")
+    layer = GuardianLayer(config_path=str(path),
+                          rebuild_log_path=str(tmp_path / "events.jsonl"))
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: "b" * 64)
+    alerts, callbacks = [], []
+
+    def callback(**kwargs):
+        alerts.append(kwargs)
+        observed = []
+        worker = Thread(target=lambda: observed.append(layer.activate()), daemon=True)
+        worker.start()
+        worker.join(timeout=1)
+        callbacks.append((worker.is_alive(), observed))
+        assert not worker.is_alive(), "activate worker blocked behind alert callback"
+        return True
+
+    monkeypatch.setattr(layer, "send_alert_email", callback)
+    assert layer.activate() is True
+    assert callbacks == [(False, [True])]
+    assert len(alerts) == 1
+    assert len(layer.rebuild_log_path.read_text().splitlines()) == 1
+    assert json.loads(path.read_text())["fingerprint"] == "b" * 64
+
+
+def test_corrupt_existing_config_refuses_activation_and_preserves_bytes(
+    tmp_path, monkeypatch
+):
+    """Vega #134: truncated existing JSON must not be treated as first-run."""
+    path = tmp_path / "guardian.json"
+    path.write_bytes(b'{"fingerprint": "truncated"')
+    previous = path.read_bytes()
+    layer = GuardianLayer(config_path=str(path),
+                          rebuild_log_path=str(tmp_path / "events.jsonl"))
+    touched = []
+    monkeypatch.setattr(
+        layer, "_generate_system_fingerprint",
+        lambda: touched.append("host fingerprint") or "c" * 64
+    )
+    assert layer.activate() is False
+    assert layer._activated is False
+    assert not touched
+    assert path.read_bytes() == previous
+    assert not layer.rebuild_log_path.exists()
+    assert layer.verify_identity()["identity_verified"] is None
+    assert layer.activate() is False
+    assert path.read_bytes() == previous
+
+
+def test_partial_saved_payload_with_matching_fingerprint_fails_closed(
+    tmp_path, monkeypatch
+):
+    """Vega #134: matching fingerprint cannot hide lost SMTP/contact fields."""
+    path = tmp_path / "guardian.json"
+    original = {
+        "fingerprint": "a" * 64,
+        "contact_email": "owner@example.invalid",
+        "smtp_config": {"server": "smtp.invalid", "username": "fake-user"},
+    }
+    path.write_text(json.dumps(original), encoding="utf-8")
+    layer = GuardianLayer(config_path=str(path),
+                          rebuild_log_path=str(tmp_path / "events.jsonl"))
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: "b" * 64)
+    alerts = []
+    monkeypatch.setattr(layer, "send_alert_email",
+                        lambda **kw: alerts.append(kw) or True)
+
+    def partial_write():
+        path.write_text(json.dumps({"fingerprint": "b" * 64, "updated_at": "test"}),
+                        encoding="utf-8")
+
+    monkeypatch.setattr(layer, "save", partial_write)
+    assert layer.activate() is False
+    assert layer._activated is False
+    assert layer._state_load_error is True
+    assert alerts == []
+    assert not layer.rebuild_log_path.exists()
+    before_retry = path.read_bytes()
+    assert layer.activate() is False
+    assert path.read_bytes() == before_retry
+
+
+def test_one_shot_post_replace_read_fault_reconciles_full_payload(
+    tmp_path, monkeypatch
+):
+    """Vega #134: retry a read fault after durable os.replace, never roll back."""
+    from pathlib import Path
+    import project_guardian.guardian_layer as module
+
+    path = tmp_path / "guardian.json"
+    path.write_text(json.dumps({
+        "fingerprint": "a" * 64,
+        "contact_email": "owner@example.invalid",
+        "smtp_config": {"server": "smtp.invalid", "port": 2525},
+    }), encoding="utf-8")
+    layer = GuardianLayer(config_path=str(path),
+                          rebuild_log_path=str(tmp_path / "events.jsonl"))
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: "b" * 64)
+    alerts = []
+    monkeypatch.setattr(layer, "send_alert_email",
+                        lambda **kw: alerts.append(kw) or True)
+    actual_replace, actual_open = module.os.replace, Path.open
+    committed, injected = [], []
+
+    def track_replace(src, dst):
+        out = actual_replace(src, dst)
+        if Path(dst) == path:
+            committed.append(True)
+        return out
+
+    def read_fault_once(file, *args, **kwargs):
+        if Path(file) == path and committed and not injected:
+            injected.append(True)
+            raise OSError("synthetic read-after-commit interruption")
+        return actual_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "replace", track_replace)
+    monkeypatch.setattr(Path, "open", read_fault_once)
+    assert layer.activate() is True
+    assert injected == [True]
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert layer.fingerprint == payload["fingerprint"] == "b" * 64
+    assert payload["contact_email"] == "owner@example.invalid"
+    assert payload["smtp_config"] == {"server": "smtp.invalid", "port": 2525}
+    assert len(alerts) == 1
+    assert len(layer.rebuild_log_path.read_text().splitlines()) == 1
+
+
+def test_replace_commits_then_raises_reconciles_without_duplicate_alert(
+    tmp_path, monkeypatch
+):
+    """Even a reported write error can follow a successful atomic replacement."""
+    import project_guardian.guardian_layer as module
+
+    path = tmp_path / "guardian.json"
+    path.write_text(json.dumps({
+        "fingerprint": "a" * 64,
+        "contact_email": "owner@example.invalid",
+        "smtp_config": {"server": "smtp.invalid"},
+    }), encoding="utf-8")
+    layer = GuardianLayer(config_path=str(path),
+                          rebuild_log_path=str(tmp_path / "events.jsonl"))
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: "z" * 64)
+    delivered = []
+    monkeypatch.setattr(layer, "send_alert_email",
+                        lambda **kw: delivered.append(kw) or True)
+    real_replace = module.os.replace
+    def committed_but_raised(src, dst):
+        real_replace(src, dst)
+        raise OSError("injected exception after replacement")
+
+    monkeypatch.setattr(module.os, "replace", committed_but_raised)
+    assert layer.activate() is True
+    assert layer.activate() is True
+    assert layer.fingerprint == json.loads(path.read_text())["fingerprint"] == "z" * 64
+    assert len(delivered) == 1
+    assert len(layer.rebuild_log_path.read_text().splitlines()) == 1
+
+
+def test_corrupt_state_blocks_configuration_setters_and_direct_save(
+    tmp_path
+):
+    """No alternate setter may overwrite a malformed durable state artifact."""
+    import pytest
+
+    path = tmp_path / "guardian.json"
+    path.write_bytes(b'{"fingerprint": "truncated"')
+    raw = path.read_bytes()
+    layer = GuardianLayer(config_path=str(path),
+                          rebuild_log_path=str(tmp_path / "events.jsonl"))
+    assert layer._state_load_error is True
+    with pytest.raises(RuntimeError, match="configuration invalid"):
+        layer.set_contact_email("new@example.invalid")
+    with pytest.raises(RuntimeError, match="configuration invalid"):
+        layer.configure_smtp("smtp.invalid", smtp_port=2525)
+    with pytest.raises(RuntimeError, match="configuration invalid"):
+        layer.save()
+    assert path.read_bytes() == raw
+    assert layer.contact_email is None
+    assert layer.smtp_config == {}
+    assert layer._activated is False

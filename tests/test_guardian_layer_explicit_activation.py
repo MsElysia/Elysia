@@ -843,7 +843,7 @@ def test_windows_setter_sequence_digests_exact_written_bytes(tmp_path, monkeypat
     layer.set_contact_email("first@example.invalid")
     first_bytes = path.read_bytes()
     assert layer._loaded_config_digest == hashlib.sha256(first_bytes).hexdigest()
-    assert first_bytes.count(b"\\r\\n") == 0, "canonical bytes must not depend on OS"
+    assert first_bytes.count(b"\r\n") == 0, "canonical bytes must not depend on OS"
 
     layer.configure_smtp("next.smtp.invalid", smtp_port=2526)
     second_bytes = path.read_bytes()

@@ -385,3 +385,83 @@ def test_noop_save_is_not_mistaken_for_successful_activation(tmp_path, monkeypat
     assert layer._activated is False
     assert layer.fingerprint is None
     assert not layer.config_path.exists()
+
+
+def test_post_commit_cleanup_failure_cannot_rollback_persisted_identity(
+    tmp_path, monkeypatch
+):
+    """Adversarial: replacement is durable, but temp cleanup raises afterward."""
+    from pathlib import Path
+
+    path = tmp_path / "guardian.json"
+    old = "a" * 64
+    new = "b" * 64
+    path.write_text(json.dumps({
+        "fingerprint": old,
+        "contact_email": None,
+        "smtp_config": {},
+    }), encoding="utf-8")
+    layer = GuardianLayer(config_path=str(path),
+                          rebuild_log_path=str(tmp_path / "events.jsonl"))
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: new)
+    original_unlink = Path.unlink
+    injected = []
+
+    def cleanup_error(target, *, missing_ok=False):
+        if target.name.startswith(".guardian-") and not injected:
+            # save() has already called os.replace successfully at this point.
+            assert json.loads(path.read_text(encoding="utf-8"))["fingerprint"] == new
+            injected.append(target.name)
+            raise OSError("synthetic post-commit cleanup failure")
+        return original_unlink(target, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", cleanup_error)
+    result = layer.activate()
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert injected, "the post-commit fault was not exercised"
+    # Success and failure must not produce contradictory state: after a durable
+    # commit the object must not roll back to a fingerprint no longer on disk.
+    assert layer.fingerprint == persisted["fingerprint"]
+    assert result is True
+
+
+def test_alert_callback_can_wait_for_other_guardian_state_update(
+    tmp_path, monkeypatch
+):
+    """Adversarial lock-order probe; bounded waits prevent stuck hosted CI."""
+    from threading import Event, Thread
+
+    path = tmp_path / "guardian.json"
+    path.write_text(json.dumps({
+        "fingerprint": "a" * 64,
+        "contact_email": "operator@example.invalid",
+        "smtp_config": {"server": "smtp.invalid"},
+    }), encoding="utf-8")
+    layer = GuardianLayer(config_path=str(path),
+                          rebuild_log_path=str(tmp_path / "events.jsonl"))
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: "b" * 64)
+    worker_started, worker_finished = Event(), Event()
+    finished_while_in_callback, workers = [], []
+
+    def callback(**kwargs):
+        def update_guardian():
+            worker_started.set()
+            layer.set_contact_email("updated@example.invalid")
+            worker_finished.set()
+
+        worker = Thread(target=update_guardian, daemon=True)
+        workers.append(worker)
+        worker.start()
+        assert worker_started.wait(timeout=2)
+        finished_while_in_callback.append(worker_finished.wait(timeout=0.4))
+        return True
+
+    monkeypatch.setattr(layer, "send_alert_email", callback)
+    assert layer.activate() is True
+    for worker in workers:
+        worker.join(timeout=2)
+    assert worker_finished.is_set(), "test worker failed to finish after callback"
+    assert finished_while_in_callback == [True], (
+        "alert callback held Guardian lock while awaiting a different thread "
+        "which needs that same lock; a synchronous wait could deadlock"
+    )

@@ -170,9 +170,10 @@ class GuardianLayer:
                 save_error = exc
 
             try:
-                persisted = self._read_persisted_config(
-                    retries=2, require_updated_at=True
-                )
+                # Older valid config files did not include updated_at. A
+                # failed pre-commit save must still be retriable from that
+                # intact old record, while a newly committed record needs it.
+                persisted = self._read_persisted_config(retries=2)
             except (OSError, ValueError):
                 # If an artifact exists but cannot be validated, never retry
                 # activation as a fresh install or overwrite its raw evidence.
@@ -180,6 +181,12 @@ class GuardianLayer:
                     self._state_load_error = True
                 self.fingerprint = previous
                 raise
+
+            if (persisted["fingerprint"] == new_fingerprint
+                    and not isinstance(persisted.get("updated_at"), str)):
+                self._state_load_error = True
+                self.fingerprint = previous
+                raise OSError("Guardian new record has no commit timestamp")
 
             if any(persisted[key] != value for key, value in intended.items()):
                 if persisted["fingerprint"] == new_fingerprint:

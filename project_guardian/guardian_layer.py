@@ -160,6 +160,14 @@ class GuardianLayer:
         with self._lock:
             previous = self.fingerprint
             if previous == new_fingerprint:
+                # The first disk check in activate() can become stale while
+                # the host fingerprint is being probed. A no-write path still
+                # needs its own cooperative lock and final revision check.
+                with self._exclusive_persistence_lock():
+                    self._assert_unchanged_disk()
+                    # Mark the no-change activation committed *inside* the
+                    # cooperative lock, without reopening the save path.
+                    self._activated = True
                 return
 
             # First persist the complete payload; a write exception may occur
@@ -561,12 +569,15 @@ class GuardianLayer:
                     "smtp_config": self.smtp_config,
                     "updated_at": datetime.now().isoformat(),
                 }
-                payload = json.dumps(data, indent=2)
+                # Serialize once and hash the *same bytes* published on
+                # every platform. Text-mode output translates LF to CRLF on
+                # Windows and otherwise poisons the cached revision digest.
+                payload = json.dumps(data, indent=2).encode("utf-8")
                 temp_path = None
                 committed = False
                 try:
                     with tempfile.NamedTemporaryFile(
-                        mode="w", encoding="utf-8",
+                        mode="wb",
                         dir=self.config_path.parent, prefix=".guardian-", suffix=".tmp",
                         delete=False,
                     ) as stream:
@@ -576,9 +587,7 @@ class GuardianLayer:
                         os.fsync(stream.fileno())
                     os.replace(temp_path, self.config_path)
                     committed = True
-                    self._loaded_config_digest = hashlib.sha256(
-                        payload.encode("utf-8")
-                    ).hexdigest()
+                    self._loaded_config_digest = hashlib.sha256(payload).hexdigest()
                 finally:
                     if temp_path is not None:
                         try:
@@ -614,6 +623,13 @@ class GuardianLayer:
             raise ValueError("Guardian SMTP configuration has invalid type")
         if require_updated_at and not isinstance(data.get("updated_at"), str):
             raise ValueError("Guardian configuration has no commit timestamp")
+        if "updated_at" in data:
+            if not isinstance(data["updated_at"], str):
+                raise ValueError("Guardian commit timestamp has invalid type")
+            try:
+                datetime.fromisoformat(data["updated_at"])
+            except ValueError as exc:
+                raise ValueError("Guardian commit timestamp is not ISO 8601") from exc
         return (data, hashlib.sha256(raw).hexdigest()) if with_digest else data
 
     def load(self):

@@ -831,3 +831,86 @@ def test_explicit_valid_reload_can_resume_after_external_change(tmp_path, monkey
     assert layer.contact_email == "new-owner@example.invalid"
     assert len(delivered) == 1
     assert json.loads(path.read_text())["contact_email"] == "new-owner@example.invalid"
+
+
+def test_windows_setter_sequence_digests_exact_written_bytes(tmp_path, monkeypatch):
+    """Vega: a successful Windows save must not poison its next stale check."""
+    import hashlib
+
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    layer.set_contact_email("first@example.invalid")
+    first_bytes = path.read_bytes()
+    assert layer._loaded_config_digest == hashlib.sha256(first_bytes).hexdigest()
+    assert first_bytes.count(b"\r\n") == 0, "canonical bytes must not depend on OS"
+
+    layer.configure_smtp("next.smtp.invalid", smtp_port=2526)
+    second_bytes = path.read_bytes()
+    assert layer._loaded_config_digest == hashlib.sha256(second_bytes).hexdigest()
+    assert layer._state_load_error is False
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: OLD)
+    assert layer.activate() is True
+    assert layer.fingerprint == OLD
+    assert _layer(tmp_path).contact_email == "first@example.invalid"
+    assert _layer(tmp_path).smtp_config["server"] == "next.smtp.invalid"
+
+
+def test_cooperative_edit_during_unchanged_fingerprint_probe_refuses_stale_success(
+    tmp_path, monkeypatch
+):
+    """Vega: an unchanged host fingerprint is not an unchanged config revision."""
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    cooperating_writer = _layer(tmp_path)
+    def probe_with_racing_writer():
+        cooperating_writer.set_contact_email("external@example.invalid")
+        return OLD
+
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", probe_with_racing_writer)
+    assert layer.activate() is False
+    assert layer._activated is False
+    assert layer._state_load_error is True
+    durable = json.loads(path.read_text(encoding="utf-8"))
+    assert durable["fingerprint"] == OLD
+    assert durable["contact_email"] == "external@example.invalid"
+    assert not layer.rebuild_log_path.exists()
+
+
+def test_corruption_during_unchanged_fingerprint_probe_refuses_activation(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    corrupted = b'{"partial":'
+    def probe_with_corrupting_writer():
+        path.write_bytes(corrupted)
+        return OLD
+
+    monkeypatch.setattr(layer, "_generate_system_fingerprint",
+                        probe_with_corrupting_writer)
+    assert layer.activate() is False
+    assert layer._activated is False
+    assert layer._state_load_error is True
+    assert path.read_bytes() == corrupted
+    assert not layer.rebuild_log_path.exists()
+
+
+def test_invalid_commit_timestamp_is_not_accepted_as_durable_state(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "guardian.json"
+    state = _seed(path)
+    state["updated_at"] = "not-a-timestamp"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    old_bytes = path.read_bytes()
+    layer = _layer(tmp_path)
+    touched = []
+    monkeypatch.setattr(layer, "_generate_system_fingerprint",
+                        lambda: touched.append("probed") or OLD)
+    assert layer._state_load_error is True
+    assert layer.activate() is False
+    assert touched == []
+    assert path.read_bytes() == old_bytes

@@ -184,7 +184,7 @@ def test_activation_failure_releases_lock_and_allows_explicit_retry(tmp_path, mo
     assert layer._activated is True
 
 
-def _competing_activation(layer, entered, release):
+def _competing_activation(layer, entered, release, *, allow_committed_early_return=False):
     """Start caller two while caller one is blocked inside a guarded effect."""
     from threading import Event, Thread
 
@@ -207,7 +207,16 @@ def _competing_activation(layer, entered, release):
         second.start()
         assert second_started.wait(timeout=5)
         second.join(timeout=0.1)
-        assert second.is_alive(), "second caller passed while first activation was in flight"
+        if allow_committed_early_return:
+            # Once the complete durable state has committed, returning during
+            # notification is safe and is required to avoid callback re-entry
+            # deadlocks. No caller may return early with uncommitted state.
+            if not second.is_alive():
+                assert layer._activated is True
+                persisted = json.loads(layer.config_path.read_text(encoding="utf-8"))
+                assert persisted["fingerprint"] == layer.fingerprint
+        else:
+            assert second.is_alive(), "second caller passed before durable commit"
     finally:
         release.set()
         first.join(timeout=5)
@@ -333,7 +342,9 @@ def test_post_alert_failure_does_not_retry_completed_side_effects(tmp_path, monk
         raise OSError("synthetic error after alert already sent")
 
     monkeypatch.setattr(layer, "_check_and_alert", raise_after_alert)
-    results = _competing_activation(layer, entered, release)
+    results = _competing_activation(
+        layer, entered, release, allow_committed_early_return=True
+    )
     assert results == {1: True, 2: True}
     assert len(notifications) == 1
     assert layer._activated is True

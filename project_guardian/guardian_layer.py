@@ -9,6 +9,8 @@ import platform
 import os
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +26,10 @@ except ImportError:
     logger.warning("Email libraries not available - email alerts disabled")
 
 logger = logging.getLogger(__name__)
+
+
+class _GuardianStateConflict(RuntimeError):
+    """The persisted Guardian configuration differs from its verified snapshot."""
 
 
 class GuardianLayer:
@@ -52,6 +58,7 @@ class GuardianLayer:
         self.smtp_config: Dict[str, Any] = {}
         self._activated = False
         self._state_load_error = False
+        self._loaded_config_digest: Optional[str] = None
         
         # Reading existing persisted state is safe during construction.
         self.load()
@@ -88,6 +95,7 @@ class GuardianLayer:
             with self._lock:
                 self.config_path.parent.mkdir(parents=True, exist_ok=True)
                 self.rebuild_log_path.parent.mkdir(parents=True, exist_ok=True)
+                self._assert_unchanged_disk()
                 notification = self._update_fingerprint()
                 # Durable data is now verified. Commit this *before* invoking
                 # external callbacks, so their cross-thread activate() calls
@@ -166,6 +174,9 @@ class GuardianLayer:
             save_error = None
             try:
                 self.save()
+            except _GuardianStateConflict:
+                self.fingerprint = previous
+                raise
             except Exception as exc:
                 save_error = exc
 
@@ -173,7 +184,9 @@ class GuardianLayer:
                 # Older valid config files did not include updated_at. A
                 # failed pre-commit save must still be retriable from that
                 # intact old record, while a newly committed record needs it.
-                persisted = self._read_persisted_config(retries=2)
+                persisted, persisted_digest = self._read_persisted_config(
+                    retries=2, with_digest=True
+                )
             except (OSError, ValueError):
                 # If an artifact exists but cannot be validated, never retry
                 # activation as a fresh install or overwrite its raw evidence.
@@ -196,6 +209,7 @@ class GuardianLayer:
                 self.fingerprint = previous
                 raise OSError("Guardian persisted state does not match full payload")
 
+            self._loaded_config_digest = persisted_digest
             if save_error is not None:
                 logger.warning("Guardian commit verified after write exception: %s", save_error)
 
@@ -262,8 +276,13 @@ class GuardianLayer:
         with self._lock:
             if self._state_load_error:
                 raise RuntimeError("Guardian configuration invalid; refusing update")
+            prior = self.contact_email
             self.contact_email = email
-            self.save()
+            try:
+                self.save()
+            except BaseException:
+                self.contact_email = prior
+                raise
         logger.info(f"Contact email set: {email}")
     
     def configure_smtp(
@@ -278,6 +297,7 @@ class GuardianLayer:
         with self._lock:
             if self._state_load_error:
                 raise RuntimeError("Guardian configuration invalid; refusing update")
+            prior = self.smtp_config
             self.smtp_config = {
                 "server": smtp_server,
                 "port": smtp_port,
@@ -285,7 +305,11 @@ class GuardianLayer:
                 "password": password,
                 "use_tls": use_tls
             }
-            self.save()
+            try:
+                self.save()
+            except BaseException:
+                self.smtp_config = prior
+                raise
         logger.info(f"SMTP configured: {smtp_server}:{smtp_port}")
     
     def send_alert_email(
@@ -473,55 +497,107 @@ class GuardianLayer:
             "last_rebuild": rebuild_history[-1] if rebuild_history else None
         }
     
+    def _assert_unchanged_disk(self):
+        """Reject activation and writes if durable state changed since load."""
+        if self._state_load_error:
+            raise _GuardianStateConflict("Guardian configuration is unverified")
+        try:
+            current = hashlib.sha256(self.config_path.read_bytes()).hexdigest()
+        except FileNotFoundError:
+            current = None
+        except OSError as exc:
+            self._state_load_error = True
+            raise _GuardianStateConflict("Guardian configuration cannot be inspected") from exc
+        if current != self._loaded_config_digest:
+            self._state_load_error = True
+            raise _GuardianStateConflict(
+                "Guardian configuration changed since load; refusing stale overwrite"
+            )
+
+    @contextmanager
+    def _exclusive_persistence_lock(self):
+        """Serialize cooperative Guardian writers across processes and instances."""
+        lock_path = self.config_path.with_name(self.config_path.name + ".lock")
+        with lock_path.open("a+b") as stream:
+            stream.seek(0, os.SEEK_END)
+            if stream.tell() == 0:
+                stream.write(b"\x00")
+                stream.flush()
+            deadline = time.monotonic() + 2.0
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+                        stream.seek(0)
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Guardian persistence lock unavailable") from exc
+                    time.sleep(0.025)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
     def save(self):
-        """Save guardian state."""
+        """Save atomically only if the previously verified revision is unchanged."""
         with self._lock:
             if self._state_load_error:
-                raise RuntimeError("Guardian configuration invalid; refusing save")
+                raise _GuardianStateConflict("Guardian configuration invalid; refusing save")
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                "fingerprint": self.fingerprint,
-                "contact_email": self.contact_email,
-                "smtp_config": self.smtp_config,
-                "updated_at": datetime.now().isoformat()
-            }
-            
-            # Atomic replacement prevents a failed/truncated write from
-            # destroying the last known-good identity and credentials.
-            temp_path = None
-            committed = False
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8",
-                    dir=self.config_path.parent, prefix=".guardian-", suffix=".tmp",
-                    delete=False,
-                ) as stream:
-                    temp_path = Path(stream.name)
-                    json.dump(data, stream, indent=2)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temp_path, self.config_path)
-                committed = True
-            finally:
-                if temp_path is not None:
-                    try:
-                        temp_path.unlink(missing_ok=True)
-                    except OSError as exc:
-                        if committed:
-                            # The committed configuration is already durable:
-                            # a cleanup warning cannot roll back that identity.
-                            logger.warning("Guardian post-commit cleanup failed: %s", exc)
-                        else:
-                            raise
-    
+            with self._exclusive_persistence_lock():
+                self._assert_unchanged_disk()
+                data = {
+                    "fingerprint": self.fingerprint,
+                    "contact_email": self.contact_email,
+                    "smtp_config": self.smtp_config,
+                    "updated_at": datetime.now().isoformat(),
+                }
+                payload = json.dumps(data, indent=2)
+                temp_path = None
+                committed = False
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", encoding="utf-8",
+                        dir=self.config_path.parent, prefix=".guardian-", suffix=".tmp",
+                        delete=False,
+                    ) as stream:
+                        temp_path = Path(stream.name)
+                        stream.write(payload)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temp_path, self.config_path)
+                    committed = True
+                    self._loaded_config_digest = hashlib.sha256(
+                        payload.encode("utf-8")
+                    ).hexdigest()
+                finally:
+                    if temp_path is not None:
+                        try:
+                            temp_path.unlink(missing_ok=True)
+                        except OSError as exc:
+                            if committed:
+                                logger.warning("Guardian post-commit cleanup failed: %s", exc)
+                            else:
+                                raise
+
     def _read_persisted_config(
-        self, *, retries: int = 0, require_updated_at: bool = False
+        self, *, retries: int = 0, require_updated_at: bool = False,
+        with_digest: bool = False
     ) -> Dict[str, Any]:
         """Read and validate all security-relevant fields, never only fingerprint."""
         for attempt in range(retries + 1):
             try:
-                with self.config_path.open(encoding="utf-8") as stream:
-                    data = json.load(stream)
+                raw = self.config_path.read_bytes()
+                data = json.loads(raw)
                 break
             except OSError:
                 if attempt == retries:
@@ -538,19 +614,22 @@ class GuardianLayer:
             raise ValueError("Guardian SMTP configuration has invalid type")
         if require_updated_at and not isinstance(data.get("updated_at"), str):
             raise ValueError("Guardian configuration has no commit timestamp")
-        return data
+        return (data, hashlib.sha256(raw).hexdigest()) if with_digest else data
 
     def load(self):
         """Load existing configuration; never accept malformed state as absent."""
         if not self.config_path.exists():
+            if self._loaded_config_digest is not None:
+                self._state_load_error = True
             return
         try:
-            data = self._read_persisted_config()
+            data, digest = self._read_persisted_config(with_digest=True)
             with self._lock:
                 self.fingerprint = data["fingerprint"]
                 self.contact_email = data["contact_email"]
                 self.smtp_config = data["smtp_config"]
                 self._state_load_error = False
+                self._loaded_config_digest = digest
             logger.info("Guardian state loaded")
         except (OSError, ValueError) as exc:
             self._state_load_error = True

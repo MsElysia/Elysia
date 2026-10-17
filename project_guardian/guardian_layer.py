@@ -260,6 +260,8 @@ class GuardianLayer:
     def set_contact_email(self, email: str):
         """Set contact email for alerts."""
         with self._lock:
+            if self._state_load_error:
+                raise RuntimeError("Guardian configuration invalid; refusing update")
             self.contact_email = email
             self.save()
         logger.info(f"Contact email set: {email}")
@@ -274,6 +276,8 @@ class GuardianLayer:
     ):
         """Configure SMTP settings for email alerts."""
         with self._lock:
+            if self._state_load_error:
+                raise RuntimeError("Guardian configuration invalid; refusing update")
             self.smtp_config = {
                 "server": smtp_server,
                 "port": smtp_port,
@@ -471,8 +475,10 @@ class GuardianLayer:
     
     def save(self):
         """Save guardian state."""
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
+            if self._state_load_error:
+                raise RuntimeError("Guardian configuration invalid; refusing save")
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
             data = {
                 "fingerprint": self.fingerprint,
                 "contact_email": self.contact_email,

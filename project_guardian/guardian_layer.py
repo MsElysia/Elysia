@@ -12,7 +12,7 @@ import tempfile
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Condition, get_ident
 
 try:
     import smtplib
@@ -42,6 +42,8 @@ class GuardianLayer:
         
         # Thread-safe operations
         self._lock = RLock()
+        self._activation_condition = Condition(self._lock)
+        self._activating_thread = None
         
         # Guardian state. Construction is intentionally inspection-only:
         # load existing state, but do not probe the host, write files, or send alerts.
@@ -54,31 +56,57 @@ class GuardianLayer:
         self.load()
 
     def activate(self) -> bool:
-        """Explicitly enable fingerprint verification and its permitted side effects.
+        """Single-flight explicit activation; publish alerts without holding the state lock.
 
-        Activation is idempotent. Host fingerprint probes, first-run persistence,
-        rebuild logging, and alert transport are all deferred until this method.
+        The condition keeps overlapping activate() calls serialized through
+        persistence and post-commit notifications. Other Guardian state methods
+        may proceed while a notification callback executes.
         """
-        # Hold the existing reentrant lock across the entire activation
-        # transition.  _update_fingerprint() also takes this RLock, so another
-        # caller cannot duplicate probes, writes, rebuild logs or alerts.
-        # On failure the flag stays false and a later explicit call may retry.
-        with self._lock:
+        with self._activation_condition:
+            while self._activating_thread is not None:
+                # Avoid waiting on our own callback reentering activate().
+                if self._activating_thread == get_ident():
+                    logger.warning("Recursive Guardian activation refused")
+                    return False
+                self._activation_condition.wait()
             if self._activated:
                 return True
+            self._activating_thread = get_ident()
 
-            try:
+        try:
+            with self._lock:
                 self.config_path.parent.mkdir(parents=True, exist_ok=True)
                 self.rebuild_log_path.parent.mkdir(parents=True, exist_ok=True)
-                self._update_fingerprint()
-            except Exception as exc:
-                logger.error("GuardianLayer activation failed: %s", exc)
-                return False
+                # Return the persisted old/new pair only for an identity change.
+                notification = self._update_fingerprint()
 
-            self._activated = True
+            # Never hold the Guardian lock during an external alert callback.
+            # If the persisted change succeeded, an alert transport exception
+            # is diagnostic only; it cannot trigger another identity rewrite.
+            if notification is not None:
+                old_fingerprint, new_fingerprint = notification
+                try:
+                    self._check_and_alert(
+                        old_fingerprint=old_fingerprint,
+                        new_fingerprint=new_fingerprint,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Guardian identity alert failed after fingerprint persistence"
+                    )
+
+            with self._lock:
+                self._activated = True
             logger.info("GuardianLayer activated")
             return True
-    
+        except Exception as exc:
+            logger.error("GuardianLayer activation failed: %s", exc)
+            return False
+        finally:
+            with self._activation_condition:
+                self._activating_thread = None
+                self._activation_condition.notify_all()
+
     def _generate_system_fingerprint(self) -> str:
         """
         Generate a cryptographic fingerprint of the system.
@@ -146,12 +174,8 @@ class GuardianLayer:
                 self._log_rebuild_event(new_fingerprint, old_fingerprint=previous)
             except Exception:
                 logger.exception("Guardian rebuild diagnostic failed after fingerprint persistence")
-            try:
-                self._check_and_alert(
-                    old_fingerprint=previous, new_fingerprint=new_fingerprint
-                )
-            except Exception:
-                logger.exception("Guardian identity alert failed after fingerprint persistence")
+            # Caller sends any notification after releasing the state lock.
+            return previous, new_fingerprint
     
     def _log_rebuild_event(self, new_fingerprint: str, *, old_fingerprint: Optional[str] = None):
         """Log a rebuild/change event."""
@@ -419,6 +443,7 @@ class GuardianLayer:
             # Atomic replacement prevents a failed/truncated write from
             # destroying the last known-good identity and credentials.
             temp_path = None
+            committed = False
             try:
                 with tempfile.NamedTemporaryFile(
                     mode="w", encoding="utf-8",
@@ -430,9 +455,18 @@ class GuardianLayer:
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.replace(temp_path, self.config_path)
+                committed = True
             finally:
                 if temp_path is not None:
-                    temp_path.unlink(missing_ok=True)
+                    try:
+                        temp_path.unlink(missing_ok=True)
+                    except OSError as exc:
+                        if committed:
+                            # The committed configuration is already durable:
+                            # a cleanup warning cannot roll back that identity.
+                            logger.warning("Guardian post-commit cleanup failed: %s", exc)
+                        else:
+                            raise
     
     def load(self):
         """Load guardian state."""

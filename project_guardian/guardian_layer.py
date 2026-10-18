@@ -219,6 +219,10 @@ class GuardianLayer:
                 raise
             except Exception as exc:
                 save_error = exc
+                if self._state_load_error:
+                    # An unresolved replacement cannot be promoted by an
+                    # incidental later read. Explicit load/recovery required.
+                    raise
 
             try:
                 # Older valid config files did not include updated_at. A

@@ -16,6 +16,7 @@ def test_readonly_preflight_does_not_create_missing_storage(tmp_path, monkeypatc
     validator = _validator_class()(read_only=True)
     issues = validator._check_directories() + validator._check_permissions() + validator._check_database()
     assert issues
+    assert not any(issue.severity.value == "error" for issue in issues)
     assert not (tmp_path / "data").exists()
 
 

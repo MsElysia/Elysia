@@ -914,3 +914,163 @@ def test_invalid_commit_timestamp_is_not_accepted_as_durable_state(
     assert layer.activate() is False
     assert touched == []
     assert path.read_bytes() == old_bytes
+
+
+def test_repeated_activation_rejects_other_instances_committed_config(
+    tmp_path, monkeypatch
+):
+    """Vega #137: an already-active fast path must revalidate durable revision."""
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    first, second = _layer(tmp_path), _layer(tmp_path)
+    monkeypatch.setattr(first, "_generate_system_fingerprint", lambda: OLD)
+    assert first.activate() is True
+    assert first._activated is True
+
+    second.set_contact_email("external@example.invalid")
+    committed = path.read_bytes()
+    assert first.activate() is False
+    assert first._activated is False
+    assert first._state_load_error is True
+    assert first.contact_email == "owner@example.invalid"
+    assert json.loads(committed)["contact_email"] == "external@example.invalid"
+    assert path.read_bytes() == committed
+    assert not first.rebuild_log_path.exists()
+
+
+def test_repeated_activation_rejects_corruption_without_overwriting(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: OLD)
+    assert layer.activate() is True
+    path.write_bytes(b'{"committed":')
+    original = path.read_bytes()
+    assert layer.activate() is False
+    assert layer._activated is False
+    assert layer._state_load_error is True
+    assert path.read_bytes() == original
+
+
+def test_setter_commit_then_raise_reconciles_memory_digest_and_followup(
+    tmp_path, monkeypatch
+):
+    """Vega #137: a successful atomic publish can report an exception afterward."""
+    import hashlib
+    import project_guardian.guardian_layer as guardian_module
+
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    real_replace = guardian_module.os.replace
+    injected = []
+
+    def committed_but_raised(src, dst):
+        real_replace(src, dst)
+        if not injected and str(dst) == str(path):
+            injected.append(True)
+            raise OSError("synthetic exception AFTER successful replacement")
+
+    monkeypatch.setattr(guardian_module.os, "replace", committed_but_raised)
+    layer.set_contact_email("committed@example.invalid")
+    assert injected == [True]
+    assert layer.contact_email == "committed@example.invalid"
+    assert json.loads(path.read_text())["contact_email"] == layer.contact_email
+    assert layer._loaded_config_digest == hashlib.sha256(path.read_bytes()).hexdigest()
+
+    layer.configure_smtp("updated.smtp.invalid", smtp_port=2526)
+    assert layer._state_load_error is False
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: OLD)
+    assert layer.activate() is True
+    reopened = _layer(tmp_path)
+    assert reopened.contact_email == layer.contact_email
+    assert reopened.smtp_config == layer.smtp_config
+
+
+def test_persistently_unreadable_post_commit_identity_is_explicitly_unknown(
+    tmp_path, monkeypatch
+):
+    """A committed but unreadable replacement must not report the old identity."""
+    from pathlib import Path
+    import project_guardian.guardian_layer as guardian_module
+
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: NEW)
+    original_replace, original_read = guardian_module.os.replace, Path.read_bytes
+    completed = []
+
+    def commit(src, dst):
+        result = original_replace(src, dst)
+        if str(dst) == str(path):
+            completed.append(True)
+        return result
+
+    def unreadable_after_commit(target):
+        if target == path and completed:
+            raise OSError("persistent synthetic readback refusal")
+        return original_read(target)
+
+    monkeypatch.setattr(guardian_module.os, "replace", commit)
+    monkeypatch.setattr(Path, "read_bytes", unreadable_after_commit)
+    assert layer.activate() is False
+    assert completed
+    assert layer._state_load_error is True
+    assert layer._activated is False
+    assert layer.fingerprint is None
+    assert layer.contact_email is None
+    assert layer.smtp_config == {}
+    assert not layer.rebuild_log_path.exists()
+
+    monkeypatch.setattr(Path, "read_bytes", original_read)
+    assert json.loads(path.read_text())["fingerprint"] == NEW
+    layer.load()
+    assert layer._state_load_error is False
+    assert layer.fingerprint == NEW
+    assert layer.contact_email == "owner@example.invalid"
+
+
+def test_setter_with_unknown_commit_result_fences_instead_of_false_rollback(
+    tmp_path, monkeypatch
+):
+    """If replacement cannot be verified, require explicit recovery before writes."""
+    from pathlib import Path
+    import project_guardian.guardian_layer as guardian_module
+
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    original_replace, original_read = guardian_module.os.replace, Path.read_bytes
+    completed = []
+
+    def committed_but_raised(src, dst):
+        original_replace(src, dst)
+        if str(dst) == str(path):
+            completed.append(True)
+            raise OSError("ambiguous committed replacement")
+
+    def permanently_unreadable(target):
+        if target == path and completed:
+            raise OSError("readback temporarily unavailable")
+        return original_read(target)
+
+    monkeypatch.setattr(guardian_module.os, "replace", committed_but_raised)
+    monkeypatch.setattr(Path, "read_bytes", permanently_unreadable)
+    with pytest.raises(OSError, match="readback temporarily unavailable"):
+        layer.set_contact_email("possibly-committed@example.invalid")
+    assert layer._state_load_error is True
+    assert layer._activated is False
+    assert layer.contact_email is None
+    assert layer.fingerprint is None
+
+    monkeypatch.setattr(Path, "read_bytes", original_read)
+    monkeypatch.setattr(guardian_module.os, "replace", original_replace)
+    assert json.loads(path.read_text())["contact_email"] == "possibly-committed@example.invalid"
+    with pytest.raises(RuntimeError, match="configuration invalid"):
+        layer.configure_smtp("blocked.example.invalid")
+    layer.load()
+    assert layer._state_load_error is False
+    assert layer.contact_email == "possibly-committed@example.invalid"

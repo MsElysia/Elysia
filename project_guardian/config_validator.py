@@ -125,7 +125,7 @@ class ConfigValidator:
             dir_path = Path(dir_name)
             if not dir_path.exists():
                 if self.read_only:
-                    issues.append(ConfigIssue(ConfigIssueSeverity.ERROR, "directories", f"Missing {description}: {dir_name}", f"Create directory: {dir_name}"))
+                    issues.append(ConfigIssue(ConfigIssueSeverity.WARNING, "directories", f"Missing {description}: {dir_name}", f"Create directory: {dir_name}"))
                     continue
                 try:
                     dir_path.mkdir(parents=True, exist_ok=True)
@@ -253,7 +253,7 @@ class ConfigValidator:
                 ))
         else:
             if self.read_only:
-                issues.append(ConfigIssue(ConfigIssueSeverity.ERROR, "permissions", "Data directory does not exist"))
+                issues.append(ConfigIssue(ConfigIssueSeverity.WARNING, "permissions", "Data directory does not exist"))
                 return issues
             try:
                 data_dir.mkdir(parents=True, exist_ok=True)

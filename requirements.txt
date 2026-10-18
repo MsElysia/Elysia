@@ -4,13 +4,14 @@
 # Web Framework & API
 Flask>=2.3.0
 flask-cors>=4.0.0
+flask-socketio>=5.3.0  # Required by ConfigValidator for the existing UI startup path
 # Note: FastAPI/uvicorn/jinja2 moved to requirements-ui.txt (optional UI dependencies)
 
 # Cryptography (for SecretsManager)
 cryptography>=41.0.0
 
 # Async Support
-asyncio  # Built-in Python 3.7+
+# asyncio is part of the Python standard library; no pip dependency
 
 # Data Handling
 # json - Built-in

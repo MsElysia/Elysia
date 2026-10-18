@@ -46,7 +46,7 @@ async def main():
     # Validate configuration first
     try:
         from .config_validator import ConfigValidator
-        validator = ConfigValidator(config_path="config/guardian_config.json")
+        validator = ConfigValidator(config_path="config/guardian_config.json", read_only=True)
         validation_results = validator.validate_all()
         
         if not validation_results["valid"]:

@@ -8,11 +8,6 @@ import sys
 import json
 from pathlib import Path
 
-try:
-    from .system_orchestrator import SystemOrchestrator
-except ImportError:
-    from system_orchestrator import SystemOrchestrator
-
 # Configure logging
 try:
     from .logging_config import setup_logging, configure_module_logging
@@ -46,7 +41,7 @@ async def main():
     # Validate configuration first
     try:
         from .config_validator import ConfigValidator
-        validator = ConfigValidator(config_path="config/guardian_config.json")
+        validator = ConfigValidator(config_path="config/guardian_config.json", read_only=True)
         validation_results = validator.validate_all()
         
         if not validation_results["valid"]:
@@ -59,9 +54,11 @@ async def main():
             logger.error("\nRun 'python setup_guardian.py' to configure the system.")
             return 1
     except ImportError:
-        logger.warning("ConfigValidator not available, skipping validation")
+        logger.error("ConfigValidator is unavailable; refusing unvalidated startup", exc_info=True)
+        return 1
     except Exception as e:
-        logger.warning(f"Configuration validation skipped: {e}")
+        logger.error(f"Configuration validation failed unexpectedly: {e}", exc_info=True)
+        return 1
     
     # Load configuration from file if available
     config = {}
@@ -97,6 +94,12 @@ async def main():
     if "claude_api_key" in api_keys:
         config["claude_api_key"] = api_keys["claude_api_key"]
     
+    # Import runtime components only after non-mutating validation succeeds.
+    try:
+        from .system_orchestrator import SystemOrchestrator
+    except ImportError as e:
+        logger.error("Runtime orchestrator unavailable: %s", e)
+        return 1
     orchestrator = SystemOrchestrator(config=config)
     
     try:

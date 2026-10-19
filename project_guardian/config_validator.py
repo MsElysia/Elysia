@@ -47,15 +47,17 @@ class ConfigValidator:
     Checks for required settings, API keys, dependencies, and permissions.
     """
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, *, read_only: bool = False):
         """
         Initialize ConfigValidator.
         
         Args:
             config_path: Path to configuration file (optional)
         """
+        self.read_only = read_only
         self.config_path = Path(config_path) if config_path else None
         self.config: Dict[str, Any] = {}
+        self.config_load_error: Optional[str] = None
         
         if self.config_path and self.config_path.exists():
             self.load_config()
@@ -71,7 +73,8 @@ class ConfigValidator:
             logger.info(f"Loaded configuration from {self.config_path}")
             return True
         except Exception as e:
-            logger.error(f"Failed to load config: {e}")
+            self.config_load_error = f"{type(e).__name__}: {e}"
+            logger.error("Failed to load config file: %s", self.config_path)
             return False
     
     def validate_all(self) -> Dict[str, Any]:
@@ -82,6 +85,8 @@ class ConfigValidator:
             Dictionary with validation results
         """
         issues: List[ConfigIssue] = []
+        if self.config_load_error:
+            issues.append(ConfigIssue(ConfigIssueSeverity.ERROR, "config", "Configuration file cannot be loaded", "Repair the configuration JSON before starting"))
         
         # Check required directories
         issues.extend(self._check_directories())
@@ -123,6 +128,9 @@ class ConfigValidator:
         for dir_name, description in required_dirs:
             dir_path = Path(dir_name)
             if not dir_path.exists():
+                if self.read_only:
+                    issues.append(ConfigIssue(ConfigIssueSeverity.WARNING, "directories", f"Missing {description}: {dir_name}", f"Create directory: {dir_name}"))
+                    continue
                 try:
                     dir_path.mkdir(parents=True, exist_ok=True)
                     issues.append(ConfigIssue(
@@ -232,6 +240,10 @@ class ConfigValidator:
         # Check write permissions for data directory
         data_dir = Path("data")
         if data_dir.exists():
+            if self.read_only:
+                if not os.access(data_dir, os.W_OK):
+                    issues.append(ConfigIssue(ConfigIssueSeverity.ERROR, "permissions", "Data directory is not writable"))
+                return issues
             test_file = data_dir / ".permission_test"
             try:
                 test_file.write_text("test")
@@ -244,6 +256,9 @@ class ConfigValidator:
                     "Check directory permissions"
                 ))
         else:
+            if self.read_only:
+                issues.append(ConfigIssue(ConfigIssueSeverity.WARNING, "permissions", "Data directory does not exist"))
+                return issues
             try:
                 data_dir.mkdir(parents=True, exist_ok=True)
             except Exception as e:
@@ -263,10 +278,12 @@ class ConfigValidator:
         # Check SQLite availability
         try:
             import sqlite3
-            test_db = Path("data/test.db")
-            conn = sqlite3.connect(str(test_db))
-            conn.close()
-            test_db.unlink()
+            # In-memory probe never opens, overwrites, or unlinks user-owned files.
+            conn = sqlite3.connect(":memory:")
+            try:
+                conn.execute("SELECT 1").fetchone()
+            finally:
+                conn.close()
         except Exception as e:
             issues.append(ConfigIssue(
                 ConfigIssueSeverity.ERROR,

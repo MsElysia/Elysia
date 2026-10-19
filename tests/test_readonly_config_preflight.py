@@ -44,3 +44,14 @@ def test_setup_mode_preserves_existing_sqlite_file(tmp_path, monkeypatch):
     validator = _validator_class()(read_only=False)
     assert validator._check_database() == []
     assert existing.read_bytes() == b'keep-this-file'
+
+
+def test_malformed_config_is_reported_without_modification(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / 'config.json'
+    path.write_text('{bad', encoding='utf-8')
+    validator = _validator_class()(config_path=str(path), read_only=True)
+    result = validator.validate_all()
+    assert result['valid'] is False
+    assert any(issue['component'] == 'config' for issue in result['errors'])
+    assert path.read_text(encoding='utf-8') == '{bad'

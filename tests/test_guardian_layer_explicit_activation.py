@@ -9,6 +9,56 @@ import pytest
 from project_guardian.guardian_layer import GuardianLayer
 
 
+@pytest.mark.parametrize("setter", ["contact", "smtp"])
+def test_stale_setter_discards_attempt_revokes_activation_and_requires_reload(
+    tmp_path, monkeypatch, setter
+):
+    config = tmp_path / "guardian.json"
+    config.write_text(json.dumps({
+        "fingerprint": "a" * 64,
+        "contact_email": "original@example.invalid",
+        "smtp_config": {"server": "original.invalid"},
+    }), encoding="utf-8")
+    stale = GuardianLayer(str(config), str(tmp_path / "rebuild.log"))
+    writer = GuardianLayer(str(config), str(tmp_path / "writer.log"))
+    monkeypatch.setattr(stale, "_generate_system_fingerprint", lambda: "a" * 64)
+    assert stale.activate() is True
+    prior_contact, prior_smtp = stale.contact_email, stale.smtp_config.copy()
+    writer.set_contact_email("newer@example.invalid")
+    writer.configure_smtp("newer.invalid", smtp_port=2525)
+    durable = config.read_bytes()
+
+    def attempt():
+        if setter == "contact":
+            stale.set_contact_email("uncommitted@example.invalid")
+        else:
+            stale.configure_smtp("uncommitted.invalid")
+
+    with pytest.raises(RuntimeError, match="changed since load"):
+        attempt()
+    assert config.read_bytes() == durable
+    assert stale.contact_email == prior_contact
+    assert stale.smtp_config == prior_smtp
+    assert stale.get_status()["activated"] is False
+    assert stale._state_load_error is True
+    assert stale.activate() is False
+    for update in (lambda: stale.set_contact_email("blocked@example.invalid"),
+                   lambda: stale.configure_smtp("blocked.invalid"), stale.save):
+        with pytest.raises(RuntimeError):
+            update()
+        assert config.read_bytes() == durable
+
+    stale.load()
+    assert stale.contact_email == "newer@example.invalid"
+    assert stale.smtp_config["server"] == "newer.invalid"
+    assert stale.get_status()["activated"] is False
+    assert stale.activate() is True
+    attempt()
+    reopened = GuardianLayer(str(config), str(tmp_path / "reopened.log"))
+    assert reopened.contact_email == stale.contact_email
+    assert reopened.smtp_config == stale.smtp_config
+
+
 def _raise_if_called(*args, **kwargs):
     raise AssertionError("host fingerprint provider touched before activation")
 

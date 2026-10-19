@@ -58,6 +58,7 @@ class GuardianLayer:
         self.smtp_config: Dict[str, Any] = {}
         self._activated = False
         self._state_load_error = False
+        self._durable_state_unknown = False
         self._loaded_config_digest: Optional[str] = None
         
         # Reading existing persisted state is safe during construction.
@@ -74,7 +75,7 @@ class GuardianLayer:
                 logger.error("Guardian activation refused: persisted state is unverified")
                 return False
             if self._activated:
-                return True
+                return self._revalidate_activation()
             while self._activating_thread is not None:
                 if self._activating_thread == get_ident():
                     logger.warning("Recursive activation before commit refused")
@@ -83,7 +84,7 @@ class GuardianLayer:
                 if self._state_load_error:
                     return False
                 if self._activated:
-                    return True
+                    return self._revalidate_activation()
             # An existing invalid file may never be treated as a fresh install.
             if self.config_path.exists() and self.fingerprint is None:
                 self.load()
@@ -159,6 +160,7 @@ class GuardianLayer:
         
         with self._lock:
             previous = self.fingerprint
+            previous_digest = self._loaded_config_digest
             if previous == new_fingerprint:
                 # The first disk check in activate() can become stale while
                 # the host fingerprint is being probed. A no-write path still
@@ -186,6 +188,10 @@ class GuardianLayer:
                 self.fingerprint = previous
                 raise
             except Exception as exc:
+                if self._durable_state_unknown:
+                    # Once the authoritative inspection failed, only explicit
+                    # load() may reopen the fence, even if a later read works.
+                    raise
                 save_error = exc
 
             try:
@@ -198,23 +204,36 @@ class GuardianLayer:
             except (OSError, ValueError):
                 # If an artifact exists but cannot be validated, never retry
                 # activation as a fresh install or overwrite its raw evidence.
-                if self.config_path.exists():
-                    self._state_load_error = True
-                self.fingerprint = previous
+                # Only a verified unchanged prior revision permits rollback.
+                # Absence on first run is likewise a verified pre-commit state.
+                try:
+                    current_digest = hashlib.sha256(self.config_path.read_bytes()).hexdigest()
+                except FileNotFoundError:
+                    current_digest = None
+                except OSError:
+                    self._mark_durable_unknown()
+                    raise
+                if current_digest == previous_digest:
+                    self.fingerprint = previous
+                    self._loaded_config_digest = previous_digest
+                else:
+                    self._mark_durable_unknown()
                 raise
 
             if (persisted["fingerprint"] == new_fingerprint
                     and not isinstance(persisted.get("updated_at"), str)):
                 self._state_load_error = True
-                self.fingerprint = previous
+                self._mark_durable_unknown()
                 raise OSError("Guardian new record has no commit timestamp")
 
-            if any(persisted[key] != value for key, value in intended.items()):
-                if persisted["fingerprint"] == new_fingerprint:
-                    # A save published a partial/mismatched record. Refuse
-                    # future writes rather than silently dropping settings.
-                    self._state_load_error = True
-                self.fingerprint = previous
+            if (persisted_digest != self._loaded_config_digest or any(
+                persisted[key] != value for key, value in intended.items()
+            )):
+                if persisted_digest == previous_digest:
+                    self.fingerprint = previous
+                    self._loaded_config_digest = previous_digest
+                else:
+                    self._mark_durable_unknown()
                 raise OSError("Guardian persisted state does not match full payload")
 
             self._loaded_config_digest = persisted_digest
@@ -285,11 +304,13 @@ class GuardianLayer:
             if self._state_load_error:
                 raise RuntimeError("Guardian configuration invalid; refusing update")
             prior = self.contact_email
+            prior_digest = self._loaded_config_digest
             self.contact_email = email
             try:
                 self.save()
             except BaseException:
-                self.contact_email = prior
+                if self._state_load_error or self._loaded_config_digest == prior_digest:
+                    self.contact_email = prior
                 raise
         logger.info(f"Contact email set: {email}")
     
@@ -306,6 +327,7 @@ class GuardianLayer:
             if self._state_load_error:
                 raise RuntimeError("Guardian configuration invalid; refusing update")
             prior = self.smtp_config
+            prior_digest = self._loaded_config_digest
             self.smtp_config = {
                 "server": smtp_server,
                 "port": smtp_port,
@@ -316,7 +338,8 @@ class GuardianLayer:
             try:
                 self.save()
             except BaseException:
-                self.smtp_config = prior
+                if self._state_load_error or self._loaded_config_digest == prior_digest:
+                    self.smtp_config = prior
                 raise
         logger.info(f"SMTP configured: {smtp_server}:{smtp_port}")
     
@@ -445,7 +468,7 @@ class GuardianLayer:
         Returns:
             Verification result dictionary
         """
-        if not self._activated:
+        if not self._activated or self._state_load_error:
             return {
                 "identity_verified": None,
                 "current_fingerprint": None,
@@ -496,6 +519,7 @@ class GuardianLayer:
         
         return {
             "activated": self._activated,
+            "durable_state_unknown": self._durable_state_unknown,
             "fingerprint": self.fingerprint,
             "fingerprint_short": self.fingerprint[:16] + "..." if self.fingerprint else None,
             "identity_verified": verification["identity_verified"],
@@ -521,6 +545,32 @@ class GuardianLayer:
             raise _GuardianStateConflict(
                 "Guardian configuration changed since load; refusing stale overwrite"
             )
+
+    def _mark_durable_unknown(self):
+        """Fence ambiguous state without claiming either fingerprint is current."""
+        self._state_load_error = True
+        self._durable_state_unknown = True
+        self._activated = False
+        self.fingerprint = None
+        self._loaded_config_digest = None
+
+    def _revalidate_activation(self):
+        """Called with the state lock; never adopt another writer's revision."""
+        try:
+            with self._exclusive_persistence_lock():
+                self._assert_unchanged_disk()
+                data, digest = self._read_persisted_config(with_digest=True)
+                if digest != self._loaded_config_digest or any(
+                    data[key] != getattr(self, key)
+                    for key in ("fingerprint", "contact_email", "smtp_config")
+                ):
+                    raise _GuardianStateConflict("Guardian activated payload changed")
+            return True
+        except (OSError, ValueError, _GuardianStateConflict):
+            self._state_load_error = True
+            self._activated = False
+            logger.exception("Guardian repeated activation refused: revalidation required")
+            return False
 
     @contextmanager
     def _exclusive_persistence_lock(self):
@@ -573,6 +623,8 @@ class GuardianLayer:
                 # every platform. Text-mode output translates LF to CRLF on
                 # Windows and otherwise poisons the cached revision digest.
                 payload = json.dumps(data, indent=2).encode("utf-8")
+                intended_digest = hashlib.sha256(payload).hexdigest()
+                previous_digest = self._loaded_config_digest
                 temp_path = None
                 committed = False
                 try:
@@ -587,7 +639,31 @@ class GuardianLayer:
                         os.fsync(stream.fileno())
                     os.replace(temp_path, self.config_path)
                     committed = True
-                    self._loaded_config_digest = hashlib.sha256(payload).hexdigest()
+                    self._loaded_config_digest = intended_digest
+                except BaseException as exc:
+                    # Replacement can commit and then raise. Resolve while
+                    # still owning the cooperative lock, using exact bytes,
+                    # including this attempt's timestamp, not field similarity.
+                    try:
+                        raw = self.config_path.read_bytes()
+                    except FileNotFoundError:
+                        durable_digest = None
+                    except OSError:
+                        self._mark_durable_unknown()
+                        raise exc
+                    else:
+                        durable_digest = hashlib.sha256(raw).hexdigest()
+                    if durable_digest == intended_digest:
+                        committed = True
+                        self._loaded_config_digest = intended_digest
+                        logger.warning("Guardian replacement verified after write exception")
+                        if not isinstance(exc, Exception):
+                            raise
+                    elif durable_digest == previous_digest:
+                        raise
+                    else:
+                        self._mark_durable_unknown()
+                        raise
                 finally:
                     if temp_path is not None:
                         try:
@@ -645,6 +721,8 @@ class GuardianLayer:
                 self.contact_email = data["contact_email"]
                 self.smtp_config = data["smtp_config"]
                 self._state_load_error = False
+                self._durable_state_unknown = False
+                self._activated = False
                 self._loaded_config_digest = digest
             logger.info("Guardian state loaded")
         except (OSError, ValueError) as exc:

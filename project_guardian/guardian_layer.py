@@ -468,6 +468,13 @@ class GuardianLayer:
         Returns:
             Verification result dictionary
         """
+        with self._lock:
+            if self._activated and not self._state_load_error:
+                self._revalidate_activation()
+            return self._inspect_identity()
+
+    def _inspect_identity(self) -> Dict[str, Any]:
+        """Inspect under the state lock after durable activation revalidation."""
         if not self._activated or self._state_load_error:
             return {
                 "identity_verified": None,

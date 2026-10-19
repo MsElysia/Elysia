@@ -1130,3 +1130,23 @@ def test_setter_interrupt_after_verified_replace_does_not_restore_stale_memory(
     assert layer.contact_email == json.loads(path.read_bytes())["contact_email"]
     assert layer._loaded_config_digest == hashlib.sha256(path.read_bytes()).hexdigest()
     assert layer._state_load_error is False
+
+
+@pytest.mark.parametrize("inspection", ["verify_identity", "get_status"])
+def test_identity_inspection_cannot_bypass_durable_activation_revalidation(
+    tmp_path, monkeypatch, inspection
+):
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: OLD)
+    assert layer.activate() is True
+    writer = _layer(tmp_path)
+    writer.set_contact_email("external@example.invalid")
+    raw = path.read_bytes()
+    result = getattr(layer, inspection)()
+    assert result["identity_verified"] is None
+    assert result["activated"] is False
+    assert layer._state_load_error is True
+    assert layer.contact_email == "owner@example.invalid"
+    assert path.read_bytes() == raw

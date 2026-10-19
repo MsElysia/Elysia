@@ -57,6 +57,7 @@ class ConfigValidator:
         self.read_only = read_only
         self.config_path = Path(config_path) if config_path else None
         self.config: Dict[str, Any] = {}
+        self.config_load_error: Optional[str] = None
         
         if self.config_path and self.config_path.exists():
             self.load_config()
@@ -72,7 +73,8 @@ class ConfigValidator:
             logger.info(f"Loaded configuration from {self.config_path}")
             return True
         except Exception as e:
-            logger.error(f"Failed to load config: {e}")
+            self.config_load_error = f"{type(e).__name__}: {e}"
+            logger.error("Failed to load config file: %s", self.config_path)
             return False
     
     def validate_all(self) -> Dict[str, Any]:
@@ -83,6 +85,8 @@ class ConfigValidator:
             Dictionary with validation results
         """
         issues: List[ConfigIssue] = []
+        if self.config_load_error:
+            issues.append(ConfigIssue(ConfigIssueSeverity.ERROR, "config", "Configuration file cannot be loaded", "Repair the configuration JSON before starting"))
         
         # Check required directories
         issues.extend(self._check_directories())
@@ -274,14 +278,12 @@ class ConfigValidator:
         # Check SQLite availability
         try:
             import sqlite3
-            if self.read_only:
-                conn = sqlite3.connect(":memory:")
+            # In-memory probe never opens, overwrites, or unlinks user-owned files.
+            conn = sqlite3.connect(":memory:")
+            try:
+                conn.execute("SELECT 1").fetchone()
+            finally:
                 conn.close()
-            else:
-                test_db = Path("data/test.db")
-                conn = sqlite3.connect(str(test_db))
-                conn.close()
-                test_db.unlink()
         except Exception as e:
             issues.append(ConfigIssue(
                 ConfigIssueSeverity.ERROR,

@@ -326,6 +326,13 @@ class GuardianLayer:
             self.contact_email = email
             try:
                 self.save()
+            except _GuardianStateConflict:
+                # Revision checks precede replacement: this attempted value
+                # never committed. Keep the prior snapshot inactive until load().
+                self.contact_email = prior
+                self._activated = False
+                self._state_load_error = True
+                raise
             except BaseException:
                 if not self._state_load_error:
                     self.contact_email = prior
@@ -354,6 +361,13 @@ class GuardianLayer:
             }
             try:
                 self.save()
+            except _GuardianStateConflict:
+                # Unlike an ambiguous replacement, a pre-write conflict proves
+                # this attempted configuration was not published.
+                self.smtp_config = prior
+                self._activated = False
+                self._state_load_error = True
+                raise
             except BaseException:
                 if not self._state_load_error:
                     self.smtp_config = prior

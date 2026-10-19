@@ -34,3 +34,13 @@ def test_readonly_preflight_preserves_existing_storage(tmp_path, monkeypatch):
     validator._check_database()
     assert sentinel.read_bytes() == before
     assert not (data / ".permission_test").exists()
+
+
+def test_setup_mode_preserves_existing_sqlite_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'data').mkdir()
+    existing = tmp_path / 'data' / 'test.db'
+    existing.write_bytes(b'keep-this-file')
+    validator = _validator_class()(read_only=False)
+    assert validator._check_database() == []
+    assert existing.read_bytes() == b'keep-this-file'

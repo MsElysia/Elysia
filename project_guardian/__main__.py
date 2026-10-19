@@ -8,11 +8,6 @@ import sys
 import json
 from pathlib import Path
 
-try:
-    from .system_orchestrator import SystemOrchestrator
-except ImportError:
-    from system_orchestrator import SystemOrchestrator
-
 # Configure logging
 try:
     from .logging_config import setup_logging, configure_module_logging
@@ -99,6 +94,12 @@ async def main():
     if "claude_api_key" in api_keys:
         config["claude_api_key"] = api_keys["claude_api_key"]
     
+    # Import runtime components only after non-mutating validation succeeds.
+    try:
+        from .system_orchestrator import SystemOrchestrator
+    except ImportError as e:
+        logger.error("Runtime orchestrator unavailable: %s", e)
+        return 1
     orchestrator = SystemOrchestrator(config=config)
     
     try:

@@ -914,3 +914,239 @@ def test_invalid_commit_timestamp_is_not_accepted_as_durable_state(
     assert layer.activate() is False
     assert touched == []
     assert path.read_bytes() == old_bytes
+
+
+@pytest.mark.parametrize("setter", ["email", "smtp"])
+def test_repeated_activation_rejects_cooperating_configuration_commit(
+    tmp_path, monkeypatch, setter
+):
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: OLD)
+    assert layer.activate() is True
+    writer = _layer(tmp_path)
+    if setter == "email":
+        writer.set_contact_email("external@example.invalid")
+    else:
+        writer.configure_smtp("external.smtp.invalid", smtp_port=2526)
+    committed = path.read_bytes()
+    assert layer.activate() is False
+    assert layer._activated is False
+    assert layer._state_load_error is True
+    assert layer.contact_email == "owner@example.invalid"
+    assert layer.smtp_config["server"] == "smtp.invalid"
+    assert path.read_bytes() == committed
+    layer.load()  # Recovery is explicit; stale activation did not adopt writer.
+    assert layer.activate() is True
+    assert layer.contact_email == writer.contact_email
+    assert layer.smtp_config == writer.smtp_config
+    assert path.read_bytes() == committed
+
+
+@pytest.mark.parametrize("setter", ["email", "smtp"])
+def test_setter_replace_then_raise_reconciles_exact_revision(
+    tmp_path, monkeypatch, setter
+):
+    import hashlib
+    import project_guardian.guardian_layer as module
+
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    real_replace = module.os.replace
+    def replace_then_raise(src, dst):
+        real_replace(src, dst)
+        raise OSError("synthetic exception immediately after replacement")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(module.os, "replace", replace_then_raise)
+        # A verified commit can complete despite the transport exception.
+        if setter == "email":
+            layer.set_contact_email("committed@example.invalid")
+        else:
+            layer.configure_smtp("committed.smtp.invalid", smtp_port=2526)
+    raw = path.read_bytes()
+    durable = json.loads(raw)
+    assert layer.contact_email == durable["contact_email"]
+    assert layer.smtp_config == durable["smtp_config"]
+    assert layer._loaded_config_digest == hashlib.sha256(raw).hexdigest()
+    assert layer._state_load_error is False
+    # Next write, activation and restart all use the reconciled revision.
+    layer.set_contact_email("next@example.invalid")
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: OLD)
+    assert layer.activate() is True
+    reopened = _layer(tmp_path)
+    assert reopened.contact_email == layer.contact_email
+    assert reopened.smtp_config == layer.smtp_config
+    assert not layer.rebuild_log_path.exists()
+
+
+@pytest.mark.parametrize("operation", ["activation", "email", "smtp"])
+def test_persistent_post_commit_read_failure_requires_explicit_revalidation(
+    tmp_path, monkeypatch, operation
+):
+    import hashlib
+    from pathlib import Path
+    import project_guardian.guardian_layer as module
+
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: NEW)
+    alerts = []
+    monkeypatch.setattr(layer, "send_alert_email",
+                        lambda **kw: alerts.append(kw) or True)
+    real_replace, real_read = module.os.replace, Path.read_bytes
+    committed = []
+    def replace(src, dst):
+        real_replace(src, dst)
+        committed.append(real_read(path))
+        if operation != "activation":
+            raise OSError("replacement committed but reported failure")
+
+    def unavailable(target):
+        if target == path and committed:
+            raise OSError("persistent read-back failure")
+        return real_read(target)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(module.os, "replace", replace)
+        fault.setattr(Path, "read_bytes", unavailable)
+        if operation == "activation":
+            assert layer.activate() is False
+        else:
+            with pytest.raises(OSError):
+                if operation == "email":
+                    layer.set_contact_email("committed@example.invalid")
+                else:
+                    layer.configure_smtp("committed.smtp.invalid")
+        assert layer._durable_state_unknown is True
+        assert layer._state_load_error is True
+        assert layer._activated is False
+        assert layer.fingerprint is None
+        assert layer._loaded_config_digest is None
+        assert layer.get_status()["identity_verified"] is None
+        assert layer.get_status()["durable_state_unknown"] is True
+        assert layer.activate() is False
+        with pytest.raises(RuntimeError):
+            layer.set_contact_email("blocked@example.invalid")
+        with pytest.raises(RuntimeError):
+            layer.configure_smtp("blocked.smtp.invalid")
+        with pytest.raises(RuntimeError):
+            layer.save()
+        assert len(committed) == 1
+    # Removing the fault alone must not reopen the fence or retry a write.
+    assert layer.activate() is False
+    assert path.read_bytes() == committed[0]
+    layer.load()
+    durable = json.loads(committed[0])
+    assert layer._durable_state_unknown is False
+    assert layer.fingerprint == durable["fingerprint"]
+    assert layer.contact_email == durable["contact_email"]
+    assert layer.smtp_config == durable["smtp_config"]
+    assert layer._loaded_config_digest == hashlib.sha256(committed[0]).hexdigest()
+    reopened = _layer(tmp_path)
+    assert reopened.fingerprint == layer.fingerprint
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: layer.fingerprint)
+    assert layer.activate() is True
+    assert path.read_bytes() == committed[0]
+    assert not alerts
+    assert not layer.rebuild_log_path.exists()
+
+
+@pytest.mark.parametrize("setter", ["email", "smtp"])
+def test_precommit_setter_failure_restores_verified_previous_state(
+    tmp_path, monkeypatch, setter
+):
+    import project_guardian.guardian_layer as module
+    path = tmp_path / "guardian.json"
+    prior = _seed(path)
+    layer = _layer(tmp_path)
+    raw, digest = path.read_bytes(), layer._loaded_config_digest
+    def denied(*args):
+        raise OSError("replacement denied before commit")
+    with monkeypatch.context() as fault:
+        fault.setattr(module.os, "replace", denied)
+        with pytest.raises(OSError):
+            if setter == "email":
+                layer.set_contact_email("uncommitted@example.invalid")
+            else:
+                layer.configure_smtp("uncommitted.smtp.invalid")
+    assert path.read_bytes() == raw
+    assert layer.contact_email == prior["contact_email"]
+    assert layer.smtp_config == prior["smtp_config"]
+    assert layer._loaded_config_digest == digest
+    assert layer._state_load_error is False
+    layer.set_contact_email("retry@example.invalid")
+
+
+def test_ambiguous_setter_rejects_third_revision_even_with_intended_fields(
+    tmp_path, monkeypatch
+):
+    import project_guardian.guardian_layer as module
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    real_replace = module.os.replace
+    evidence = []
+    def third_revision(src, dst):
+        real_replace(src, dst)
+        data = json.loads(path.read_bytes())
+        # Same protected values do not identify our precise attempted commit.
+        data["updated_at"] = "2000-01-01T00:00:00"
+        path.write_bytes(json.dumps(data).encode("utf-8"))
+        evidence.append(path.read_bytes())
+        raise OSError("unrecognized revision after replacement")
+    with monkeypatch.context() as fault:
+        fault.setattr(module.os, "replace", third_revision)
+        with pytest.raises(OSError):
+            layer.set_contact_email("intended@example.invalid")
+    assert layer._durable_state_unknown is True
+    assert layer.fingerprint is None
+    assert layer._loaded_config_digest is None
+    assert layer.activate() is False
+    assert path.read_bytes() == evidence[0]
+    layer.load()
+    assert layer._durable_state_unknown is False
+    assert layer.contact_email == "intended@example.invalid"
+
+
+def test_setter_interrupt_after_verified_replace_does_not_restore_stale_memory(
+    tmp_path, monkeypatch
+):
+    import hashlib
+    import project_guardian.guardian_layer as module
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    real_replace = module.os.replace
+    def interrupted(src, dst):
+        real_replace(src, dst)
+        raise KeyboardInterrupt("synthetic interruption after commit")
+    monkeypatch.setattr(module.os, "replace", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        layer.set_contact_email("committed@example.invalid")
+    assert layer.contact_email == json.loads(path.read_bytes())["contact_email"]
+    assert layer._loaded_config_digest == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert layer._state_load_error is False
+
+
+@pytest.mark.parametrize("inspection", ["verify_identity", "get_status"])
+def test_identity_inspection_cannot_bypass_durable_activation_revalidation(
+    tmp_path, monkeypatch, inspection
+):
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    layer = _layer(tmp_path)
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: OLD)
+    assert layer.activate() is True
+    writer = _layer(tmp_path)
+    writer.set_contact_email("external@example.invalid")
+    raw = path.read_bytes()
+    result = getattr(layer, inspection)()
+    assert result["identity_verified"] is None
+    assert result["activated"] is False
+    assert layer._state_load_error is True
+    assert layer.contact_email == "owner@example.invalid"
+    assert path.read_bytes() == raw

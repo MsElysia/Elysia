@@ -308,6 +308,12 @@ class GuardianLayer:
             self.contact_email = email
             try:
                 self.save()
+            except _GuardianStateConflict:
+                # A pre-write revision conflict proves this attempt did not commit.
+                self.contact_email = prior
+                self._activated = False
+                self._state_load_error = True
+                raise
             except BaseException:
                 if self._state_load_error or self._loaded_config_digest == prior_digest:
                     self.contact_email = prior
@@ -337,6 +343,12 @@ class GuardianLayer:
             }
             try:
                 self.save()
+            except _GuardianStateConflict:
+                # Keep the historical snapshot inactive until explicit load().
+                self.smtp_config = prior
+                self._activated = False
+                self._state_load_error = True
+                raise
             except BaseException:
                 if self._state_load_error or self._loaded_config_digest == prior_digest:
                     self.smtp_config = prior

@@ -46,7 +46,7 @@ async def main():
     # Validate configuration first
     try:
         from .config_validator import ConfigValidator
-        validator = ConfigValidator(config_path="config/guardian_config.json")
+        validator = ConfigValidator(config_path="config/guardian_config.json", read_only=True)
         validation_results = validator.validate_all()
         
         if not validation_results["valid"]:
@@ -59,9 +59,11 @@ async def main():
             logger.error("\nRun 'python setup_guardian.py' to configure the system.")
             return 1
     except ImportError:
-        logger.warning("ConfigValidator not available, skipping validation")
+        logger.error("ConfigValidator is unavailable; refusing unvalidated startup", exc_info=True)
+        return 1
     except Exception as e:
-        logger.warning(f"Configuration validation skipped: {e}")
+        logger.error(f"Configuration validation failed unexpectedly: {e}", exc_info=True)
+        return 1
     
     # Load configuration from file if available
     config = {}

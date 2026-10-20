@@ -551,6 +551,7 @@ class GuardianLayer:
     def _assert_unchanged_disk(self):
         """Reject activation and writes if durable state changed since load."""
         if self._state_load_error:
+            self._activated = False
             raise _GuardianStateConflict("Guardian configuration is unverified")
         try:
             current = hashlib.sha256(self.config_path.read_bytes()).hexdigest()
@@ -558,9 +559,11 @@ class GuardianLayer:
             current = None
         except OSError as exc:
             self._state_load_error = True
+            self._activated = False
             raise _GuardianStateConflict("Guardian configuration cannot be inspected") from exc
         if current != self._loaded_config_digest:
             self._state_load_error = True
+            self._activated = False
             raise _GuardianStateConflict(
                 "Guardian configuration changed since load; refusing stale overwrite"
             )

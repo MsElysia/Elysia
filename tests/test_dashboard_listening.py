@@ -81,6 +81,19 @@ class TestDashboardListening:
         finally:
             occupied_socket.close()
     
+    def test_rejected_port_is_not_rechecked_during_fallback(self):
+        """A port rejected as occupied must not be chosen again on retry."""
+        from tests._ui_isolated_loader import UIControlPanel
+
+        panel = UIControlPanel(orchestrator=Mock(), host="127.0.0.1", port=5000)
+        with mock_running_server(panel), \
+             patch.object(panel, "_check_port_available", return_value=False), \
+             patch.object(panel, "_find_available_port", return_value=5001) as find, \
+             patch.object(panel, "_wait_for_server_ready", return_value=True):
+            assert panel.start(source="occupied-port-race") is True
+            find.assert_called_once_with(5001)
+            assert panel.port == 5001
+
     def test_server_ready_before_browser_open(self):
         """Test that server is listening before browser open is called."""
         from tests._ui_isolated_loader import UIControlPanel

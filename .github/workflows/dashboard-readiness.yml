@@ -29,12 +29,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install isolated UI-test dependencies (no Elysia providers)
+      - name: Install minimal unit-test dependencies (no Elysia providers)
         run: |
-          python -m pip install --disable-pip-version-check pytest flask flask-socketio flask-cors cryptography pyyaml psutil httpx beautifulsoup4 lxml requests fastapi uvicorn jinja2 python-multipart openai pyttsx3
+          python -m pip install --disable-pip-version-check pytest flask flask-socketio
       - name: Check Python syntax
         run: |
-          python -m py_compile project_guardian/ui_control_panel.py project_guardian/memory_vector_search.py tests/test_ui_readiness_http.py tests/test_optional_numpy_fallback.py tests/test_ui_server_exit_recovery.py tests/test_dashboard_listening.py tests/test_dashboard_idempotent.py
+          python -m py_compile project_guardian/ui_control_panel.py project_guardian/memory_vector_search.py tests/_ui_isolated_loader.py tests/test_ui_readiness_http.py tests/test_optional_numpy_fallback.py tests/test_ui_server_exit_recovery.py tests/test_dashboard_listening.py tests/test_dashboard_idempotent.py
       - name: Test dashboard readiness and single-start recovery
         run: |
           python -m pytest tests/test_ui_readiness_http.py tests/test_ui_server_exit_recovery.py tests/test_dashboard_listening.py tests/test_dashboard_idempotent.py tests/test_optional_numpy_fallback.py -q

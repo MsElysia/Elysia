@@ -12,6 +12,7 @@ import socket
 import threading
 import time
 from unittest.mock import Mock, patch, MagicMock
+from contextlib import contextmanager
 
 # Add project root to path
 import sys
@@ -19,6 +20,32 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "project_guardian"))
+
+
+@pytest.fixture(autouse=True)
+def reset_guard_between_tests():
+    from project_guardian.ui_control_panel import reset_dashboard_guard
+    reset_dashboard_guard()
+    yield
+    reset_dashboard_guard()
+
+
+@contextmanager
+def mock_running_server(panel):
+    """A successful server start must stay active until test cleanup.
+
+    Immediate return from a mocked Socket.IO run() is a stopped server.
+    """
+    release = threading.Event()
+    with patch.object(panel, "socketio") as mock_socketio:
+        mock_socketio.run.side_effect = lambda *a, **kw: release.wait(timeout=8)
+        try:
+            yield mock_socketio
+        finally:
+            release.set()
+            deadline = time.monotonic() + 1
+            while panel.running and time.monotonic() < deadline:
+                time.sleep(0.01)
 
 
 class TestDashboardListening:
@@ -39,8 +66,7 @@ class TestDashboardListening:
             ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
             
             # Mock socketio.run to avoid actually starting server
-            with patch.object(ui_panel, 'socketio') as mock_socketio:
-                mock_socketio.run = Mock()
+            with mock_running_server(ui_panel) as mock_socketio:
                 
                 # Mock _wait_for_server_ready to return True (simulate success)
                 with patch.object(ui_panel, '_wait_for_server_ready', return_value=True):
@@ -63,8 +89,7 @@ class TestDashboardListening:
         ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
         
         # Mock socketio.run
-        with patch.object(ui_panel, 'socketio') as mock_socketio:
-            mock_socketio.run = Mock()
+        with mock_running_server(ui_panel) as mock_socketio:
             
             # Mock _wait_for_server_ready to simulate server becoming ready
             ready_called = []
@@ -121,8 +146,7 @@ class TestDashboardListening:
         ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
         
         # Mock socketio.run
-        with patch.object(ui_panel, 'socketio') as mock_socketio:
-            mock_socketio.run = Mock()
+        with mock_running_server(ui_panel) as mock_socketio:
             
             # Mock _check_port_available to return True
             with patch.object(ui_panel, '_check_port_available', return_value=True):

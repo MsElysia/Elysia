@@ -22,6 +22,8 @@ import logging
 import socket
 import time
 import os
+import uuid
+from http.client import HTTPConnection
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -2033,21 +2035,32 @@ class UIControlPanel:
         self.orchestrator = orchestrator
         self.host = host
         self.port = port
+        self._server_identity = uuid.uuid4().hex
         self.app = Flask(__name__)
         self.socketio = SocketIO(self.app, cors_allowed_origins="*")
         self._setup_routes()
         self._setup_socketio()
         self.running = False
         self._server_ready = threading.Event()
+        self._server_listening = False
         self._server_error = None
         self._actual_port = None
 
     def is_ready(self) -> bool:
         """
         Return True only when the dashboard server is actually ready/listening.
-        Uses the running flag and the internal _server_ready event.
+        Uses the running flag and a fresh HTTP response from this panel.
         """
-        return bool(self.running) and self._server_ready.is_set()
+        if not bool(getattr(self, "running", False)) or getattr(self, "_server_error", None):
+            self._server_listening = False
+            self._server_ready.clear()
+            return False
+        self._server_listening = self._probe_server_listening(timeout=0.2)
+        if self._server_listening:
+            self._server_ready.set()
+        else:
+            self._server_ready.clear()
+        return self._server_listening
         
     def _setup_routes(self):
         """Setup Flask routes."""
@@ -2149,12 +2162,14 @@ class UIControlPanel:
         @self.app.route('/api/ping')
         def ping():
             """Quick connectivity check - returns immediately."""
-            return jsonify({
+            response = jsonify({
                 "ok": True,
                 "service": "elysia-control-panel",
                 "port": getattr(self, 'port', None),
                 "orchestrator": self.orchestrator is not None if hasattr(self, 'orchestrator') else False,
-            }), 200
+            })
+            response.headers["X-Elysia-Instance"] = self._server_identity
+            return response, 200
 
         @self.app.route('/api/debug')
         def debug_info():
@@ -3454,10 +3469,9 @@ class UIControlPanel:
         """Check if a port is available for binding."""
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(1)
-                result = s.connect_ex((host, port))
-                return result != 0  # 0 means port is in use
-        except Exception:
+                s.bind((host, int(port)))
+                return True
+        except (OSError, TypeError, ValueError):
             return False
     
     def _find_available_port(self, start_port: int, max_attempts: int = 10) -> int:
@@ -3468,24 +3482,38 @@ class UIControlPanel:
                 return port
         raise OSError(f"Could not find available port in range {start_port}-{start_port + max_attempts - 1}")
     
+    def _probe_server_listening(self, timeout: float = 0.5) -> bool:
+        """Require a successful HTTP ping from this panel, without proxying."""
+        host = "127.0.0.1" if self.host == "0.0.0.0" else self.host
+        connection = HTTPConnection(host, self._actual_port or self.port, timeout=timeout)
+        try:
+            connection.request("GET", "/api/ping")
+            response = connection.getresponse()
+            return (
+                response.status == 200
+                and response.getheader("X-Elysia-Instance") == self._server_identity
+                and not self._server_error
+                and self.running
+            )
+        except Exception:
+            return False
+        finally:
+            connection.close()
+
     def _wait_for_server_ready(self, timeout: float = 10.0) -> bool:
-        """Wait for server to be ready by checking if port is listening."""
-        start_time = time.time()
-        while time.time() - start_time < timeout:
+        """Wait for a successful HTTP ping from this panel."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             # Check for server errors first (fast failure)
             if self._server_error:
                 logger.error(f"[DASHBOARD] Server error detected during readiness check: {self._server_error}")
                 return False
             
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.settimeout(0.5)
-                    result = s.connect_ex((self.host, self._actual_port or self.port))
-                    if result == 0:  # Port is listening
-                        return True
-            except Exception:
-                pass
+            if self._probe_server_listening(timeout=min(0.5, max(0.001, deadline - time.monotonic()))):
+                self._server_listening = True
+                return True
             time.sleep(0.1)
+        self._server_listening = False
         return False
             
     def start(self, debug: bool = False, source: str = "unknown"):
@@ -3533,6 +3561,7 @@ class UIControlPanel:
             
             # Reset readiness event
             self._server_ready.clear()
+            self._server_listening = False
             self._server_error = None
             self._actual_port = self.port
             
@@ -3571,6 +3600,8 @@ class UIControlPanel:
                 with _dashboard_start_lock:
                     _dashboard_started = False
                     self.running = False
+                    self._server_listening = False
+                    self._server_ready.clear()
             except Exception as e:
                 logger.error(f"[DASHBOARD] Server error: {e}", exc_info=True)
                 self._server_error = str(e)
@@ -3578,23 +3609,25 @@ class UIControlPanel:
                 with _dashboard_start_lock:
                     _dashboard_started = False
                     self.running = False
-            finally:
-                self._server_ready.set()  # Signal even on error
+                    self._server_listening = False
+                    self._server_ready.clear()
             
         server_thread = threading.Thread(target=run_server, daemon=True, name="UIControlPanel-Server")
         server_thread.start()
         
-        # Wait briefly so startup doesn't stall the main thread (was 10s, now 2s max; never raise)
+        # Wait briefly so startup doesn't stall the main thread. Timeouts stay non-fatal,
+        # but immediate server errors are surfaced to direct callers.
         time.sleep(0.3)
         if self._wait_for_server_ready(timeout=2.0):
+            self._server_listening = True
             self._server_ready.set()
             logger.info(
                 f"[DASHBOARD] Server is listening on http://{self.host}:{self.port} (PID: {os.getpid()})"
             )
         else:
-            self._server_ready.set()
             if self._server_error:
-                logger.warning(f"[DASHBOARD] Server may still be starting: {self._server_error}")
+                logger.warning(f"[DASHBOARD] Server failed readiness check: {self._server_error}")
+                raise RuntimeError(f"Dashboard failed to start: {self._server_error}")
             else:
                 logger.warning(
                     "[DASHBOARD] Server did not become ready in 2s (panel may load in a few seconds); continuing startup"
@@ -3606,6 +3639,8 @@ class UIControlPanel:
         with _dashboard_start_lock:
             _dashboard_started = False
             self.running = False
+            self._server_listening = False
+            self._server_ready.clear()
         logger.info("Control panel stopped")
 
 

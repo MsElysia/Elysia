@@ -16,7 +16,7 @@ pytest.importorskip("flask_socketio")
 from flask import Flask, jsonify
 from werkzeug.serving import make_server
 
-from project_guardian.ui_control_panel import UIControlPanel, reset_dashboard_guard
+from tests._ui_isolated_loader import UIControlPanel, reset_dashboard_guard
 
 
 @pytest.fixture(autouse=True)

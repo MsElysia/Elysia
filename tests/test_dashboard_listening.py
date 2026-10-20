@@ -12,6 +12,7 @@ import socket
 import threading
 import time
 from unittest.mock import Mock, patch, MagicMock
+from contextlib import contextmanager
 
 # Add project root to path
 import sys
@@ -21,12 +22,38 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "project_guardian"))
 
 
+@pytest.fixture(autouse=True)
+def reset_guard_between_tests():
+    from tests._ui_isolated_loader import reset_dashboard_guard
+    reset_dashboard_guard()
+    yield
+    reset_dashboard_guard()
+
+
+@contextmanager
+def mock_running_server(panel):
+    """A successful server start must stay active until test cleanup.
+
+    Immediate return from a mocked Socket.IO run() is a stopped server.
+    """
+    release = threading.Event()
+    with patch.object(panel, "socketio") as mock_socketio:
+        mock_socketio.run.side_effect = lambda *a, **kw: release.wait(timeout=8)
+        try:
+            yield mock_socketio
+        finally:
+            release.set()
+            deadline = time.monotonic() + 1
+            while panel.running and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+
 class TestDashboardListening:
     """Test dashboard server listening behavior."""
     
     def test_port_fallback_when_5000_occupied(self):
         """Test that port fallback works when port 5000 is occupied."""
-        from project_guardian.ui_control_panel import UIControlPanel
+        from tests._ui_isolated_loader import UIControlPanel
         
         # Create a socket to occupy port 5000
         occupied_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -39,8 +66,7 @@ class TestDashboardListening:
             ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
             
             # Mock socketio.run to avoid actually starting server
-            with patch.object(ui_panel, 'socketio') as mock_socketio:
-                mock_socketio.run = Mock()
+            with mock_running_server(ui_panel) as mock_socketio:
                 
                 # Mock _wait_for_server_ready to return True (simulate success)
                 with patch.object(ui_panel, '_wait_for_server_ready', return_value=True):
@@ -55,16 +81,28 @@ class TestDashboardListening:
         finally:
             occupied_socket.close()
     
+    def test_rejected_port_is_not_rechecked_during_fallback(self):
+        """A port rejected as occupied must not be chosen again on retry."""
+        from tests._ui_isolated_loader import UIControlPanel
+
+        panel = UIControlPanel(orchestrator=Mock(), host="127.0.0.1", port=5000)
+        with mock_running_server(panel), \
+             patch.object(panel, "_check_port_available", return_value=False), \
+             patch.object(panel, "_find_available_port", return_value=5001) as find, \
+             patch.object(panel, "_wait_for_server_ready", return_value=True):
+            assert panel.start(source="occupied-port-race") is True
+            find.assert_called_once_with(5001)
+            assert panel.port == 5001
+
     def test_server_ready_before_browser_open(self):
         """Test that server is listening before browser open is called."""
-        from project_guardian.ui_control_panel import UIControlPanel
+        from tests._ui_isolated_loader import UIControlPanel
         
         mock_orchestrator = Mock()
         ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
         
         # Mock socketio.run
-        with patch.object(ui_panel, 'socketio') as mock_socketio:
-            mock_socketio.run = Mock()
+        with mock_running_server(ui_panel) as mock_socketio:
             
             # Mock _wait_for_server_ready to simulate server becoming ready
             ready_called = []
@@ -85,7 +123,7 @@ class TestDashboardListening:
     
     def test_server_error_propagation(self):
         """Test that server errors are properly captured and propagated."""
-        from project_guardian.ui_control_panel import UIControlPanel
+        from tests._ui_isolated_loader import UIControlPanel
         
         mock_orchestrator = Mock()
         ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
@@ -115,14 +153,13 @@ class TestDashboardListening:
     
     def test_actual_port_stored_correctly(self):
         """Test that _actual_port is stored correctly."""
-        from project_guardian.ui_control_panel import UIControlPanel
+        from tests._ui_isolated_loader import UIControlPanel
         
         mock_orchestrator = Mock()
         ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
         
         # Mock socketio.run
-        with patch.object(ui_panel, 'socketio') as mock_socketio:
-            mock_socketio.run = Mock()
+        with mock_running_server(ui_panel) as mock_socketio:
             
             # Mock _check_port_available to return True
             with patch.object(ui_panel, '_check_port_available', return_value=True):
@@ -136,7 +173,7 @@ class TestDashboardListening:
     
     def test_port_availability_check(self):
         """Test that _check_port_available works correctly."""
-        from project_guardian.ui_control_panel import UIControlPanel
+        from tests._ui_isolated_loader import UIControlPanel
         
         mock_orchestrator = Mock()
         ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
@@ -162,7 +199,7 @@ class TestDashboardListening:
     
     def test_find_available_port(self):
         """Test that _find_available_port finds an available port."""
-        from project_guardian.ui_control_panel import UIControlPanel
+        from tests._ui_isolated_loader import UIControlPanel
         
         mock_orchestrator = Mock()
         ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)

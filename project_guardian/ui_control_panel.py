@@ -3556,7 +3556,7 @@ class UIControlPanel:
                     f"[DASHBOARD] Port {self.port} is in use, attempting to find alternative..."
                 )
                 try:
-                    self.port = self._find_available_port(self.port)
+                    self.port = self._find_available_port(self.port + 1)
                     logger.info(f"[DASHBOARD] Using port {self.port} instead")
                 except OSError as e:
                     logger.error(f"[DASHBOARD] Could not find available port: {e}")
@@ -3609,6 +3609,16 @@ class UIControlPanel:
                 with _dashboard_start_lock:
                     _dashboard_started = False
                     self.running = False
+            else:
+                # socketio.run() normally blocks while the HTTP server serves.
+                # If it returns, the server is no longer operational. Clear the
+                # global single-start guard so an explicit restart can retry.
+                self._server_error = "Dashboard server exited unexpectedly"
+                logger.error("[DASHBOARD] %s", self._server_error)
+                with _dashboard_start_lock:
+                    _dashboard_started = False
+                    self.running = False
+                self._server_ready.clear()
             # The readiness event is set only by a successful HTTP probe.
             
         server_thread = threading.Thread(target=run_server, daemon=True, name="UIControlPanel-Server")

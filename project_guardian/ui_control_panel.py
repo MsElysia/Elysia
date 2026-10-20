@@ -3505,7 +3505,8 @@ class UIControlPanel:
                 if response.status == 200:
                     payload = json.loads(response.read(4096).decode("utf-8"))
                     if (
-                        payload.get("ok") is True
+                        isinstance(payload, dict)
+                        and payload.get("ok") is True
                         and payload.get("service") == "elysia-control-panel"
                         and payload.get("instance_id") == self._ready_instance_id
                     ):

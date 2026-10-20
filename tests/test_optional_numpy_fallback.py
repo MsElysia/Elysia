@@ -4,7 +4,7 @@ These regressions require no network, cloud model, memory store, or paid provide
 """
 from pathlib import Path
 
-import project_guardian.memory_vector_search as vector_search
+from tests._ui_isolated_loader import memory_vector_module as vector_search
 
 
 def test_hash_embedding_without_numpy(monkeypatch):

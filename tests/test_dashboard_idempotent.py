@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip("flask")
 pytest.importorskip("flask_socketio")
 
-from project_guardian.ui_control_panel import UIControlPanel, reset_dashboard_guard
+from tests._ui_isolated_loader import UIControlPanel, reset_dashboard_guard, ui_panel_module
 
 
 @pytest.fixture(autouse=True)
@@ -81,7 +81,7 @@ def test_repeated_start_is_logged(long_running_runner):
     check_port, check_health = _mock_health(panel)
     with check_port, check_health, \
          patch.object(panel.socketio, "run", side_effect=run) as mock_run, \
-         patch("project_guardian.ui_control_panel.logger") as mock_logger:
+         patch.object(ui_panel_module, "logger") as mock_logger:
         assert panel.start(source="instrument_first") is True
         assert entered.wait(timeout=2)
         assert panel.start(source="instrument_second") is True

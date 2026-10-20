@@ -24,7 +24,7 @@ sys.path.insert(0, str(project_root / "project_guardian"))
 
 @pytest.fixture(autouse=True)
 def reset_guard_between_tests():
-    from project_guardian.ui_control_panel import reset_dashboard_guard
+    from tests._ui_isolated_loader import reset_dashboard_guard
     reset_dashboard_guard()
     yield
     reset_dashboard_guard()
@@ -53,7 +53,7 @@ class TestDashboardListening:
     
     def test_port_fallback_when_5000_occupied(self):
         """Test that port fallback works when port 5000 is occupied."""
-        from project_guardian.ui_control_panel import UIControlPanel
+        from tests._ui_isolated_loader import UIControlPanel
         
         # Create a socket to occupy port 5000
         occupied_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -83,7 +83,7 @@ class TestDashboardListening:
     
     def test_server_ready_before_browser_open(self):
         """Test that server is listening before browser open is called."""
-        from project_guardian.ui_control_panel import UIControlPanel
+        from tests._ui_isolated_loader import UIControlPanel
         
         mock_orchestrator = Mock()
         ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
@@ -110,7 +110,7 @@ class TestDashboardListening:
     
     def test_server_error_propagation(self):
         """Test that server errors are properly captured and propagated."""
-        from project_guardian.ui_control_panel import UIControlPanel
+        from tests._ui_isolated_loader import UIControlPanel
         
         mock_orchestrator = Mock()
         ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
@@ -140,7 +140,7 @@ class TestDashboardListening:
     
     def test_actual_port_stored_correctly(self):
         """Test that _actual_port is stored correctly."""
-        from project_guardian.ui_control_panel import UIControlPanel
+        from tests._ui_isolated_loader import UIControlPanel
         
         mock_orchestrator = Mock()
         ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
@@ -160,7 +160,7 @@ class TestDashboardListening:
     
     def test_port_availability_check(self):
         """Test that _check_port_available works correctly."""
-        from project_guardian.ui_control_panel import UIControlPanel
+        from tests._ui_isolated_loader import UIControlPanel
         
         mock_orchestrator = Mock()
         ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)
@@ -186,7 +186,7 @@ class TestDashboardListening:
     
     def test_find_available_port(self):
         """Test that _find_available_port finds an available port."""
-        from project_guardian.ui_control_panel import UIControlPanel
+        from tests._ui_isolated_loader import UIControlPanel
         
         mock_orchestrator = Mock()
         ui_panel = UIControlPanel(orchestrator=mock_orchestrator, host='127.0.0.1', port=5000)

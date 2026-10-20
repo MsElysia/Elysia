@@ -748,6 +748,49 @@ def _layer(tmp_path):
     )
 
 
+@pytest.mark.parametrize("external_setter", ["email", "smtp"])
+def test_direct_save_stale_revision_revokes_activation_until_explicit_reload(
+    tmp_path, monkeypatch, external_setter
+):
+    """A direct save must never preserve active status after a stale revision."""
+    path = tmp_path / "guardian.json"
+    _seed(path)
+    stale = _layer(tmp_path)
+    writer = _layer(tmp_path)
+    monkeypatch.setattr(stale, "_generate_system_fingerprint", lambda: OLD)
+    assert stale.activate() is True
+    prior_bytes = path.read_bytes()
+
+    if external_setter == "email":
+        writer.set_contact_email("newer@example.invalid")
+    else:
+        writer.configure_smtp("newer.smtp.invalid", smtp_port=2526)
+    committed_bytes = path.read_bytes()
+    assert committed_bytes != prior_bytes
+
+    with pytest.raises(RuntimeError, match="changed since load"):
+        stale.save()
+    assert path.read_bytes() == committed_bytes
+    assert stale._state_load_error is True
+    assert stale._activated is False
+    assert stale.get_status()["activated"] is False
+    assert stale.verify_identity()["identity_verified"] is None
+    assert stale.activate() is False
+    assert stale._activated is False
+    with pytest.raises(RuntimeError, match="configuration invalid"):
+        stale.save()
+    assert path.read_bytes() == committed_bytes
+
+    stale.load()  # Only an explicit valid reload adopts the newer revision.
+    assert stale._state_load_error is False
+    assert stale.get_status()["activated"] is False
+    assert stale.contact_email == writer.contact_email
+    assert stale.smtp_config == writer.smtp_config
+    assert stale.activate() is True
+    assert path.read_bytes() == committed_bytes
+    assert not stale.rebuild_log_path.exists()
+
+
 def test_corruption_after_valid_load_refuses_activation_without_probe(tmp_path, monkeypatch):
     path = tmp_path / "guardian.json"
     _seed(path)

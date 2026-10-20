@@ -23,6 +23,14 @@ sys.path.insert(0, str(project_root / "project_guardian"))
 
 class TestDashboardListening:
     """Test dashboard server listening behavior."""
+
+    def setup_method(self):
+        from project_guardian.ui_control_panel import reset_dashboard_guard
+        reset_dashboard_guard()
+
+    def teardown_method(self):
+        from project_guardian.ui_control_panel import reset_dashboard_guard
+        reset_dashboard_guard()
     
     def test_port_fallback_when_5000_occupied(self):
         """Test that port fallback works when port 5000 is occupied."""

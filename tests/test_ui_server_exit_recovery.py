@@ -70,7 +70,7 @@ def test_normal_exit_after_readiness_revokes_status_and_unblocks_retry():
         release.wait(timeout=5.0)
 
     with patch.object(panel, "_check_port_available", return_value=True), \
-         patch.object(panel, "_wait_for_server_ready", return_value=True), \
+         patch.object(panel, "_wait_for_server_ready", side_effect=lambda timeout: entered.is_set() and not release.is_set()), \
          patch.object(panel.socketio, "run", side_effect=run_until_released):
         try:
             assert panel.start(source="synthetic-start") is True

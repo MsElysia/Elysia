@@ -12,7 +12,7 @@ import pytest
 pytest.importorskip("flask")
 pytest.importorskip("flask_socketio")
 
-from project_guardian.ui_control_panel import UIControlPanel, reset_dashboard_guard
+from tests._ui_isolated_loader import UIControlPanel, reset_dashboard_guard
 
 
 @pytest.fixture(autouse=True)

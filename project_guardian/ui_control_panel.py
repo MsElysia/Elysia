@@ -3556,7 +3556,7 @@ class UIControlPanel:
                     f"[DASHBOARD] Port {self.port} is in use, attempting to find alternative..."
                 )
                 try:
-                    self.port = self._find_available_port(self.port)
+                    self.port = self._find_available_port(self.port + 1)
                     logger.info(f"[DASHBOARD] Using port {self.port} instead")
                 except OSError as e:
                     logger.error(f"[DASHBOARD] Could not find available port: {e}")

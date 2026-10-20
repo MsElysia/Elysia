@@ -93,6 +93,22 @@ def test_foreign_http_listener_is_not_our_dashboard(panel):
         stop_server(server, thread)
 
 
+def test_malformed_ping_is_not_ready(panel):
+    """A JSON response of the wrong shape is not a successful health check."""
+    foreign = Flask("malformed-ping-test")
+
+    @foreign.get("/api/ping")
+    def malformed_ping():
+        return jsonify(["not", "a", "health", "object"])
+
+    server, thread = serve_until_done(foreign)
+    try:
+        panel._actual_port = server.server_port
+        assert panel._wait_for_server_ready(timeout=0.3) is False
+    finally:
+        stop_server(server, thread)
+
+
 def test_own_http_ping_confirms_readiness(panel):
     """The running Flask instance, not merely its TCP port, supplies proof."""
     server, thread = serve_until_done(panel.app)

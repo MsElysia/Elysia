@@ -22,6 +22,8 @@ import logging
 import socket
 import time
 import os
+import http.client
+import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -2035,6 +2037,8 @@ class UIControlPanel:
         self.port = port
         self.app = Flask(__name__)
         self.socketio = SocketIO(self.app, cors_allowed_origins="*")
+        # Non-secret identity proving the responding listener is this panel.
+        self._ready_instance_id = uuid.uuid4().hex
         self._setup_routes()
         self._setup_socketio()
         self.running = False
@@ -2043,11 +2047,20 @@ class UIControlPanel:
         self._actual_port = None
 
     def is_ready(self) -> bool:
+        """Only a current successful HTTP ping from this panel establishes readiness.
+
+        The event caches that result for observers, but is never independent
+        proof. A slow startup can become ready when checked again.
         """
-        Return True only when the dashboard server is actually ready/listening.
-        Uses the running flag and the internal _server_ready event.
-        """
-        return bool(self.running) and self._server_ready.is_set()
+        if not self.running or self._server_error:
+            self._server_ready.clear()
+            return False
+        ready = self._wait_for_server_ready(timeout=0.25)
+        if ready:
+            self._server_ready.set()
+        else:
+            self._server_ready.clear()
+        return ready
         
     def _setup_routes(self):
         """Setup Flask routes."""
@@ -2152,6 +2165,7 @@ class UIControlPanel:
             return jsonify({
                 "ok": True,
                 "service": "elysia-control-panel",
+                "instance_id": self._ready_instance_id,
                 "port": getattr(self, 'port', None),
                 "orchestrator": self.orchestrator is not None if hasattr(self, 'orchestrator') else False,
             }), 200
@@ -3469,25 +3483,42 @@ class UIControlPanel:
         raise OSError(f"Could not find available port in range {start_port}-{start_port + max_attempts - 1}")
     
     def _wait_for_server_ready(self, timeout: float = 10.0) -> bool:
-        """Wait for server to be ready by checking if port is listening."""
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            # Check for server errors first (fast failure)
+        """Require HTTP /api/ping from this exact dashboard, not just an open port.
+
+        Direct loopback HTTP is used without proxies or external services.
+        """
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
             if self._server_error:
-                logger.error(f"[DASHBOARD] Server error detected during readiness check: {self._server_error}")
+                logger.error(
+                    "[DASHBOARD] Server error during readiness check: %s",
+                    self._server_error,
+                )
                 return False
-            
+            connection = None
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.settimeout(0.5)
-                    result = s.connect_ex((self.host, self._actual_port or self.port))
-                    if result == 0:  # Port is listening
+                connection = http.client.HTTPConnection(
+                    self.host, self._actual_port or self.port, timeout=0.3
+                )
+                connection.request("GET", "/api/ping")
+                response = connection.getresponse()
+                if response.status == 200:
+                    payload = json.loads(response.read(4096).decode("utf-8"))
+                    if (
+                        isinstance(payload, dict)
+                        and payload.get("ok") is True
+                        and payload.get("service") == "elysia-control-panel"
+                        and payload.get("instance_id") == self._ready_instance_id
+                    ):
                         return True
-            except Exception:
+            except (OSError, TimeoutError, ValueError, http.client.HTTPException):
                 pass
+            finally:
+                if connection is not None:
+                    connection.close()
             time.sleep(0.1)
         return False
-            
+
     def start(self, debug: bool = False, source: str = "unknown"):
         """
         Start the web server (idempotent - only starts once per process).
@@ -3509,7 +3540,7 @@ class UIControlPanel:
                     "[DASHBOARD] start attempt %d source=%s thread=%s - Already started; skipping",
                     attempt_num, source, thread_name
                 )
-                return
+                return self.is_ready()
             
             # Instance-level guard (defensive)
             if self.running:
@@ -3517,7 +3548,7 @@ class UIControlPanel:
                     "[DASHBOARD] start attempt %d source=%s thread=%s - Instance already running; skipping",
                     attempt_num, source, thread_name
                 )
-                return
+                return self.is_ready()
             
             # Check port availability and find alternative if needed
             if not self._check_port_available(self.host, self.port):
@@ -3578,28 +3609,33 @@ class UIControlPanel:
                 with _dashboard_start_lock:
                     _dashboard_started = False
                     self.running = False
-            finally:
-                self._server_ready.set()  # Signal even on error
+            # The readiness event is set only by a successful HTTP probe.
             
         server_thread = threading.Thread(target=run_server, daemon=True, name="UIControlPanel-Server")
         server_thread.start()
         
-        # Wait briefly so startup doesn't stall the main thread (was 10s, now 2s max; never raise)
+        # Allow a bounded synchronous check. Slow startup remains unverified
+        # until a later is_ready() call succeeds against this exact instance.
         time.sleep(0.3)
         if self._wait_for_server_ready(timeout=2.0):
             self._server_ready.set()
             logger.info(
-                f"[DASHBOARD] Server is listening on http://{self.host}:{self.port} (PID: {os.getpid()})"
+                "[DASHBOARD] Verified HTTP ready on http://%s:%s (PID: %s)",
+                self.host, self.port, os.getpid(),
             )
-        else:
-            self._server_ready.set()
-            if self._server_error:
-                logger.warning(f"[DASHBOARD] Server may still be starting: {self._server_error}")
-            else:
-                logger.warning(
-                    "[DASHBOARD] Server did not become ready in 2s (panel may load in a few seconds); continuing startup"
-                )
-        
+            return True
+
+        self._server_ready.clear()
+        if self._server_error:
+            raise RuntimeError(
+                "Elysia dashboard startup failed: %s" % self._server_error
+            )
+        logger.warning(
+            "[DASHBOARD] HTTP readiness not verified within startup window; "
+            "dashboard is not yet ready"
+        )
+        return False
+
     def stop(self):
         """Stop the web server."""
         global _dashboard_started

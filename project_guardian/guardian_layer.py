@@ -735,6 +735,7 @@ class GuardianLayer:
         if not self.config_path.exists():
             if self._loaded_config_digest is not None:
                 self._state_load_error = True
+                self._activated = False
             return
         try:
             data, digest = self._read_persisted_config(with_digest=True)
@@ -749,6 +750,7 @@ class GuardianLayer:
             logger.info("Guardian state loaded")
         except (OSError, ValueError) as exc:
             self._state_load_error = True
+            self._activated = False
             logger.error("Guardian persisted state invalid, activation refused: %s", exc)
 
 

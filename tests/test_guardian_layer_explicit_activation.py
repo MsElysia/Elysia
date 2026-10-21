@@ -1243,3 +1243,56 @@ def test_identity_inspection_cannot_bypass_durable_activation_revalidation(
     assert layer._state_load_error is True
     assert layer.contact_email == "owner@example.invalid"
     assert path.read_bytes() == raw
+
+@pytest.mark.parametrize("invalid_state", ["malformed", "missing"])
+def test_failed_explicit_reload_revokes_cached_activation_until_recovery(
+    tmp_path, monkeypatch, invalid_state
+):
+    path = tmp_path / "guardian.json"
+    state = _seed(path)
+    layer = _layer(tmp_path)
+    monkeypatch.setattr(layer, "_generate_system_fingerprint", lambda: OLD)
+    notifications = []
+    monkeypatch.setattr(layer, "send_alert_email", lambda *a, **kw: notifications.append(a))
+    assert layer.activate() is True
+    if invalid_state == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b'{"fingerprint":')
+    invalid_bytes = path.read_bytes() if path.exists() else None
+
+    layer.load()
+    assert layer._activated is False  # Before status/identity can mask stale activation.
+    assert layer._state_load_error is True
+    assert layer.get_status()["activated"] is False
+    assert layer.verify_identity()["identity_verified"] is None
+
+    def assert_fenced(expected_bytes):
+        assert layer.activate() is False
+        for write in (layer.save,
+                      lambda: layer.set_contact_email("blocked@example.invalid"),
+                      lambda: layer.configure_smtp("blocked.invalid")):
+            with pytest.raises(RuntimeError):
+                write()
+            assert (path.read_bytes() if path.exists() else None) == expected_bytes
+        assert layer._state_load_error is True
+        assert layer._activated is False
+
+    assert_fenced(invalid_bytes)
+    state["contact_email"] = "recovered@example.invalid"
+    state["smtp_config"] = {"server": "recovered.invalid", "port": 2526}
+    recovered_bytes = json.dumps(state).encode("utf-8")
+    path.write_bytes(recovered_bytes)
+    assert_fenced(recovered_bytes)  # Readable valid bytes alone cannot clear the fence.
+    layer.load()
+    assert layer._state_load_error is False
+    assert layer._activated is False
+    assert layer.contact_email == state["contact_email"]
+    assert layer.smtp_config == state["smtp_config"]
+    assert layer.get_status()["activated"] is False
+    assert layer.verify_identity()["identity_verified"] is None
+    assert path.read_bytes() == recovered_bytes
+    assert layer.activate() is True
+    assert path.read_bytes() == recovered_bytes
+    assert notifications == []
+    assert not layer.rebuild_log_path.exists()

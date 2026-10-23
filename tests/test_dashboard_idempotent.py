@@ -1,147 +1,89 @@
-"""
-Test that dashboard/UI control panel start is idempotent.
-Verifies that multiple start attempts only launch the server once.
+"""Control panel single-start/idempotency regressions.
+
+A mocked server which returns immediately is NOT a running server.
+These tests deliberately keep the fake server alive until the assertions end.
 """
 
-import pytest
-import sys
 import threading
 import time
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+import pytest
+
+pytest.importorskip("flask")
+pytest.importorskip("flask_socketio")
+
+from tests._ui_isolated_loader import UIControlPanel, reset_dashboard_guard, ui_panel_module
 
 
-class TestDashboardIdempotent:
-    """Test dashboard start idempotency"""
-    
-    def setup_method(self):
-        """Reset dashboard guard before each test"""
-        try:
-            from project_guardian.ui_control_panel import reset_dashboard_guard
-            reset_dashboard_guard()
-        except ImportError:
-            pytest.skip("UIControlPanel not available (Flask not installed)")
-    
-    def teardown_method(self):
-        """Reset dashboard guard after each test"""
-        try:
-            from project_guardian.ui_control_panel import reset_dashboard_guard
-            reset_dashboard_guard()
-        except ImportError:
-            pass
-    
-    def test_dashboard_start_is_idempotent(self):
-        """Test that calling start() twice only starts the server once"""
-        try:
-            from project_guardian.ui_control_panel import UIControlPanel
-        except ImportError:
-            pytest.skip("UIControlPanel not available (Flask not installed)")
-        
-        # Create mock orchestrator
-        mock_orchestrator = Mock()
-        
-        # Create UIControlPanel instance
-        panel = UIControlPanel(
-            orchestrator=mock_orchestrator,
-            host="127.0.0.1",
-            port=9999  # Use non-standard port for testing
-        )
-        
-        # Mock the socketio.run to avoid actually starting a server
-        with patch.object(panel.socketio, 'run') as mock_run:
-            # First start
-            panel.start(source="test_first")
-            time.sleep(0.1)  # Give thread time to start
-            
-            # Verify start was called
-            assert panel.running is True
-            
-            # Second start (should be idempotent)
-            panel.start(source="test_second")
-            time.sleep(0.1)
-            
-            # Verify socketio.run was only called once (idempotent)
-            # Note: The actual server thread might not have called run() yet,
-            # but the guard should prevent the second start from proceeding
-            assert panel.running is True
-            
-            # Stop to clean up
-            panel.stop()
-            
-    def test_dashboard_start_from_multiple_instances(self):
-        """Test that multiple UIControlPanel instances respect the module-level guard"""
-        try:
-            from project_guardian.ui_control_panel import UIControlPanel
-        except ImportError:
-            pytest.skip("UIControlPanel not available (Flask not installed)")
-        
-        mock_orchestrator = Mock()
-        
-        # Create two different instances
-        panel1 = UIControlPanel(
-            orchestrator=mock_orchestrator,
-            host="127.0.0.1",
-            port=9998
-        )
-        
-        panel2 = UIControlPanel(
-            orchestrator=mock_orchestrator,
-            host="127.0.0.1",
-            port=9997
-        )
-        
-        with patch.object(panel1.socketio, 'run') as mock_run1, \
-             patch.object(panel2.socketio, 'run') as mock_run2:
-            
-            # Start first instance
-            panel1.start(source="test_instance1")
-            time.sleep(0.1)
-            
-            # Try to start second instance (should be blocked by module-level guard)
-            panel2.start(source="test_instance2")
-            time.sleep(0.1)
-            
-            # Both should report as running (instance-level flag)
-            # But only one should actually start the server
-            assert panel1.running is True
-            # panel2.running might be True due to instance flag, but server shouldn't start
-            
-            # Clean up
-            panel1.stop()
-            panel2.stop()
-    
-    def test_dashboard_start_instrumentation(self):
-        """Test that start attempts are logged with instrumentation"""
-        try:
-            from project_guardian.ui_control_panel import UIControlPanel, _dashboard_start_attempts
-        except ImportError:
-            pytest.skip("UIControlPanel not available (Flask not installed)")
-        
-        mock_orchestrator = Mock()
-        panel = UIControlPanel(
-            orchestrator=mock_orchestrator,
-            host="127.0.0.1",
-            port=9996
-        )
-        
-        with patch.object(panel.socketio, 'run'), \
-             patch('project_guardian.ui_control_panel.logger') as mock_logger:
-            
-            # First start
-            panel.start(source="test_instrumentation_1")
-            time.sleep(0.1)
-            
-            # Second start (should log skip message)
-            panel.start(source="test_instrumentation_2")
-            time.sleep(0.1)
-            
-            # Verify instrumentation logs were called
-            # Check that info was called (for start attempt logging)
-            assert mock_logger.info.called
-            
-            # Clean up
-            panel.stop()
+@pytest.fixture(autouse=True)
+def reset_single_start_guard():
+    reset_dashboard_guard()
+    yield
+    reset_dashboard_guard()
+
+
+@pytest.fixture
+def long_running_runner():
+    release = threading.Event()
+    entered = threading.Event()
+
+    def run(*args, **kwargs):
+        entered.set()
+        release.wait(timeout=8.0)
+
+    yield run, entered
+    release.set()
+
+
+def _mock_health(panel):
+    """Only the startup/idempotency behavior is under test here."""
+    return [
+        patch.object(panel, "_check_port_available", return_value=True),
+        patch.object(panel, "_wait_for_server_ready", return_value=True),
+    ]
+
+
+def test_start_twice_launches_only_one_server(long_running_runner):
+    run, entered = long_running_runner
+    panel = UIControlPanel(orchestrator=Mock(), port=9999)
+    check_port, check_health = _mock_health(panel)
+    with check_port, check_health, patch.object(panel.socketio, "run", side_effect=run) as mock_run:
+        assert panel.start(source="test_first") is True
+        assert entered.wait(timeout=2)
+        assert panel.running is True
+        assert panel.start(source="test_second") is True
+        assert mock_run.call_count == 1
+        assert panel.is_ready() is True
+
+
+def test_two_panels_respect_global_guard(long_running_runner):
+    run, entered = long_running_runner
+    panel1 = UIControlPanel(orchestrator=Mock(), port=9998)
+    panel2 = UIControlPanel(orchestrator=Mock(), port=9997)
+    check_port1, check_health1 = _mock_health(panel1)
+    check_port2, check_health2 = _mock_health(panel2)
+    with check_port1, check_health1, check_port2, check_health2, \
+         patch.object(panel1.socketio, "run", side_effect=run) as mock_run1, \
+         patch.object(panel2.socketio, "run") as mock_run2:
+        assert panel1.start(source="first_instance") is True
+        assert entered.wait(timeout=2)
+        assert panel2.start(source="second_instance") is False
+        assert mock_run1.call_count == 1
+        assert mock_run2.call_count == 0
+        assert panel1.running is True
+        assert panel2.running is False
+
+
+def test_repeated_start_is_logged(long_running_runner):
+    run, entered = long_running_runner
+    panel = UIControlPanel(orchestrator=Mock(), port=9996)
+    check_port, check_health = _mock_health(panel)
+    with check_port, check_health, \
+         patch.object(panel.socketio, "run", side_effect=run) as mock_run, \
+         patch.object(ui_panel_module, "logger") as mock_logger:
+        assert panel.start(source="instrument_first") is True
+        assert entered.wait(timeout=2)
+        assert panel.start(source="instrument_second") is True
+        assert mock_run.call_count == 1
+        assert mock_logger.info.called

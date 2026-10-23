@@ -159,6 +159,7 @@ def test_frontend_never_fabricates_running_status(panel_module):
     assert "running: true" not in js
     assert "Connected (Limited)" not in js
     assert "function markOffline" in js
+    assert re.search(r"function markOffline\(reason\) \{[^}]*markMetricsUnknown\(\)", js)
     assert "setInterval(pollStatus" in js
 
 

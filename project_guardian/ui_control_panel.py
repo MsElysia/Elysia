@@ -962,9 +962,17 @@ CONTROL_PANEL_TEMPLATE = """
             if (spinner) spinner.style.display = 'none';
         }
 
+        function markMetricsUnknown() {
+            ['uptime', 'loop-status', 'queue-size', 'active-tasks'].forEach(function(id) {
+                const el = document.getElementById(id);
+                if (el) el.textContent = 'unknown';
+            });
+        }
+
         function markOffline(reason) {
             const ago = lastOkAt ? ' (last contact ' + Math.round((Date.now() - lastOkAt) / 1000) + 's ago)' : '';
             setHeaderStatus('offline', 'Offline - backend unreachable' + ago);
+            markMetricsUnknown();
             if (backendOnline !== false || lastStatusFailure !== reason) {
                 addLog('Backend unreachable: ' + reason, 'error');
             }
@@ -974,6 +982,7 @@ CONTROL_PANEL_TEMPLATE = """
 
         function markStatusError(reason) {
             setHeaderStatus('degraded', 'Backend error: ' + reason);
+            markMetricsUnknown();
             if (lastStatusFailure !== reason) addLog('Status endpoint error: ' + reason, 'error');
             backendOnline = true;
             lastStatusFailure = reason;

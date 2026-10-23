@@ -161,6 +161,8 @@ CONTROL_PANEL_TEMPLATE = """
         .status-stopped { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
         .status-connected { background: var(--primary); box-shadow: 0 0 10px var(--primary); }
         .status-initialized { background: var(--secondary); box-shadow: 0 0 10px var(--secondary); }
+        .status-degraded { background: var(--warning); box-shadow: 0 0 10px var(--warning); }
+        .status-offline { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
         
         .status-text {
             color: white;
@@ -563,6 +565,13 @@ CONTROL_PANEL_TEMPLATE = """
                         <span class="metric-value" id="trust-components">-</span>
                     </div>
                 </div>
+
+                <div class="card">
+                    <h2>Local Model</h2>
+                    <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Read-only: configured Ollama model vs. installed models. Change with ELYSIA_OLLAMA_MODEL.</p>
+                    <div id="model-status" style="font-size: 12px; white-space: pre-wrap;">Checking...</div>
+                    <button onclick="refreshModelStatus()" style="margin-top: 8px;">Refresh</button>
+                </div>
             </div>
         </div>
 
@@ -839,7 +848,7 @@ CONTROL_PANEL_TEMPLATE = """
                 <h3 style="margin-top: 24px;">APIs &amp; Tools</h3>
                 <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: 12px;">Trigger income, research, harvest, and AI chat from the dashboard.</p>
                 <div class="input-group" style="margin-bottom: 12px;">
-                    <label>Chat with AI (OpenAI/OpenRouter):</label>
+                    <label>Chat with Elysia (unified LLM router: local Ollama first; may fall back to OpenAI/OpenRouter if API keys are configured):</label>
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                         <input type="text" id="api-chat-message" placeholder="Ask anything..." style="flex: 1; min-width: 200px;">
                         <button onclick="sendApiChat()">Send</button>
@@ -938,26 +947,74 @@ CONTROL_PANEL_TEMPLATE = """
         const socket = (typeof io !== 'undefined') ? io() : null;
         let updateInterval;
         let initialized = false;
+        let backendOnline = null;
+        let lastOkAt = null;
+        let lastStatusFailure = '';
+        const STATUS_POLL_MS = 2000;
+        const STATUS_TIMEOUT_MS = 5000;
 
-        // Initialize on page load - show UI immediately
+        function setHeaderStatus(cls, text) {
+            const indicator = document.getElementById('status-indicator');
+            if (indicator) indicator.className = 'status-indicator' + (cls ? ' status-' + cls : '');
+            const statusTextEl = document.getElementById('status-text');
+            if (statusTextEl) statusTextEl.textContent = text;
+            const spinner = document.getElementById('loading-spinner');
+            if (spinner) spinner.style.display = 'none';
+        }
+
+        function markOffline(reason) {
+            const ago = lastOkAt ? ' (last contact ' + Math.round((Date.now() - lastOkAt) / 1000) + 's ago)' : '';
+            setHeaderStatus('offline', 'Offline - backend unreachable' + ago);
+            if (backendOnline !== false || lastStatusFailure !== reason) {
+                addLog('Backend unreachable: ' + reason, 'error');
+            }
+            backendOnline = false;
+            lastStatusFailure = reason;
+        }
+
+        function markStatusError(reason) {
+            setHeaderStatus('degraded', 'Backend error: ' + reason);
+            if (lastStatusFailure !== reason) addLog('Status endpoint error: ' + reason, 'error');
+            backendOnline = true;
+            lastStatusFailure = reason;
+        }
+
+        function pollStatus() {
+            const controller = new AbortController();
+            const timer = setTimeout(function() { controller.abort(); }, STATUS_TIMEOUT_MS);
+            return fetch('/api/status', { method: 'GET', headers: {'Accept': 'application/json'}, signal: controller.signal, cache: 'no-store' })
+                .then(function(r) {
+                    clearTimeout(timer);
+                    if (!r.ok) {
+                        return r.text().then(function() { markStatusError('HTTP ' + r.status + ' from /api/status'); });
+                    }
+                    return r.json().then(function(data) {
+                        if (backendOnline === false) {
+                            addLog('Backend reachable again', 'info');
+                            if (typeof window.refreshModelStatus === 'function') window.refreshModelStatus();
+                        }
+                        backendOnline = true;
+                        lastOkAt = Date.now();
+                        lastStatusFailure = '';
+                        updateDashboard(data);
+                    });
+                })
+                .catch(function(err) {
+                    clearTimeout(timer);
+                    markOffline(err && err.name === 'AbortError' ? 'no response in ' + (STATUS_TIMEOUT_MS / 1000) + 's' : (err && err.message) || String(err));
+                });
+        }
+
+        // Initialize on page load
         document.addEventListener('DOMContentLoaded', function() {
             try {
                 addLog('Control Panel loaded at ' + window.location.href, 'info');
-                const spinner = document.getElementById('loading-spinner');
-                if (spinner) spinner.style.display = 'none';
-                const statusTextEl = document.getElementById('status-text');
-                if (statusTextEl) statusTextEl.textContent = 'Connecting...';
-                const indicator = document.getElementById('status-indicator');
-                if (indicator) indicator.className = 'status-indicator status-connected';
+                setHeaderStatus('', 'Connecting...');
                 if (!socket) {
-                    addLog('Socket.IO CDN not loaded - using HTTP polling only', 'warning');
+                    addLog('Socket.IO client not loaded - using HTTP polling only', 'warning');
                 }
-                setTimeout(function() {
-                    try { startUpdates(); } catch (e) {
-                        addLog('startUpdates error: ' + e.message, 'error');
-                        console.error(e);
-                    }
-                }, 100);
+                startUpdates();
+                if (typeof window.refreshModelStatus === 'function') window.refreshModelStatus();
             } catch (e) {
                 console.error('DOMContentLoaded error:', e);
                 if (window.addLog) addLog('Init error: ' + e.message, 'error');
@@ -965,270 +1022,83 @@ CONTROL_PANEL_TEMPLATE = """
         });
 
         if (socket) socket.on('connect', function() {
-            addLog('Connected to Elysia system', 'info');
-            if (!updateInterval) {
-                startUpdates();
-            }
+            addLog('Socket.IO connected', 'info');
+            pollStatus();
         });
 
         if (socket) socket.on('disconnect', function() {
-            addLog('Disconnected from Elysia system', 'warning');
+            addLog('Socket.IO disconnected - checking backend', 'warning');
+            pollStatus();
         });
 
         if (socket) socket.on('connect_error', function(error) {
-            addLog('Socket.IO connection error (continuing with HTTP polling): ' + error, 'warning');
-            // Still start updates even if socket fails - use HTTP polling instead
-            if (!updateInterval && !initialized) {
-                startUpdates();
-            }
+            console.log('Socket.IO connect_error (HTTP polling continues):', error);
         });
-        
-        // Fallback: if socket doesn't connect within 2 seconds, start HTTP polling
-        setTimeout(function() {
-            if (!initialized && (!socket || !socket.connected)) {
-                addLog('Socket.IO not connected, using HTTP polling mode', 'info');
-                startUpdates();
-            }
-        }, 2000);
 
         if (socket) socket.on('status_update', function(data) {
-            updateDashboard(data);
+            if (data && data.system) updateDashboard(data);
         });
 
         if (socket) socket.on('log_entry', function(data) {
             addLog(data.message, data.level || 'info');
         });
 
-        // Safety: force UI usable if stuck - run at 2s and 4s
-        setTimeout(function() {
-            const statusTextEl = document.getElementById('status-text');
-            const spinner = document.getElementById('loading-spinner');
-            if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
-                statusTextEl.textContent = 'Connected (Limited)';
-                if (spinner) spinner.style.display = 'none';
-                const ind = document.getElementById('status-indicator');
-                if (ind) ind.className = 'status-indicator status-running';
-                addLog('Status: using limited mode - buttons should work', 'info');
-            }
-        }, 2000);
-        setTimeout(function() {
-            const statusTextEl = document.getElementById('status-text');
-            if (statusTextEl && statusTextEl.textContent === 'Connecting...') {
-                statusTextEl.textContent = 'Connected (Limited)';
-            }
-        }, 4000);
-
         function startUpdates() {
-            // Prevent multiple initializations
             if (initialized) {
                 return;
             }
             initialized = true;
-            
-            // Mark as initialized immediately to show UI
-            const spinner = document.getElementById('loading-spinner');
-            if (spinner) {
-                spinner.style.display = 'none';
-            }
-            
-            // Show "Connecting" status immediately
-            const statusTextEl = document.getElementById('status-text');
-            if (statusTextEl) {
-                statusTextEl.textContent = 'Connecting...';
-            }
-            const indicator = document.getElementById('status-indicator');
-            if (indicator) {
-                indicator.className = 'status-indicator status-running';
-            }
-            
-            // Set a timeout to show "Connected" status if API doesn't respond quickly
-            let timeoutId = setTimeout(function() {
-                if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
-                    statusTextEl.textContent = 'Connected';
-                    if (indicator) {
-                        indicator.className = 'status-indicator status-running';
-                    }
-                    addLog('Connected to server (waiting for status)', 'info');
-                }
-            }, 2000); // 2 second timeout (reduced from 3)
-            
-            // Do an immediate update with timeout protection
-            const controller = new AbortController();
-            const timeoutId2 = setTimeout(function() { controller.abort(); }, 5000); // 5 second fetch timeout
-            
-            fetch('/api/status', { 
-                method: 'GET',
-                headers: {'Accept': 'application/json'},
-                signal: controller.signal
-            })
-                .then(function(r) {
-                    clearTimeout(timeoutId);
-                    clearTimeout(timeoutId2);
-                    if (!r.ok) {
-                        throw new Error('HTTP ' + r.status + ': ' + r.statusText);
-                    }
-                    return r.json();
-                })
-                .then(function(data) {
-                    clearTimeout(timeoutId);
-                    clearTimeout(timeoutId2);
-                    updateDashboard(data);
-                    addLog('Status update received', 'info');
-                })
-                .catch(function(err) {
-                    clearTimeout(timeoutId);
-                    clearTimeout(timeoutId2);
-                    const msg = err.name === 'AbortError' ? 'Status timed out (5s)' : (err.message || String(err));
-                    addLog('Status fetch failed: ' + msg + ' - using fallback', 'warning');
-                    // Use fallback status to show UI is working
-                    // Check if we have any indicators that system is running
-                    updateDashboard({
-                        system: { running: true, initialized: true, uptime: 0 },
-                        loop: { running: true, paused: false, queue_size: 0 },
-                        memory: { total_entries: 0, total_memories: 0 },
-                        security: { policy_loaded: false, recent_violations: 0, pending_reviews: 0 },
-                        trust: { components: 0, average_trust: 0 }
-                    });
-                    
-                    // Ensure UI is visible even on error
-                    const statusTextEl = document.getElementById('status-text');
-                    if (statusTextEl && statusTextEl.textContent === 'Initializing...') {
-                        statusTextEl.textContent = 'Connected (Limited)';
-                    }
-                });
-            
-            // Then set up interval
+            pollStatus().then(function() {
+                if (backendOnline) addLog('Status update received', 'info');
+            });
             if (updateInterval) {
                 clearInterval(updateInterval);
             }
-            updateInterval = setInterval(function() {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(function() { controller.abort(); }, 5000); // 5 second timeout
-                
-                fetch('/api/status', {
-                    method: 'GET',
-                    headers: {'Accept': 'application/json'},
-                    signal: controller.signal
-                })
-                    .then(function(r) {
-                        clearTimeout(timeoutId);
-                        if (!r.ok) {
-                            throw new Error('HTTP ' + r.status + ': ' + r.statusText);
-                        }
-                        return r.json();
-                    })
-                    .then(function(data) {
-                        clearTimeout(timeoutId);
-                        updateDashboard(data);
-                    })
-                    .catch(function(err) {
-                        clearTimeout(timeoutId);
-                        if (err.name !== 'AbortError') {
-                            console.log('Status fetch error:', err);
-                        }
-                        // Don't update status on error - keep showing last known status
-                    });
-            }, 2000);
+            updateInterval = setInterval(pollStatus, STATUS_POLL_MS);
         }
 
         function updateDashboard(data) {
-            if (!data || typeof data !== 'object') return;
-            const spinner = document.getElementById('loading-spinner');
-            if (spinner) spinner.style.display = 'none';
-            
-            // Update status indicator and text first
-            // Priority: system initialized/running > loop status > memory loaded > connected
-            // If we got any response, never stay stuck on "Initializing"
-            let status = 'connected';
-            let statusText = 'Connected';
-            
-            // Check for errors first
-            if (data.system && data.system.error) {
-                status = 'stopped';
-                statusText = 'Error: ' + (data.system.error.substring(0, 30) || 'Unknown error');
-            } else if (data.system && data.system.timeout) {
-                status = 'stopped';
-                statusText = 'Timeout - Slow Response';
-            } else if (data.system) {
-                // Check multiple indicators to determine status
-                const systemInitialized = data.system.initialized || false;
-                const systemRunning = data.system.running || false;
-                const loopRunning = data.loop && data.loop.running !== undefined ? data.loop.running : false;
-                const memoryLoaded = data.memory && data.memory.total_entries > 0;
-                const hasUptime = data.system.uptime && data.system.uptime > 0;
-                
-                // System is considered running if any of these are true:
-                const isActuallyRunning = systemRunning || loopRunning || memoryLoaded || hasUptime;
-                const isActuallyInitialized = systemInitialized || memoryLoaded || loopRunning || hasUptime;
-                
-                if (isActuallyInitialized || isActuallyRunning) {
-                    // System is initialized/running, check loop status for more detail
-                    if (data.loop && data.loop.running !== undefined) {
-                        status = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'initialized';
-                        statusText = status.charAt(0).toUpperCase() + status.slice(1);
-                    } else if (memoryLoaded) {
-                        // Memory is loaded, system is running
-                        status = 'running';
-                        statusText = 'Running';
-                    } else {
-                        // System is initialized but not fully running yet
-                        status = isActuallyRunning ? 'running' : 'initialized';
-                        statusText = status.charAt(0).toUpperCase() + status.slice(1);
-                    }
-                } else {
-                    // Got system data but not fully initialized - still show connected so UI is usable
-                    status = 'connected';
-                    statusText = 'Connected (Limited)';
-                }
-            } else if (data.loop && data.loop.running !== undefined) {
-                // Only loop data available
-                status = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'stopped';
-                statusText = status.charAt(0).toUpperCase() + status.slice(1);
-            } else if (data.memory && data.memory.total_entries > 0) {
-                // Memory is loaded, system is likely running
-                status = 'running';
-                statusText = 'Running';
+            if (!data || typeof data !== 'object' || !data.system) return;
+            const sys = data.system;
+            const loop = data.loop || {};
+            let status;
+            let statusText;
+            if (sys.orchestrator_available === false) {
+                status = 'degraded';
+                statusText = 'Backend online - orchestrator not available';
+            } else if (sys.error) {
+                status = 'degraded';
+                statusText = 'Backend error: ' + String(sys.error).substring(0, 60);
+            } else if (sys.timeout) {
+                status = 'degraded';
+                statusText = 'Backend slow - status timed out';
+            } else if (sys.running || loop.running) {
+                status = loop.paused ? 'paused' : 'running';
+                statusText = loop.paused ? 'Paused' : 'Running';
+            } else if (sys.initialized) {
+                status = 'initialized';
+                statusText = 'Initialized (not running)';
             } else {
-                // No system data but we got a response - assume connected but initializing
                 status = 'connected';
-                statusText = 'Connected';
+                statusText = 'Backend online - starting up';
             }
-            
-            const indicator = document.getElementById('status-indicator');
-            if (indicator) {
-                indicator.className = 'status-indicator status-' + status;
+            setHeaderStatus(status, statusText);
+
+            const uptimeEl = document.getElementById('uptime');
+            if (uptimeEl) uptimeEl.textContent = Math.floor(sys.uptime || 0) + 's';
+            const activeTasksEl = document.getElementById('active-tasks');
+            if (activeTasksEl) {
+                const tasks = (sys.tasks && sys.tasks.active_tasks) || (sys.operational_stats && sys.operational_stats.total_tasks_processed) || 0;
+                activeTasksEl.textContent = tasks;
             }
-            const statusTextEl = document.getElementById('status-text');
-            if (statusTextEl) {
-                statusTextEl.textContent = statusText;
+
+            const loopStatusEl = document.getElementById('loop-status');
+            if (loopStatusEl) {
+                loopStatusEl.textContent = loop.available === false ? 'unavailable' : (loop.running ? (loop.paused ? 'paused' : 'running') : 'stopped');
             }
-            
-            // Update system metrics
-            if (data.system) {
-                const uptimeEl = document.getElementById('uptime');
-                if (uptimeEl) {
-                    const uptime = data.system.uptime || 0;
-                    uptimeEl.textContent = Math.floor(uptime) + 's';
-                }
-                const activeTasksEl = document.getElementById('active-tasks');
-                if (activeTasksEl) {
-                    const tasks = (data.system.tasks && data.system.tasks.active_tasks) || (data.system.operational_stats && data.system.operational_stats.total_tasks_processed) || 0;
-                    activeTasksEl.textContent = tasks;
-                }
-            }
-            
-            if (data.loop) {
-                const loopStatusEl = document.getElementById('loop-status');
-                if (loopStatusEl) {
-                    const loopStatus = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'stopped';
-                    loopStatusEl.textContent = loopStatus;
-                }
-                const queueSizeEl = document.getElementById('queue-size');
-                if (queueSizeEl) {
-                    queueSizeEl.textContent = data.loop.queue_size || 0;
-                }
-            }
-            
+            const queueSizeEl = document.getElementById('queue-size');
+            if (queueSizeEl) queueSizeEl.textContent = loop.queue_size || 0;
+
             if (data.memory) {
                 const totalMemoriesEl = document.getElementById('total-memories');
                 if (totalMemoriesEl) {
@@ -1239,22 +1109,49 @@ CONTROL_PANEL_TEMPLATE = """
                     vectorEnabledEl.textContent = (data.memory.vector_memory_enabled || data.memory.vector_enabled) ? 'Yes' : 'No';
                 }
             }
-            
+
             if (data.security) {
                 const violationsEl = document.getElementById('violations');
-                if (violationsEl) {
-                    violationsEl.textContent = data.security.recent_violations || 0;
-                }
+                if (violationsEl) violationsEl.textContent = data.security.recent_violations || 0;
                 const pendingReviewsEl = document.getElementById('pending-reviews');
-                if (pendingReviewsEl) {
-                    pendingReviewsEl.textContent = data.security.pending_reviews || 0;
-                }
+                if (pendingReviewsEl) pendingReviewsEl.textContent = data.security.pending_reviews || 0;
                 const policyLoadedEl = document.getElementById('policy-loaded');
-                if (policyLoadedEl) {
-                    policyLoadedEl.textContent = data.security.policy_loaded ? 'Yes' : 'No';
-                }
+                if (policyLoadedEl) policyLoadedEl.textContent = data.security.policy_loaded ? 'Yes' : 'No';
             }
+
+            const trust = data.trust || {};
+            const avgTrustEl = document.getElementById('avg-trust');
+            if (avgTrustEl) avgTrustEl.textContent = (typeof trust.average_trust === 'number') ? trust.average_trust.toFixed(2) : 'n/a';
+            const trustComponentsEl = document.getElementById('trust-components');
+            if (trustComponentsEl) trustComponentsEl.textContent = (trust.components !== undefined) ? trust.components : 'n/a';
         }
+
+        window.refreshModelStatus = function() {
+            const el = document.getElementById('model-status');
+            if (!el) return;
+            fetch('/api/models', { cache: 'no-store' })
+                .then(function(r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status + ' from /api/models');
+                    return r.json();
+                })
+                .then(function(m) {
+                    const lines = [
+                        'Provider: Ollama at ' + m.base_url,
+                        'Configured: ' + m.configured_model + ' (' + m.configured_source + ')',
+                        'Ollama reachable: ' + (m.ollama_reachable ? 'yes' : 'no'),
+                        'Configured model installed: ' + (m.configured_model_installed === null ? 'unknown' : (m.configured_model_installed ? 'yes' : 'NO')),
+                        'Installed models: ' + ((m.installed_models && m.installed_models.length) ? m.installed_models.join(', ') : 'none'),
+                        'Model selection in dashboard: not supported'
+                    ];
+                    if (m.error) lines.push('Problem: ' + m.error);
+                    el.textContent = lines.join(String.fromCharCode(10));
+                    el.style.color = m.error ? 'var(--danger)' : '';
+                })
+                .catch(function(err) {
+                    el.textContent = 'Model status unavailable: ' + (err.message || err);
+                    el.style.color = 'var(--danger)';
+                });
+        };
 
         // addLog function moved to top of script for early availability
 
@@ -1494,13 +1391,35 @@ CONTROL_PANEL_TEMPLATE = """
             const el = document.getElementById('api-chat-result');
             if (!msg) { if (el) el.textContent = 'Enter a message first.'; return; }
             if (el) el.textContent = 'Sending...';
-            fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) })
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    if (el) el.textContent = data.reply || data.error || JSON.stringify(data);
-                    addLog('Chat: ' + (data.success ? 'OK' : (data.error || '')), data.success ? 'info' : 'error');
+            const controller = new AbortController();
+            const timer = setTimeout(function() { controller.abort(); }, 180000);
+            fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }), signal: controller.signal })
+                .then(function(r) {
+                    return r.text().then(function(body) {
+                        let data;
+                        try { data = JSON.parse(body); } catch (e) { data = { error: 'Non-JSON response: ' + body.substring(0, 200) }; }
+                        return { ok: r.ok, status: r.status, data: data };
+                    });
                 })
-                .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Chat error: ' + err, 'error'); });
+                .then(function(o) {
+                    clearTimeout(timer);
+                    const data = o.data || {};
+                    const success = o.ok && data.success !== false && !!data.reply;
+                    if (success) {
+                        if (el) el.textContent = data.reply;
+                        addLog('Chat: OK', 'info');
+                    } else {
+                        const err = data.error || ('HTTP ' + o.status + ' with no reply');
+                        if (el) el.textContent = (o.ok ? 'Error: ' : 'Error (HTTP ' + o.status + '): ') + err;
+                        addLog('Chat failed: ' + err, 'error');
+                    }
+                })
+                .catch(function(err) {
+                    clearTimeout(timer);
+                    const m = err.name === 'AbortError' ? 'no reply within 180s (is the local model loaded?)' : ('backend unreachable: ' + (err.message || err));
+                    if (el) el.textContent = 'Error: ' + m;
+                    addLog('Chat error: ' + m, 'error');
+                });
         };
 
         window.refreshWalletAccounts = function() {
@@ -2173,6 +2092,11 @@ class UIControlPanel:
                 return jsonify(info), 200
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
+
+        @self.app.route('/api/models')
+        def get_models():
+            """Read-only local model status: configured Ollama model vs. models Ollama reports installed."""
+            return jsonify(get_local_model_status()), 200
             
         @self.app.route('/api/status')
         def get_status():
@@ -2181,8 +2105,9 @@ class UIControlPanel:
                 # Quick check - return fast if orchestrator is None
                 if not hasattr(self, 'orchestrator') or self.orchestrator is None:
                     return jsonify({
-                        "system": {"running": False, "initialized": False, "uptime": 0, "error": "Orchestrator not available"},
-                        "loop": {"running": False, "paused": False, "queue_size": 0},
+                        "system": {"running": False, "initialized": False, "uptime": 0,
+                                   "orchestrator_available": False, "error": "Orchestrator not available"},
+                        "loop": {"running": False, "paused": False, "queue_size": 0, "available": False},
                         "memory": {"total_entries": 0, "total_memories": 0},
                         "security": {"policy_loaded": False, "recent_violations": 0, "pending_reviews": 0},
                         "trust": {"components": 0, "average_trust": 0},
@@ -2226,21 +2151,15 @@ class UIControlPanel:
                     except:
                         pass
                 
-                # System is considered initialized if:
-                # - _initialized attribute is True, OR
-                # - Memory is loaded (system has been running), OR
-                # - Loop is running, OR
-                # - Orchestrator has core components (so UI never sticks on "Initializing")
-                has_core = (
-                    (hasattr(self.orchestrator, 'elysia_loop') and self.orchestrator.elysia_loop is not None)
-                    or (hasattr(self.orchestrator, 'memory') and self.orchestrator.memory is not None)
-                )
-                is_initialized = _initialized_attr or memory_loaded or loop_running or has_core
-                is_running = _running_attr or loop_running or memory_loaded or has_core
+                # "running" must come from the orchestrator's own run flag or a live event loop;
+                # merely having constructed components or loaded memory is not "running".
+                is_initialized = bool(_initialized_attr or memory_loaded or loop_running)
+                is_running = bool(_running_attr or loop_running)
                 
                 system_status = {
                     "running": is_running,
                     "initialized": is_initialized,
+                    "orchestrator_available": True,
                     "start_time": None,
                     "operational_stats": {}
                 }
@@ -2258,7 +2177,6 @@ class UIControlPanel:
                 # Calculate uptime if start_time exists
                 if system_status["start_time"]:
                     try:
-                        from datetime import datetime
                         start = datetime.fromisoformat(system_status["start_time"])
                         uptime = (datetime.now() - start).total_seconds()
                         system_status["uptime"] = max(0, uptime)
@@ -2301,8 +2219,7 @@ class UIControlPanel:
                         logger.debug(f"Error getting loop status: {e}")
                         loop_status = {"running": False, "paused": False, "queue_size": 0}
                 else:
-                    # If no elysia_loop, check if system is at least initialized
-                    loop_status = {"running": system_status.get("initialized", False), "paused": False, "queue_size": 0}
+                    loop_status = {"running": False, "paused": False, "queue_size": 0, "available": False}
                 
                 # Get RuntimeLoop status (quick check only)
                 runtime_status = {}
@@ -2350,9 +2267,14 @@ class UIControlPanel:
                 
                 # Get trust status (quick check)
                 trust_status = {}
-                if hasattr(self.orchestrator, 'trust') and self.orchestrator.trust:
-                    trust_status["components"] = 1
-                    trust_status["average_trust"] = 0.8
+                trust = getattr(self.orchestrator, 'trust', None)
+                if trust and hasattr(trust, 'get_trust_report'):
+                    try:
+                        report = trust.get_trust_report()
+                        trust_status["components"] = report.get("total_components", 0)
+                        trust_status["average_trust"] = report.get("average_trust")
+                    except Exception as e:
+                        logger.debug(f"Error getting trust report: {e}")
                 
                 # Convert all data to ensure no Path objects remain
                 response_data = {
@@ -3607,6 +3529,71 @@ class UIControlPanel:
             _dashboard_started = False
             self.running = False
         logger.info("Control panel stopped")
+
+
+def _configured_ollama_model() -> tuple:
+    """Return (model, source) using the same resolution order as ollama_model_config."""
+    import sys
+    loaded = sys.modules.get("project_guardian.ollama_model_config")
+    if loaded is not None and hasattr(loaded, "get_canonical_ollama_model"):
+        try:
+            return loaded.get_canonical_ollama_model(log_once=False), "runtime"
+        except Exception:
+            pass
+    for env in ("ELYSIA_OLLAMA_MODEL", "OLLAMA_MODEL"):
+        v = (os.environ.get(env) or "").strip()
+        if v:
+            return v, f"env:{env}"
+    cfg_path = Path(__file__).resolve().parent.parent / "config" / "mistral_decider.json"
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        m = (cfg.get("mistral_decider_model") or cfg.get("ollama_model") or "").strip()
+        if m:
+            return m, "config/mistral_decider.json"
+    except Exception:
+        pass
+    return "mistral:7b", "default"
+
+
+def get_local_model_status(timeout: float = 2.0) -> Dict[str, Any]:
+    """Query Ollama's /api/tags (read-only) and compare against the configured model."""
+    import urllib.request
+
+    base = (os.environ.get("OLLAMA_BASE_URL") or os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434").strip().rstrip("/")
+    if "/api/" in base:
+        base = base.split("/api/")[0].rstrip("/")
+    if not base.startswith("http"):
+        base = f"http://{base}"
+    configured, source = _configured_ollama_model()
+    status: Dict[str, Any] = {
+        "provider": "ollama",
+        "base_url": base,
+        "configured_model": configured,
+        "configured_source": source,
+        "ollama_reachable": False,
+        "installed_models": [],
+        "configured_model_installed": None,
+        "selection_supported": False,
+        "error": None,
+    }
+    try:
+        with urllib.request.urlopen(f"{base}/api/tags", timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8") or "{}")
+        names = [m.get("name") for m in (data.get("models") or []) if isinstance(m, dict) and m.get("name")]
+        status["ollama_reachable"] = True
+        status["installed_models"] = names
+        status["configured_model_installed"] = configured in names or (
+            ":" not in configured and f"{configured}:latest" in names
+        )
+        if not status["configured_model_installed"]:
+            status["error"] = (
+                f"Configured model '{configured}' is not installed in Ollama "
+                f"(installed: {', '.join(names) or 'none'}). Set ELYSIA_OLLAMA_MODEL to an installed tag."
+            )
+    except Exception as e:
+        status["error"] = f"Ollama not reachable at {base}: {e}"
+    return status
 
 
 def reset_dashboard_guard():

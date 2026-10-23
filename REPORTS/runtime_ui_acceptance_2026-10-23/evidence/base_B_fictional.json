@@ -1,0 +1,212 @@
+{
+  "url": "http://127.0.0.1:5062",
+  "console": [
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 (INTERNAL SERVER ERROR)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 (INTERNAL SERVER ERROR)"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: Error: HTTP 500: INTERNAL SERVER ERROR\n    at http://127.0.0.1:5062/:1076:35"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 (INTERNAL SERVER ERROR)"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: Error: HTTP 500: INTERNAL SERVER ERROR\n    at http://127.0.0.1:5062/:1076:35"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 (INTERNAL SERVER ERROR)"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: Error: HTTP 500: INTERNAL SERVER ERROR\n    at http://127.0.0.1:5062/:1076:35"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 (INTERNAL SERVER ERROR)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 (INTERNAL SERVER ERROR)"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: Error: HTTP 500: INTERNAL SERVER ERROR\n    at http://127.0.0.1:5062/:1076:35"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 503 (SERVICE UNAVAILABLE)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: TypeError: Failed to fetch\n    at http://127.0.0.1:5062/:1068:17"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: TypeError: Failed to fetch\n    at http://127.0.0.1:5062/:1068:17"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: TypeError: Failed to fetch\n    at http://127.0.0.1:5062/:1068:17"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: TypeError: Failed to fetch\n    at http://127.0.0.1:5062/:1068:17"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: TypeError: Failed to fetch\n    at http://127.0.0.1:5062/:1068:17"
+    }
+  ],
+  "page_errors": [],
+  "bad_requests": [
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/next-action",
+      "status": 503
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/socket.io/?EIO=4&transport=polling&t=Q5h8WcX",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/socket.io/?EIO=4&transport=polling&t=Q5h8XHB",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/socket.io/?EIO=4&transport=polling&t=Q5h8Y2B",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    }
+  ],
+  "status_timeline": [
+    {
+      "t": 0.2,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    },
+    {
+      "t": 6.5,
+      "event": "page reloaded"
+    },
+    {
+      "t": 6.6,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    },
+    {
+      "t": 10.2,
+      "event": "server interrupted"
+    },
+    {
+      "t": 10.2,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    }
+  ],
+  "theme": {
+    "before": "dark",
+    "after_toggle": "light",
+    "after_reload": "light"
+  },
+  "chat_result": "[STUB llama3.2:3b] received: Fictional test: what colour is the sky on planet Zorb?",
+  "logs_panel": "\n                [System] Control Panel initialized\n            [11:39:10 PM] Control Panel loaded at http://127.0.0.1:5062/[11:39:10 PM] Connected to Elysia system[11:39:10 PM] Status fetch failed: HTTP 500: INTERNAL SERVER ERROR - using fallback[11:39:13 PM] Chat: OK[11:39:13 PM] Disconnected from Elysia system[11:39:15 PM] Socket.IO connection error (continuing with HTTP polling): Error: xhr poll error[11:39:17 PM] Socket.IO connection error (continuing with HTTP polling): Error: xhr poll error[11:39:21 PM] Socket.IO connection error (continuing with HTTP polling): Error: xhr poll error"
+}

@@ -1,0 +1,25 @@
+{
+  "url": "http://127.0.0.1:5064",
+  "console": [
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    }
+  ],
+  "page_errors": [],
+  "bad_requests": [],
+  "status_timeline": [
+    {
+      "t": 0.2,
+      "text": "Initialized (not running)",
+      "indicator": "status-indicator status-initialized"
+    }
+  ],
+  "model_card": "Provider: Ollama at http://127.0.0.1:11434\nConfigured: llama3.2:3b (env:ELYSIA_OLLAMA_MODEL)\nOllama reachable: no\nConfigured model installed: unknown\nInstalled models: none\nModel selection in dashboard: not supported\nProblem: Ollama not reachable at http://127.0.0.1:11434: <urlopen error [Errno 111] Connection refused>",
+  "chat_result": "Error: Local model unreachable at http://127.0.0.1:11434: HTTPConnectionPool(host='127.0.0.1', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=11434): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+  "logs_panel": "\n                [System] Control Panel initialized\n            [11:47:18 PM] Control Panel loaded at http://127.0.0.1:5064/[11:47:18 PM] Status update received[11:47:18 PM] Socket.IO connected[11:47:23 PM] Chat failed: Local model unreachable at http://127.0.0.1:11434: HTTPConnectionPool(host='127.0.0.1', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=11434): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+}

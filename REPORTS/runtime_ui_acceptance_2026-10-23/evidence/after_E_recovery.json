@@ -1,0 +1,102 @@
+{
+  "url": "http://127.0.0.1:5066",
+  "console": [
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Socket.IO connect_error (HTTP polling continues): i: xhr poll error\n    at s.value (https://cdn.socket.io/4.5.4/socket.io.min.js:6:8287)\n    at i.<anonymous> (https://cdn.socket.io/4.5.4/socket.io.min.js:6:12676)\n    at L.emit (https://cdn.socket.io/4.5.4/socket.io.min.js:6:7123)\n    at i.value (https://cdn.socket.io/4.5.4/socket.io.min.js:6:14107)\n    at https://cdn.socket.io/4.5.4/socket.io.min.js:6:13838"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Socket.IO connect_error (HTTP polling continues): i: xhr poll error\n    at s.value (https://cdn.socket.io/4.5.4/socket.io.min.js:6:8287)\n    at i.<anonymous> (https://cdn.socket.io/4.5.4/socket.io.min.js:6:12676)\n    at L.emit (https://cdn.socket.io/4.5.4/socket.io.min.js:6:7123)\n    at i.value (https://cdn.socket.io/4.5.4/socket.io.min.js:6:14107)\n    at https://cdn.socket.io/4.5.4/socket.io.min.js:6:13838"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    }
+  ],
+  "page_errors": [],
+  "bad_requests": [
+    {
+      "url": "http://127.0.0.1:5066/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5066/socket.io/?EIO=4&transport=polling&t=Q5h9u2h",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5066/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5066/socket.io/?EIO=4&transport=polling&t=Q5h9uaa",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5066/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    }
+  ],
+  "status_timeline": [
+    {
+      "t": 0.2,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    },
+    {
+      "t": 4.4,
+      "event": "server interrupted"
+    },
+    {
+      "t": 4.4,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    },
+    {
+      "t": 4.7,
+      "text": "Offline - backend unreachable (last contact 0s ago)",
+      "indicator": "status-indicator status-offline"
+    },
+    {
+      "t": 6.2,
+      "text": "Offline - backend unreachable (last contact 2s ago)",
+      "indicator": "status-indicator status-offline"
+    },
+    {
+      "t": 8.3,
+      "text": "Offline - backend unreachable (last contact 4s ago)",
+      "indicator": "status-indicator status-offline"
+    },
+    {
+      "t": 10.3,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    }
+  ],
+  "model_card": "Provider: Ollama at http://127.0.0.1:11503\nConfigured: llama3.2:3b (env:ELYSIA_OLLAMA_MODEL)\nOllama reachable: yes\nConfigured model installed: yes\nInstalled models: llama3.2:3b\nModel selection in dashboard: not supported",
+  "logs_panel": "\n                [System] Control Panel initialized\n            [11:45:08 PM] Control Panel loaded at http://127.0.0.1:5066/[11:45:08 PM] Status update received[11:45:08 PM] Socket.IO connected[11:45:12 PM] Socket.IO disconnected - checking backend[11:45:12 PM] Backend unreachable: Failed to fetch[11:45:18 PM] Backend reachable again[11:45:19 PM] Socket.IO connected"
+}

@@ -1,0 +1,158 @@
+{
+  "url": "http://127.0.0.1:5056",
+  "console": [
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 (INTERNAL SERVER ERROR)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 (INTERNAL SERVER ERROR)"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: Error: HTTP 500: INTERNAL SERVER ERROR\n    at http://127.0.0.1:5056/:1076:35"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 (INTERNAL SERVER ERROR)"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: Error: HTTP 500: INTERNAL SERVER ERROR\n    at http://127.0.0.1:5056/:1076:35"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: TypeError: Failed to fetch\n    at http://127.0.0.1:5056/:1068:17"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: TypeError: Failed to fetch\n    at http://127.0.0.1:5056/:1068:17"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: TypeError: Failed to fetch\n    at http://127.0.0.1:5056/:1068:17"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: TypeError: Failed to fetch\n    at http://127.0.0.1:5056/:1068:17"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: TypeError: Failed to fetch\n    at http://127.0.0.1:5056/:1068:17"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    }
+  ],
+  "page_errors": [],
+  "bad_requests": [
+    {
+      "url": "http://127.0.0.1:5056/api/status",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:5056/api/status",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:5056/api/status",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:5056/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5056/socket.io/?EIO=4&transport=polling&t=Q5h8G1t",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5056/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5056/socket.io/?EIO=4&transport=polling&t=Q5h8Gm7",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5056/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5056/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5056/socket.io/?EIO=4&transport=polling&t=Q5h8Hpp",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5056/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5056/api/chat",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    }
+  ],
+  "status_timeline": [
+    {
+      "t": 0.0,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    },
+    {
+      "t": 5.3,
+      "event": "server interrupted"
+    },
+    {
+      "t": 5.3,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    }
+  ],
+  "chat_result": "Error: TypeError: Failed to fetch",
+  "logs_panel": "\n                [System] Control Panel initialized\n            [11:38:00 PM] Control Panel loaded at http://127.0.0.1:5056/[11:38:01 PM] Connected to Elysia system[11:38:01 PM] Status fetch failed: HTTP 500: INTERNAL SERVER ERROR - using fallback[11:38:06 PM] Disconnected from Elysia system[11:38:07 PM] Socket.IO connection error (continuing with HTTP polling): Error: xhr poll error[11:38:10 PM] Socket.IO connection error (continuing with HTTP polling): Error: xhr poll error[11:38:14 PM] Socket.IO connection error (continuing with HTTP polling): Error: xhr poll error[11:38:15 PM] Chat error: TypeError: Failed to fetch"
+}

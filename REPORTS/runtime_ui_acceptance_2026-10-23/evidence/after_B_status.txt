@@ -1,0 +1,2 @@
+{"loop":{"paused":false,"queue_size":0,"running":true},"memory":{"total_entries":0,"total_memories":0},"modules":{},"runtime":{},"security":{},"system":{"initialized":true,"operational_stats":{},"orchestrator_available":true,"running":true,"start_time":null,"uptime":0},"timestamp":"2026-10-23T23:46:51.027268","trust":{}}
+ HTTP 200

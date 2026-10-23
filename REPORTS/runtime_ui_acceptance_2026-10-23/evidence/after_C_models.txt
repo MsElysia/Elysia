@@ -1,0 +1,2 @@
+{"base_url":"http://127.0.0.1:11502","configured_model":"mistral:7b","configured_model_installed":false,"configured_source":"env:ELYSIA_OLLAMA_MODEL","error":"Configured model 'mistral:7b' is not installed in Ollama (installed: llama3.2:3b). Set ELYSIA_OLLAMA_MODEL to an installed tag.","installed_models":["llama3.2:3b"],"ollama_reachable":true,"provider":"ollama","selection_supported":false}
+ HTTP 200

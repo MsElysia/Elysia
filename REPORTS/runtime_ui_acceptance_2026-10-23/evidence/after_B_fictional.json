@@ -1,0 +1,174 @@
+{
+  "url": "http://127.0.0.1:5062",
+  "console": [
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 503 (SERVICE UNAVAILABLE)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Socket.IO connect_error (HTTP polling continues): i: xhr poll error\n    at s.value (https://cdn.socket.io/4.5.4/socket.io.min.js:6:8287)\n    at i.<anonymous> (https://cdn.socket.io/4.5.4/socket.io.min.js:6:12676)\n    at L.emit (https://cdn.socket.io/4.5.4/socket.io.min.js:6:7123)\n    at i.value (https://cdn.socket.io/4.5.4/socket.io.min.js:6:14107)\n    at https://cdn.socket.io/4.5.4/socket.io.min.js:6:13838"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Socket.IO connect_error (HTTP polling continues): i: xhr poll error\n    at s.value (https://cdn.socket.io/4.5.4/socket.io.min.js:6:8287)\n    at i.<anonymous> (https://cdn.socket.io/4.5.4/socket.io.min.js:6:12676)\n    at L.emit (https://cdn.socket.io/4.5.4/socket.io.min.js:6:7123)\n    at i.value (https://cdn.socket.io/4.5.4/socket.io.min.js:6:14107)\n    at https://cdn.socket.io/4.5.4/socket.io.min.js:6:13838"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "log",
+      "text": "Socket.IO connect_error (HTTP polling continues): i: xhr poll error\n    at s.value (https://cdn.socket.io/4.5.4/socket.io.min.js:6:8287)\n    at i.<anonymous> (https://cdn.socket.io/4.5.4/socket.io.min.js:6:12676)\n    at L.emit (https://cdn.socket.io/4.5.4/socket.io.min.js:6:7123)\n    at i.value (https://cdn.socket.io/4.5.4/socket.io.min.js:6:14107)\n    at https://cdn.socket.io/4.5.4/socket.io.min.js:6:13838"
+    }
+  ],
+  "page_errors": [],
+  "bad_requests": [
+    {
+      "url": "http://127.0.0.1:5062/api/next-action",
+      "status": 503
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/socket.io/?EIO=4&transport=polling&t=Q5hAIsb",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/socket.io/?EIO=4&transport=polling&t=Q5hAJRS",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/api/status",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:5062/socket.io/?EIO=4&transport=polling&t=Q5hAKfc",
+      "failure": "net::ERR_CONNECTION_REFUSED"
+    }
+  ],
+  "status_timeline": [
+    {
+      "t": 0.2,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    },
+    {
+      "t": 6.6,
+      "event": "page reloaded"
+    },
+    {
+      "t": 6.6,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    },
+    {
+      "t": 10.3,
+      "event": "server interrupted"
+    },
+    {
+      "t": 10.3,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    },
+    {
+      "t": 10.5,
+      "text": "Offline - backend unreachable (last contact 2s ago)",
+      "indicator": "status-indicator status-offline"
+    },
+    {
+      "t": 12.6,
+      "text": "Offline - backend unreachable (last contact 4s ago)",
+      "indicator": "status-indicator status-offline"
+    },
+    {
+      "t": 14.6,
+      "text": "Offline - backend unreachable (last contact 6s ago)",
+      "indicator": "status-indicator status-offline"
+    },
+    {
+      "t": 16.7,
+      "text": "Offline - backend unreachable (last contact 8s ago)",
+      "indicator": "status-indicator status-offline"
+    },
+    {
+      "t": 18.7,
+      "text": "Offline - backend unreachable (last contact 10s ago)",
+      "indicator": "status-indicator status-offline"
+    }
+  ],
+  "model_card": "Provider: Ollama at http://127.0.0.1:11501\nConfigured: llama3.2:3b (env:ELYSIA_OLLAMA_MODEL)\nOllama reachable: yes\nConfigured model installed: yes\nInstalled models: llama3.2:3b\nModel selection in dashboard: not supported",
+  "theme": {
+    "before": "dark",
+    "after_toggle": "light",
+    "after_reload": "light"
+  },
+  "chat_result": "[STUB llama3.2:3b] received: Fictional test: what colour is the sky on planet Zorb?",
+  "logs_panel": "\n                [System] Control Panel initialized\n            [11:46:58 PM] Control Panel loaded at http://127.0.0.1:5062/[11:46:58 PM] Socket.IO connected[11:46:58 PM] Status update received[11:47:01 PM] Chat: OK[11:47:01 PM] Socket.IO disconnected - checking backend[11:47:01 PM] Backend unreachable: Failed to fetch"
+}

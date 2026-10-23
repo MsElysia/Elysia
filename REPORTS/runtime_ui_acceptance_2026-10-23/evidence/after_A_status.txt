@@ -1,0 +1,2 @@
+:false,"paused":false,"queue_size":0,"running":false},"memory":{"total_entries":0,"total_memories":0},"security":{"pending_reviews":0,"policy_loaded":false,"recent_violations":0},"system":{"error":"Orchestrator not available","initialized":false,"orchestrator_available":false,"running":false,"uptime":0},"timestamp":"2026-10-23T23:46:43.369360","trust":{"average_trust":0,"components":0}}
+ HTTP 200

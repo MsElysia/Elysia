@@ -1,0 +1,2 @@
+{"ok":true,"orchestrator":true,"port":5062,"service":"elysia-control-panel"}
+ HTTP 200

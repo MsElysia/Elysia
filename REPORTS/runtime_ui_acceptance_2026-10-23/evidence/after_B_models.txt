@@ -1,0 +1,2 @@
+{"base_url":"http://127.0.0.1:11501","configured_model":"llama3.2:3b","configured_model_installed":true,"configured_source":"env:ELYSIA_OLLAMA_MODEL","error":null,"installed_models":["llama3.2:3b"],"ollama_reachable":true,"provider":"ollama","selection_supported":false}
+ HTTP 200

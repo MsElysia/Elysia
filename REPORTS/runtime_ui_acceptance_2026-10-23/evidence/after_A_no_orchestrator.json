@@ -1,0 +1,24 @@
+{
+  "url": "http://127.0.0.1:5071",
+  "console": [
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    }
+  ],
+  "page_errors": [],
+  "bad_requests": [],
+  "status_timeline": [
+    {
+      "t": 0.2,
+      "text": "Backend online - orchestrator not available",
+      "indicator": "status-indicator status-degraded"
+    }
+  ],
+  "model_card": "Provider: Ollama at http://127.0.0.1:11434\nConfigured: llama3.2:3b (env:ELYSIA_OLLAMA_MODEL)\nOllama reachable: no\nConfigured model installed: unknown\nInstalled models: none\nModel selection in dashboard: not supported\nProblem: Ollama not reachable at http://127.0.0.1:11434: <urlopen error [Errno 111] Connection refused>",
+  "logs_panel": "\n                [System] Control Panel initialized\n            [11:46:43 PM] Control Panel loaded at http://127.0.0.1:5071/[11:46:43 PM] Status update received[11:46:44 PM] Socket.IO connected"
+}

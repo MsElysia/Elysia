@@ -1,0 +1,31 @@
+{
+ "page_errors": [],
+ "tabs": {
+  "Learning": "learning",
+  "Tasks": "tasks",
+  "Security": "security",
+  "Memory": "memory",
+  "Introspection": "introspection",
+  "Control": "control",
+  "Logs": "logs",
+  "Dashboard": "dashboard"
+ },
+ "bad": [
+  [
+   "api/next-action",
+   503
+  ]
+ ],
+ "after_pause": "Paused",
+ "after_resume": "Running",
+ "dashboard_values": {
+  "uptime": "0s",
+  "loop-status": "running",
+  "queue-size": "0",
+  "active-tasks": "0",
+  "total-memories": "0",
+  "avg-trust": "n/a",
+  "trust-components": "n/a"
+ },
+ "logs": "[System] Control Panel initialized\n[11:45:40 PM] Control Panel loaded at http://127.0.0.1:5067/\n[11:45:40 PM] Status update received\n[11:45:40 PM] Socket.IO connected\n[11:45:48 PM] Pause requested...\n[11:45:48 PM] Loop paused\n[11:45:51 PM] Resume requested...\n[11:45:51 PM] Loop resumed"
+}

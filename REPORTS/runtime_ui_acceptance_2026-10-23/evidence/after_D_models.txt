@@ -1,0 +1,2 @@
+{"base_url":"http://127.0.0.1:11434","configured_model":"llama3.2:3b","configured_model_installed":null,"configured_source":"env:ELYSIA_OLLAMA_MODEL","error":"Ollama not reachable at http://127.0.0.1:11434: <urlopen error [Errno 111] Connection refused>","installed_models":[],"ollama_reachable":false,"provider":"ollama","selection_supported":false}
+ HTTP 200

@@ -1,0 +1,57 @@
+{
+  "url": "http://127.0.0.1:5063",
+  "console": [
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 (INTERNAL SERVER ERROR)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 (INTERNAL SERVER ERROR)"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: Error: HTTP 500: INTERNAL SERVER ERROR\n    at http://127.0.0.1:5063/:1076:35"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 (INTERNAL SERVER ERROR)"
+    },
+    {
+      "type": "log",
+      "text": "Status fetch error: Error: HTTP 500: INTERNAL SERVER ERROR\n    at http://127.0.0.1:5063/:1076:35"
+    }
+  ],
+  "page_errors": [],
+  "bad_requests": [
+    {
+      "url": "http://127.0.0.1:5063/api/status",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:5063/api/status",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:5063/api/status",
+      "status": 500
+    }
+  ],
+  "status_timeline": [
+    {
+      "t": 0.2,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    }
+  ],
+  "chat_result": "Ollama HTTP 404 for model 'mistral:7b': {\"error\": \"model 'mistral:7b' not found\"}",
+  "logs_panel": "\n                [System] Control Panel initialized\n            [11:39:24 PM] Control Panel loaded at http://127.0.0.1:5063/[11:39:24 PM] Connected to Elysia system[11:39:24 PM] Status fetch failed: HTTP 500: INTERNAL SERVER ERROR - using fallback[11:39:29 PM] Chat: Ollama HTTP 404 for model 'mistral:7b': {\"error\": \"model 'mistral:7b' not found\"}"
+}

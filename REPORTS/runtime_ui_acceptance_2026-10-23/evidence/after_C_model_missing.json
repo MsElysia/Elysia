@@ -1,0 +1,25 @@
+{
+  "url": "http://127.0.0.1:5063",
+  "console": [
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    }
+  ],
+  "page_errors": [],
+  "bad_requests": [],
+  "status_timeline": [
+    {
+      "t": 0.2,
+      "text": "Running",
+      "indicator": "status-indicator status-running"
+    }
+  ],
+  "model_card": "Provider: Ollama at http://127.0.0.1:11502\nConfigured: mistral:7b (env:ELYSIA_OLLAMA_MODEL)\nOllama reachable: yes\nConfigured model installed: NO\nInstalled models: llama3.2:3b\nModel selection in dashboard: not supported\nProblem: Configured model 'mistral:7b' is not installed in Ollama (installed: llama3.2:3b). Set ELYSIA_OLLAMA_MODEL to an installed tag.",
+  "chat_result": "Error: Ollama HTTP 404 for model 'mistral:7b': {\"error\": \"model 'mistral:7b' not found\"}",
+  "logs_panel": "\n                [System] Control Panel initialized\n            [11:47:12 PM] Control Panel loaded at http://127.0.0.1:5063/[11:47:12 PM] Status update received[11:47:12 PM] Socket.IO connected[11:47:17 PM] Chat failed: Ollama HTTP 404 for model 'mistral:7b': {\"error\": \"model 'mistral:7b' not found\"}"
+}

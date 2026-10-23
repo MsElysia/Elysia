@@ -22,6 +22,9 @@ import logging
 import socket
 import time
 import os
+import uuid
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -161,6 +164,7 @@ CONTROL_PANEL_TEMPLATE = """
         .status-stopped { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
         .status-connected { background: var(--primary); box-shadow: 0 0 10px var(--primary); }
         .status-initialized { background: var(--secondary); box-shadow: 0 0 10px var(--secondary); }
+        .status-offline { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
         
         .status-text {
             color: white;
@@ -494,6 +498,14 @@ CONTROL_PANEL_TEMPLATE = """
                     <div class="metric">
                         <span class="metric-label">Active Tasks:</span>
                         <span class="metric-value" id="active-tasks">-</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Backend:</span>
+                        <span class="metric-value" id="backend-status">-</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Models:</span>
+                        <span class="metric-value" id="model-status">-</span>
                     </div>
                 </div>
 
@@ -839,7 +851,7 @@ CONTROL_PANEL_TEMPLATE = """
                 <h3 style="margin-top: 24px;">APIs &amp; Tools</h3>
                 <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: 12px;">Trigger income, research, harvest, and AI chat from the dashboard.</p>
                 <div class="input-group" style="margin-bottom: 12px;">
-                    <label>Chat with AI (OpenAI/OpenRouter):</label>
+                    <label>Chat with Elysia <span id="chat-model-hint" style="font-weight: 400; color: var(--text-secondary);"></span>:</label>
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                         <input type="text" id="api-chat-message" placeholder="Ask anything..." style="flex: 1; min-width: 200px;">
                         <button onclick="sendApiChat()">Send</button>
@@ -879,19 +891,20 @@ CONTROL_PANEL_TEMPLATE = """
         function addLog(message, level) {
             if (level === undefined) level = 'info';
             try {
-                const console = document.getElementById('console-logs');
-                if (console) {
+                const logEl = document.getElementById('console-logs');
+                if (logEl) {
                     const entry = document.createElement('div');
                     entry.className = 'log-entry log-' + level;
                     entry.textContent = '[' + new Date().toLocaleTimeString() + '] ' + message;
-                    console.appendChild(entry);
-                    console.scrollTop = console.scrollHeight;
-                } else {
-                    // Fallback to browser console if element not found
-                    console.log('[' + level.toUpperCase() + '] ' + message);
+                    logEl.appendChild(entry);
+                    logEl.scrollTop = logEl.scrollHeight;
+                } else if (window.console && typeof window.console.log === 'function') {
+                    window.console.log('[' + level.toUpperCase() + '] ' + message);
                 }
             } catch (e) {
-                console.log('[' + level.toUpperCase() + '] ' + message);
+                if (window.console && typeof window.console.log === 'function') {
+                    window.console.log('[' + level.toUpperCase() + '] ' + message);
+                }
             }
         }
         
@@ -938,6 +951,28 @@ CONTROL_PANEL_TEMPLATE = """
         const socket = (typeof io !== 'undefined') ? io() : null;
         let updateInterval;
         let initialized = false;
+        let lastStatusOk = false;
+        let statusFailCount = 0;
+
+        function applyDisconnectedStatus(reason) {
+            lastStatusOk = false;
+            const spinner = document.getElementById('loading-spinner');
+            if (spinner) spinner.style.display = 'none';
+            const statusTextEl = document.getElementById('status-text');
+            if (statusTextEl) statusTextEl.textContent = 'Offline';
+            const indicator = document.getElementById('status-indicator');
+            if (indicator) indicator.className = 'status-indicator status-offline';
+            const backendEl = document.getElementById('backend-status');
+            if (backendEl) backendEl.textContent = reason || 'Unreachable';
+            const loopEl = document.getElementById('loop-status');
+            if (loopEl && (!loopEl.textContent || loopEl.textContent === '-' || loopEl.textContent === 'Connecting...')) {
+                loopEl.textContent = 'Unknown';
+            }
+            const modelEl = document.getElementById('model-status');
+            if (modelEl && (modelEl.textContent === '-' || !modelEl.textContent)) {
+                modelEl.textContent = 'Unknown';
+            }
+        }
 
         // Initialize on page load - show UI immediately
         document.addEventListener('DOMContentLoaded', function() {
@@ -973,6 +1008,7 @@ CONTROL_PANEL_TEMPLATE = """
 
         if (socket) socket.on('disconnect', function() {
             addLog('Disconnected from Elysia system', 'warning');
+            if (!lastStatusOk) applyDisconnectedStatus('Socket disconnected');
         });
 
         if (socket) socket.on('connect_error', function(error) {
@@ -999,22 +1035,13 @@ CONTROL_PANEL_TEMPLATE = """
             addLog(data.message, data.level || 'info');
         });
 
-        // Safety: force UI usable if stuck - run at 2s and 4s
+        // If status never arrives, leave Initializing/Connecting for Offline — never fake Running.
         setTimeout(function() {
             const statusTextEl = document.getElementById('status-text');
-            const spinner = document.getElementById('loading-spinner');
-            if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
-                statusTextEl.textContent = 'Connected (Limited)';
-                if (spinner) spinner.style.display = 'none';
-                const ind = document.getElementById('status-indicator');
-                if (ind) ind.className = 'status-indicator status-running';
-                addLog('Status: using limited mode - buttons should work', 'info');
-            }
-        }, 2000);
-        setTimeout(function() {
-            const statusTextEl = document.getElementById('status-text');
-            if (statusTextEl && statusTextEl.textContent === 'Connecting...') {
-                statusTextEl.textContent = 'Connected (Limited)';
+            if (!lastStatusOk && statusTextEl &&
+                (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
+                applyDisconnectedStatus('Status timed out');
+                addLog('No truthful status from backend yet — showing Offline', 'warning');
             }
         }, 4000);
 
@@ -1031,104 +1058,64 @@ CONTROL_PANEL_TEMPLATE = """
                 spinner.style.display = 'none';
             }
             
-            // Show "Connecting" status immediately
+            // Show "Connecting" until a real status payload arrives. Never paint Running here.
             const statusTextEl = document.getElementById('status-text');
             if (statusTextEl) {
                 statusTextEl.textContent = 'Connecting...';
             }
             const indicator = document.getElementById('status-indicator');
             if (indicator) {
-                indicator.className = 'status-indicator status-running';
+                indicator.className = 'status-indicator status-connected';
             }
-            
-            // Set a timeout to show "Connected" status if API doesn't respond quickly
-            let timeoutId = setTimeout(function() {
-                if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
-                    statusTextEl.textContent = 'Connected';
-                    if (indicator) {
-                        indicator.className = 'status-indicator status-running';
-                    }
-                    addLog('Connected to server (waiting for status)', 'info');
-                }
-            }, 2000); // 2 second timeout (reduced from 3)
-            
-            // Do an immediate update with timeout protection
-            const controller = new AbortController();
-            const timeoutId2 = setTimeout(function() { controller.abort(); }, 5000); // 5 second fetch timeout
-            
-            fetch('/api/status', { 
-                method: 'GET',
-                headers: {'Accept': 'application/json'},
-                signal: controller.signal
-            })
-                .then(function(r) {
-                    clearTimeout(timeoutId);
-                    clearTimeout(timeoutId2);
+
+            function fetchStatusOnce(isPoll) {
+                const controller = new AbortController();
+                const abortId = setTimeout(function() { controller.abort(); }, 5000);
+                return fetch('/api/status', {
+                    method: 'GET',
+                    headers: {'Accept': 'application/json'},
+                    signal: controller.signal
+                }).then(function(r) {
+                    clearTimeout(abortId);
                     if (!r.ok) {
                         throw new Error('HTTP ' + r.status + ': ' + r.statusText);
                     }
                     return r.json();
-                })
-                .then(function(data) {
-                    clearTimeout(timeoutId);
-                    clearTimeout(timeoutId2);
+                }).then(function(data) {
+                    clearTimeout(abortId);
+                    lastStatusOk = true;
+                    statusFailCount = 0;
                     updateDashboard(data);
-                    addLog('Status update received', 'info');
-                })
-                .catch(function(err) {
-                    clearTimeout(timeoutId);
-                    clearTimeout(timeoutId2);
+                    if (!isPoll) addLog('Status update received', 'info');
+                }).catch(function(err) {
+                    clearTimeout(abortId);
+                    statusFailCount += 1;
                     const msg = err.name === 'AbortError' ? 'Status timed out (5s)' : (err.message || String(err));
-                    addLog('Status fetch failed: ' + msg + ' - using fallback', 'warning');
-                    // Use fallback status to show UI is working
-                    // Check if we have any indicators that system is running
-                    updateDashboard({
-                        system: { running: true, initialized: true, uptime: 0 },
-                        loop: { running: true, paused: false, queue_size: 0 },
-                        memory: { total_entries: 0, total_memories: 0 },
-                        security: { policy_loaded: false, recent_violations: 0, pending_reviews: 0 },
-                        trust: { components: 0, average_trust: 0 }
-                    });
-                    
-                    // Ensure UI is visible even on error
-                    const statusTextEl = document.getElementById('status-text');
-                    if (statusTextEl && statusTextEl.textContent === 'Initializing...') {
-                        statusTextEl.textContent = 'Connected (Limited)';
+                    if (!isPoll || statusFailCount >= 2) {
+                        addLog('Status fetch failed: ' + msg, 'warning');
+                        applyDisconnectedStatus(msg);
+                    } else if (window.console && window.console.log) {
+                        window.console.log('Status fetch error:', err);
                     }
                 });
-            
-            // Then set up interval
+            }
+
+            fetch('/api/ping', { method: 'GET', headers: {'Accept': 'application/json'} })
+                .then(function(r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+                .then(function(ping) {
+                    const backendEl = document.getElementById('backend-status');
+                    if (backendEl && ping && ping.service) {
+                        backendEl.textContent = ping.service + (ping.orchestrator ? '' : ' (no orchestrator)');
+                    }
+                })
+                .catch(function() { /* status poll reports offline */ });
+
+            fetchStatusOnce(false);
+
             if (updateInterval) {
                 clearInterval(updateInterval);
             }
-            updateInterval = setInterval(function() {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(function() { controller.abort(); }, 5000); // 5 second timeout
-                
-                fetch('/api/status', {
-                    method: 'GET',
-                    headers: {'Accept': 'application/json'},
-                    signal: controller.signal
-                })
-                    .then(function(r) {
-                        clearTimeout(timeoutId);
-                        if (!r.ok) {
-                            throw new Error('HTTP ' + r.status + ': ' + r.statusText);
-                        }
-                        return r.json();
-                    })
-                    .then(function(data) {
-                        clearTimeout(timeoutId);
-                        updateDashboard(data);
-                    })
-                    .catch(function(err) {
-                        clearTimeout(timeoutId);
-                        if (err.name !== 'AbortError') {
-                            console.log('Status fetch error:', err);
-                        }
-                        // Don't update status on error - keep showing last known status
-                    });
-            }, 2000);
+            updateInterval = setInterval(function() { fetchStatusOnce(true); }, 2000);
         }
 
         function updateDashboard(data) {
@@ -1150,46 +1137,26 @@ CONTROL_PANEL_TEMPLATE = """
                 status = 'stopped';
                 statusText = 'Timeout - Slow Response';
             } else if (data.system) {
-                // Check multiple indicators to determine status
-                const systemInitialized = data.system.initialized || false;
-                const systemRunning = data.system.running || false;
-                const loopRunning = data.loop && data.loop.running !== undefined ? data.loop.running : false;
-                const memoryLoaded = data.memory && data.memory.total_entries > 0;
-                const hasUptime = data.system.uptime && data.system.uptime > 0;
-                
-                // System is considered running if any of these are true:
-                const isActuallyRunning = systemRunning || loopRunning || memoryLoaded || hasUptime;
-                const isActuallyInitialized = systemInitialized || memoryLoaded || loopRunning || hasUptime;
-                
-                if (isActuallyInitialized || isActuallyRunning) {
-                    // System is initialized/running, check loop status for more detail
-                    if (data.loop && data.loop.running !== undefined) {
-                        status = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'initialized';
-                        statusText = status.charAt(0).toUpperCase() + status.slice(1);
-                    } else if (memoryLoaded) {
-                        // Memory is loaded, system is running
-                        status = 'running';
-                        statusText = 'Running';
-                    } else {
-                        // System is initialized but not fully running yet
-                        status = isActuallyRunning ? 'running' : 'initialized';
-                        statusText = status.charAt(0).toUpperCase() + status.slice(1);
-                    }
+                const systemInitialized = !!data.system.initialized;
+                const systemRunning = !!data.system.running;
+                const loopRunning = !!(data.loop && data.loop.running);
+                const loopPaused = !!(data.loop && data.loop.paused);
+                const isActuallyRunning = systemRunning || loopRunning;
+
+                if (isActuallyRunning) {
+                    status = loopPaused ? 'paused' : 'running';
+                    statusText = status.charAt(0).toUpperCase() + status.slice(1);
+                } else if (systemInitialized) {
+                    status = 'initialized';
+                    statusText = 'Initialized';
                 } else {
-                    // Got system data but not fully initialized - still show connected so UI is usable
-                    status = 'connected';
-                    statusText = 'Connected (Limited)';
+                    status = 'stopped';
+                    statusText = 'Stopped';
                 }
             } else if (data.loop && data.loop.running !== undefined) {
-                // Only loop data available
                 status = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'stopped';
                 statusText = status.charAt(0).toUpperCase() + status.slice(1);
-            } else if (data.memory && data.memory.total_entries > 0) {
-                // Memory is loaded, system is likely running
-                status = 'running';
-                statusText = 'Running';
             } else {
-                // No system data but we got a response - assume connected but initializing
                 status = 'connected';
                 statusText = 'Connected';
             }
@@ -1252,6 +1219,40 @@ CONTROL_PANEL_TEMPLATE = """
                 const policyLoadedEl = document.getElementById('policy-loaded');
                 if (policyLoadedEl) {
                     policyLoadedEl.textContent = data.security.policy_loaded ? 'Yes' : 'No';
+                }
+            }
+
+            const backendEl = document.getElementById('backend-status');
+            if (backendEl) {
+                if (data.backend && data.backend.service) {
+                    backendEl.textContent = data.backend.service + (data.backend.orchestrator ? '' : ' (no orchestrator)');
+                } else {
+                    backendEl.textContent = 'elysia-control-panel';
+                }
+            }
+
+            const modelEl = document.getElementById('model-status');
+            const chatHint = document.getElementById('chat-model-hint');
+            if (data.models) {
+                const configured = (data.models.configured || []).map(function(m) {
+                    return (m && m.name) ? m.name : String(m);
+                });
+                const available = (data.models.available || []).map(function(m) {
+                    return (m && m.name) ? m.name : String(m);
+                });
+                let modelText;
+                if (available.length) {
+                    modelText = available.join(', ');
+                } else if (configured.length) {
+                    modelText = configured.join(', ') + ' (not reachable)';
+                } else {
+                    modelText = data.models.error ? 'None reachable' : 'None configured';
+                }
+                if (modelEl) modelEl.textContent = modelText;
+                if (chatHint) {
+                    chatHint.textContent = available.length
+                        ? '(' + available.join(', ') + ')'
+                        : (configured.length ? '(configured: ' + configured.join(', ') + ', unavailable)' : '(no local model)');
                 }
             }
         }
@@ -1494,13 +1495,39 @@ CONTROL_PANEL_TEMPLATE = """
             const el = document.getElementById('api-chat-result');
             if (!msg) { if (el) el.textContent = 'Enter a message first.'; return; }
             if (el) el.textContent = 'Sending...';
-            fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) })
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    if (el) el.textContent = data.reply || data.error || JSON.stringify(data);
-                    addLog('Chat: ' + (data.success ? 'OK' : (data.error || '')), data.success ? 'info' : 'error');
+            const controller = new AbortController();
+            const timeoutId = setTimeout(function() { controller.abort(); }, 20000);
+            fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: msg }),
+                signal: controller.signal
+            })
+                .then(function(r) {
+                    return r.json().then(function(data) {
+                        data._http = r.status;
+                        data._ok = r.ok;
+                        return data;
+                    }).catch(function() {
+                        throw new Error('Chat HTTP ' + r.status + ' (non-JSON)');
+                    });
                 })
-                .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Chat error: ' + err, 'error'); });
+                .then(function(data) {
+                    clearTimeout(timeoutId);
+                    const err = data.error || (!data._ok ? ('HTTP ' + data._http) : '');
+                    if (el) {
+                        el.textContent = data.reply || err || JSON.stringify(data);
+                    }
+                    addLog('Chat: ' + (data.success ? 'OK' : (err || 'failed')), data.success ? 'info' : 'error');
+                })
+                .catch(function(err) {
+                    clearTimeout(timeoutId);
+                    const msg = err && err.name === 'AbortError'
+                        ? 'Chat timed out after 20s. Local model may be unavailable — check Ollama and /api/status models.'
+                        : String(err);
+                    if (el) el.textContent = msg;
+                    addLog('Chat error: ' + msg, 'error');
+                });
         };
 
         window.refreshWalletAccounts = function() {
@@ -2041,6 +2068,104 @@ class UIControlPanel:
         self._server_ready = threading.Event()
         self._server_error = None
         self._actual_port = None
+        self._instance_id = uuid.uuid4().hex
+
+    def _collect_model_status(self) -> Dict[str, Any]:
+        """Read-only configured vs available local models. Never starts providers."""
+        configured: List[Dict[str, str]] = []
+        try:
+            try:
+                from project_guardian.ollama_model_config import get_canonical_ollama_model
+            except Exception:
+                cfg_path = Path(__file__).resolve().parent / "ollama_model_config.py"
+                spec_mod = None
+                if cfg_path.exists():
+                    import importlib.util
+                    spec = importlib.util.spec_from_file_location("ollama_model_config", cfg_path)
+                    spec_mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(spec_mod)  # type: ignore[union-attr]
+                    get_canonical_ollama_model = spec_mod.get_canonical_ollama_model
+                else:
+                    raise
+            name = (get_canonical_ollama_model(log_once=False) or "").strip()
+            if name:
+                configured.append({"provider": "ollama", "name": name})
+        except Exception:
+            pass
+
+        if self.orchestrator is not None:
+            for attr in ("current_model", "active_model", "llm_model"):
+                val = getattr(self.orchestrator, attr, None)
+                if isinstance(val, str) and val.strip():
+                    if not any(c.get("name") == val.strip() for c in configured):
+                        configured.append({"provider": "orchestrator", "name": val.strip()})
+                    break
+
+        available: List[Dict[str, str]] = []
+        reachable = False
+        error = None
+        base = (
+            os.environ.get("OLLAMA_BASE_URL")
+            or os.environ.get("OLLAMA_HOST")
+            or "http://127.0.0.1:11434"
+        ).strip().rstrip("/")
+        if "/api/" in base:
+            base = base.split("/api/")[0].rstrip("/")
+        if not base.startswith("http"):
+            base = f"http://{base}"
+        try:
+            req = urllib.request.Request(
+                base + "/api/tags",
+                headers={"Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+            reachable = True
+            for item in payload.get("models") or []:
+                if isinstance(item, dict):
+                    n = (item.get("name") or "").strip()
+                    if n:
+                        available.append({"provider": "ollama", "name": n})
+        except Exception as exc:
+            error = f"ollama_unreachable: {exc}"[:220]
+
+        return {
+            "configured": configured,
+            "available": available,
+            "reachable": reachable,
+            "provider": "ollama",
+            "base_url": base,
+            "error": error,
+        }
+
+    def _empty_status(
+        self,
+        *,
+        running: bool = False,
+        initialized: bool = False,
+        error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        system: Dict[str, Any] = {
+            "running": bool(running),
+            "initialized": bool(initialized),
+            "uptime": 0,
+        }
+        if error:
+            system["error"] = error
+        return {
+            "system": system,
+            "loop": {"running": False, "paused": False, "queue_size": 0},
+            "memory": {"total_entries": 0, "total_memories": 0},
+            "security": {"policy_loaded": False, "recent_violations": 0, "pending_reviews": 0},
+            "trust": {"components": 0, "average_trust": 0},
+            "models": self._collect_model_status(),
+            "backend": {
+                "service": "elysia-control-panel",
+                "orchestrator": self.orchestrator is not None,
+                "connected": True,
+            },
+            "timestamp": datetime.now().isoformat(),
+        }
 
     def is_ready(self) -> bool:
         """
@@ -2149,12 +2274,22 @@ class UIControlPanel:
         @self.app.route('/api/ping')
         def ping():
             """Quick connectivity check - returns immediately."""
-            return jsonify({
+            payload = {
                 "ok": True,
                 "service": "elysia-control-panel",
                 "port": getattr(self, 'port', None),
                 "orchestrator": self.orchestrator is not None if hasattr(self, 'orchestrator') else False,
-            }), 200
+                "instance_id": getattr(self, "_instance_id", None),
+            }
+            response = jsonify(payload)
+            response.headers["X-Elysia-Panel"] = str(payload["instance_id"] or "unknown")
+            response.headers["X-Elysia-Service"] = "elysia-control-panel"
+            return response, 200
+
+        @self.app.route('/api/models')
+        def api_models():
+            """Configured and reachable local models (read-only)."""
+            return jsonify(self._collect_model_status()), 200
 
         @self.app.route('/api/debug')
         def debug_info():
@@ -2180,14 +2315,7 @@ class UIControlPanel:
             try:
                 # Quick check - return fast if orchestrator is None
                 if not hasattr(self, 'orchestrator') or self.orchestrator is None:
-                    return jsonify({
-                        "system": {"running": False, "initialized": False, "uptime": 0, "error": "Orchestrator not available"},
-                        "loop": {"running": False, "paused": False, "queue_size": 0},
-                        "memory": {"total_entries": 0, "total_memories": 0},
-                        "security": {"policy_loaded": False, "recent_violations": 0, "pending_reviews": 0},
-                        "trust": {"components": 0, "average_trust": 0},
-                        "timestamp": datetime.now().isoformat()
-                    }), 200
+                    return jsonify(self._empty_status(error="Orchestrator not available")), 200
                 
                 # Helper function to convert Path objects to strings
                 def convert_paths(obj):
@@ -2235,8 +2363,9 @@ class UIControlPanel:
                     (hasattr(self.orchestrator, 'elysia_loop') and self.orchestrator.elysia_loop is not None)
                     or (hasattr(self.orchestrator, 'memory') and self.orchestrator.memory is not None)
                 )
-                is_initialized = _initialized_attr or memory_loaded or loop_running or has_core
-                is_running = _running_attr or loop_running or memory_loaded or has_core
+                is_initialized = bool(_initialized_attr or memory_loaded or loop_running or has_core)
+                # Presence of core objects is not proof the runtime is executing.
+                is_running = bool(_running_attr or loop_running)
                 
                 system_status = {
                     "running": is_running,
@@ -2258,11 +2387,10 @@ class UIControlPanel:
                 # Calculate uptime if start_time exists
                 if system_status["start_time"]:
                     try:
-                        from datetime import datetime
                         start = datetime.fromisoformat(system_status["start_time"])
                         uptime = (datetime.now() - start).total_seconds()
                         system_status["uptime"] = max(0, uptime)
-                    except:
+                    except Exception:
                         system_status["uptime"] = 0
                 else:
                     system_status["uptime"] = 0
@@ -2301,8 +2429,7 @@ class UIControlPanel:
                         logger.debug(f"Error getting loop status: {e}")
                         loop_status = {"running": False, "paused": False, "queue_size": 0}
                 else:
-                    # If no elysia_loop, check if system is at least initialized
-                    loop_status = {"running": system_status.get("initialized", False), "paused": False, "queue_size": 0}
+                    loop_status = {"running": False, "paused": False, "queue_size": 0}
                 
                 # Get RuntimeLoop status (quick check only)
                 runtime_status = {}
@@ -2363,6 +2490,12 @@ class UIControlPanel:
                     "memory": convert_paths(memory_stats),
                     "security": convert_paths(security_status),
                     "trust": convert_paths(trust_status),
+                    "models": self._collect_model_status(),
+                    "backend": {
+                        "service": "elysia-control-panel",
+                        "orchestrator": True,
+                        "connected": True,
+                    },
                     "timestamp": datetime.now().isoformat()
                 }
                 
@@ -2371,24 +2504,16 @@ class UIControlPanel:
             except Exception as e:
                 logger.error(f"Status endpoint error: {e}", exc_info=True)
                 error_msg = str(e)[:200]
-                # Return minimal valid status even on error
-                return jsonify({
-                    "system": {
-                        "running": getattr(self.orchestrator, '_running', False),
-                        "initialized": getattr(self.orchestrator, '_initialized', False),
-                        "uptime": 0,
-                        "error": error_msg
-                    },
-                    "loop": {
-                        "running": getattr(self.orchestrator, '_running', False),
-                        "paused": False,
-                        "queue_size": 0
-                    },
-                    "memory": {"total_entries": 0, "total_memories": 0},
-                    "security": {"policy_loaded": False, "recent_violations": 0, "pending_reviews": 0},
-                    "trust": {"components": 0, "average_trust": 0},
-                    "timestamp": datetime.now().isoformat()
-                }), 200
+                running = False
+                initialized = False
+                if getattr(self, "orchestrator", None) is not None:
+                    running = bool(getattr(self.orchestrator, "_running", False))
+                    initialized = bool(getattr(self.orchestrator, "_initialized", False))
+                return jsonify(self._empty_status(
+                    running=running,
+                    initialized=initialized,
+                    error=error_msg,
+                )), 200
                 
         @self.app.route('/api/control/pause', methods=['POST'])
         def pause_loop():
@@ -2536,7 +2661,24 @@ class UIControlPanel:
                 if hasattr(self.orchestrator, 'ask_ai'):
                     reply = self.orchestrator.ask_ai(message)
                     return jsonify({"success": True, "reply": reply or "(no reply)", "error": None})
-                return jsonify({"error": "No chat backend available (unified system or ask_ai)"}), 400
+                models = self._collect_model_status()
+                available = [m.get("name") for m in models.get("available") or [] if isinstance(m, dict)]
+                configured = [m.get("name") for m in models.get("configured") or [] if isinstance(m, dict)]
+                detail = "No chat backend available (unified system or ask_ai)."
+                if configured and not available:
+                    detail += (
+                        " Configured local model(s) "
+                        + ", ".join(configured)
+                        + " are not reachable. Start Ollama or attach an orchestrator."
+                    )
+                elif not configured:
+                    detail += " No local model is configured or reachable."
+                return jsonify({
+                    "success": False,
+                    "error": detail,
+                    "reply": None,
+                    "models": models,
+                }), 400
             except Exception as e:
                 logger.error(f"Chat error: {e}", exc_info=True)
                 return jsonify({"error": str(e)}), 500
@@ -3469,22 +3611,33 @@ class UIControlPanel:
         raise OSError(f"Could not find available port in range {start_port}-{start_port + max_attempts - 1}")
     
     def _wait_for_server_ready(self, timeout: float = 10.0) -> bool:
-        """Wait for server to be ready by checking if port is listening."""
+        """Wait until this panel's own /api/ping returns HTTP 200."""
         start_time = time.time()
+        port = self._actual_port or self.port
+        ping_url = f"http://{self.host}:{port}/api/ping"
         while time.time() - start_time < timeout:
-            # Check for server errors first (fast failure)
             if self._server_error:
                 logger.error(f"[DASHBOARD] Server error detected during readiness check: {self._server_error}")
                 return False
-            
+
+            tcp_ok = False
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.settimeout(0.5)
-                    result = s.connect_ex((self.host, self._actual_port or self.port))
-                    if result == 0:  # Port is listening
-                        return True
+                    tcp_ok = s.connect_ex((self.host, port)) == 0
             except Exception:
-                pass
+                tcp_ok = False
+            if tcp_ok:
+                try:
+                    req = urllib.request.Request(ping_url, headers={"Accept": "application/json"})
+                    with urllib.request.urlopen(req, timeout=0.5) as resp:
+                        if getattr(resp, "status", 200) == 200:
+                            ident = resp.headers.get("X-Elysia-Service") or ""
+                            if ident and ident != "elysia-control-panel":
+                                continue
+                            return True
+                except Exception:
+                    pass
             time.sleep(0.1)
         return False
             

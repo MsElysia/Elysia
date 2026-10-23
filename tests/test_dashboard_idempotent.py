@@ -21,24 +21,25 @@ class TestDashboardIdempotent:
     def setup_method(self):
         """Reset dashboard guard before each test"""
         try:
-            from project_guardian.ui_control_panel import reset_dashboard_guard
-            reset_dashboard_guard()
-        except ImportError:
+            from tests.test_dashboard_status_truth import _load_panel_module
+            _load_panel_module().reset_dashboard_guard()
+        except Exception:
             pytest.skip("UIControlPanel not available (Flask not installed)")
     
     def teardown_method(self):
         """Reset dashboard guard after each test"""
         try:
-            from project_guardian.ui_control_panel import reset_dashboard_guard
-            reset_dashboard_guard()
-        except ImportError:
+            from tests.test_dashboard_status_truth import _load_panel_module
+            _load_panel_module().reset_dashboard_guard()
+        except Exception:
             pass
     
     def test_dashboard_start_is_idempotent(self):
         """Test that calling start() twice only starts the server once"""
         try:
-            from project_guardian.ui_control_panel import UIControlPanel
-        except ImportError:
+            from tests.test_dashboard_status_truth import _load_panel_module
+            UIControlPanel = _load_panel_module().UIControlPanel
+        except Exception:
             pytest.skip("UIControlPanel not available (Flask not installed)")
         
         # Create mock orchestrator
@@ -75,8 +76,9 @@ class TestDashboardIdempotent:
     def test_dashboard_start_from_multiple_instances(self):
         """Test that multiple UIControlPanel instances respect the module-level guard"""
         try:
-            from project_guardian.ui_control_panel import UIControlPanel
-        except ImportError:
+            from tests.test_dashboard_status_truth import _load_panel_module
+            UIControlPanel = _load_panel_module().UIControlPanel
+        except Exception:
             pytest.skip("UIControlPanel not available (Flask not installed)")
         
         mock_orchestrator = Mock()
@@ -117,8 +119,10 @@ class TestDashboardIdempotent:
     def test_dashboard_start_instrumentation(self):
         """Test that start attempts are logged with instrumentation"""
         try:
-            from project_guardian.ui_control_panel import UIControlPanel, _dashboard_start_attempts
-        except ImportError:
+            from tests.test_dashboard_status_truth import _load_panel_module
+            panel_mod = _load_panel_module()
+            UIControlPanel = panel_mod.UIControlPanel
+        except Exception:
             pytest.skip("UIControlPanel not available (Flask not installed)")
         
         mock_orchestrator = Mock()
@@ -129,7 +133,7 @@ class TestDashboardIdempotent:
         )
         
         with patch.object(panel.socketio, 'run'), \
-             patch('project_guardian.ui_control_panel.logger') as mock_logger:
+             patch.object(panel_mod, 'logger') as mock_logger:
             
             # First start
             panel.start(source="test_instrumentation_1")

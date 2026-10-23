@@ -973,6 +973,7 @@ CONTROL_PANEL_TEMPLATE = """
 
         if (socket) socket.on('disconnect', function() {
             addLog('Disconnected from Elysia system', 'warning');
+            if (typeof showOffline === 'function') showOffline('Socket.IO disconnected');
         });
 
         if (socket) socket.on('connect_error', function(error) {
@@ -999,22 +1000,23 @@ CONTROL_PANEL_TEMPLATE = """
             addLog(data.message, data.level || 'info');
         });
 
-        // Safety: force UI usable if stuck - run at 2s and 4s
-        setTimeout(function() {
+        // Truthful offline helper: never claim Connected/Running without a backend response
+        function showOffline(reason) {
             const statusTextEl = document.getElementById('status-text');
             const spinner = document.getElementById('loading-spinner');
-            if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
-                statusTextEl.textContent = 'Connected (Limited)';
-                if (spinner) spinner.style.display = 'none';
-                const ind = document.getElementById('status-indicator');
-                if (ind) ind.className = 'status-indicator status-running';
-                addLog('Status: using limited mode - buttons should work', 'info');
-            }
-        }, 2000);
+            if (spinner) spinner.style.display = 'none';
+            if (statusTextEl) statusTextEl.textContent = 'Offline';
+            const ind = document.getElementById('status-indicator');
+            if (ind) ind.className = 'status-indicator status-stopped';
+            if (reason) addLog('Backend offline: ' + reason, 'error');
+        }
+        window.showOffline = showOffline;
+
+        // If still connecting after 4s with no successful status fetch, report Offline (polling keeps retrying)
         setTimeout(function() {
             const statusTextEl = document.getElementById('status-text');
-            if (statusTextEl && statusTextEl.textContent === 'Connecting...') {
-                statusTextEl.textContent = 'Connected (Limited)';
+            if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
+                showOffline('no status response yet - retrying');
             }
         }, 4000);
 
@@ -1041,17 +1043,8 @@ CONTROL_PANEL_TEMPLATE = """
                 indicator.className = 'status-indicator status-running';
             }
             
-            // Set a timeout to show "Connected" status if API doesn't respond quickly
-            let timeoutId = setTimeout(function() {
-                if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
-                    statusTextEl.textContent = 'Connected';
-                    if (indicator) {
-                        indicator.className = 'status-indicator status-running';
-                    }
-                    addLog('Connected to server (waiting for status)', 'info');
-                }
-            }, 2000); // 2 second timeout (reduced from 3)
-            
+            let timeoutId = null;
+
             // Do an immediate update with timeout protection
             const controller = new AbortController();
             const timeoutId2 = setTimeout(function() { controller.abort(); }, 5000); // 5 second fetch timeout
@@ -1079,22 +1072,7 @@ CONTROL_PANEL_TEMPLATE = """
                     clearTimeout(timeoutId);
                     clearTimeout(timeoutId2);
                     const msg = err.name === 'AbortError' ? 'Status timed out (5s)' : (err.message || String(err));
-                    addLog('Status fetch failed: ' + msg + ' - using fallback', 'warning');
-                    // Use fallback status to show UI is working
-                    // Check if we have any indicators that system is running
-                    updateDashboard({
-                        system: { running: true, initialized: true, uptime: 0 },
-                        loop: { running: true, paused: false, queue_size: 0 },
-                        memory: { total_entries: 0, total_memories: 0 },
-                        security: { policy_loaded: false, recent_violations: 0, pending_reviews: 0 },
-                        trust: { components: 0, average_trust: 0 }
-                    });
-                    
-                    // Ensure UI is visible even on error
-                    const statusTextEl = document.getElementById('status-text');
-                    if (statusTextEl && statusTextEl.textContent === 'Initializing...') {
-                        statusTextEl.textContent = 'Connected (Limited)';
-                    }
+                    showOffline(msg);
                 });
             
             // Then set up interval
@@ -1123,10 +1101,8 @@ CONTROL_PANEL_TEMPLATE = """
                     })
                     .catch(function(err) {
                         clearTimeout(timeoutId);
-                        if (err.name !== 'AbortError') {
-                            console.log('Status fetch error:', err);
-                        }
-                        // Don't update status on error - keep showing last known status
+                        // Disconnection must be visible: never keep a stale "Running"
+                        showOffline(err.name === 'AbortError' ? 'Status timed out (5s)' : (err.message || String(err)));
                     });
             }, 2000);
         }
@@ -1157,37 +1133,28 @@ CONTROL_PANEL_TEMPLATE = """
                 const memoryLoaded = data.memory && data.memory.total_entries > 0;
                 const hasUptime = data.system.uptime && data.system.uptime > 0;
                 
-                // System is considered running if any of these are true:
-                const isActuallyRunning = systemRunning || loopRunning || memoryLoaded || hasUptime;
-                const isActuallyInitialized = systemInitialized || memoryLoaded || loopRunning || hasUptime;
-                
-                if (isActuallyInitialized || isActuallyRunning) {
-                    // System is initialized/running, check loop status for more detail
-                    if (data.loop && data.loop.running !== undefined) {
-                        status = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'initialized';
-                        statusText = status.charAt(0).toUpperCase() + status.slice(1);
-                    } else if (memoryLoaded) {
-                        // Memory is loaded, system is running
-                        status = 'running';
-                        statusText = 'Running';
-                    } else {
-                        // System is initialized but not fully running yet
-                        status = isActuallyRunning ? 'running' : 'initialized';
-                        statusText = status.charAt(0).toUpperCase() + status.slice(1);
-                    }
+                // Truthful: only explicit running flags count as Running.
+                const isActuallyRunning = systemRunning || loopRunning;
+                const isActuallyInitialized = systemInitialized || isActuallyRunning;
+
+                if (isActuallyRunning) {
+                    status = (data.loop && data.loop.paused) ? 'paused' : 'running';
+                    statusText = status.charAt(0).toUpperCase() + status.slice(1);
+                } else if (isActuallyInitialized) {
+                    status = 'initialized';
+                    statusText = 'Initialized';
                 } else {
-                    // Got system data but not fully initialized - still show connected so UI is usable
-                    status = 'connected';
-                    statusText = 'Connected (Limited)';
+                    status = 'stopped';
+                    statusText = 'Stopped';
                 }
             } else if (data.loop && data.loop.running !== undefined) {
                 // Only loop data available
                 status = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'stopped';
                 statusText = status.charAt(0).toUpperCase() + status.slice(1);
             } else if (data.memory && data.memory.total_entries > 0) {
-                // Memory is loaded, system is likely running
-                status = 'running';
-                statusText = 'Running';
+                // Memory alone does not prove the system is running
+                status = 'connected';
+                statusText = 'Connected';
             } else {
                 // No system data but we got a response - assume connected but initializing
                 status = 'connected';
@@ -2174,6 +2141,55 @@ class UIControlPanel:
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
             
+        @self.app.route('/api/models', methods=['GET'])
+        def get_models():
+            """Truthful model availability: configured name + live local Ollama probe only.
+
+            No external/paid provider is contacted. ``available`` is true only when
+            the local Ollama endpoint answers and lists the configured tag.
+            """
+            import os as _os
+            import urllib.request as _urlreq
+            configured = None
+            try:
+                from .ollama_model_config import get_canonical_ollama_model
+                configured = get_canonical_ollama_model(log_once=False)
+            except Exception:
+                try:
+                    import importlib.util as _ilu
+                    from pathlib import Path as _Path
+                    _spec = _ilu.spec_from_file_location(
+                        "ollama_model_config", _Path(__file__).resolve().parent / "ollama_model_config.py"
+                    )
+                    _mod = _ilu.module_from_spec(_spec)
+                    _spec.loader.exec_module(_mod)
+                    configured = _mod.get_canonical_ollama_model(log_once=False)
+                except Exception:
+                    configured = (_os.environ.get("ELYSIA_OLLAMA_MODEL") or _os.environ.get("OLLAMA_MODEL") or "").strip() or None
+            base = (_os.environ.get("OLLAMA_BASE_URL") or _os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434").strip().rstrip("/")
+            local = {"available": False, "models": [], "base_url": base, "error": None}
+            try:
+                with _urlreq.urlopen(base + "/api/tags", timeout=1.5) as resp:
+                    payload = json.loads(resp.read().decode("utf-8", "replace"))
+                local["models"] = [m.get("name") for m in payload.get("models", []) if isinstance(m, dict) and m.get("name")]
+                local["available"] = True
+            except Exception as exc:
+                local["error"] = f"Local Ollama not reachable at {base}: {exc}"
+            us = _get_unified_system() if hasattr(self, 'orchestrator') and self.orchestrator else None
+            chat_backend = "none"
+            if us and hasattr(us, 'chat_with_llm'):
+                chat_backend = "unified.chat_with_llm"
+            elif self.orchestrator is not None and hasattr(self.orchestrator, 'ask_ai'):
+                chat_backend = "orchestrator.ask_ai"
+            return jsonify({
+                "success": True,
+                "configured_model": configured,
+                "configured_available_locally": bool(configured and configured in local["models"]),
+                "local_ollama": local,
+                "chat_backend": chat_backend,
+                "timestamp": datetime.now().isoformat(),
+            }), 200
+
         @self.app.route('/api/status')
         def get_status():
             """Get comprehensive system status - optimized for fast response."""
@@ -2236,7 +2252,9 @@ class UIControlPanel:
                     or (hasattr(self.orchestrator, 'memory') and self.orchestrator.memory is not None)
                 )
                 is_initialized = _initialized_attr or memory_loaded or loop_running or has_core
-                is_running = _running_attr or loop_running or memory_loaded or has_core
+                # Truthful running: only an explicit running flag or a live loop counts.
+                # Merely having components/memory objects constructed is not "Running".
+                is_running = bool(_running_attr or loop_running)
                 
                 system_status = {
                     "running": is_running,
@@ -2258,7 +2276,6 @@ class UIControlPanel:
                 # Calculate uptime if start_time exists
                 if system_status["start_time"]:
                     try:
-                        from datetime import datetime
                         start = datetime.fromisoformat(system_status["start_time"])
                         uptime = (datetime.now() - start).total_seconds()
                         system_status["uptime"] = max(0, uptime)
@@ -2301,8 +2318,8 @@ class UIControlPanel:
                         logger.debug(f"Error getting loop status: {e}")
                         loop_status = {"running": False, "paused": False, "queue_size": 0}
                 else:
-                    # If no elysia_loop, check if system is at least initialized
-                    loop_status = {"running": system_status.get("initialized", False), "paused": False, "queue_size": 0}
+                    # No loop object means no loop is running (do not mirror "initialized")
+                    loop_status = {"running": False, "paused": False, "queue_size": 0}
                 
                 # Get RuntimeLoop status (quick check only)
                 runtime_status = {}
@@ -2536,7 +2553,7 @@ class UIControlPanel:
                 if hasattr(self.orchestrator, 'ask_ai'):
                     reply = self.orchestrator.ask_ai(message)
                     return jsonify({"success": True, "reply": reply or "(no reply)", "error": None})
-                return jsonify({"error": "No chat backend available (unified system or ask_ai)"}), 400
+                return jsonify({"error": "No chat backend available (unified system or ask_ai)"}), 503
             except Exception as e:
                 logger.error(f"Chat error: {e}", exc_info=True)
                 return jsonify({"error": str(e)}), 500
@@ -3579,8 +3596,11 @@ class UIControlPanel:
                     _dashboard_started = False
                     self.running = False
             finally:
-                self._server_ready.set()  # Signal even on error
-            
+                # Only signal readiness when the server actually ran without error;
+                # on failure _server_error is set and readiness must stay false.
+                if not self._server_error:
+                    self._server_ready.set()
+
         server_thread = threading.Thread(target=run_server, daemon=True, name="UIControlPanel-Server")
         server_thread.start()
         
@@ -3592,13 +3612,12 @@ class UIControlPanel:
                 f"[DASHBOARD] Server is listening on http://{self.host}:{self.port} (PID: {os.getpid()})"
             )
         else:
-            self._server_ready.set()
             if self._server_error:
-                logger.warning(f"[DASHBOARD] Server may still be starting: {self._server_error}")
-            else:
-                logger.warning(
-                    "[DASHBOARD] Server did not become ready in 2s (panel may load in a few seconds); continuing startup"
-                )
+                logger.error(f"[DASHBOARD] Server failed to start: {self._server_error}")
+                raise RuntimeError(f"Dashboard server failed to start: {self._server_error}")
+            logger.warning(
+                "[DASHBOARD] Server did not become ready in 2s (panel may load in a few seconds); continuing startup"
+            )
         
     def stop(self):
         """Stop the web server."""

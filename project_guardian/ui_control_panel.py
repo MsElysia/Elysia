@@ -498,6 +498,21 @@ CONTROL_PANEL_TEMPLATE = """
                 </div>
 
                 <div class="card">
+                    <h2>Local Model</h2>
+                    <div class="metric">
+                        <span class="metric-label">Configured:</span>
+                        <span class="metric-value" id="model-configured">Checking…</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Ollama:</span>
+                        <span class="metric-value" id="model-runtime">Checking…</span>
+                    </div>
+                    <div style="margin-top: 8px; font-size: 11px; color: var(--text-secondary);" id="model-available">
+                        Available models: checking…
+                    </div>
+                </div>
+
+                <div class="card">
                     <h2>Autonomy</h2>
                     <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Elysia acts on its own when enabled</p>
                     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
@@ -839,10 +854,10 @@ CONTROL_PANEL_TEMPLATE = """
                 <h3 style="margin-top: 24px;">APIs &amp; Tools</h3>
                 <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: 12px;">Trigger income, research, harvest, and AI chat from the dashboard.</p>
                 <div class="input-group" style="margin-bottom: 12px;">
-                    <label>Chat with AI (OpenAI/OpenRouter):</label>
+                    <label>Chat with Elysia (configured router):</label>
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                         <input type="text" id="api-chat-message" placeholder="Ask anything..." style="flex: 1; min-width: 200px;">
-                        <button onclick="sendApiChat()">Send</button>
+                        <button id="api-chat-send" onclick="sendApiChat()">Send</button>
                     </div>
                     <div id="api-chat-result" style="margin-top: 8px; padding: 10px; background: var(--bg-dark); border-radius: 8px; font-size: 13px; min-height: 40px; white-space: pre-wrap;"></div>
                 </div>
@@ -938,6 +953,20 @@ CONTROL_PANEL_TEMPLATE = """
         const socket = (typeof io !== 'undefined') ? io() : null;
         let updateInterval;
         let initialized = false;
+        let backendReachable = null;
+
+        function setConnectionState(reachable, text) {
+            const indicator = document.getElementById('status-indicator');
+            const statusTextEl = document.getElementById('status-text');
+            if (statusTextEl) statusTextEl.textContent = text;
+            if (indicator) {
+                indicator.className = 'status-indicator status-' + (reachable ? 'connected' : 'stopped');
+            }
+            if (backendReachable !== reachable) {
+                addLog(reachable ? 'Backend connection restored' : 'Backend unavailable', reachable ? 'info' : 'error');
+            }
+            backendReachable = reachable;
+        }
 
         // Initialize on page load - show UI immediately
         document.addEventListener('DOMContentLoaded', function() {
@@ -999,25 +1028,6 @@ CONTROL_PANEL_TEMPLATE = """
             addLog(data.message, data.level || 'info');
         });
 
-        // Safety: force UI usable if stuck - run at 2s and 4s
-        setTimeout(function() {
-            const statusTextEl = document.getElementById('status-text');
-            const spinner = document.getElementById('loading-spinner');
-            if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
-                statusTextEl.textContent = 'Connected (Limited)';
-                if (spinner) spinner.style.display = 'none';
-                const ind = document.getElementById('status-indicator');
-                if (ind) ind.className = 'status-indicator status-running';
-                addLog('Status: using limited mode - buttons should work', 'info');
-            }
-        }, 2000);
-        setTimeout(function() {
-            const statusTextEl = document.getElementById('status-text');
-            if (statusTextEl && statusTextEl.textContent === 'Connecting...') {
-                statusTextEl.textContent = 'Connected (Limited)';
-            }
-        }, 4000);
-
         function startUpdates() {
             // Prevent multiple initializations
             if (initialized) {
@@ -1041,17 +1051,6 @@ CONTROL_PANEL_TEMPLATE = """
                 indicator.className = 'status-indicator status-running';
             }
             
-            // Set a timeout to show "Connected" status if API doesn't respond quickly
-            let timeoutId = setTimeout(function() {
-                if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
-                    statusTextEl.textContent = 'Connected';
-                    if (indicator) {
-                        indicator.className = 'status-indicator status-running';
-                    }
-                    addLog('Connected to server (waiting for status)', 'info');
-                }
-            }, 2000); // 2 second timeout (reduced from 3)
-            
             // Do an immediate update with timeout protection
             const controller = new AbortController();
             const timeoutId2 = setTimeout(function() { controller.abort(); }, 5000); // 5 second fetch timeout
@@ -1062,7 +1061,6 @@ CONTROL_PANEL_TEMPLATE = """
                 signal: controller.signal
             })
                 .then(function(r) {
-                    clearTimeout(timeoutId);
                     clearTimeout(timeoutId2);
                     if (!r.ok) {
                         throw new Error('HTTP ' + r.status + ': ' + r.statusText);
@@ -1070,32 +1068,16 @@ CONTROL_PANEL_TEMPLATE = """
                     return r.json();
                 })
                 .then(function(data) {
-                    clearTimeout(timeoutId);
                     clearTimeout(timeoutId2);
                     updateDashboard(data);
                     addLog('Status update received', 'info');
                 })
                 .catch(function(err) {
-                    clearTimeout(timeoutId);
                     clearTimeout(timeoutId2);
                     const msg = err.name === 'AbortError' ? 'Status timed out (5s)' : (err.message || String(err));
-                    addLog('Status fetch failed: ' + msg + ' - using fallback', 'warning');
-                    // Use fallback status to show UI is working
-                    // Check if we have any indicators that system is running
-                    updateDashboard({
-                        system: { running: true, initialized: true, uptime: 0 },
-                        loop: { running: true, paused: false, queue_size: 0 },
-                        memory: { total_entries: 0, total_memories: 0 },
-                        security: { policy_loaded: false, recent_violations: 0, pending_reviews: 0 },
-                        trust: { components: 0, average_trust: 0 }
-                    });
-                    
-                    // Ensure UI is visible even on error
-                    const statusTextEl = document.getElementById('status-text');
-                    if (statusTextEl && statusTextEl.textContent === 'Initializing...') {
-                        statusTextEl.textContent = 'Connected (Limited)';
-                    }
+                    setConnectionState(false, 'Offline — ' + msg);
                 });
+            refreshModelStatus();
             
             // Then set up interval
             if (updateInterval) {
@@ -1126,19 +1108,20 @@ CONTROL_PANEL_TEMPLATE = """
                         if (err.name !== 'AbortError') {
                             console.log('Status fetch error:', err);
                         }
-                        // Don't update status on error - keep showing last known status
+                        const msg = err.name === 'AbortError' ? 'status timeout' : (err.message || String(err));
+                        setConnectionState(false, 'Offline — ' + msg);
                     });
             }, 2000);
         }
 
         function updateDashboard(data) {
             if (!data || typeof data !== 'object') return;
+            backendReachable = true;
             const spinner = document.getElementById('loading-spinner');
             if (spinner) spinner.style.display = 'none';
             
             // Update status indicator and text first
-            // Priority: system initialized/running > loop status > memory loaded > connected
-            // If we got any response, never stay stuck on "Initializing"
+            // Transport reachability is distinct from runtime state.
             let status = 'connected';
             let statusText = 'Connected';
             
@@ -1154,24 +1137,15 @@ CONTROL_PANEL_TEMPLATE = """
                 const systemInitialized = data.system.initialized || false;
                 const systemRunning = data.system.running || false;
                 const loopRunning = data.loop && data.loop.running !== undefined ? data.loop.running : false;
-                const memoryLoaded = data.memory && data.memory.total_entries > 0;
-                const hasUptime = data.system.uptime && data.system.uptime > 0;
-                
-                // System is considered running if any of these are true:
-                const isActuallyRunning = systemRunning || loopRunning || memoryLoaded || hasUptime;
-                const isActuallyInitialized = systemInitialized || memoryLoaded || loopRunning || hasUptime;
+                const isActuallyRunning = systemRunning || loopRunning;
+                const isActuallyInitialized = systemInitialized;
                 
                 if (isActuallyInitialized || isActuallyRunning) {
                     // System is initialized/running, check loop status for more detail
                     if (data.loop && data.loop.running !== undefined) {
                         status = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'initialized';
                         statusText = status.charAt(0).toUpperCase() + status.slice(1);
-                    } else if (memoryLoaded) {
-                        // Memory is loaded, system is running
-                        status = 'running';
-                        statusText = 'Running';
                     } else {
-                        // System is initialized but not fully running yet
                         status = isActuallyRunning ? 'running' : 'initialized';
                         statusText = status.charAt(0).toUpperCase() + status.slice(1);
                     }
@@ -1184,12 +1158,7 @@ CONTROL_PANEL_TEMPLATE = """
                 // Only loop data available
                 status = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'stopped';
                 statusText = status.charAt(0).toUpperCase() + status.slice(1);
-            } else if (data.memory && data.memory.total_entries > 0) {
-                // Memory is loaded, system is likely running
-                status = 'running';
-                statusText = 'Running';
             } else {
-                // No system data but we got a response - assume connected but initializing
                 status = 'connected';
                 statusText = 'Connected';
             }
@@ -1492,15 +1461,67 @@ CONTROL_PANEL_TEMPLATE = """
         window.sendApiChat = function() {
             const msg = (document.getElementById('api-chat-message') || {}).value;
             const el = document.getElementById('api-chat-result');
+            const button = document.getElementById('api-chat-send');
             if (!msg) { if (el) el.textContent = 'Enter a message first.'; return; }
             if (el) el.textContent = 'Sending...';
-            fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) })
-                .then(function(r) { return r.json(); })
+            if (button) button.disabled = true;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(function() { controller.abort(); }, 60000);
+            fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: msg }),
+                signal: controller.signal
+            })
+                .then(function(r) {
+                    return r.json().then(function(data) {
+                        if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+                        return data;
+                    });
+                })
                 .then(function(data) {
                     if (el) el.textContent = data.reply || data.error || JSON.stringify(data);
                     addLog('Chat: ' + (data.success ? 'OK' : (data.error || '')), data.success ? 'info' : 'error');
                 })
-                .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Chat error: ' + err, 'error'); });
+                .catch(function(err) {
+                    const message = err.name === 'AbortError'
+                        ? 'Model request timed out after 60 seconds. Check Ollama and the configured model.'
+                        : err.message || String(err);
+                    if (el) el.textContent = 'Error: ' + message;
+                    addLog('Chat error: ' + message, 'error');
+                })
+                .finally(function() {
+                    clearTimeout(timeoutId);
+                    if (button) button.disabled = false;
+                });
+        };
+
+        window.refreshModelStatus = function() {
+            fetch('/api/models', { headers: {'Accept': 'application/json'} })
+                .then(function(r) {
+                    return r.json().then(function(data) {
+                        if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+                        return data;
+                    });
+                })
+                .then(function(data) {
+                    const configured = document.getElementById('model-configured');
+                    const runtime = document.getElementById('model-runtime');
+                    const available = document.getElementById('model-available');
+                    if (configured) configured.textContent = data.configured_model || 'Not configured';
+                    if (runtime) runtime.textContent = data.reachable
+                        ? (data.configured_available ? 'Ready' : 'Model unavailable')
+                        : 'Offline';
+                    if (available) available.textContent = 'Available models: ' +
+                        ((data.available_models || []).join(', ') || 'none reported') +
+                        (data.error ? ' — ' + data.error : '');
+                })
+                .catch(function(err) {
+                    const runtime = document.getElementById('model-runtime');
+                    const available = document.getElementById('model-available');
+                    if (runtime) runtime.textContent = 'Unknown';
+                    if (available) available.textContent = 'Model status error: ' + (err.message || String(err));
+                });
         };
 
         window.refreshWalletAccounts = function() {
@@ -2156,6 +2177,42 @@ class UIControlPanel:
                 "orchestrator": self.orchestrator is not None if hasattr(self, 'orchestrator') else False,
             }), 200
 
+        @self.app.route('/api/models')
+        def get_models():
+            """Report configured and currently installed local models without generating text."""
+            try:
+                from project_guardian.ollama_health import (
+                    list_ollama_installed_model_names,
+                    normalize_ollama_base,
+                )
+                from project_guardian.ollama_model_config import get_canonical_ollama_model
+
+                configured = get_canonical_ollama_model(log_once=False)
+                base_url = normalize_ollama_base(None)
+                available, error = list_ollama_installed_model_names(
+                    base_url=base_url,
+                    timeout=2.0,
+                )
+                return jsonify({
+                    "provider": "ollama",
+                    "base_url": base_url,
+                    "configured_model": configured,
+                    "available_models": available,
+                    "configured_available": configured in available,
+                    "reachable": error is None,
+                    "error": error,
+                }), 200
+            except Exception as e:
+                logger.warning("Model status error: %s", e)
+                return jsonify({
+                    "provider": "ollama",
+                    "configured_model": None,
+                    "available_models": [],
+                    "configured_available": False,
+                    "reachable": False,
+                    "error": str(e),
+                }), 503
+
         @self.app.route('/api/debug')
         def debug_info():
             """Diagnostic endpoint for control panel troubleshooting."""
@@ -2206,7 +2263,7 @@ class UIControlPanel:
                 _initialized_attr = getattr(self.orchestrator, '_initialized', False)
                 _running_attr = getattr(self.orchestrator, '_running', False)
                 
-                # Additional indicators: use loaded-aware APIs (do not read memory_log directly)
+                # Loaded components are diagnostic details, not proof that the runtime is running.
                 memory_loaded = False
                 if hasattr(self.orchestrator, 'memory') and self.orchestrator.memory:
                     try:
@@ -2226,17 +2283,8 @@ class UIControlPanel:
                     except:
                         pass
                 
-                # System is considered initialized if:
-                # - _initialized attribute is True, OR
-                # - Memory is loaded (system has been running), OR
-                # - Loop is running, OR
-                # - Orchestrator has core components (so UI never sticks on "Initializing")
-                has_core = (
-                    (hasattr(self.orchestrator, 'elysia_loop') and self.orchestrator.elysia_loop is not None)
-                    or (hasattr(self.orchestrator, 'memory') and self.orchestrator.memory is not None)
-                )
-                is_initialized = _initialized_attr or memory_loaded or loop_running or has_core
-                is_running = _running_attr or loop_running or memory_loaded or has_core
+                is_initialized = bool(_initialized_attr)
+                is_running = bool(_running_attr or loop_running)
                 
                 system_status = {
                     "running": is_running,
@@ -2258,7 +2306,6 @@ class UIControlPanel:
                 # Calculate uptime if start_time exists
                 if system_status["start_time"]:
                     try:
-                        from datetime import datetime
                         start = datetime.fromisoformat(system_status["start_time"])
                         uptime = (datetime.now() - start).total_seconds()
                         system_status["uptime"] = max(0, uptime)
@@ -2301,8 +2348,7 @@ class UIControlPanel:
                         logger.debug(f"Error getting loop status: {e}")
                         loop_status = {"running": False, "paused": False, "queue_size": 0}
                 else:
-                    # If no elysia_loop, check if system is at least initialized
-                    loop_status = {"running": system_status.get("initialized", False), "paused": False, "queue_size": 0}
+                    loop_status = {"running": False, "paused": False, "queue_size": 0}
                 
                 # Get RuntimeLoop status (quick check only)
                 runtime_status = {}
@@ -2388,7 +2434,7 @@ class UIControlPanel:
                     "security": {"policy_loaded": False, "recent_violations": 0, "pending_reviews": 0},
                     "trust": {"components": 0, "average_trust": 0},
                     "timestamp": datetime.now().isoformat()
-                }), 200
+                }), 503
                 
         @self.app.route('/api/control/pause', methods=['POST'])
         def pause_loop():
@@ -2531,12 +2577,12 @@ class UIControlPanel:
                 if us and hasattr(us, 'chat_with_llm'):
                     reply, err = us.chat_with_llm(message)
                     if err:
-                        return jsonify({"success": False, "error": err, "reply": None}), 200
+                        return jsonify({"success": False, "error": err, "reply": None}), 503
                     return jsonify({"success": True, "reply": reply, "error": None})
                 if hasattr(self.orchestrator, 'ask_ai'):
                     reply = self.orchestrator.ask_ai(message)
                     return jsonify({"success": True, "reply": reply or "(no reply)", "error": None})
-                return jsonify({"error": "No chat backend available (unified system or ask_ai)"}), 400
+                return jsonify({"error": "No chat backend available (unified system or ask_ai)"}), 503
             except Exception as e:
                 logger.error(f"Chat error: {e}", exc_info=True)
                 return jsonify({"error": str(e)}), 500

@@ -495,6 +495,14 @@ CONTROL_PANEL_TEMPLATE = """
                         <span class="metric-label">Active Tasks:</span>
                         <span class="metric-value" id="active-tasks">-</span>
                     </div>
+                    <div class="metric">
+                        <span class="metric-label">Local Model:</span>
+                        <span class="metric-value" id="llm-model" title="Configured canonical Ollama tag">-</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Model State:</span>
+                        <span class="metric-value" id="llm-readiness" title="From the startup planner probe; no live call is made">-</span>
+                    </div>
                 </div>
 
                 <div class="card">
@@ -999,24 +1007,64 @@ CONTROL_PANEL_TEMPLATE = """
             addLog(data.message, data.level || 'info');
         });
 
-        // Safety: force UI usable if stuck - run at 2s and 4s
+        // Safety: never leave the header stuck on "Initializing..." if no status has
+        // arrived yet. This only unblocks the UI; it must not claim the backend is running.
         setTimeout(function() {
             const statusTextEl = document.getElementById('status-text');
             const spinner = document.getElementById('loading-spinner');
             if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
-                statusTextEl.textContent = 'Connected (Limited)';
+                statusTextEl.textContent = 'Connected (no status yet)';
                 if (spinner) spinner.style.display = 'none';
                 const ind = document.getElementById('status-indicator');
-                if (ind) ind.className = 'status-indicator status-running';
-                addLog('Status: using limited mode - buttons should work', 'info');
+                if (ind) ind.className = 'status-indicator status-connected';
+                addLog('No /api/status response yet - controls are usable, backend state unknown', 'warning');
             }
         }, 2000);
-        setTimeout(function() {
+
+        // Backend reachability tracking for /api/status polling
+        let statusFailureStreak = 0;
+        let backendUnreachable = false;
+        const STATUS_FAILURES_BEFORE_DISCONNECT = 2;
+
+        function describeStatusError(err) {
+            if (err && err.name === 'AbortError') return 'Status request timed out (5s)';
+            const m = (err && err.message) ? err.message : String(err);
+            if (/Failed to fetch|NetworkError|Load failed/i.test(m)) return 'Backend unreachable (connection failed)';
+            return m;
+        }
+
+        function markBackendUnreachable(reason) {
             const statusTextEl = document.getElementById('status-text');
-            if (statusTextEl && statusTextEl.textContent === 'Connecting...') {
-                statusTextEl.textContent = 'Connected (Limited)';
+            const indicator = document.getElementById('status-indicator');
+            const spinner = document.getElementById('loading-spinner');
+            if (spinner) spinner.style.display = 'none';
+            if (statusTextEl) statusTextEl.textContent = /HTTP \\d+/.test(reason) ? ('Status error: ' + reason.match(/HTTP \\d+/)[0]) : 'Disconnected';
+            if (indicator) indicator.className = 'status-indicator status-stopped';
+            const loopEl = document.getElementById('loop-status');
+            if (loopEl) loopEl.textContent = 'unknown';
+            if (!backendUnreachable) {
+                backendUnreachable = true;
+                addLog('Backend status unavailable: ' + reason, 'error');
             }
-        }, 4000);
+        }
+
+        function noteStatusFailure(err) {
+            statusFailureStreak += 1;
+            const reason = describeStatusError(err);
+            if (statusFailureStreak >= STATUS_FAILURES_BEFORE_DISCONNECT) {
+                markBackendUnreachable(reason);
+            } else if (!backendUnreachable) {
+                addLog('Status fetch failed: ' + reason + ' (retrying)', 'warning');
+            }
+        }
+
+        function noteStatusSuccess() {
+            statusFailureStreak = 0;
+            if (backendUnreachable) {
+                backendUnreachable = false;
+                addLog('Backend status restored', 'info');
+            }
+        }
 
         function startUpdates() {
             // Prevent multiple initializations
@@ -1038,15 +1086,15 @@ CONTROL_PANEL_TEMPLATE = """
             }
             const indicator = document.getElementById('status-indicator');
             if (indicator) {
-                indicator.className = 'status-indicator status-running';
+                indicator.className = 'status-indicator status-connected';
             }
             
-            // Set a timeout to show "Connected" status if API doesn't respond quickly
+            // If the first status call is slow, say so without claiming the system is running
             let timeoutId = setTimeout(function() {
                 if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
-                    statusTextEl.textContent = 'Connected';
+                    statusTextEl.textContent = 'Connected (no status yet)';
                     if (indicator) {
-                        indicator.className = 'status-indicator status-running';
+                        indicator.className = 'status-indicator status-connected';
                     }
                     addLog('Connected to server (waiting for status)', 'info');
                 }
@@ -1072,29 +1120,17 @@ CONTROL_PANEL_TEMPLATE = """
                 .then(function(data) {
                     clearTimeout(timeoutId);
                     clearTimeout(timeoutId2);
+                    noteStatusSuccess();
                     updateDashboard(data);
                     addLog('Status update received', 'info');
                 })
                 .catch(function(err) {
                     clearTimeout(timeoutId);
                     clearTimeout(timeoutId2);
-                    const msg = err.name === 'AbortError' ? 'Status timed out (5s)' : (err.message || String(err));
-                    addLog('Status fetch failed: ' + msg + ' - using fallback', 'warning');
-                    // Use fallback status to show UI is working
-                    // Check if we have any indicators that system is running
-                    updateDashboard({
-                        system: { running: true, initialized: true, uptime: 0 },
-                        loop: { running: true, paused: false, queue_size: 0 },
-                        memory: { total_entries: 0, total_memories: 0 },
-                        security: { policy_loaded: false, recent_violations: 0, pending_reviews: 0 },
-                        trust: { components: 0, average_trust: 0 }
-                    });
-                    
-                    // Ensure UI is visible even on error
-                    const statusTextEl = document.getElementById('status-text');
-                    if (statusTextEl && statusTextEl.textContent === 'Initializing...') {
-                        statusTextEl.textContent = 'Connected (Limited)';
-                    }
+                    // The first failure is already decisive for the initial load: report
+                    // the real error instead of inventing a "running" status.
+                    statusFailureStreak = STATUS_FAILURES_BEFORE_DISCONNECT - 1;
+                    noteStatusFailure(err);
                 });
             
             // Then set up interval
@@ -1119,6 +1155,7 @@ CONTROL_PANEL_TEMPLATE = """
                     })
                     .then(function(data) {
                         clearTimeout(timeoutId);
+                        noteStatusSuccess();
                         updateDashboard(data);
                     })
                     .catch(function(err) {
@@ -1126,7 +1163,8 @@ CONTROL_PANEL_TEMPLATE = """
                         if (err.name !== 'AbortError') {
                             console.log('Status fetch error:', err);
                         }
-                        // Don't update status on error - keep showing last known status
+                        // After repeated failures the header must stop claiming the last known state
+                        noteStatusFailure(err);
                     });
             }, 2000);
         }
@@ -1157,37 +1195,28 @@ CONTROL_PANEL_TEMPLATE = """
                 const memoryLoaded = data.memory && data.memory.total_entries > 0;
                 const hasUptime = data.system.uptime && data.system.uptime > 0;
                 
-                // System is considered running if any of these are true:
-                const isActuallyRunning = systemRunning || loopRunning || memoryLoaded || hasUptime;
+                // "Running" requires an explicit run signal from the backend. Loaded memory or
+                // uptime only prove the process initialized; they must not be shown as Running.
+                const isActuallyRunning = systemRunning || loopRunning;
                 const isActuallyInitialized = systemInitialized || memoryLoaded || loopRunning || hasUptime;
                 
                 if (isActuallyInitialized || isActuallyRunning) {
-                    // System is initialized/running, check loop status for more detail
                     if (data.loop && data.loop.running !== undefined) {
-                        status = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'initialized';
+                        status = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : (systemRunning ? 'running' : 'initialized');
                         statusText = status.charAt(0).toUpperCase() + status.slice(1);
-                    } else if (memoryLoaded) {
-                        // Memory is loaded, system is running
-                        status = 'running';
-                        statusText = 'Running';
                     } else {
-                        // System is initialized but not fully running yet
                         status = isActuallyRunning ? 'running' : 'initialized';
                         statusText = status.charAt(0).toUpperCase() + status.slice(1);
                     }
                 } else {
-                    // Got system data but not fully initialized - still show connected so UI is usable
+                    // Backend answered but reports it is not initialized
                     status = 'connected';
-                    statusText = 'Connected (Limited)';
+                    statusText = 'Connected (not initialized)';
                 }
             } else if (data.loop && data.loop.running !== undefined) {
                 // Only loop data available
                 status = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'stopped';
                 statusText = status.charAt(0).toUpperCase() + status.slice(1);
-            } else if (data.memory && data.memory.total_entries > 0) {
-                // Memory is loaded, system is likely running
-                status = 'running';
-                statusText = 'Running';
             } else {
                 // No system data but we got a response - assume connected but initializing
                 status = 'connected';
@@ -1220,7 +1249,8 @@ CONTROL_PANEL_TEMPLATE = """
             if (data.loop) {
                 const loopStatusEl = document.getElementById('loop-status');
                 if (loopStatusEl) {
-                    const loopStatus = data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'stopped';
+                    const loopStatus = data.loop.available === false ? 'not attached'
+                        : (data.loop.running ? (data.loop.paused ? 'paused' : 'running') : 'stopped');
                     loopStatusEl.textContent = loopStatus;
                 }
                 const queueSizeEl = document.getElementById('queue-size');
@@ -1253,6 +1283,17 @@ CONTROL_PANEL_TEMPLATE = """
                 if (policyLoadedEl) {
                     policyLoadedEl.textContent = data.security.policy_loaded ? 'Yes' : 'No';
                 }
+            }
+
+            const llmModelEl = document.getElementById('llm-model');
+            const llmStateEl = document.getElementById('llm-readiness');
+            if (llmModelEl && llmStateEl) {
+                const llm = data.llm || {};
+                llmModelEl.textContent = llm.canonical_model || 'not configured';
+                const state = llm.state || 'unknown';
+                llmStateEl.textContent = state;
+                llmStateEl.className = 'metric-value' + (state === 'ready' ? '' : (state === 'degraded' ? ' warning' : ' danger'));
+                llmStateEl.title = (llm.detail || '') + (llm.chat_backend ? ' | chat backend: ' + llm.chat_backend : '');
             }
         }
 
@@ -1494,13 +1535,32 @@ CONTROL_PANEL_TEMPLATE = """
             const el = document.getElementById('api-chat-result');
             if (!msg) { if (el) el.textContent = 'Enter a message first.'; return; }
             if (el) el.textContent = 'Sending...';
-            fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) })
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    if (el) el.textContent = data.reply || data.error || JSON.stringify(data);
-                    addLog('Chat: ' + (data.success ? 'OK' : (data.error || '')), data.success ? 'info' : 'error');
+            const CHAT_TIMEOUT_MS = 90000;
+            const chatController = new AbortController();
+            const chatTimer = setTimeout(function() { chatController.abort(); }, CHAT_TIMEOUT_MS);
+            fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }), signal: chatController.signal })
+                .then(function(r) {
+                    return r.json().catch(function() { throw new Error('HTTP ' + r.status + ' with non-JSON body'); });
                 })
-                .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Chat error: ' + err, 'error'); });
+                .then(function(data) {
+                    clearTimeout(chatTimer);
+                    if (data.success) {
+                        if (el) el.textContent = data.reply || '(empty reply)';
+                        addLog('Chat: OK', 'info');
+                    } else {
+                        const errText = data.error || JSON.stringify(data);
+                        if (el) el.textContent = 'Model error: ' + errText;
+                        addLog('Chat failed: ' + errText, 'error');
+                    }
+                })
+                .catch(function(err) {
+                    clearTimeout(chatTimer);
+                    const reason = err.name === 'AbortError'
+                        ? ('No reply after ' + (CHAT_TIMEOUT_MS / 1000) + 's - the model backend did not respond')
+                        : (err.message || String(err));
+                    if (el) el.textContent = 'Chat error: ' + reason;
+                    addLog('Chat error: ' + reason, 'error');
+                });
         };
 
         window.refreshWalletAccounts = function() {
@@ -2048,6 +2108,61 @@ class UIControlPanel:
         Uses the running flag and the internal _server_ready event.
         """
         return bool(self.running) and self._server_ready.is_set()
+
+    def _collect_llm_status(self) -> Dict[str, Any]:
+        """
+        Read-only snapshot of local model availability for the dashboard.
+
+        Only consults state already recorded by the startup planner probe
+        (planner_readiness) and the configured canonical Ollama tag. It never
+        opens a connection to Ollama or a cloud provider, so it is safe to call
+        on every /api/status poll.
+        """
+        info: Dict[str, Any] = {
+            "state": "unknown",
+            "canonical_model": None,
+            "ollama_reachable": None,
+            "model_installed": None,
+            "installed_model_tags": [],
+            "chat_backend": None,
+            "detail": "",
+        }
+        orch = getattr(self, 'orchestrator', None)
+        if orch is not None:
+            us = getattr(orch, '_unified_system', None)
+            if us is not None and hasattr(us, 'chat_with_llm'):
+                info["chat_backend"] = "unified_system.chat_with_llm"
+            elif hasattr(orch, 'ask_ai'):
+                info["chat_backend"] = "orchestrator.ask_ai"
+        try:
+            from project_guardian.ollama_model_config import get_canonical_ollama_model
+            info["canonical_model"] = get_canonical_ollama_model(log_once=False)
+        except Exception as e:  # package import can fail; report rather than guess
+            info["detail"] = f"model config unavailable: {type(e).__name__}: {str(e)[:120]}"
+        try:
+            from project_guardian.planner_readiness import snapshot_startup_dict
+            snap = snapshot_startup_dict()
+            probed = bool(snap.get("canonical_ollama_model"))
+            info["ollama_reachable"] = bool(snap.get("ollama_reachable")) if probed else None
+            info["model_installed"] = bool(snap.get("exact_tag_match")) if probed else None
+            info["installed_model_tags"] = list(snap.get("installed_model_tags") or [])
+            if not probed:
+                info["state"] = "unknown"
+                info["detail"] = info["detail"] or "startup planner probe has not run in this process"
+            elif snap.get("ollama_reachable") and snap.get("exact_tag_match") and snap.get("startup_health_ok"):
+                info["state"] = "ready"
+            elif snap.get("ollama_reachable") and snap.get("exact_tag_match"):
+                info["state"] = "degraded"
+                info["detail"] = snap.get("startup_detail") or "startup health check failed"
+            else:
+                info["state"] = "unavailable"
+                info["detail"] = snap.get("startup_detail") or (
+                    "ollama unreachable" if not snap.get("ollama_reachable") else "configured model tag not installed"
+                )
+        except Exception as e:
+            info["state"] = "unknown"
+            info["detail"] = info["detail"] or f"planner readiness unavailable: {type(e).__name__}: {str(e)[:120]}"
+        return info
         
     def _setup_routes(self):
         """Setup Flask routes."""
@@ -2186,6 +2301,7 @@ class UIControlPanel:
                         "memory": {"total_entries": 0, "total_memories": 0},
                         "security": {"policy_loaded": False, "recent_violations": 0, "pending_reviews": 0},
                         "trust": {"components": 0, "average_trust": 0},
+                        "llm": self._collect_llm_status(),
                         "timestamp": datetime.now().isoformat()
                     }), 200
                 
@@ -2236,7 +2352,9 @@ class UIControlPanel:
                     or (hasattr(self.orchestrator, 'memory') and self.orchestrator.memory is not None)
                 )
                 is_initialized = _initialized_attr or memory_loaded or loop_running or has_core
-                is_running = _running_attr or loop_running or memory_loaded or has_core
+                # "running" must only reflect an actual run signal. Having a memory object or
+                # loaded memories proves initialization, not that anything is executing.
+                is_running = bool(_running_attr or loop_running)
                 
                 system_status = {
                     "running": is_running,
@@ -2258,7 +2376,6 @@ class UIControlPanel:
                 # Calculate uptime if start_time exists
                 if system_status["start_time"]:
                     try:
-                        from datetime import datetime
                         start = datetime.fromisoformat(system_status["start_time"])
                         uptime = (datetime.now() - start).total_seconds()
                         system_status["uptime"] = max(0, uptime)
@@ -2301,8 +2418,9 @@ class UIControlPanel:
                         logger.debug(f"Error getting loop status: {e}")
                         loop_status = {"running": False, "paused": False, "queue_size": 0}
                 else:
-                    # If no elysia_loop, check if system is at least initialized
-                    loop_status = {"running": system_status.get("initialized", False), "paused": False, "queue_size": 0}
+                    # No ElysiaLoopCore attached: report it as absent rather than
+                    # inferring "running" from initialization state.
+                    loop_status = {"running": False, "paused": False, "queue_size": 0, "available": False}
                 
                 # Get RuntimeLoop status (quick check only)
                 runtime_status = {}
@@ -2363,6 +2481,7 @@ class UIControlPanel:
                     "memory": convert_paths(memory_stats),
                     "security": convert_paths(security_status),
                     "trust": convert_paths(trust_status),
+                    "llm": convert_paths(self._collect_llm_status()),
                     "timestamp": datetime.now().isoformat()
                 }
                 
@@ -2374,19 +2493,20 @@ class UIControlPanel:
                 # Return minimal valid status even on error
                 return jsonify({
                     "system": {
-                        "running": getattr(self.orchestrator, '_running', False),
-                        "initialized": getattr(self.orchestrator, '_initialized', False),
+                        "running": bool(getattr(self.orchestrator, '_running', False)),
+                        "initialized": bool(getattr(self.orchestrator, '_initialized', False)),
                         "uptime": 0,
                         "error": error_msg
                     },
                     "loop": {
-                        "running": getattr(self.orchestrator, '_running', False),
+                        "running": False,
                         "paused": False,
                         "queue_size": 0
                     },
                     "memory": {"total_entries": 0, "total_memories": 0},
                     "security": {"policy_loaded": False, "recent_violations": 0, "pending_reviews": 0},
                     "trust": {"components": 0, "average_trust": 0},
+                    "llm": {"state": "unknown", "detail": "status endpoint error"},
                     "timestamp": datetime.now().isoformat()
                 }), 200
                 
@@ -2535,8 +2655,18 @@ class UIControlPanel:
                     return jsonify({"success": True, "reply": reply, "error": None})
                 if hasattr(self.orchestrator, 'ask_ai'):
                     reply = self.orchestrator.ask_ai(message)
-                    return jsonify({"success": True, "reply": reply or "(no reply)", "error": None})
-                return jsonify({"error": "No chat backend available (unified system or ask_ai)"}), 400
+                    reply_text = (reply or "").strip()
+                    # AIInteraction.ask_chatgpt reports failures as strings; surface them as errors
+                    # instead of presenting them as a successful model reply.
+                    if not reply_text or reply_text.startswith("Error:") or reply_text.startswith("[AI Interaction Error]"):
+                        return jsonify({
+                            "success": False,
+                            "reply": None,
+                            "error": reply_text or "Model returned an empty reply",
+                        }), 200
+                    return jsonify({"success": True, "reply": reply_text, "error": None})
+                return jsonify({"success": False, "reply": None,
+                                "error": "No chat backend available (unified system or ask_ai)"}), 400
             except Exception as e:
                 logger.error(f"Chat error: {e}", exc_info=True)
                 return jsonify({"error": str(e)}), 500

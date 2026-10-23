@@ -1289,7 +1289,8 @@ CONTROL_PANEL_TEMPLATE = """
             const llmStateEl = document.getElementById('llm-readiness');
             if (llmModelEl && llmStateEl) {
                 const llm = data.llm || {};
-                llmModelEl.textContent = llm.canonical_model || 'not configured';
+                llmModelEl.textContent = llm.canonical_model || 'unknown';
+                llmModelEl.title = llm.canonical_model ? 'Configured canonical Ollama tag' : (llm.detail || 'Model configuration not readable');
                 const state = llm.state || 'unknown';
                 llmStateEl.textContent = state;
                 llmStateEl.className = 'metric-value' + (state === 'ready' ? '' : (state === 'degraded' ? ' warning' : ' danger'));

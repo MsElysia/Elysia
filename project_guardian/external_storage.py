@@ -22,11 +22,25 @@ logger = logging.getLogger(__name__)
 _fallback_warned: set = set()  # Paths we've already warned about (avoid spam)
 
 
+def _looks_like_windows_drive_root(path: str) -> bool:
+    """True for Windows-style roots like 'F:', 'F:\\', 'F:/' (letter + colon)."""
+    if not path or not path.strip():
+        return False
+    s = path.strip().replace("/", "\\")
+    if len(s) >= 2 and s[0].isalpha() and s[1] == ":":
+        rest = s[2:].lstrip("\\")
+        return rest == ""
+    return len(s) == 1 and s[0].isalpha()
+
+
 def normalize_storage_root(path: str) -> str:
     """
     On Windows, ensure a drive letter (e.g. "F" or "F:") becomes drive root "F:\\"
     so that Path(root) / "ProjectGuardian" / ... yields F:\\ProjectGuardian\\...
     and not F:ProjectGuardian\\...
+
+    On non-Windows, Windows drive-letter roots are left unchanged for callers to
+    reject — never strip to a relative "F:" path that pathlib would create under cwd.
     """
     if not path or not path.strip():
         return path
@@ -268,23 +282,40 @@ def validate_and_resolve_storage_paths(
     candidates = [external_drive] + [d for d in fallback_drives if d and d != external_drive]
     drive_path = None
     chosen_drive = None
+    skipped_windows_roots: List[str] = []
     for candidate in candidates:
         if not candidate:
             continue
-        p = Path(normalize_storage_root(str(candidate).strip()))
+        raw = str(candidate).strip()
+        # On Linux/macOS, "F:\\" normalizes to relative "F:" and mkdir(parents=True)
+        # would create ./F:/ProjectGuardian under the repo — never treat as valid.
+        if os.name != "nt" and _looks_like_windows_drive_root(raw):
+            skipped_windows_roots.append(raw)
+            continue
+        p = Path(normalize_storage_root(raw))
+        if not p.is_absolute() and os.name != "nt":
+            # Relative roots are not external drives on POSIX.
+            continue
         if p.exists():
             try:
                 test_file = p / ".elysia_test_write"
                 test_file.touch()
                 test_file.unlink()
                 drive_path = p
-                chosen_drive = normalize_storage_root(str(candidate).strip())
+                chosen_drive = normalize_storage_root(raw)
                 break
             except (PermissionError, OSError):
                 continue
     
     use_fallback = drive_path is None
-    fallback_reason = f"No writable drive among: {candidates}" if not chosen_drive else None
+    if not chosen_drive:
+        fallback_reason = f"No writable drive among: {candidates}"
+        if skipped_windows_roots:
+            fallback_reason += (
+                f" (skipped Windows drive letter(s) on {os.name}: {skipped_windows_roots})"
+            )
+    else:
+        fallback_reason = None
     
     if use_fallback:
         # Use fallback path

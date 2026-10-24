@@ -812,8 +812,14 @@ class EnhancedMemoryCore:
         timeline_memory=None,
         lazy_json: bool = False,
         lazy_vector: bool = False,
+        defer_embeddings: bool = False,
+        **_compat_kwargs: Any,
     ):
         from .memory import MemoryCore
+
+        # defer_embeddings: GuardianCore boot flag — keep vector index lazy too.
+        if defer_embeddings:
+            lazy_vector = True
         
         # Keep existing JSON-based memory
         self.json_memory = MemoryCore(

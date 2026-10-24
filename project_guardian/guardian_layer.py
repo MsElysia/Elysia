@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from threading import RLock
 
+logger = logging.getLogger(__name__)
+
 try:
     import smtplib
     from email.mime.text import MIMEText
@@ -21,8 +23,6 @@ try:
 except ImportError:
     SMTP_AVAILABLE = False
     logger.warning("Email libraries not available - email alerts disabled")
-
-logger = logging.getLogger(__name__)
 
 
 class GuardianLayer:
@@ -58,13 +58,17 @@ class GuardianLayer:
         """
         Generate a cryptographic fingerprint of the system.
         Based on system characteristics that identify this installation.
+
+        Uses lightweight platform APIs only. Avoid platform.platform() and
+        platform.processor() — both can hang indefinitely on some Linux hosts
+        (libc/uname probing), which blocks GuardianCore boot.
         """
         fingerprint_data = []
         
-        # System information — avoid platform.processor(): it can hang on some Linux hosts.
-        fingerprint_data.append(f"platform={platform.platform()}")
+        # System information (no subprocess / libc version probes)
+        fingerprint_data.append(f"system={platform.system()}")
+        fingerprint_data.append(f"release={platform.release()}")
         fingerprint_data.append(f"machine={platform.machine()}")
-        fingerprint_data.append(f"processor={platform.machine()}")
         fingerprint_data.append(f"node={platform.node()}")
         
         # Python environment

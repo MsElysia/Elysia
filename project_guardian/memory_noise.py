@@ -257,8 +257,24 @@ def routine_autonomy_remember_suppressed(
             return True
         _ROUTINE_THROTTLE_LAST[key] = now
         if len(_ROUTINE_THROTTLE_LAST) > _ROUTINE_THROTTLE_MAX_KEYS:
-            cutoff = now - ttl
-            dead = [k for k, t in _ROUTINE_THROTTLE_LAST.items() if t < cutoff]
-            for k in dead[: _ROUTINE_THROTTLE_MAX_KEYS // 2]:
-                _ROUTINE_THROTTLE_LAST.pop(k, None)
+            _evict_routine_throttle_entries(now, ttl)
     return False
+
+
+def _evict_routine_throttle_entries(now: float, ttl: float) -> None:
+    """
+    Bring the throttle map back under ``_ROUTINE_THROTTLE_MAX_KEYS``.
+
+    Expired fingerprints go first; if the map is still over the cap (many distinct
+    routine lines inside one TTL window), the oldest live entries are dropped so the
+    cap is an actual bound rather than a hint. Caller holds ``_ROUTINE_THROTTLE_LOCK``.
+    """
+    cutoff = now - ttl
+    for k in [k for k, t in _ROUTINE_THROTTLE_LAST.items() if t < cutoff]:
+        _ROUTINE_THROTTLE_LAST.pop(k, None)
+    overflow = len(_ROUTINE_THROTTLE_LAST) - _ROUTINE_THROTTLE_MAX_KEYS
+    if overflow <= 0:
+        return
+    oldest = sorted(_ROUTINE_THROTTLE_LAST.items(), key=lambda kv: kv[1])[:overflow]
+    for k, _ in oldest:
+        _ROUTINE_THROTTLE_LAST.pop(k, None)

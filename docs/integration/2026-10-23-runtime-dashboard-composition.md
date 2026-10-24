@@ -31,3 +31,7 @@ The restricted CLI starts before legacy Guardian/provider/UI imports. Cursor's U
 6. Request independent exact-SHA composed review, reconcile the missing Codex test commit, and address any integration defects on a new reviewed draft SHA. Stop at READY_FOR_MERGE_REVIEW if all required checks pass; never merge automatically.
 
 No credentials, external API, paid model, live provider, autonomous schedule, production activation, protected-gate edits, or archive mutation are authorized.
+
+
+## Isolated hosted dashboard acceptance job
+A separate Windows CI job was added to the existing restricted-pilot workflow **without modifying or relaxing its original job**. It installs isolated test dependencies and executes the four copied dashboard/package test modules at the same exact PR head. Successful tests prove tested UI import/status behaviors, NOT a live GuardianCore startup, Ollama availability, or an end-to-end browser-to-restricted-memory workflow. Treat all skipped import tests and runtime prerequisites explicitly. Original user data, live services and network model providers are outside the test scope.

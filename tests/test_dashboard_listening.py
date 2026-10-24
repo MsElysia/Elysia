@@ -42,6 +42,7 @@ class TestDashboardListening:
         
         # Create a socket to occupy port 5000
         occupied_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        occupied_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             occupied_socket.bind(('127.0.0.1', 5000))
             occupied_socket.listen(1)
@@ -159,6 +160,7 @@ class TestDashboardListening:
         
         # Test with occupied port
         occupied_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        occupied_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             occupied_socket.bind(('127.0.0.1', 5000))
             occupied_socket.listen(1)
@@ -180,6 +182,7 @@ class TestDashboardListening:
         
         # Occupy port 5000
         occupied_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        occupied_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             occupied_socket.bind(('127.0.0.1', 5000))
             occupied_socket.listen(1)

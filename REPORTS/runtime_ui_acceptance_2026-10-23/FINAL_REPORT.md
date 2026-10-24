@@ -101,7 +101,9 @@ The October 22 note that `llama3.2:3b` was installed was not true of this machin
 
 ## 6. Remaining limitations
 
-- **PARTIAL** because GuardianCore cannot boot here, and there is no local model process to answer a generation request.
+Follow-up after the first acceptance pass: `import project_guardian` now succeeds. The package died on three declared dependencies (`openai`, `requests`, `pyttsx3` from `project_guardian/requirements.txt`) and then on two source gaps `core.py` already called: missing `project_guardian/module_activity.py`, and missing `log_autonomy_routine` / `log_autonomy_exploration_routine` in `planner_readiness.py`. Those two source gaps are restored. `tests/test_project_guardian_import.py` covers the income-bundle activity aliases, the package import, and the routine log level. This environment installed the three packages; no API key was set and no provider was called. GuardianCore was not constructed, so startup, memory, and task loops are still unproven.
+
+- **PARTIAL** because the control panel's Flask path is verified, the package can now be imported, and there is still no local model process to answer a generation request. Full `GuardianCore()` startup was not run.
 - Cross-boundary, not modified: `project_guardian/__init__.py`, `core.py`, `mutation.py`, the missing `module_activity.py`, `start_ui_panel.py`, `start_control_panel.py`, task and memory modules.
 - Installing `openai` or adding `module_activity.py` would be the next launcher repair and was left for the backend owner.
 - Controls that need GuardianCore methods remain unavailable until that launcher imports.

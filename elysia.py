@@ -595,33 +595,49 @@ class UnifiedElysiaSystem:
             pass
         return "mistral"
 
+    def _openai_client_direct(self):
+        """Build an OpenAI client from env when income APIManager is unavailable."""
+        api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+        if not api_key:
+            return None
+        try:
+            from openai import OpenAI
+            return OpenAI(api_key=api_key)
+        except Exception as e:
+            logger.debug("Direct OpenAI client unavailable: %s", e)
+            return None
+
     def _llm_completion_cloud_openai(self, messages: List[Dict[str, Any]], max_tokens: int) -> Tuple[str, str]:
         reply, err = "", ""
+        client = None
         ig = self.get_income_generator()
         if ig and getattr(ig, "api_manager", None):
             api = ig.api_manager
             client = api.get_openai_client() if hasattr(api, "get_openai_client") else None
-            if client:
+        if client is None:
+            client = self._openai_client_direct()
+        if client:
+            try:
+                r = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages,
+                    max_tokens=max_tokens,
+                )
+                if r.choices:
+                    reply = (r.choices[0].message.content or "").strip()
+            except Exception as e:
+                err = str(e)
                 try:
-                    r = client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=messages,
-                        max_tokens=max_tokens,
-                    )
-                    if r.choices:
-                        reply = (r.choices[0].message.content or "").strip()
-                except Exception as e:
-                    err = str(e)
-                    try:
-                        from project_guardian.openai_degraded import note_openai_transport_failure
+                    from project_guardian.openai_degraded import note_openai_transport_failure
 
-                        note_openai_transport_failure(e, context="elysia_cloud_openai")
-                    except Exception:
-                        pass
-            else:
-                err = "No OpenAI client"
+                    note_openai_transport_failure(e, context="elysia_cloud_openai")
+                except Exception:
+                    pass
         else:
-            err = "Income generator or API manager not available."
+            if not (os.environ.get("OPENAI_API_KEY") or "").strip():
+                err = "OPENAI_API_KEY not set (and income API manager unavailable)."
+            else:
+                err = "No OpenAI client (income API manager unavailable and direct client failed)."
         return reply, err
 
     def _llm_completion_cloud_openrouter(self, messages: List[Dict[str, Any]], max_tokens: int) -> Tuple[str, str]:
@@ -642,10 +658,24 @@ class UnifiedElysiaSystem:
                         reply = (out["choices"][0].get("message", {}).get("content") or "").strip()
                 except Exception as e:
                     err = str(e)
-            else:
-                err = "No OpenRouter key"
+                return reply, err
+            # API manager present but no openrouter key — fall through to env direct
+        or_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+        if or_key:
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=or_key, base_url="https://openrouter.ai/api/v1")
+                r = client.chat.completions.create(
+                    model="openai/gpt-3.5-turbo",
+                    messages=messages,
+                    max_tokens=max_tokens,
+                )
+                if r.choices:
+                    reply = (r.choices[0].message.content or "").strip()
+            except Exception as e:
+                err = str(e)
         else:
-            err = "Income generator or API manager not available."
+            err = "OPENROUTER_API_KEY not set (and income API manager unavailable)."
         return reply, err
 
     def _llm_completion_cloud_preferred(self, messages: List[Dict[str, Any]], max_tokens: int) -> Tuple[str, str]:
@@ -665,13 +695,37 @@ class UnifiedElysiaSystem:
             caller="UnifiedElysiaSystem._chat_with_llm_cloud_only",
         )
 
+    def _offline_chat_reply(self, message: str, err: str) -> Tuple[str, str]:
+        """Local status reply when no LLM backend (Ollama/cloud) is available."""
+        try:
+            st = self.get_status() if hasattr(self, "get_status") else {}
+            comps = (st or {}).get("components") or {}
+            uptime = (st or {}).get("uptime", "n/a")
+            lines = [
+                "Elysia is running in offline chat mode (no local Ollama and no cloud API keys).",
+                f"Uptime: {uptime}",
+                f"Guardian: {bool(comps.get('guardian_core'))}, "
+                f"Runtime: {bool(comps.get('runtime_loop'))}, "
+                f"Architect: {bool(comps.get('architect_core'))}, "
+                f"Modules: {comps.get('integrated_modules', 0)}",
+                "Set OPENAI_API_KEY / OPENROUTER_API_KEY, or start Ollama, for full chat.",
+            ]
+            if message:
+                lines.append(f"Heard: {message[:200]}")
+            return "\n".join(lines), ""
+        except Exception:
+            return "", err or "No LLM backend available."
+
     def chat_with_llm(self, message: str):
         """
         Send a chat message via unified router (capability preamble + Ollama vs cloud), or legacy cloud-only.
         Returns (reply_text, error_string). One will be empty.
         """
         if not self._unified_chat_llm_router_enabled():
-            return self._chat_with_llm_cloud_only(message)
+            reply, err = self._chat_with_llm_cloud_only(message)
+            if reply:
+                return reply, err
+            return self._offline_chat_reply(message, err)
         try:
             from project_guardian.unified_llm_route import unified_chat_completion
 
@@ -686,17 +740,22 @@ class UnifiedElysiaSystem:
                 module_name="planner",
                 agent_name="orchestrator",
             )
-            return reply, err
+            if reply:
+                return reply, err
+            return self._offline_chat_reply(message, err)
         except Exception as e:
             logger.warning("Unified chat router failed (%s); falling back to cloud-only", e)
             from project_guardian.elysia_llm_fallback import elysia_cloud_fallback_completion
 
-            return elysia_cloud_fallback_completion(
+            reply, err = elysia_cloud_fallback_completion(
                 [{"role": "user", "content": message}],
                 500,
                 cloud_preferred=self._llm_completion_cloud_preferred,
                 caller="UnifiedElysiaSystem.chat_with_llm.fallback",
             )
+            if reply:
+                return reply, err
+            return self._offline_chat_reply(message, err)
 
     def _llm_completion(
         self,

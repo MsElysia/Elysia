@@ -61,6 +61,34 @@ def test_validate_and_resolve_storage_paths_missing_drive():
     assert Path(result["vector_memory_config"]["metadata_path"]).parent.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only: Windows drive letters must not become cwd-relative dirs")
+def test_windows_drive_letters_do_not_create_relative_dirs_on_posix(tmp_path, monkeypatch):
+    """F:\\ must not validate as ./F: under the repo on Linux/macOS."""
+    from project_guardian.external_storage import (
+        _looks_like_windows_drive_root,
+        validate_and_resolve_storage_paths,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    # Even if a bogus relative F: directory already exists, skip Windows roots.
+    bogous = tmp_path / "F:"
+    bogous.mkdir()
+    (bogous / "ProjectGuardian").mkdir()
+
+    assert _looks_like_windows_drive_root("F:\\")
+    assert _looks_like_windows_drive_root("F:")
+    result = validate_and_resolve_storage_paths(
+        {
+            "use_external_storage": True,
+            "external_drive": "F:\\",
+            "fallback_drives": ["G:\\", "E:\\"],
+        }
+    )
+    assert result["fallback_used"] is True
+    assert result["use_external_storage"] is False
+    assert "F:" not in result["memory_filepath"].replace("\\", "/")
+
+
 def test_validate_and_resolve_storage_paths_valid_drive():
     """Test that valid drive path is used without fallback"""
     from project_guardian.external_storage import validate_and_resolve_storage_paths

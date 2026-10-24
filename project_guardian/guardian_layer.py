@@ -11,7 +11,9 @@ import sys
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from pathlib import Path
-from threading import Lock
+from threading import RLock
+
+logger = logging.getLogger(__name__)
 
 try:
     import smtplib
@@ -21,8 +23,6 @@ try:
 except ImportError:
     SMTP_AVAILABLE = False
     logger.warning("Email libraries not available - email alerts disabled")
-
-logger = logging.getLogger(__name__)
 
 
 class GuardianLayer:
@@ -40,8 +40,8 @@ class GuardianLayer:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         self.rebuild_log_path = Path(rebuild_log_path)
         
-        # Thread-safe operations
-        self._lock = Lock()
+        # Reentrant: _update_fingerprint / setters hold the lock then call save()
+        self._lock = RLock()
         
         # Guardian state
         self.fingerprint: Optional[str] = None
@@ -58,13 +58,17 @@ class GuardianLayer:
         """
         Generate a cryptographic fingerprint of the system.
         Based on system characteristics that identify this installation.
+
+        Uses lightweight platform APIs only. Avoid platform.platform() and
+        platform.processor() — both can hang indefinitely on some Linux hosts
+        (libc/uname probing), which blocks GuardianCore boot.
         """
         fingerprint_data = []
         
-        # System information
-        fingerprint_data.append(f"platform={platform.platform()}")
+        # System information (no subprocess / libc version probes)
+        fingerprint_data.append(f"system={platform.system()}")
+        fingerprint_data.append(f"release={platform.release()}")
         fingerprint_data.append(f"machine={platform.machine()}")
-        fingerprint_data.append(f"processor={platform.processor()}")
         fingerprint_data.append(f"node={platform.node()}")
         
         # Python environment
@@ -205,7 +209,12 @@ class GuardianLayer:
             msg['Subject'] = subject
             msg.attach(MIMEText(message, 'plain'))
             
-            server = smtplib.SMTP(self.smtp_config["server"], self.smtp_config["port"])
+            # Bound connect so fingerprint-change alerts cannot hang GuardianCore init.
+            server = smtplib.SMTP(
+                self.smtp_config["server"],
+                self.smtp_config["port"],
+                timeout=10,
+            )
             
             if self.smtp_config.get("use_tls", True):
                 server.starttls()

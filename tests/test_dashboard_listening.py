@@ -33,6 +33,20 @@ class TestDashboardListening:
         from tests.dashboard_panel_loader import reset_dashboard_guard
         reset_dashboard_guard()
     
+
+    def test_fallback_does_not_reprobe_known_occupied_port(self):
+        """A failed initial probe must not allow reuse of that same port."""
+        ui_panel = UIControlPanel(orchestrator=Mock(), host='127.0.0.1', port=5000)
+        # First 5000 is occupied; a second call on the same port may falsely
+        # look free on Windows when a single-connection listener backlog fills.
+        with patch.object(ui_panel, '_check_port_available', side_effect=[False, True]) as check:
+            with patch.object(ui_panel, 'socketio') as fake_socketio:
+                fake_socketio.run = Mock()
+                with patch.object(ui_panel, '_wait_for_server_ready', return_value=True):
+                    ui_panel.start(debug=False, source="test")
+        assert ui_panel.port == 5001
+        assert [c.args[1] for c in check.call_args_list] == [5000, 5001]
+
     def test_port_fallback_when_5000_occupied(self):
         """Test that port fallback works when port 5000 is occupied."""
         

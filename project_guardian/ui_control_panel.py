@@ -3611,12 +3611,12 @@ class UIControlPanel:
             return False
     
     def _find_available_port(self, start_port: int, max_attempts: int = 10) -> int:
-        """Find an available port starting from start_port."""
-        for i in range(max_attempts):
+        """Find an alternative after the port already proven occupied."""
+        for i in range(1, max_attempts + 1):
             port = start_port + i
             if self._check_port_available(self.host, port):
                 return port
-        raise OSError(f"Could not find available port in range {start_port}-{start_port + max_attempts - 1}")
+        raise OSError(f"Could not find available port in range {start_port + 1}-{start_port + max_attempts}")
     
     def _wait_for_server_ready(self, timeout: float = 10.0) -> bool:
         """Wait for server to be ready by checking if port is listening."""

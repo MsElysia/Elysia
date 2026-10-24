@@ -35,3 +35,7 @@ No credentials, external API, paid model, live provider, autonomous schedule, pr
 
 ## Isolated hosted dashboard acceptance job
 A separate Windows CI job was added to the existing restricted-pilot workflow **without modifying or relaxing its original job**. It installs isolated test dependencies and executes the four copied dashboard/package test modules at the same exact PR head. Successful tests prove tested UI import/status behaviors, NOT a live GuardianCore startup, Ollama availability, or an end-to-end browser-to-restricted-memory workflow. Treat all skipped import tests and runtime prerequisites explicitly. Original user data, live services and network model providers are outside the test scope.
+
+
+## Exact-head CI repair after first composed run
+First composed two-job Windows run `40053604557`: restricted pilot **193 passed**, UI/import **23 passed, 2 failed**. The first UI failure reprobed occupied port 5000, allowing reuse after a contradictory connect probe; the second showed `project_guardian/memory_vector_search.py` evaluating `np.ndarray` when optional NumPy was absent. This draft follow-up starts fallback at the next port, adds a deterministic occupied-then-free regression, and defers annotation evaluation with `from __future__ import annotations`. It does not install NumPy or alter the offline restricted launcher. Re-run both jobs at the new exact head; CI green alone does not prove the browser-to-restricted-memory bridge.

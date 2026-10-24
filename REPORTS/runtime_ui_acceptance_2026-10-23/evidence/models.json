@@ -1,0 +1,1 @@
+{"available":[],"configured":{"available":false,"error":null,"name":"mistral:7b","provider":"ollama","source":"config/mistral_decider.json or default"},"ollama":{"endpoint":"http://127.0.0.1:11434/api/tags","error":"<urlopen error [Errno 111] Connection refused>","reachable":false}}

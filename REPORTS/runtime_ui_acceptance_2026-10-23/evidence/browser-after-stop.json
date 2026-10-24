@@ -1,0 +1,25 @@
+{
+  "offline": true,
+  "after": {
+    "status": "Offline",
+    "indicator": "status-indicator status-stopped",
+    "loop": "unknown",
+    "uptime": "—",
+    "logs": "\n                [System] Control Panel initialized\n            [12:37:20 AM] Control Panel loaded at http://127.0.0.1:8765/[12:37:20 AM] Socket.IO connected[12:37:20 AM] Status update received[12:37:20 AM] Chat: OK[12:37:20 AM] Pause requested...[12:37:20 AM] Pause: Event loop is not attached[12:37:21 AM] Socket.IO disconnected; checking HTTP status[12:37:21 AM] Backend unreachable: Socket disconnected and /api/ping failed"
+  },
+  "pageErrors": [],
+  "failed": [
+    {
+      "url": "http://127.0.0.1:8765/api/ping",
+      "error": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:8765/socket.io/?EIO=4&transport=polling&t=Q5hLpuW",
+      "error": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "url": "http://127.0.0.1:8765/api/status",
+      "error": "net::ERR_CONNECTION_REFUSED"
+    }
+  ]
+}

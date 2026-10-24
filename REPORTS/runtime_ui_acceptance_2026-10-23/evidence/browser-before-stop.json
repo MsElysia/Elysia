@@ -1,0 +1,85 @@
+{
+  "initial": {
+    "status": "Initialized",
+    "indicator": "status-indicator status-initialized",
+    "uptime": "—",
+    "loop": "not attached",
+    "queue": "—",
+    "memories": "—",
+    "trust": "—",
+    "violations": "—",
+    "theme": "dark",
+    "models": "mistral:7b",
+    "available": "none",
+    "modelDetail": "Local model service is not reachable. <urlopen error [Errno 111] Connection refused>"
+  },
+  "themeAfter": "light",
+  "themeReloaded": {
+    "theme": "light",
+    "status": "Initialized"
+  },
+  "tabState": [
+    {
+      "name": "learning",
+      "active": true
+    },
+    {
+      "name": "tasks",
+      "active": true
+    },
+    {
+      "name": "security",
+      "active": true
+    },
+    {
+      "name": "memory",
+      "active": true
+    },
+    {
+      "name": "introspection",
+      "active": true
+    },
+    {
+      "name": "control",
+      "active": true
+    },
+    {
+      "name": "logs",
+      "active": true
+    },
+    {
+      "name": "dashboard",
+      "active": true
+    }
+  ],
+  "chat": "FICTIONAL_REPLY:hello fictional profile",
+  "logs": "\n                [System] Control Panel initialized\n            [12:37:20 AM] Control Panel loaded at http://127.0.0.1:8765/[12:37:20 AM] Socket.IO connected[12:37:20 AM] Status update received[12:37:20 AM] Chat: OK[12:37:20 AM] Pause requested...[12:37:20 AM] Pause: Event loop is not attached",
+  "consoleEvents": [
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "verbose",
+      "text": "[DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 503 (SERVICE UNAVAILABLE)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 400 (BAD REQUEST)"
+    }
+  ],
+  "pageErrors": [],
+  "failed": []
+}

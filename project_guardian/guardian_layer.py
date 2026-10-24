@@ -61,10 +61,10 @@ class GuardianLayer:
         """
         fingerprint_data = []
         
-        # System information
+        # System information — avoid platform.processor(): it can hang on some Linux hosts.
         fingerprint_data.append(f"platform={platform.platform()}")
         fingerprint_data.append(f"machine={platform.machine()}")
-        fingerprint_data.append(f"processor={platform.processor()}")
+        fingerprint_data.append(f"processor={platform.machine()}")
         fingerprint_data.append(f"node={platform.node()}")
         
         # Python environment
@@ -205,7 +205,12 @@ class GuardianLayer:
             msg['Subject'] = subject
             msg.attach(MIMEText(message, 'plain'))
             
-            server = smtplib.SMTP(self.smtp_config["server"], self.smtp_config["port"])
+            # Bound connect so fingerprint-change alerts cannot hang GuardianCore init.
+            server = smtplib.SMTP(
+                self.smtp_config["server"],
+                self.smtp_config["port"],
+                timeout=10,
+            )
             
             if self.smtp_config.get("use_tls", True):
                 server.starttls()

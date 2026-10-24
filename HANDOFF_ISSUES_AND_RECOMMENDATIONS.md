@@ -57,23 +57,27 @@ Healthy `/status` should show: `running: true`, `guardian_core`, `runtime_loop`,
 
 ---
 
-### P0.2 GuardianLayer fingerprint hang on Linux
+### P0.2 GuardianLayer boot freeze on Linux (deadlock + heavy platform APIs)
 
 **Symptom:** Boot freezes after `[OK] EAI safety framework initialized`; process sits in `futex_wait` / never reaches adapters.
 
-**Root cause:** `GuardianLayer._generate_system_fingerprint()` used `platform.platform()` / `platform.processor()`, which can hang on some Linux hosts during libc/uname probing.
+**Primary root cause (confirmed):** `GuardianLayer._update_fingerprint()` held a non-reentrant `threading.Lock` and called `save()`, which acquired the same lock → **self-deadlock**. Fix: use `threading.RLock`. Regression: `project_guardian/tests/test_guardian_layer_lock.py`.
+
+**Secondary hardening:** `_generate_system_fingerprint()` also used `platform.platform()` / `platform.processor()`, which can hang on some Linux hosts during libc/uname probing. Prefer lightweight APIs only: `system`, `release`, `machine`, `node`, cwd, user, python paths.
 
 **Fix direction (already in PR #160):**
 
-- Fingerprint with lightweight APIs only: `system`, `release`, `machine`, `node`, cwd, user, python paths.
+- `RLock` so fingerprint update can call `save()` under the lock.
+- Lightweight fingerprint APIs (no `platform.platform()` / `platform.processor()` on the boot path).
 - Bound SMTP (`smtplib.SMTP(..., timeout=10)`) so fingerprint-change email cannot hang init.
 - Move `logger = logging.getLogger(__name__)` **above** the SMTP import try/except (old code referenced `logger` before definition on ImportError).
 
 **Recommendation:**
 
-1. Keep the lightweight fingerprint; do **not** reintroduce `platform.platform()` / `platform.processor()` without a hard timeout (e.g. subprocess with 1s timeout, never call from `__init__` without it).
-2. Add a unit test that mocks/patches and asserts fingerprint generation completes under a short wall-clock budget.
-3. Consider computing fingerprint **after** status HTTP is up (deferred), so identity checks never block boot.
+1. Keep `RLock`; never nest `Lock`-guarded `save()` under the same non-reentrant lock.
+2. Keep the lightweight fingerprint; do **not** reintroduce `platform.platform()` / `platform.processor()` without a hard timeout.
+3. Keep/extend the lock regression test; optionally add a wall-clock budget test for fingerprint generation.
+4. Consider computing fingerprint **after** status HTTP is up (deferred), so identity checks never block boot.
 
 ---
 

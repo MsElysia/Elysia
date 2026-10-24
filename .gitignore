@@ -138,3 +138,7 @@ guardian_backups/
 
 extracted_zip/
 
+
+# Isolated synthetic development pilot data (never commit learned records).
+.synthetic-pilot-stores/
+tests/offline-tests-*/

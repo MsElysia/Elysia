@@ -4,6 +4,13 @@ Elysia - Main Program
 Unified Elysia system. Orchestrates all elysia_sub_* subroutines.
 Run: python elysia.py  (or python -m elysia when packaged)
 """
+
+# Draft restricted startup: dispatch before legacy configuration and logging.
+import sys
+if __name__ == "__main__":
+    from elysia_offline import main as offline_main
+    raise SystemExit(offline_main(sys.argv[1:]))
+
 import atexit
 import json
 import os

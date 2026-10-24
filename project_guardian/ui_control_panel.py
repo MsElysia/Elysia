@@ -962,6 +962,12 @@ CONTROL_PANEL_TEMPLATE = """
             if (indicator) {
                 indicator.className = 'status-indicator status-' + (reachable ? 'connected' : 'stopped');
             }
+            if (!reachable) {
+                ['uptime', 'loop-status', 'queue-size', 'active-tasks'].forEach(function(id) {
+                    const element = document.getElementById(id);
+                    if (element) element.textContent = 'Unknown';
+                });
+            }
             if (backendReachable !== reachable) {
                 addLog(reachable ? 'Backend connection restored' : 'Backend unavailable', reachable ? 'info' : 'error');
             }

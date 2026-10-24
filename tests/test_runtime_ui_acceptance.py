@@ -118,6 +118,7 @@ def test_template_has_truthful_disconnect_and_model_status_wiring(ui_module):
     template = ui_module.CONTROL_PANEL_TEMPLATE
 
     assert "setConnectionState(false, 'Offline — ' + msg)" in template
+    assert "element.textContent = 'Unknown'" in template
     assert "system: { running: true, initialized: true" not in template
     assert "Available models: checking…" in template
     assert "Model request timed out after 60 seconds" in template

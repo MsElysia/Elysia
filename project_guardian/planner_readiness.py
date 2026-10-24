@@ -709,3 +709,39 @@ def planner_context_for_snapshot(decision_cycle: int) -> Dict[str, Any]:
         "planner_gate_reason": reason,
         "latency": recent_planner_latency_summary(),
     }
+
+
+def _autonomy_routine_info_forced_when_ready() -> bool:
+    """Keep routine autonomy lines at INFO when the operator forces that level."""
+    for key in (
+        "ELYSIA_AUTONOMY_ROUTINE_INFO_WHEN_READY",
+        "ELYSIA_EXPLORATION_INFO_WHEN_READY",
+    ):
+        value = (os.environ.get(key) or "").strip().lower()
+        if value in ("1", "true", "yes", "always", "force"):
+            return True
+    return False
+
+
+def autonomy_exploration_log_use_debug() -> bool:
+    """Routine autonomy chatter uses DEBUG when planner readiness is ready."""
+    if _autonomy_routine_info_forced_when_ready():
+        return False
+    try:
+        return compute_readiness_label() == "ready"
+    except Exception:
+        return False
+
+
+autonomy_routine_log_use_debug = autonomy_exploration_log_use_debug
+
+
+def log_autonomy_routine(log: logging.Logger, fmt: str, *args: Any, **kwargs: Any) -> None:
+    """Routine autonomy chatter: INFO normally; DEBUG when planner readiness is ready."""
+    level = logging.DEBUG if autonomy_exploration_log_use_debug() else logging.INFO
+    log.log(level, fmt, *args, **kwargs)
+
+
+def log_autonomy_exploration_routine(log: logging.Logger, fmt: str, *args: Any, **kwargs: Any) -> None:
+    """Same level rule as log_autonomy_routine, for exploration-prefixed lines."""
+    log_autonomy_routine(log, fmt, *args, **kwargs)

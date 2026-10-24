@@ -19,11 +19,12 @@ except ImportError:
 import threading
 import json
 import logging
+import secrets
 import socket
 import time
 import os
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,25 @@ _dashboard_start_attempts = 0
 
 # Bounded limits for UI/runtime memory access (avoid full-dump latency spikes)
 UI_MEMORY_RECENT_LIMIT = 200
+
+# Local dashboard principal. Permissions are the fact workflow only.
+_DASHBOARD_OPERATOR_IDENTITY = "dashboard-operator"
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _normalize_loopback_addr(value: Optional[str]) -> str:
+    text = (value or "").strip().lower()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    if "%" in text:
+        text = text.split("%", 1)[0]
+    if text.startswith("::ffff:"):
+        text = text.split("::ffff:", 1)[1]
+    return text
+
+
+def _is_loopback_addr(value: Optional[str]) -> bool:
+    return _normalize_loopback_addr(value) in _LOOPBACK_HOSTS
 
 
 # HTML Template for Control Panel - Enhanced Version
@@ -714,6 +734,32 @@ CONTROL_PANEL_TEMPLATE = """
                 </div>
                 <div id="memory-results"></div>
             </div>
+            <div class="card">
+                <h2>Restricted Facts</h2>
+                <p id="restricted-memory-store" style="font-size: 12px; color: var(--text-secondary);">Memory file: not checked</p>
+                <div class="input-group">
+                    <label>Fact:</label>
+                    <input type="text" id="restricted-fact-statement" placeholder="Fictional fact, 12 or more characters" autocomplete="off">
+                    <button type="button" onclick="saveRestrictedFact()">Save fact</button>
+                </div>
+                <div class="input-group">
+                    <label>Retrieve with different wording:</label>
+                    <input type="text" id="restricted-fact-query" placeholder="Different wording than the saved fact" autocomplete="off">
+                    <button type="button" onclick="retrieveRestrictedFacts()">Retrieve</button>
+                </div>
+                <div id="restricted-fact-matches" style="margin: 8px 0;"></div>
+                <p style="font-size: 12px; color: var(--text-secondary);">Selected fact: <span id="restricted-fact-id">none</span></p>
+                <div class="input-group">
+                    <label>Correction:</label>
+                    <input type="text" id="restricted-fact-correction" placeholder="Replacement statement" autocomplete="off">
+                    <button type="button" onclick="correctRestrictedFact()">Correct fact</button>
+                </div>
+                <div class="input-group">
+                    <button type="button" onclick="showRestrictedFactHistory()">Show history</button>
+                </div>
+                <div id="restricted-fact-status" style="margin-top: 8px; white-space: pre-wrap;"></div>
+                <div id="restricted-fact-history" style="margin-top: 12px;"></div>
+            </div>
         </div>
 
         <!-- Introspection Tab -->
@@ -875,6 +921,9 @@ CONTROL_PANEL_TEMPLATE = """
     </div>
 
     <script>
+        var RESTRICTED_IDENTITY = {{ restricted_identity|tojson }};
+        var RESTRICTED_TOKEN = {{ restricted_token|tojson }};
+
         // Define addLog function FIRST so it's available immediately
         function addLog(message, level) {
             if (level === undefined) level = 'info';
@@ -933,6 +982,8 @@ CONTROL_PANEL_TEMPLATE = """
             }
             if (tabName === 'tasks' && typeof window.refreshTaskQueue === 'function')
                 window.refreshTaskQueue();
+            if (tabName === 'memory' && typeof window.refreshRestrictedMemoryStore === 'function')
+                window.refreshRestrictedMemoryStore();
         };
         
         const socket = (typeof io !== 'undefined') ? io() : null;
@@ -1596,6 +1647,232 @@ CONTROL_PANEL_TEMPLATE = """
                 .catch(function(err) { addLog('Error: ' + err, 'error'); });
         };
 
+        function restrictedHeaders() {
+            return {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'X-Elysia-Identity': RESTRICTED_IDENTITY,
+                'X-Elysia-Token': RESTRICTED_TOKEN
+            };
+        }
+
+        function restrictedReady() {
+            return !!(RESTRICTED_IDENTITY && RESTRICTED_TOKEN);
+        }
+
+        function setRestrictedStatus(text, isError) {
+            var el = document.getElementById('restricted-fact-status');
+            if (!el) return;
+            el.textContent = text || '';
+            el.style.color = isError ? 'var(--danger)' : 'var(--success)';
+        }
+
+        function parseRestricted(response) {
+            return response.text().then(function(text) {
+                var data = {};
+                if (text) {
+                    try {
+                        data = JSON.parse(text);
+                    } catch (e) {
+                        data = { ok: false, error: 'invalid_response', detail: text.slice(0, 200) };
+                    }
+                }
+                return { status: response.status, data: data };
+            });
+        }
+
+        function selectRestrictedFact(factId) {
+            window._restrictedFactId = factId || '';
+            var idEl = document.getElementById('restricted-fact-id');
+            if (idEl) idEl.textContent = factId || 'none';
+        }
+
+        function renderRestrictedMatches(matches) {
+            var box = document.getElementById('restricted-fact-matches');
+            if (!box) return;
+            box.textContent = '';
+            if (!matches || !matches.length) {
+                box.textContent = 'No matching current fact.';
+                return;
+            }
+            matches.forEach(function(match) {
+                var row = document.createElement('div');
+                row.style.marginBottom = '6px';
+                var button = document.createElement('button');
+                button.type = 'button';
+                button.textContent = (match.fact_id || '') + ' (score ' + match.score + '): ' + (match.statement || '');
+                button.onclick = function() { selectRestrictedFact(match.fact_id); };
+                row.appendChild(button);
+                box.appendChild(row);
+            });
+        }
+
+        function renderRestrictedHistory(revisions) {
+            var box = document.getElementById('restricted-fact-history');
+            if (!box) return;
+            box.textContent = '';
+            (revisions || []).forEach(function(item) {
+                var row = document.createElement('div');
+                row.style.marginBottom = '10px';
+                row.style.padding = '8px';
+                row.style.background = 'var(--bg-dark)';
+                row.style.borderRadius = '8px';
+                var title = document.createElement('div');
+                title.textContent = 'Revision ' + item.revision + ' (' + (item.operation || '') + ')' + (item.current ? ' current' : ' kept');
+                var statement = document.createElement('div');
+                statement.textContent = item.statement || '';
+                row.appendChild(title);
+                row.appendChild(statement);
+                if (item.previous_statement) {
+                    var previous = document.createElement('div');
+                    previous.textContent = 'Previous: ' + item.previous_statement;
+                    row.appendChild(previous);
+                }
+                box.appendChild(row);
+            });
+        }
+
+        window.refreshRestrictedMemoryStore = function() {
+            var label = document.getElementById('restricted-memory-store');
+            if (!restrictedReady()) {
+                if (label) label.textContent = 'Memory file: restricted routes are loopback only';
+                setRestrictedStatus('Restricted fact routes are mounted only when this panel is bound to loopback.', true);
+                return;
+            }
+            fetch('/api/restricted/v1/memory-store', { method: 'GET', headers: restrictedHeaders() })
+                .then(parseRestricted)
+                .then(function(res) {
+                    if (!res.data || !res.data.ok || !res.data.memory_store) {
+                        var detail = (res.data && (res.data.detail || res.data.error)) || ('HTTP ' + res.status);
+                        if (label) label.textContent = 'Memory file: ' + detail;
+                        setRestrictedStatus(detail, true);
+                        return;
+                    }
+                    var store = res.data.memory_store;
+                    if (label) {
+                        label.textContent = 'Memory file: ' + store.filepath + ' (' + store.module + ')';
+                    }
+                })
+                .catch(function(err) {
+                    if (label) label.textContent = 'Memory file: ' + err;
+                    setRestrictedStatus(String(err), true);
+                });
+        };
+
+        window.saveRestrictedFact = function() {
+            if (!restrictedReady()) {
+                setRestrictedStatus('Restricted fact routes are mounted only when this panel is bound to loopback.', true);
+                return;
+            }
+            var input = document.getElementById('restricted-fact-statement');
+            var statement = input ? input.value : '';
+            fetch('/api/restricted/v1/facts', {
+                method: 'POST',
+                headers: restrictedHeaders(),
+                body: JSON.stringify({ statement: statement })
+            })
+                .then(parseRestricted)
+                .then(function(res) {
+                    if (!res.data || !res.data.ok) {
+                        setRestrictedStatus((res.data && (res.data.detail || res.data.error)) || ('HTTP ' + res.status), true);
+                        return;
+                    }
+                    selectRestrictedFact(res.data.fact.fact_id);
+                    setRestrictedStatus('Saved ' + res.data.fact.fact_id + ' revision ' + res.data.fact.revision, false);
+                    addLog('Restricted fact saved ' + res.data.fact.fact_id, 'info');
+                })
+                .catch(function(err) { setRestrictedStatus(String(err), true); });
+        };
+
+        window.retrieveRestrictedFacts = function() {
+            if (!restrictedReady()) {
+                setRestrictedStatus('Restricted fact routes are mounted only when this panel is bound to loopback.', true);
+                return;
+            }
+            var input = document.getElementById('restricted-fact-query');
+            var query = input ? input.value : '';
+            fetch('/api/restricted/v1/facts/retrieve', {
+                method: 'POST',
+                headers: restrictedHeaders(),
+                body: JSON.stringify({ query: query })
+            })
+                .then(parseRestricted)
+                .then(function(res) {
+                    if (!res.data || !res.data.ok) {
+                        setRestrictedStatus((res.data && (res.data.detail || res.data.error)) || ('HTTP ' + res.status), true);
+                        return;
+                    }
+                    var matches = res.data.matches || [];
+                    renderRestrictedMatches(matches);
+                    if (matches.length) {
+                        selectRestrictedFact(matches[0].fact_id);
+                        setRestrictedStatus('Retrieved ' + matches.length + ' current fact(s). Selected ' + matches[0].fact_id, false);
+                    } else {
+                        setRestrictedStatus('No current fact matched that wording.', true);
+                    }
+                })
+                .catch(function(err) { setRestrictedStatus(String(err), true); });
+        };
+
+        window.correctRestrictedFact = function() {
+            if (!restrictedReady()) {
+                setRestrictedStatus('Restricted fact routes are mounted only when this panel is bound to loopback.', true);
+                return;
+            }
+            var factId = window._restrictedFactId;
+            if (!factId) {
+                setRestrictedStatus('Save or retrieve a fact before correcting it.', true);
+                return;
+            }
+            var input = document.getElementById('restricted-fact-correction');
+            var statement = input ? input.value : '';
+            fetch('/api/restricted/v1/facts/' + encodeURIComponent(factId) + '/corrections', {
+                method: 'POST',
+                headers: restrictedHeaders(),
+                body: JSON.stringify({ statement: statement })
+            })
+                .then(parseRestricted)
+                .then(function(res) {
+                    if (!res.data || !res.data.ok) {
+                        setRestrictedStatus((res.data && (res.data.detail || res.data.error)) || ('HTTP ' + res.status), true);
+                        return;
+                    }
+                    setRestrictedStatus('Corrected ' + factId + ' to revision ' + res.data.fact.revision, false);
+                    addLog('Restricted fact corrected ' + factId, 'info');
+                    window.showRestrictedFactHistory();
+                })
+                .catch(function(err) { setRestrictedStatus(String(err), true); });
+        };
+
+        window.showRestrictedFactHistory = function() {
+            if (!restrictedReady()) {
+                setRestrictedStatus('Restricted fact routes are mounted only when this panel is bound to loopback.', true);
+                return;
+            }
+            var factId = window._restrictedFactId;
+            if (!factId) {
+                setRestrictedStatus('Save or retrieve a fact before reading its history.', true);
+                return;
+            }
+            fetch('/api/restricted/v1/facts/' + encodeURIComponent(factId) + '/history', {
+                method: 'GET',
+                headers: restrictedHeaders()
+            })
+                .then(parseRestricted)
+                .then(function(res) {
+                    if (!res.data || !res.data.ok) {
+                        setRestrictedStatus((res.data && (res.data.detail || res.data.error)) || ('HTTP ' + res.status), true);
+                        return;
+                    }
+                    var revisions = res.data.revisions || [];
+                    renderRestrictedHistory(revisions);
+                    var currentCount = 0;
+                    revisions.forEach(function(item) { if (item.current) currentCount += 1; });
+                    setRestrictedStatus('History for ' + factId + ': ' + revisions.length + ' revision(s), ' + currentCount + ' current.', false);
+                })
+                .catch(function(err) { setRestrictedStatus(String(err), true); });
+        };
+
         // Introspection Functions - make globally accessible
         window.refreshIntrospection = function() {
             addLog('Refreshing introspection data...', 'info');
@@ -2035,6 +2312,10 @@ class UIControlPanel:
         self.port = port
         self.app = Flask(__name__)
         self.socketio = SocketIO(self.app, cors_allowed_origins="*")
+        self._restricted_lock = threading.Lock()
+        self._restricted_runtime_adapter = None
+        self._restricted_memory = None
+        self._dashboard_operator_token_value = None
         self._setup_routes()
         self._setup_socketio()
         self.running = False
@@ -2054,7 +2335,16 @@ class UIControlPanel:
         
         @self.app.route('/')
         def index():
-            return render_template_string(CONTROL_PANEL_TEMPLATE)
+            identity = ""
+            token = ""
+            if self._restricted_routes_enabled():
+                identity = _DASHBOARD_OPERATOR_IDENTITY
+                token = self._dashboard_operator_token()
+            return render_template_string(
+                CONTROL_PANEL_TEMPLATE,
+                restricted_identity=identity,
+                restricted_token=token,
+            )
         
         @self.app.route('/favicon.ico')
         def favicon():
@@ -3441,7 +3731,137 @@ class UIControlPanel:
             except Exception as e:
                 logger.error(f"Learning start error: {e}", exc_info=True)
                 return jsonify({"error": str(e), "success": False}), 500
-                
+
+        if self._restricted_routes_enabled():
+            @self.app.route(
+                "/api/restricted/v1",
+                defaults={"subpath": ""},
+                methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+                strict_slashes=False,
+            )
+            @self.app.route(
+                "/api/restricted/v1/<path:subpath>",
+                methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+                strict_slashes=False,
+            )
+            def restricted_runtime_dispatch(subpath):
+                return self._dispatch_restricted(subpath)
+
+    def _restricted_routes_enabled(self) -> bool:
+        """Restricted routes exist only when this panel is bound to loopback."""
+        return _is_loopback_addr(self.host)
+
+    def _dashboard_operator_token(self) -> str:
+        """Process-local secret for the dashboard principal. Never written to memory."""
+        existing = getattr(self, "_dashboard_operator_token_value", None)
+        if existing:
+            return existing
+        configured = os.environ.get("ELYSIA_DASHBOARD_OPERATOR_TOKEN", "").strip()
+        if len(configured) < 16 or any(char.isspace() for char in configured):
+            configured = secrets.token_urlsafe(32)
+        self._dashboard_operator_token_value = configured
+        return configured
+
+    def _runtime_memory_core(self):
+        """The orchestrator's MemoryCore, or one MemoryCore on its resolved filepath."""
+        from project_guardian.memory import MemoryCore
+        from project_guardian.memory_paths import resolve_memory_paths
+
+        memory = getattr(self.orchestrator, "memory", None)
+        if isinstance(memory, MemoryCore):
+            return memory
+        nested = getattr(memory, "json_memory", None) if memory is not None else None
+        if isinstance(nested, MemoryCore):
+            return nested
+        cached = getattr(self, "_restricted_memory", None)
+        if isinstance(cached, MemoryCore):
+            return cached
+        config = getattr(self.orchestrator, "config", None)
+        if not isinstance(config, dict):
+            config = {}
+        project_root = Path(__file__).resolve().parent.parent
+        filepath = resolve_memory_paths(config, project_root)["memory_filepath"]
+        created = MemoryCore(
+            filepath=filepath,
+            timeline_memory=None,
+            enable_timeline_logging=False,
+            enable_vector_search=False,
+        )
+        self._restricted_memory = created
+        return created
+
+    def _restricted_adapter(self):
+        from project_guardian.restricted_runtime_adapter import (
+            OPERATOR_FACT_PERMISSIONS,
+            LocalPrincipal,
+            RestrictedRuntimeAdapter,
+        )
+
+        with self._restricted_lock:
+            memory = self._runtime_memory_core()
+            adapter = self._restricted_runtime_adapter
+            if adapter is not None and adapter.memory is memory:
+                return adapter
+            adapter = RestrictedRuntimeAdapter(
+                principals=[
+                    LocalPrincipal(
+                        identity=_DASHBOARD_OPERATOR_IDENTITY,
+                        token=self._dashboard_operator_token(),
+                        permissions=OPERATOR_FACT_PERMISSIONS,
+                    )
+                ],
+                memory=memory,
+            )
+            self._restricted_runtime_adapter = adapter
+            return adapter
+
+    def _restricted_request_body(self) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[int, Dict[str, Any]]]]:
+        raw = request.get_data(cache=True, as_text=False) or b""
+        if not raw.strip():
+            return None, None
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None, (
+                400,
+                {"ok": False, "error": "invalid_request", "detail": "body must be an object"},
+            )
+        if not isinstance(parsed, dict):
+            return None, (
+                400,
+                {"ok": False, "error": "invalid_request", "detail": "body must be an object"},
+            )
+        return parsed, None
+
+    def _dispatch_restricted(self, subpath: str):
+        """Forward one panel request to RestrictedRuntimeAdapter.handle."""
+        del subpath
+        if not _is_loopback_addr(request.remote_addr):
+            return jsonify({
+                "ok": False,
+                "error": "forbidden",
+                "detail": "restricted runtime is loopback only",
+            }), 403
+        path = request.path or ""
+        if request.query_string:
+            path = path + "?" + request.query_string.decode("utf-8", "replace")
+        body, body_error = self._restricted_request_body()
+        if body_error is not None:
+            status, payload = body_error
+            return jsonify(payload), status
+        try:
+            adapter = self._restricted_adapter()
+        except Exception as exc:
+            logger.error("Restricted runtime adapter is not attached: %s", exc)
+            return jsonify({
+                "ok": False,
+                "error": "unavailable",
+                "detail": "restricted runtime is not attached",
+            }), 503
+        headers = {key: value for key, value in request.headers.items()}
+        result = adapter.handle(request.method, path, headers=headers, body=body)
+        return jsonify(result.body), result.status
+
     def _setup_socketio(self):
         """Setup SocketIO event handlers."""
         

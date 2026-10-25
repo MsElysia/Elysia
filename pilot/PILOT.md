@@ -12,11 +12,14 @@ Separate contained installation for the Windows browser-memory acceptance candid
 | Preferred UI | `http://127.0.0.1:5065/` (scans 5066–5085 if busy; never kills unknown listeners) |
 | Entry | `scripts/start_contained_browser_memory.py` with `--enable-ui --auto-start-ui --keep-alive` |
 
-## Launch / stop
+## Launch / stop / inbox
 
 - Start: `pilot\START_ELYSIA_VERIFIED_PILOT.bat` or desktop **Elysia Verified Pilot**
 - Stop: `pilot\STOP_ELYSIA_VERIFIED_PILOT.bat`
 - Stop ownership: PID/runtime marker alone never authorizes kill. Stop verifies live executable, entry point, disposable data root, and process creation time; prefers cooperative Ctrl+C + `shutdown.request`; hard-kill is PID-only (no tree) after re-check. Uncertain ownership is refused.
+- Inbox folder: `C:\Users\Owner\Elysia-Verified-Pilot-Data\inbox` (`.txt` / `.md` only)
+- Inbox scan: **startup and manual only** (`SCAN_INBOX.bat` or automatic scan before UI spawn on launch). Not a background watcher. Browser upload / page drag-and-drop: **not implemented**.
+- Manual `SCAN_INBOX.bat` refuses apply while a verified pilot is running (no cross-process MemoryCore lock).
 
 ## Security posture
 

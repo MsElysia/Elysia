@@ -34,6 +34,7 @@ from pilot_identity import (
 )
 from pilot_paths import (
     APPLICATION_BASE_SHA,
+    INBOX_DIR,
     LAUNCH_LOG,
     PID_FILE,
     PILOT_DATA_ROOT,
@@ -116,6 +117,26 @@ def main() -> int:
     (PILOT_DATA_ROOT / "logs").mkdir(parents=True, exist_ok=True)
     (PILOT_DATA_ROOT / "temp").mkdir(parents=True, exist_ok=True)
     (PILOT_DATA_ROOT / "memory").mkdir(parents=True, exist_ok=True)
+    INBOX_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Startup inbox scan (manual/startup only — not a watcher). Before UI spawn so
+    # MemoryCore is not shared with a live pilot process.
+    try:
+        from inbox_import import scan_inbox_to_memory
+
+        inbox_report = scan_inbox_to_memory(apply=True, allow_while_pilot_running=True)
+        print(
+            f"Inbox scan: scanned={inbox_report['scanned']} "
+            f"imported={inbox_report['imported']} "
+            f"duplicates={inbox_report['duplicates']} "
+            f"rejected={inbox_report['rejected']} "
+            f"path={inbox_report['inbox_dir']}",
+            flush=True,
+        )
+        for err in inbox_report.get("errors") or []:
+            print(f"Inbox reject: {err}", flush=True)
+    except Exception as exc:
+        print(f"WARNING: inbox scan skipped ({exc})", flush=True)
 
     if _already_running():
         runtime = {}

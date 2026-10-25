@@ -6,11 +6,14 @@ Launch Elysia Verified Pilot (contained runtime + dedicated persistent store).
 - Contained disables enforced (autonomy/providers/learning workers off)
 - Never attaches to an unidentified listener
 - Never terminates unrelated processes when the preferred port is busy
+- Reports application base SHA separately from delivery commit; dirty trees are not
+  labeled as an exact verified delivery SHA
 """
 from __future__ import annotations
 
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -22,7 +25,15 @@ _PILOT_DIR = Path(__file__).resolve().parent
 if str(_PILOT_DIR) not in sys.path:
     sys.path.insert(0, str(_PILOT_DIR))
 
+from pilot_identity import (
+    expected_entry_path,
+    format_identity_report,
+    query_process_snapshot,
+    read_delivery_identity,
+    verify_live_ownership,
+)
 from pilot_paths import (
+    APPLICATION_BASE_SHA,
     LAUNCH_LOG,
     PID_FILE,
     PILOT_DATA_ROOT,
@@ -34,7 +45,6 @@ from pilot_paths import (
     PREFERRED_UI_PORT,
     RUNTIME_DIR,
     RUNTIME_JSON,
-    SOURCE_SHA,
 )
 
 
@@ -65,26 +75,23 @@ def _choose_port(host: str) -> int:
 
 
 def _already_running() -> bool:
+    """True only when PID file + runtime identify a live owned pilot instance."""
     if not PID_FILE.exists():
         return False
     try:
         pid = int(PID_FILE.read_text(encoding="utf-8").strip())
     except ValueError:
         return False
-    # Windows: tasklist
+    if not RUNTIME_JSON.is_file():
+        return False
     try:
-        out = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        line = (out.stdout or "").strip()
-        if str(pid) in line and "python" in line.lower():
-            return True
-    except OSError:
-        pass
-    return False
+        runtime = json.loads(RUNTIME_JSON.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(runtime, dict):
+        return False
+    verdict = verify_live_ownership(pid, runtime)
+    return bool(verdict.owned)
 
 
 def main() -> int:
@@ -95,6 +102,16 @@ def main() -> int:
         print(f"ERROR: pilot source missing: {PILOT_SOURCE_ROOT}", file=sys.stderr)
         return 2
 
+    delivery = read_delivery_identity()
+    print(format_identity_report(delivery), flush=True)
+    if not delivery.get("exact_verified_delivery"):
+        print(
+            "NOTE: checkout is not an exact clean delivery SHA "
+            f"(status={delivery.get('delivery_status')}). "
+            "Do not treat this run as the frozen verified candidate.",
+            flush=True,
+        )
+
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     (PILOT_DATA_ROOT / "logs").mkdir(parents=True, exist_ok=True)
     (PILOT_DATA_ROOT / "temp").mkdir(parents=True, exist_ok=True)
@@ -102,23 +119,31 @@ def main() -> int:
 
     if _already_running():
         runtime = {}
-        if RUNTIME_JSON.exists():
-            try:
-                runtime = json.loads(RUNTIME_JSON.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                runtime = {}
+        try:
+            runtime = json.loads(RUNTIME_JSON.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            runtime = {}
         port = runtime.get("ui_port", PREFERRED_UI_PORT)
         print(
-            f"Pilot already running (pid file {PID_FILE}). "
+            f"Pilot already running (verified live ownership; pid file {PID_FILE}). "
             f"Open http://{PREFERRED_UI_HOST}:{port}/  — or run STOP_ELYSIA_VERIFIED_PILOT.bat first.",
             flush=True,
         )
         return 0
 
+    # Stale PID file pointing at unrelated/dead process: clear before launch
+    if PID_FILE.exists():
+        print(
+            "Stale or unverified PID/runtime record present; clearing before launch "
+            "(refused to treat as live pilot).",
+            flush=True,
+        )
+        PID_FILE.unlink(missing_ok=True)
+
     host = PREFERRED_UI_HOST
     port = _choose_port(host)
 
-    entry = PILOT_SOURCE_ROOT / "scripts" / "start_contained_browser_memory.py"
+    entry = expected_entry_path()
     if not entry.is_file():
         print(f"ERROR: contained entry missing: {entry}", file=sys.stderr)
         return 2
@@ -128,12 +153,10 @@ def main() -> int:
     env["ELYSIA_DISPOSABLE_ROOT"] = str(PILOT_DATA_ROOT)
     env["TEMP"] = str(PILOT_DATA_ROOT / "temp")
     env["TMP"] = str(PILOT_DATA_ROOT / "temp")
-    # Marker for stop-script ownership checks (no secrets)
     env["ELYSIA_PILOT_MARKER"] = PILOT_MARKER
 
     creationflags = 0
     if sys.platform == "win32":
-        # New console so the pilot is visible and stoppable without killing the shell
         creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
     cmd = [
@@ -151,7 +174,11 @@ def main() -> int:
     ]
 
     log_f = LAUNCH_LOG.open("a", encoding="utf-8")
-    log_f.write(f"\n--- launch {datetime.now(timezone.utc).isoformat()} sha={SOURCE_SHA} port={port} ---\n")
+    log_f.write(
+        f"\n--- launch {datetime.now(timezone.utc).isoformat()} "
+        f"base={APPLICATION_BASE_SHA} delivery={delivery.get('delivery_commit')} "
+        f"status={delivery.get('delivery_status')} port={port} ---\n"
+    )
     log_f.flush()
 
     proc = subprocess.Popen(
@@ -163,15 +190,46 @@ def main() -> int:
         creationflags=creationflags,
     )
 
+    # Capture live identity shortly after spawn (creation time + resolved executable)
+    snap = None
+    for _ in range(20):
+        snap = query_process_snapshot(proc.pid)
+        if snap is not None and snap.create_filetime and snap.create_filetime != "0":
+            break
+        time.sleep(0.1)
+    if snap is None:
+        print(
+            f"ERROR: spawned pid {proc.pid} but could not read process identity. Aborting.",
+            file=sys.stderr,
+        )
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        return 1
+
+    shutdown_token = secrets.token_hex(16)
     PID_FILE.write_text(str(proc.pid), encoding="utf-8")
     runtime = {
         "ok": True,
         "marker": PILOT_MARKER,
-        "source_sha": SOURCE_SHA,
+        "application_base_sha": APPLICATION_BASE_SHA,
+        "delivery_commit": delivery.get("delivery_commit"),
+        "delivery_status": delivery.get("delivery_status"),
+        "exact_verified_delivery": bool(delivery.get("exact_verified_delivery")),
+        "tracked_modifications": delivery.get("tracked_modifications") or [],
+        "untracked_product_paths": delivery.get("untracked_product_paths") or [],
+        # Deprecated single field — kept for older readers; equals application base only
+        "source_sha": APPLICATION_BASE_SHA,
         "source_root": str(PILOT_SOURCE_ROOT),
         "data_root": str(PILOT_DATA_ROOT),
         "python": str(PILOT_PYTHON),
+        "entry_point": str(entry),
         "pid": proc.pid,
+        "process_create_filetime": snap.create_filetime,
+        "process_executable": snap.executable,
+        "command_line": snap.command_line,
+        "shutdown_token": shutdown_token,
         "ui_host": host,
         "ui_port": port,
         "url": f"http://{host}:{port}/",
@@ -183,7 +241,6 @@ def main() -> int:
     }
     RUNTIME_JSON.write_text(json.dumps(runtime, indent=2), encoding="utf-8")
 
-    # Wait briefly for listen (do not attach if something else is on the port)
     listening = False
     for _ in range(60):
         if proc.poll() is not None:
@@ -207,9 +264,12 @@ def main() -> int:
 
     print(json.dumps(runtime, indent=2), flush=True)
     print(f"Pilot listening at http://{host}:{port}/", flush=True)
-    print("Stop with STOP_ELYSIA_VERIFIED_PILOT.bat (pilot-owned PID only).", flush=True)
+    print(
+        "Stop with STOP_ELYSIA_VERIFIED_PILOT.bat "
+        "(cooperative shutdown; hard-kill only after live identity re-check).",
+        flush=True,
+    )
 
-    # Open default browser to the pilot UI (loopback)
     try:
         os.startfile(f"http://{host}:{port}/")  # type: ignore[attr-defined]
     except OSError:

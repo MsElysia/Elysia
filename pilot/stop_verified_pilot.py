@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Stop only the Elysia Verified Pilot process recorded in the pilot PID file."""
+"""
+Stop only a verified Elysia Verified Pilot instance.
+
+A PID or runtime-record match alone never authorizes termination.
+Prefer authenticated cooperative shutdown (shutdown.request + Ctrl+C).
+Hard-kill fallback re-verifies live process identity and kills that PID only
+(no process-tree /T). Uncertain ownership and PID reuse are refused.
+"""
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -12,47 +18,20 @@ _PILOT_DIR = Path(__file__).resolve().parent
 if str(_PILOT_DIR) not in sys.path:
     sys.path.insert(0, str(_PILOT_DIR))
 
+from pilot_identity import (
+    clear_shutdown_request,
+    load_runtime_record,
+    query_process_snapshot,
+    send_ctrl_c,
+    taskkill_pid_only,
+    verify_live_ownership,
+    write_shutdown_request,
+)
 from pilot_paths import (
     PID_FILE,
-    PILOT_MARKER,
     PREFERRED_UI_HOST,
     RUNTIME_JSON,
 )
-
-
-def _tasklist_line(pid: int) -> str:
-    try:
-        out = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return (out.stdout or "").strip()
-    except OSError:
-        return ""
-
-
-def _wmic_commandline(pid: int) -> str:
-    """Best-effort command line for ownership check (no secrets expected)."""
-    try:
-        out = subprocess.run(
-            [
-                "wmic",
-                "process",
-                "where",
-                f"ProcessId={pid}",
-                "get",
-                "CommandLine",
-                "/FORMAT:LIST",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return (out.stdout or "")
-    except OSError:
-        return ""
 
 
 def _port_in_use(host: str, port: int) -> bool:
@@ -63,9 +42,16 @@ def _port_in_use(host: str, port: int) -> bool:
         return s.connect_ex((host, port)) == 0
 
 
+def _cleanup_stale_records() -> None:
+    PID_FILE.unlink(missing_ok=True)
+    # Keep runtime.json for audit unless explicitly removed by successful stop
+    clear_shutdown_request()
+
+
 def main() -> int:
     if not PID_FILE.exists():
         print(f"No pilot PID file at {PID_FILE}. Nothing to stop.")
+        clear_shutdown_request()
         return 0
 
     try:
@@ -74,62 +60,86 @@ def main() -> int:
         print(f"ERROR: invalid PID file {PID_FILE}", file=sys.stderr)
         return 2
 
-    runtime = {}
-    if RUNTIME_JSON.exists():
-        try:
-            runtime = json.loads(RUNTIME_JSON.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            runtime = {}
+    runtime, runtime_err = load_runtime_record(RUNTIME_JSON)
+    if runtime_err:
+        # Malformed/missing identity record: if process is gone, clean PID only.
+        snap = query_process_snapshot(pid)
+        if snap is None:
+            print(
+                f"Pilot PID {pid} is not running; runtime unusable ({runtime_err}). "
+                "Cleaning PID file only."
+            )
+            PID_FILE.unlink(missing_ok=True)
+            clear_shutdown_request()
+            return 0
+        print(
+            f"REFUSING to stop PID {pid}: {runtime_err}. "
+            "Will not terminate without a complete identity record.",
+            file=sys.stderr,
+        )
+        return 3
 
-    line = _tasklist_line(pid)
-    if not line or str(pid) not in line:
+    assert runtime is not None
+    snap = query_process_snapshot(pid)
+    if snap is None:
         print(f"Pilot PID {pid} is not running. Cleaning runtime files.")
         PID_FILE.unlink(missing_ok=True)
+        clear_shutdown_request()
         return 0
 
-    if "python" not in line.lower():
+    verdict = verify_live_ownership(pid, runtime, snapshot=snap)
+    if not verdict.owned:
         print(
-            f"REFUSING to stop PID {pid}: tasklist does not look like python ({line!r}). "
-            "Will not terminate unidentified processes.",
+            f"REFUSING to stop PID {pid}: {verdict.reason}. "
+            "Manual review required. Will not kill unidentified or reused PIDs.",
             file=sys.stderr,
         )
         return 3
 
-    cmdline = _wmic_commandline(pid)
-    # Ownership: must be our contained entry or carry pilot marker / data root
-    owned = False
-    markers = (
-        "start_contained_browser_memory.py",
-        PILOT_MARKER,
-        "Elysia-Verified-Pilot-Data",
-        "Elysia-Verified-Pilot",
-    )
-    if any(m.lower() in cmdline.lower() for m in markers):
-        owned = True
-    if runtime.get("marker") == PILOT_MARKER and runtime.get("pid") == pid:
-        owned = True
+    token = str(runtime.get("shutdown_token") or "")
+    print(f"Verified pilot ownership for PID {pid}. Requesting cooperative shutdown...", flush=True)
+    write_shutdown_request(token)
+    ctrl_ok, ctrl_msg = send_ctrl_c(pid)
+    print(f"Cooperative Ctrl+C: ok={ctrl_ok} ({ctrl_msg})", flush=True)
 
-    if not owned:
-        print(
-            f"REFUSING to stop PID {pid}: command line does not match pilot ownership. "
-            "Manual review required. Will not kill unidentified processes.",
-            file=sys.stderr,
-        )
-        return 3
+    # Wait for voluntary exit
+    exited = False
+    for _ in range(40):
+        if query_process_snapshot(pid) is None:
+            exited = True
+            break
+        time.sleep(0.25)
 
-    print(f"Stopping pilot-owned PID {pid}...", flush=True)
-    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
-    time.sleep(1.5)
-
-    still = _tasklist_line(pid)
-    if still and str(pid) in still:
-        print(f"ERROR: PID {pid} still present after taskkill.", file=sys.stderr)
-        return 1
+    if not exited:
+        # Re-verify before any hard kill — refuse if identity drifted (PID reuse mid-wait)
+        snap2 = query_process_snapshot(pid)
+        if snap2 is None:
+            exited = True
+        else:
+            verdict2 = verify_live_ownership(pid, runtime, snapshot=snap2)
+            if not verdict2.owned:
+                print(
+                    f"REFUSING hard-kill for PID {pid}: ownership no longer verified "
+                    f"({verdict2.reason}).",
+                    file=sys.stderr,
+                )
+                clear_shutdown_request()
+                return 3
+            print(
+                f"Cooperative shutdown timed out; hard-killing verified PID {pid} only (no tree)...",
+                flush=True,
+            )
+            taskkill_pid_only(pid)
+            time.sleep(1.0)
+            if query_process_snapshot(pid) is not None:
+                print(f"ERROR: PID {pid} still present after taskkill.", file=sys.stderr)
+                clear_shutdown_request()
+                return 1
+            exited = True
 
     port = int(runtime.get("ui_port") or 0)
     host = str(runtime.get("ui_host") or PREFERRED_UI_HOST)
     if port:
-        # Wait for pilot port release only; do not touch other listeners
         for _ in range(40):
             if not _port_in_use(host, port):
                 break
@@ -140,6 +150,14 @@ def main() -> int:
         )
 
     PID_FILE.unlink(missing_ok=True)
+    clear_shutdown_request()
+    # Retain runtime.json with stopped marker for audit
+    runtime["stopped_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    runtime["stop_ok"] = True
+    try:
+        RUNTIME_JSON.write_text(json.dumps(runtime, indent=2), encoding="utf-8")
+    except OSError:
+        pass
     print("Pilot stopped.")
     return 0
 

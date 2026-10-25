@@ -4,7 +4,8 @@ Separate contained installation for the Windows browser-memory acceptance candid
 
 | Item | Value |
 |------|--------|
-| Source SHA | `6b03b7d645e092c336564fb65bf2d5339a047c8e` |
+| Application base SHA | `6b03b7d645e092c336564fb65bf2d5339a047c8e` |
+| Delivery commit | Reported at launch from `git rev-parse HEAD` — only “exact verified” when the product tree is clean |
 | Source checkout | `C:\Users\Owner\Elysia-Verified-Pilot` |
 | Persistent data | `C:\Users\Owner\Elysia-Verified-Pilot-Data` (outside source) |
 | Interpreter | `C:\Users\Owner\Project guardian\.venv\Scripts\python.exe` (read-only; not modified) |
@@ -14,7 +15,8 @@ Separate contained installation for the Windows browser-memory acceptance candid
 ## Launch / stop
 
 - Start: `pilot\START_ELYSIA_VERIFIED_PILOT.bat` or desktop **Elysia Verified Pilot**
-- Stop: `pilot\STOP_ELYSIA_VERIFIED_PILOT.bat` (pilot PID file only)
+- Stop: `pilot\STOP_ELYSIA_VERIFIED_PILOT.bat`
+- Stop ownership: PID/runtime marker alone never authorizes kill. Stop verifies live executable, entry point, disposable data root, and process creation time; prefers cooperative Ctrl+C + `shutdown.request`; hard-kill is PID-only (no tree) after re-check. Uncertain ownership is refused.
 
 ## Security posture
 

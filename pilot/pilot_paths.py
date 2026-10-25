@@ -1,4 +1,4 @@
-"""Absolute paths for the Elysia Verified Pilot installation (Windows)."""
+"""Absolute paths and SHA identity for the Elysia Verified Pilot installation (Windows)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,7 +19,12 @@ PORT_SCAN_END = 5085
 RUNTIME_DIR = PILOT_DATA_ROOT / "runtime"
 PID_FILE = RUNTIME_DIR / "pilot.pid"
 RUNTIME_JSON = RUNTIME_DIR / "pilot.runtime.json"
+SHUTDOWN_REQUEST_FILE = RUNTIME_DIR / "shutdown.request"
 LAUNCH_LOG = PILOT_DATA_ROOT / "logs" / "pilot-launch.log"
 
-SOURCE_SHA = "6b03b7d645e092c336564fb65bf2d5339a047c8e"
+# Application product base (contained browser-memory candidate), NOT the pilot delivery commit.
+APPLICATION_BASE_SHA = "6b03b7d645e092c336564fb65bf2d5339a047c8e"
+# Back-compat alias — prefer APPLICATION_BASE_SHA in new code.
+SOURCE_SHA = APPLICATION_BASE_SHA
+
 PILOT_MARKER = "elysia-verified-pilot"

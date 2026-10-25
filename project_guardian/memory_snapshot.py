@@ -72,16 +72,38 @@ class MemorySnapshot:
                 json.dump(snapshot_data, f, indent=2)
                 
             # Copy to one of the backup shards (round-robin)
-            shard_idx = len(list(self.shard_dirs[0].glob("*.json"))) % self.backup_shards
-            shard_file = self.shard_dirs[shard_idx] / f"snapshot_{timestamp}.json"
-            shutil.copy2(snapshot_file, shard_file)
-            
-            logger.info(f"Snapshot created: {snapshot_file} (backed to shard {shard_idx+1})")
+            if self.shard_dirs:
+                shard_idx = self._select_backup_shard()
+                shard_file = self.shard_dirs[shard_idx] / f"snapshot_{timestamp}.json"
+                shutil.copy2(snapshot_file, shard_file)
+                logger.info(f"Snapshot created: {snapshot_file} (backed to shard {shard_idx+1})")
+            else:
+                logger.info(f"Snapshot created: {snapshot_file} (no backup shards configured)")
             return str(snapshot_file)
             
         except Exception as e:
             logger.error(f"Failed to create snapshot: {e}")
             return ""
+
+    def _select_backup_shard(self) -> int:
+        """
+        Pick the shard that should receive the next backup copy.
+
+        Chooses the shard currently holding the fewest snapshot files (lowest index on
+        ties). Starting from empty shards this is exactly round-robin, and after
+        retention cleanup it keeps copies spread across all shards rather than
+        piling onto one. Keying off a single shard's count (the previous behaviour)
+        stalled once that shard stopped receiving files.
+        """
+        if not self.shard_dirs:
+            return 0
+        counts = []
+        for shard_dir in self.shard_dirs:
+            try:
+                counts.append(len(list(shard_dir.glob("snapshot_*.json"))))
+            except OSError:
+                counts.append(0)
+        return counts.index(min(counts))
             
     def create_daily_snapshot(
         self,

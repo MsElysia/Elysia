@@ -2548,7 +2548,6 @@ class UIControlPanel:
                 # Calculate uptime if start_time exists
                 if system_status["start_time"]:
                     try:
-                        from datetime import datetime
                         start = datetime.fromisoformat(system_status["start_time"])
                         uptime = (datetime.now() - start).total_seconds()
                         system_status["uptime"] = max(0, uptime)

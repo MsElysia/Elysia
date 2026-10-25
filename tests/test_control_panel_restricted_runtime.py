@@ -4,7 +4,10 @@
 import json
 import sys
 import types
+from datetime import datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
@@ -68,6 +71,24 @@ def _auth(panel: UIControlPanel):
 
 
 class TestLivePanelRestrictedRoutes:
+    @pytest.mark.parametrize("has_start_time", [False, True])
+    def test_status_timestamp_with_and_without_start_time(self, tmp_path, has_start_time):
+        panel = _panel(_memory(tmp_path / "guardian_memory.json"))
+        if has_start_time:
+            panel.orchestrator.start_time = datetime.now() - timedelta(seconds=60)
+
+        response = panel.app.test_client().get("/api/status")
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert "error" not in body["system"]
+        datetime.fromisoformat(body["timestamp"])
+        if has_start_time:
+            assert body["system"]["uptime"] >= 60
+        else:
+            assert body["system"]["start_time"] is None
+            assert body["system"]["uptime"] == 0
+
     def test_fact_workflow_uses_the_same_memory_core(self, tmp_path):
         path = tmp_path / "guardian_memory.json"
         memory = _memory(path)

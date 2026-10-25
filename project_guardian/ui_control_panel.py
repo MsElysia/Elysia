@@ -16,6 +16,8 @@ except ImportError:
     def emit(*args, **kwargs):
         pass
 
+import hashlib
+import hmac
 import threading
 import json
 import logging
@@ -1405,7 +1407,11 @@ CONTROL_PANEL_TEMPLATE = """
                                     .then(function(r) { return r.json(); })
                                     .then(function(d) { addLog('Dream cycle: ' + (d.dream_thoughts ? d.dream_thoughts.join('; ') : 'triggered'), 'info'); });
                             } else {
-                                fetch('/api/autonomy/execute-cycle', { method: 'POST' })
+                                var cycleOpts = { method: 'POST' };
+                                if (restrictedReady()) {
+                                    cycleOpts.headers = restrictedHeaders();
+                                }
+                                fetch('/api/autonomy/execute-cycle', cycleOpts)
                                     .then(function(r) { return r.json(); })
                                     .then(function(d) {
                                         addLog(d.executed ? 'Executed: ' + (d.action || '') : (d.reason || d.error || 'Not executed'), d.executed ? 'info' : 'warning');
@@ -2410,6 +2416,9 @@ class UIControlPanel:
         def execute_autonomy_cycle():
             """Run one autonomy cycle (get next action and execute if allowed). Supports exploratory actions."""
             try:
+                denied = self._deny_autonomy_execute_cycle_if_blocked()
+                if denied is not None:
+                    return denied
                 if hasattr(self.orchestrator, "run_autonomous_cycle"):
                     result = self.orchestrator.run_autonomous_cycle()
                     return jsonify({
@@ -3749,6 +3758,77 @@ class UIControlPanel:
     def _restricted_routes_enabled(self) -> bool:
         """Restricted routes exist only when this panel is bound to loopback."""
         return _is_loopback_addr(self.host)
+
+    def _resolve_autonomy_config_for_gate(self) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Load autonomy config for the execute-cycle entry gate. Missing/invalid → deny reason."""
+        try:
+            if hasattr(self.orchestrator, "_load_autonomy_config"):
+                cfg = self.orchestrator._load_autonomy_config()
+            else:
+                config = getattr(self.orchestrator, "config", None)
+                if not isinstance(config, dict):
+                    return None, "autonomy_state_unavailable"
+                cfg = config.get("autonomy_config")
+        except Exception:
+            return None, "autonomy_state_unavailable"
+        if not isinstance(cfg, dict):
+            return None, "autonomy_state_invalid"
+        return cfg, None
+
+    def _autonomy_execute_enabled(self) -> Tuple[bool, Optional[str]]:
+        """
+        Entry check only: whether autonomy is explicitly enabled.
+        enabled=True is not permission to execute; approval/policy checks stay in run_autonomous_cycle.
+        """
+        cfg, err = self._resolve_autonomy_config_for_gate()
+        if err is not None:
+            return False, err
+        assert cfg is not None
+        if "enabled" not in cfg:
+            return False, "autonomy_state_missing_enabled"
+        if cfg.get("enabled") is not True:
+            return False, "autonomy_disabled"
+        return True, None
+
+    def _dashboard_operator_token_matches(self, presented: str, expected: str) -> bool:
+        presented_digest = hashlib.sha256(presented.encode("utf-8")).digest()
+        expected_digest = hashlib.sha256(expected.encode("utf-8")).digest()
+        return hmac.compare_digest(presented_digest, expected_digest)
+
+    def _dashboard_operator_auth_failure(self):
+        """When loopback restricted auth is available, require the dashboard operator headers."""
+        if not self._restricted_routes_enabled():
+            return None
+        identity = (request.headers.get("X-Elysia-Identity") or "").strip()
+        presented = request.headers.get("X-Elysia-Token") or ""
+        expected = self._dashboard_operator_token()
+        if identity != _DASHBOARD_OPERATOR_IDENTITY or not self._dashboard_operator_token_matches(
+            presented, expected
+        ):
+            return jsonify({
+                "success": False,
+                "error": "unauthorized",
+                "detail": "dashboard operator authentication required",
+            }), 401
+        return None
+
+    def _deny_autonomy_execute_cycle_if_blocked(self):
+        """
+        Deny before any cycle invocation when autonomy is off/invalid, then apply
+        available dashboard-operator auth. Auth never overrides a disabled gate.
+        """
+        allowed, reason = self._autonomy_execute_enabled()
+        if not allowed:
+            return jsonify({
+                "success": False,
+                "error": reason,
+                "detail": "autonomy execute-cycle denied before cycle invocation",
+                "executed": False,
+            }), 403
+        auth_failure = self._dashboard_operator_auth_failure()
+        if auth_failure is not None:
+            return auth_failure
+        return None
 
     def _dashboard_operator_token(self) -> str:
         """Process-local secret for the dashboard principal. Never written to memory."""

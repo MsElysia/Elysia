@@ -1,57 +1,43 @@
-# Autonomy execute-cycle gate repair — handoff to Codex
+# Privileged-control gate — close A–D (handoff to Codex)
 
-Date: 2026-10-25. No merge, push, deploy, desktop-launcher change, protected-gate edit, listener launch, or real autonomy cycle.
+Date: 2026-10-25. No merge, push, deploy, launcher change, protected-gate edit, listener, or real autonomy/learning/provider run.
 
 ## Candidate
 
 | Item | Value |
 |------|--------|
-| Baseline SHA | `6c819ba80b0a6db626992a92d3ac96644e800005` |
-| Repair branch | `cursor/autonomy-execute-cycle-contained-gate-001` |
-| Repair worktree | `C:\Users\Owner\ely-autonomy-execute-cycle-repair` |
-| Codex source WT (untouched) | `C:\Users\Owner\ely-windows-browser-accept-contained` @ `6c819ba` |
-| Primary install | untouched @ `0760798bc3ecb036c92fca456670c67e901c7ed7` |
+| Base SHA | `38246975afe316d79b7a1f318f9eea34a42244d9` |
+| Branch | `cursor/privileged-control-gate-001` |
+| Worktree | `C:\Users\Owner\ely-privileged-control-gate-repair` |
+| Codex verify WT (untouched) | `C:\Users\Owner\ely-verify-autonomy-gate-3824697` @ `3824697` |
 
-## Defect → repair
+## Repair summary
 
-Unauthenticated `POST /api/autonomy/execute-cycle` returned 200 and reached `run_autonomous_cycle` while `autonomy_config.enabled=False`.
+Shared `_deny_privileged_control_if_blocked(kind=...)`:
 
-**Repair:** `_deny_autonomy_execute_cycle_if_blocked()` runs before any cycle call:
-1. Deny (403) when autonomy `enabled is not True`, or state missing/invalid/unavailable.
-2. On loopback (restricted auth available), require `X-Elysia-Identity` / `X-Elysia-Token` dashboard-operator (401). Auth does **not** override disabled autonomy.
-3. `enabled=True` only passes the entry gate; `run_autonomous_cycle` retains approval/policy checks.
+| kind | Auth (any bind) | Enabled-state | Contained |
+|------|-----------------|---------------|-----------|
+| `configure` (`POST /api/autonomy`) | required first; no write on deny | **not** required (may enable when currently disabled) | `contained_startup` → 403 `contained_immutable`, no write |
+| `execute` / `dream` / `learning` | required after enabled check | autonomy `enabled is True` | disabled → 403; auth cannot override |
 
-Dashboard JS for execute-cycle now sends `restrictedHeaders()` when tokens are present (same mechanism as restricted fact routes).
-
-## Adjacent routes inspected (narrow scope)
-
-| Route | Calls `run_autonomous_cycle`? | Action |
-|-------|-------------------------------|--------|
-| `POST /api/autonomy/execute-cycle` | Yes | **Gated** |
-| `GET /api/next-action` | No (`get_next_action` only) | Identified; not gated (informational) |
-| `POST /api/control/dream-cycle` | No (dreams module) | Remaining gap — unauthenticated cycle-like control |
-| `POST /api/autonomy` (set enabled) | No (writes config) | Remaining gap — can flip enabled without auth |
+UI: toggle autonomy, dream-cycle, learning/start, execute-cycle send existing `restrictedHeaders()` when tokens are present (loopback inject only; tokens not logged).
 
 ## Evidence
 
 | Check | Result |
 |-------|--------|
-| Baseline red | 7 failed / 1 passed — `repair-evidence/logs/baseline-red.log` |
-| Repaired green | 8 passed — `repair-evidence/logs/repaired-green.log` |
-| Security probe (disabled + intercept) | status 403, calls 0 — `repair-evidence/logs/extended-containment-security-repaired.json` |
-| Contained startup | 4/4 passed |
-| Status / restricted panel | 7/7 passed (incl. status_timestamp) |
-| Dashboard idempotent + readiness | passed |
-| `test_dashboard_listening` | 4 failed — **pre-existing env** (host port 5000 occupied; `_dashboard_started` cascade). Same failure on Codex baseline WT. Not introduced by this repair. |
+| Baseline red (A–D tests @ 3824697) | 9 failed / 5 passed — `logs/baseline-red.log` |
+| Repaired green | 14 + 8 = 22 passed — `logs/repaired-green.log` |
+| Contained + status/restricted + gates | **33 passed** — `logs/containment-status-restricted-gate.log` |
+| `test_dashboard_listening` | **not run as success criteria**; known 4-fail isolation/`_find_available_port` debt on baseline and prior candidates (ports free). Do not waive. |
 
-## Remaining security gaps (do not claim dashboard secure)
+## Remaining gaps
 
-- Unauthenticated `POST /api/autonomy` can enable autonomy.
-- Unauthenticated `POST /api/control/dream-cycle`, learning start, and other legacy control routes.
-- Unauthenticated `GET /api/next-action` still exposes planning output.
-- Non-loopback panels skip operator auth (by design of restricted routes); autonomy-disabled gate still applies.
-- This repair alone does **not** make the entire dashboard secure.
+- Other legacy control routes (pause/resume, speak, tasks, research, learning settings/link, etc.) may still lack this gate.
+- Non-loopback HTML does not embed operator tokens (fail-closed for stock UI on public bind).
+- Listening-test isolation / port-fallback product debt remains.
+- Do **not** claim overall dashboard security or desktop-launcher readiness from this repair alone.
 
-## Codex next steps
+## Codex next
 
-Independent security verification of this candidate, then continue browser acceptance: save → retrieve → correct → history → shutdown → restart → recall on the contained entry (`scripts/start_contained_browser_memory.py`). Do not retarget the desktop launcher.
+Independent re-verify sequences A–D + contained immutable configure; if pass, continue contained browser save → retrieve → correct → history → shutdown → restart → recall.

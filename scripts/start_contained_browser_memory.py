@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         "background_workers": bool(config.get("start_background_workers")),
         "datetime_fix_included": False,
         "base_sha_note": "Branch cursor/contained-startup-browser-memory-001 from c7f6ad1; Codex dff2ead datetime fix NOT included",
-        "security_note": "execute-cycle gated on autonomy enabled + loopback operator auth when available; other legacy control routes may still lack equivalent gates — do not declare the dashboard secure from this alone.",
+        "security_note": "privileged routes (execute-cycle, autonomy configure, dream-cycle, learning/start) require dashboard-operator auth + enabled/contained checks; other legacy control routes may remain open — do not declare the entire dashboard secure.",
     }
 
     if args.json_status or not args.keep_alive:

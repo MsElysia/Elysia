@@ -1356,14 +1356,22 @@ CONTROL_PANEL_TEMPLATE = """
                 .catch(function() {});
         };
         window.toggleAutonomy = function(enabled) {
+            var headers = { 'Content-Type': 'application/json' };
+            if (restrictedReady()) {
+                headers = restrictedHeaders();
+            }
             fetch('/api/autonomy', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: headers,
                 body: JSON.stringify({ enabled: enabled })
             })
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
-                    addLog('Autonomy ' + (data.enabled ? 'enabled' : 'disabled'), 'info');
+                    if (data.error) {
+                        addLog('Autonomy toggle denied: ' + (data.error || data.detail || 'error'), 'error');
+                    } else {
+                        addLog('Autonomy ' + (data.enabled ? 'enabled' : 'disabled'), 'info');
+                    }
                     window.refreshAutonomyStatus();
                 })
                 .catch(function(err) { addLog('Error: ' + err, 'error'); });
@@ -1399,13 +1407,17 @@ CONTROL_PANEL_TEMPLATE = """
                         execBtn.style.display = (data.can_auto_execute && data.action) ? 'inline-block' : 'none';
                         execBtn.onclick = function() {
                             if (data.action === 'consider_learning') {
-                                fetch('/api/learning/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ platform: 'reddit', query: 'MachineLearning', max_items: 2 }) })
+                                var learnHeaders = { 'Content-Type': 'application/json' };
+                                if (restrictedReady()) { learnHeaders = restrictedHeaders(); }
+                                fetch('/api/learning/start', { method: 'POST', headers: learnHeaders, body: JSON.stringify({ platform: 'reddit', query: 'MachineLearning', max_items: 2 }) })
                                     .then(function(r) { return r.json(); })
                                     .then(function(d) { addLog(d.success ? 'Learning started' : (d.error || 'Failed'), d.success ? 'info' : 'error'); });
                             } else if (data.action === 'consider_dream_cycle') {
-                                fetch('/api/control/dream-cycle', { method: 'POST' })
+                                var dreamOpts = { method: 'POST' };
+                                if (restrictedReady()) { dreamOpts.headers = restrictedHeaders(); }
+                                fetch('/api/control/dream-cycle', dreamOpts)
                                     .then(function(r) { return r.json(); })
-                                    .then(function(d) { addLog('Dream cycle: ' + (d.dream_thoughts ? d.dream_thoughts.join('; ') : 'triggered'), 'info'); });
+                                    .then(function(d) { addLog('Dream cycle: ' + (d.dream_thoughts ? d.dream_thoughts.join('; ') : (d.error || 'triggered')), d.success ? 'info' : 'warning'); });
                             } else {
                                 var cycleOpts = { method: 'POST' };
                                 if (restrictedReady()) {
@@ -1461,10 +1473,12 @@ CONTROL_PANEL_TEMPLATE = """
         };
 
         window.triggerDreamCycle = function() {
-            fetch('/api/control/dream-cycle', { method: 'POST' })
+            var dreamOpts = { method: 'POST' };
+            if (restrictedReady()) { dreamOpts.headers = restrictedHeaders(); }
+            fetch('/api/control/dream-cycle', dreamOpts)
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
-                    addLog(data.success ? 'Dream cycle completed' : (data.message || 'Dream cycle triggered'), data.success ? 'info' : 'warning');
+                    addLog(data.success ? 'Dream cycle completed' : (data.error || data.message || 'Dream cycle triggered'), data.success ? 'info' : 'warning');
                     if (data.dream_thoughts && data.dream_thoughts.length) {
                         data.dream_thoughts.forEach(function(t) { addLog('[Dream] ' + t, 'info'); });
                     }
@@ -2256,9 +2270,11 @@ CONTROL_PANEL_TEMPLATE = """
             const resultsDiv = document.getElementById('learning-results');
             resultsDiv.innerHTML = '<div style="color: var(--warning);">Learning in progress...</div>';
             
+            var learnHeaders = { 'Content-Type': 'application/json' };
+            if (restrictedReady()) { learnHeaders = restrictedHeaders(); }
             fetch('/api/learning/start', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: learnHeaders,
                 body: JSON.stringify({ platform: platform, query: query, max_items: maxItems })
             })
                 .then(function(r) { return r.json(); })
@@ -2382,6 +2398,9 @@ class UIControlPanel:
         def set_autonomy():
             """Toggle autonomy on/off via config file."""
             try:
+                denied = self._deny_privileged_control_if_blocked(kind="configure")
+                if denied is not None:
+                    return denied
                 data = request.get_json() or {}
                 enabled = data.get("enabled")
                 if enabled is None:
@@ -2416,7 +2435,7 @@ class UIControlPanel:
         def execute_autonomy_cycle():
             """Run one autonomy cycle (get next action and execute if allowed). Supports exploratory actions."""
             try:
-                denied = self._deny_autonomy_execute_cycle_if_blocked()
+                denied = self._deny_privileged_control_if_blocked(kind="execute")
                 if denied is not None:
                     return denied
                 if hasattr(self.orchestrator, "run_autonomous_cycle"):
@@ -2947,6 +2966,9 @@ class UIControlPanel:
         def trigger_dream_cycle():
             """Trigger a dream cycle for memory consolidation."""
             try:
+                denied = self._deny_privileged_control_if_blocked(kind="dream")
+                if denied is not None:
+                    return denied
                 result = {
                     "success": True,
                     "message": "Dream cycle initiated",
@@ -3576,6 +3598,9 @@ class UIControlPanel:
         def start_learning():
             """Start a learning session (Reddit, RSS, ChatGPT chatlogs) via auto_learning."""
             try:
+                denied = self._deny_privileged_control_if_blocked(kind="learning")
+                if denied is not None:
+                    return denied
                 data = request.get_json() or {}
                 platform = data.get('platform', 'reddit')
                 query = data.get('query', '')
@@ -3796,9 +3821,7 @@ class UIControlPanel:
         return hmac.compare_digest(presented_digest, expected_digest)
 
     def _dashboard_operator_auth_failure(self):
-        """When loopback restricted auth is available, require the dashboard operator headers."""
-        if not self._restricted_routes_enabled():
-            return None
+        """Require dashboard-operator headers for privileged control (any bind address)."""
         identity = (request.headers.get("X-Elysia-Identity") or "").strip()
         presented = request.headers.get("X-Elysia-Token") or ""
         expected = self._dashboard_operator_token()
@@ -3812,23 +3835,54 @@ class UIControlPanel:
             }), 401
         return None
 
-    def _deny_autonomy_execute_cycle_if_blocked(self):
+    def _contained_startup_active(self) -> bool:
+        config = getattr(self.orchestrator, "config", None)
+        return isinstance(config, dict) and bool(config.get("contained_startup"))
+
+    def _deny_privileged_control_if_blocked(self, *, kind: str):
         """
-        Deny before any cycle invocation when autonomy is off/invalid, then apply
-        available dashboard-operator auth. Auth never overrides a disabled gate.
+        Shared entry gate for privileged panel routes.
+
+        kind:
+          - configure: auth + contained immutability (does not require autonomy enabled)
+          - execute / dream / learning: enabled-state then auth (auth never overrides disable)
         """
+        if kind == "configure":
+            auth_failure = self._dashboard_operator_auth_failure()
+            if auth_failure is not None:
+                return auth_failure
+            if self._contained_startup_active():
+                return jsonify({
+                    "success": False,
+                    "error": "contained_immutable",
+                    "detail": "contained-mode autonomy disables cannot be changed via dashboard",
+                    "executed": False,
+                }), 403
+            return None
+
+        if kind not in ("execute", "dream", "learning"):
+            return jsonify({
+                "success": False,
+                "error": "invalid_gate_kind",
+                "detail": f"unknown privileged control kind: {kind}",
+            }), 500
+
         allowed, reason = self._autonomy_execute_enabled()
         if not allowed:
             return jsonify({
                 "success": False,
                 "error": reason,
-                "detail": "autonomy execute-cycle denied before cycle invocation",
+                "detail": f"privileged {kind} denied before action",
                 "executed": False,
             }), 403
         auth_failure = self._dashboard_operator_auth_failure()
         if auth_failure is not None:
             return auth_failure
         return None
+
+    def _deny_autonomy_execute_cycle_if_blocked(self):
+        """Backward-compatible alias for execute-cycle gating."""
+        return self._deny_privileged_control_if_blocked(kind="execute")
 
     def _dashboard_operator_token(self) -> str:
         """Process-local secret for the dashboard principal. Never written to memory."""

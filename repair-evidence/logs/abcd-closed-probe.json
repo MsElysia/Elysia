@@ -1,0 +1,29 @@
+{
+  "A": {
+    "enable": 401,
+    "execute": 403,
+    "cycle": 0,
+    "ok": true
+  },
+  "B": {
+    "status": 401,
+    "cycle": 0,
+    "ok": true
+  },
+  "C": {
+    "status": 403,
+    "dream": 0,
+    "save": 0,
+    "ok": true
+  },
+  "D": {
+    "status": 403,
+    "ok": true
+  },
+  "contained_configure": {
+    "status": 403,
+    "error": "contained_immutable",
+    "ok": true
+  },
+  "all_ok": true
+}

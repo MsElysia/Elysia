@@ -425,12 +425,15 @@ class TimelineMemory:
                     "database_size_mb": self.db_path.stat().st_size / (1024 * 1024) if self.db_path.exists() else 0
                 }
     
-    def cleanup_old_events(self, older_than_days: int = 90):
+    def cleanup_old_events(self, older_than_days: int = 90) -> Dict[str, int]:
         """
         Clean up events older than specified days.
         
         Args:
             older_than_days: Remove events older than this many days
+            
+        Returns:
+            Dictionary with ``events_deleted`` and ``tasks_deleted`` counts
         """
         cutoff = (datetime.now() - timedelta(days=older_than_days)).isoformat()
         
@@ -446,12 +449,17 @@ class TimelineMemory:
                 cursor.execute("DELETE FROM task_history WHERE started_at < ?", (cutoff,))
                 tasks_deleted = cursor.rowcount
                 
-                # Vacuum database to reclaim space
-                cursor.execute("VACUUM")
-                
+                # The DELETEs above open an implicit transaction and SQLite refuses to
+                # VACUUM inside one, so the deletes must be committed first. Reclaiming
+                # space is best-effort: the deletes are already durable at this point.
                 conn.commit()
+                try:
+                    cursor.execute("VACUUM")
+                except sqlite3.OperationalError as exc:
+                    logger.warning(f"Timeline VACUUM skipped after cleanup: {exc}")
         
         logger.info(f"Cleaned up {events_deleted} old events and {tasks_deleted} old task records")
+        return {"events_deleted": events_deleted, "tasks_deleted": tasks_deleted}
 
 
 # Example usage

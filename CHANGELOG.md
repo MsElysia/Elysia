@@ -497,3 +497,10 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — /api/events limit
+
+- `GET /api/events?limit=0` no longer returns the whole event buffer
+- Non-integer and negative `limit` values return JSON 400 instead of an HTML 500
+- Values above 200 stay capped, and the JSON body reports the applied `limit`
+- Contract coverage: `tests/test_runtime_api_events.py` (Flask app and live HTTP)

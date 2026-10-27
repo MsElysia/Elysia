@@ -18,6 +18,26 @@ from ..events import EventBus
 
 logger = logging.getLogger(__name__)
 
+_EVENTS_LIMIT_DEFAULT = 50
+_EVENTS_LIMIT_MAX = 200
+
+
+def parse_events_limit(raw: Optional[str]) -> int:
+    """Return the event count /api/events will actually read.
+
+    Zero means an empty page. Values above 200 are capped. Non-integers and
+    negatives are rejected so a bad query cannot dump or reshuffle the buffer.
+    """
+    if raw is None:
+        return _EVENTS_LIMIT_DEFAULT
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit must be a non-negative integer") from exc
+    if value < 0:
+        raise ValueError("limit must be a non-negative integer")
+    return min(value, _EVENTS_LIMIT_MAX)
+
 
 class RuntimeAPIServer:
     """Wrap a Flask server that exposes runtime status and events."""
@@ -73,9 +93,16 @@ class RuntimeAPIServer:
 
         @self._app.route("/api/events", methods=["GET"])
         def api_events():
-            limit = min(int(request.args.get("limit", 50)), 200)
-            events = self._event_bus.get_recent_events(limit=limit)
-            return jsonify({"events": events})
+            try:
+                limit = parse_events_limit(request.args.get("limit"))
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            # EventBus treats limit 0 as "the whole buffer" (list[-0:]).
+            if limit == 0:
+                events = []
+            else:
+                events = self._event_bus.get_recent_events(limit=limit)
+            return jsonify({"events": events, "limit": limit})
 
         @self._app.route("/api/chat", methods=["POST"])
         def api_chat():

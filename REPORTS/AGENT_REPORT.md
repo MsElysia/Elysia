@@ -3577,3 +3577,31 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — /api/events limit (2026-10-27)
+
+**Status:** COMPLETE on this branch. Not integrated to `main`.
+
+**Lane:** Product workflow. Unclaimed. `CONTROL.md` `CURRENT_TASK` remains `NONE`. Reconciliation queue `TASKS/TASK-0053.md` on `origin/codex/issue95-readonly-brain-bridge` stays OPEN review-only. Codex Campaign 41 (`3223ebb`) was not modified.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c` (`main`). No other branch dependency.
+
+**Acceptance:**
+- `GET /api/events` with no `limit` returns the newest 50 fictional events and `"limit": 50`
+- `limit=1` returns only the newest event
+- `limit=0` returns `{"events": [], "limit": 0}` instead of the whole buffer
+- `limit=-1` and `limit=nope` return HTTP 400 JSON `{"error": "limit must be a non-negative integer"}`
+- `limit=999` against a 250-event bus returns the newest 200 and `"limit": 200`
+- The same contract holds through Flask's test client and through a live Werkzeug HTTP server on 127.0.0.1
+
+**Command:** `python3 -m pytest tests/test_runtime_api_events.py -v --tb=short` — 2 passed.
+
+**Files:** `elysia/api/server.py`, `tests/test_runtime_api_events.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`.
+
+**Remaining limitations:** `EventBus.get_recent_events(0)` still slices the whole buffer. Only the API avoids that call. This does not connect chat, proposals, or the dashboard, and it does not change memory, governance, or deployment settings.
+
+**Next action:** Leave `TASK-0053` unmerged. A later product run can correct another unclaimed dashboard/API error path that is outside PRs #147–#149 and #153–#160.
+
+**Commit:** filled in after `git rev-parse HEAD` of the implementation commit.

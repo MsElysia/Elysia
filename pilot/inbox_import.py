@@ -29,7 +29,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple  # Any used for exclusion_hold
 
 _PILOT_DIR = Path(__file__).resolve().parent
 if str(_PILOT_DIR) not in sys.path:
@@ -62,14 +62,13 @@ def _looks_binary(raw: bytes) -> bool:
 
 
 def _decode_text(raw: bytes) -> Optional[str]:
+    """Strict UTF-8 (BOM optional). Malformed sequences are rejected — no latin-1 fallback."""
     if _looks_binary(raw):
         return None
-    for encoding in ("utf-8-sig", "utf-8", "utf-16", "latin-1"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="replace")
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
 
 
 def _normalize_text(text: str) -> str:
@@ -107,9 +106,19 @@ def _append_manifest(manifest_path: Path, record: Dict[str, Any]) -> None:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def ensure_inbox_dirs() -> Path:
-    INBOX_DIR.mkdir(parents=True, exist_ok=True)
+def ensure_inbox_dirs() -> Tuple[Path, str]:
+    """
+    Ensure inbox/state dirs. Refuses to create README through a reparse-point root.
+    Returns (inbox_dir, inbox_final_path_or_error_prefix).
+    """
+    from pilot_fs import assert_physical_inbox_root
+
     INBOX_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if not INBOX_DIR.exists():
+        INBOX_DIR.mkdir(parents=True, exist_ok=True)
+    ok, detail = assert_physical_inbox_root(INBOX_DIR)
+    if not ok:
+        return INBOX_DIR, f"REFUSING:{detail}"
     readme = INBOX_DIR / "README.txt"
     if not readme.exists():
         readme.write_text(
@@ -117,10 +126,10 @@ def ensure_inbox_dirs() -> Path:
             "Drop .txt or .md files here, then run SCAN_INBOX.bat or start the pilot.\n"
             "This is startup/manual scanning only (not a watcher).\n"
             "Unsupported types are rejected with a clear error. Source files are not moved.\n"
-            "Prefer scanning while the pilot UI is stopped to avoid concurrent memory writes.\n",
+            "UTF-8 text only. Prefer scanning while the pilot UI is stopped.\n",
             encoding="utf-8",
         )
-    return INBOX_DIR
+    return INBOX_DIR, detail
 
 
 def _verified_pilot_running() -> bool:
@@ -144,15 +153,17 @@ def scan_inbox_to_memory(
     apply: bool = True,
     max_file_mb: float = DEFAULT_MAX_FILE_MB,
     allow_while_pilot_running: bool = False,
+    exclusion_hold: Any = None,
 ) -> Dict[str, Any]:
     """
     Scan top-level inbox files into the pilot MemoryCore store.
 
     apply=False: dry-run report only (no memory/manifest writes).
-    allow_while_pilot_running: launch path may set True only before UI spawn;
-      manual SCAN should leave False (default) to avoid cross-process MemoryCore races.
+    exclusion_hold: optional already-acquired pilot exclusion mutex from launch.
+    allow_while_pilot_running: legacy flag; ignored when exclusion_hold is provided.
+      Manual SCAN must establish exclusion (fail closed if uncertain).
     """
-    ensure_inbox_dirs()
+    inbox_path, inbox_final = ensure_inbox_dirs()
     delivery = read_delivery_identity()
     max_bytes = int(max_file_mb * 1024 * 1024)
     known = _read_known_hashes(INBOX_MANIFEST) if apply else set()
@@ -176,14 +187,73 @@ def scan_inbox_to_memory(
         "results": [],
     }
 
-    if apply and not allow_while_pilot_running and _verified_pilot_running():
+    if isinstance(inbox_final, str) and inbox_final.startswith("REFUSING:"):
         report["ok"] = False
         report["errors"].append(
-            "REFUSING inbox apply while a verified pilot instance is running "
-            "(MemoryCore has no cross-process file lock). Stop the pilot or rely on "
-            "startup scan before UI spawn."
+            f"REFUSING inbox apply: inbox root failed containment ({inbox_final[9:]})"
         )
         return report
+
+    owned_exclusion = False
+    if apply and exclusion_hold is None:
+        from pilot_exclusion import writer_exclusion_status
+        from pilot_identity import expected_entry_path
+
+        excl = writer_exclusion_status(entry=expected_entry_path(), data_root=PILOT_DATA_ROOT)
+        if not excl.get("safe_to_write"):
+            report["ok"] = False
+            report["errors"].append(
+                "REFUSING inbox apply: cannot establish exclusive writer ownership "
+                f"({excl.get('reason')})."
+            )
+            return report
+        exclusion_hold = excl.get("hold")
+        owned_exclusion = True
+
+    from pilot_fs import ImportFileLock
+
+    file_lock = ImportFileLock(INBOX_STATE_DIR / "import.lock")
+    if apply:
+        ok_lock, lock_reason = file_lock.acquire(blocking=True)
+        if not ok_lock:
+            report["ok"] = False
+            report["errors"].append(f"REFUSING inbox apply: {lock_reason}")
+            if owned_exclusion and exclusion_hold is not None:
+                try:
+                    exclusion_hold.release()
+                except Exception:
+                    pass
+            return report
+
+    try:
+        return _scan_inbox_body(
+            report=report,
+            apply=apply,
+            max_bytes=max_bytes,
+            known=known,
+            delivery=delivery,
+            inbox_final=str(inbox_final),
+        )
+    finally:
+        if apply:
+            file_lock.release()
+        if owned_exclusion and exclusion_hold is not None:
+            try:
+                exclusion_hold.release()
+            except Exception:
+                pass
+
+
+def _scan_inbox_body(
+    *,
+    report: Dict[str, Any],
+    apply: bool,
+    max_bytes: int,
+    known: Set[str],
+    delivery: Dict[str, Any],
+    inbox_final: str,
+) -> Dict[str, Any]:
+    from pilot_fs import assert_file_inside_inbox
 
     memory = None
     if apply:
@@ -211,9 +281,19 @@ def scan_inbox_to_memory(
         ext = entry.suffix.lower()
         result: Dict[str, Any] = {
             "filename": entry.name,
-            "path": str(entry.resolve()),
+            "path": str(entry),
             "extension": ext,
         }
+
+        inside, final_or_err = assert_file_inside_inbox(entry, inbox_final)
+        if not inside:
+            result["status"] = "unsupported"
+            result["error"] = f"Path containment failed: {final_or_err}"
+            report["rejected"] += 1
+            report["errors"].append(result["error"] + f" ({entry.name})")
+            report["results"].append(result)
+            continue
+        result["path"] = final_or_err
 
         if ext not in INBOX_SUPPORTED_EXTENSIONS:
             result["status"] = "unsupported"
@@ -238,7 +318,7 @@ def scan_inbox_to_memory(
 
         if size > max_bytes:
             result["status"] = "unsupported"
-            result["error"] = f"File exceeds {max_file_mb} MB limit ({size} bytes)"
+            result["error"] = f"File exceeds size limit ({size} bytes > {max_bytes})"
             report["rejected"] += 1
             report["errors"].append(result["error"] + f" ({entry.name})")
             report["results"].append(result)
@@ -257,7 +337,9 @@ def scan_inbox_to_memory(
         text = _decode_text(raw)
         if text is None:
             result["status"] = "unsupported"
-            result["error"] = "File looks binary; only UTF text .txt/.md are accepted"
+            result["error"] = (
+                "Invalid encoding or binary content; only strict UTF-8 .txt/.md are accepted"
+            )
             report["rejected"] += 1
             report["errors"].append(result["error"] + f" ({entry.name})")
             report["results"].append(result)
@@ -319,7 +401,7 @@ def scan_inbox_to_memory(
         assert memory is not None
         metadata = {
             "source": "pilot_inbox",
-            "source_path": str(entry.resolve()),
+            "source_path": final_or_err,
             "source_filename": entry.name,
             "source_sha256": digest,
             "source_extension": ext,
@@ -328,19 +410,58 @@ def scan_inbox_to_memory(
             "delivery_commit": delivery.get("delivery_commit"),
             "scan_mode": "startup_or_manual",
         }
-        memory.remember(
-            thought=normalized,
-            category="inbox_import",
-            priority=0.75,
-            metadata=metadata,
+        try:
+            memory.remember(
+                thought=normalized,
+                category="inbox_import",
+                priority=0.75,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            result["status"] = "error"
+            result["error"] = f"memory_persist_failed:{exc}"
+            report["rejected"] += 1
+            report["errors"].append(result["error"])
+            report["results"].append(result)
+            report["ok"] = False
+            continue
+
+        # Durable integrity: reload from disk and confirm the SHA is present
+        mem_path = Path(report["memory_filepath"])
+        try:
+            disk = json.loads(mem_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            result["status"] = "error"
+            result["error"] = f"post_write_integrity_failed:{exc}"
+            report["rejected"] += 1
+            report["errors"].append(result["error"])
+            report["results"].append(result)
+            report["ok"] = False
+            continue
+        persisted = any(
+            (m.get("metadata") or {}).get("source_sha256") == digest
+            or (
+                (m.get("thought") or "") == normalized
+                and (m.get("metadata") or {}).get("source") == "pilot_inbox"
+            )
+            for m in disk
         )
+        if not persisted:
+            result["status"] = "error"
+            result["error"] = "post_write_integrity_failed:entry_missing_on_disk"
+            report["rejected"] += 1
+            report["errors"].append(result["error"])
+            report["results"].append(result)
+            report["ok"] = False
+            continue
+
         _append_manifest(
             INBOX_MANIFEST,
             {
                 "status": "imported",
                 "sha256": digest,
                 "filename": entry.name,
-                "source_path": str(entry.resolve()),
+                "source_path": final_or_err,
                 "imported_at": metadata["imported_at"],
                 "application_base_sha": APPLICATION_BASE_SHA,
                 "delivery_commit": delivery.get("delivery_commit"),

@@ -119,25 +119,12 @@ def main() -> int:
     (PILOT_DATA_ROOT / "memory").mkdir(parents=True, exist_ok=True)
     INBOX_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Startup inbox scan (manual/startup only — not a watcher). Before UI spawn so
-    # MemoryCore is not shared with a live pilot process.
-    try:
-        from inbox_import import scan_inbox_to_memory
+    entry = expected_entry_path()
+    if not entry.is_file():
+        print(f"ERROR: contained entry missing: {entry}", file=sys.stderr)
+        return 2
 
-        inbox_report = scan_inbox_to_memory(apply=True, allow_while_pilot_running=True)
-        print(
-            f"Inbox scan: scanned={inbox_report['scanned']} "
-            f"imported={inbox_report['imported']} "
-            f"duplicates={inbox_report['duplicates']} "
-            f"rejected={inbox_report['rejected']} "
-            f"path={inbox_report['inbox_dir']}",
-            flush=True,
-        )
-        for err in inbox_report.get("errors") or []:
-            print(f"Inbox reject: {err}", flush=True)
-    except Exception as exc:
-        print(f"WARNING: inbox scan skipped ({exc})", flush=True)
-
+    # Live-instance / exclusion check MUST precede any memory writes (inbox scan).
     if _already_running():
         runtime = {}
         try:
@@ -152,6 +139,46 @@ def main() -> int:
         )
         return 0
 
+    from pilot_exclusion import writer_exclusion_status
+
+    excl = writer_exclusion_status(entry=entry, data_root=PILOT_DATA_ROOT)
+    launch_hold = excl.get("hold")
+    if not excl.get("safe_to_write"):
+        print(
+            f"REFUSING launch: cannot establish exclusive writer ownership "
+            f"({excl.get('reason')}).",
+            file=sys.stderr,
+        )
+        return 3
+
+    # Startup inbox scan only after exclusion — still before UI spawn.
+    try:
+        from inbox_import import scan_inbox_to_memory
+
+        inbox_report = scan_inbox_to_memory(
+            apply=True,
+            allow_while_pilot_running=False,
+            exclusion_hold=launch_hold,
+        )
+        print(
+            f"Inbox scan: scanned={inbox_report['scanned']} "
+            f"imported={inbox_report['imported']} "
+            f"duplicates={inbox_report['duplicates']} "
+            f"rejected={inbox_report['rejected']} "
+            f"path={inbox_report['inbox_dir']}",
+            flush=True,
+        )
+        for err in inbox_report.get("errors") or []:
+            print(f"Inbox reject: {err}", flush=True)
+        if not inbox_report.get("ok", True) and any(
+            str(e).startswith("REFUSING") for e in (inbox_report.get("errors") or [])
+        ):
+            if launch_hold is not None:
+                launch_hold.release()
+            return 3
+    except Exception as exc:
+        print(f"WARNING: inbox scan skipped ({exc})", flush=True)
+
     # Stale PID file pointing at unrelated/dead process: clear before launch
     if PID_FILE.exists():
         print(
@@ -164,17 +191,14 @@ def main() -> int:
     host = PREFERRED_UI_HOST
     port = _choose_port(host)
 
-    entry = expected_entry_path()
-    if not entry.is_file():
-        print(f"ERROR: contained entry missing: {entry}", file=sys.stderr)
-        return 2
-
+    shutdown_token = secrets.token_hex(16)
     env = os.environ.copy()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["ELYSIA_DISPOSABLE_ROOT"] = str(PILOT_DATA_ROOT)
     env["TEMP"] = str(PILOT_DATA_ROOT / "temp")
     env["TMP"] = str(PILOT_DATA_ROOT / "temp")
     env["ELYSIA_PILOT_MARKER"] = PILOT_MARKER
+    env["ELYSIA_PILOT_SHUTDOWN_TOKEN"] = shutdown_token
 
     creationflags = 0
     if sys.platform == "win32":
@@ -194,6 +218,11 @@ def main() -> int:
         "--keep-alive",
     ]
 
+    # Release launch exclusion before spawn so the child can hold the instance mutex.
+    if launch_hold is not None:
+        launch_hold.release()
+        launch_hold = None
+
     log_f = LAUNCH_LOG.open("a", encoding="utf-8")
     log_f.write(
         f"\n--- launch {datetime.now(timezone.utc).isoformat()} "
@@ -211,25 +240,37 @@ def main() -> int:
         creationflags=creationflags,
     )
 
-    # Capture live identity shortly after spawn (creation time + resolved executable)
+    # Capture live identity via OS handle (creation time + image path), then cmdline
+    from pilot_winprocess import BoundProcess
+
+    bound = None
     snap = None
-    for _ in range(20):
-        snap = query_process_snapshot(proc.pid)
-        if snap is not None and snap.create_filetime and snap.create_filetime != "0":
-            break
+    for _ in range(30):
+        bound, berr = BoundProcess.open(proc.pid)
+        if bound is not None:
+            snap = query_process_snapshot(proc.pid)
+            if snap is not None:
+                break
+            bound.close()
+            bound = None
         time.sleep(0.1)
-    if snap is None:
+    if bound is None or snap is None:
         print(
-            f"ERROR: spawned pid {proc.pid} but could not read process identity. Aborting.",
+            f"ERROR: spawned pid {proc.pid} but could not bind process identity. Aborting.",
             file=sys.stderr,
         )
         try:
             proc.terminate()
         except OSError:
             pass
+        if launch_hold is not None:
+            launch_hold.release()
         return 1
 
-    shutdown_token = secrets.token_hex(16)
+    create_ft = bound.create_filetime
+    image = bound.image_path
+    bound.close()
+
     PID_FILE.write_text(str(proc.pid), encoding="utf-8")
     runtime = {
         "ok": True,
@@ -247,8 +288,8 @@ def main() -> int:
         "python": str(PILOT_PYTHON),
         "entry_point": str(entry),
         "pid": proc.pid,
-        "process_create_filetime": snap.create_filetime,
-        "process_executable": snap.executable,
+        "process_create_filetime": create_ft,
+        "process_executable": image,
         "command_line": snap.command_line,
         "shutdown_token": shutdown_token,
         "ui_host": host,

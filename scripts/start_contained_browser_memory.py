@@ -127,15 +127,58 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     print(json.dumps(status, indent=2))
-    print("Contained Guardian running. Ctrl+C to stop.", flush=True)
+    print("Contained Guardian running. Ctrl+C or pilot shutdown.request to stop.", flush=True)
+
+    # Pilot cooperative shutdown: poll disposable_root/runtime/shutdown.request
+    # for a matching ELYSIA_PILOT_SHUTDOWN_TOKEN (set by verified pilot launcher).
+    exclusion_hold = None
     try:
+        pilot_dir = Path(__file__).resolve().parents[1] / "pilot"
+        if str(pilot_dir) not in sys.path:
+            sys.path.insert(0, str(pilot_dir))
+        from pilot_exclusion import try_acquire_exclusion
+        from pilot_identity import read_shutdown_request
+
+        exclusion_hold, _mutex_reason = try_acquire_exclusion(
+            data_root=disposable, timeout_ms=60_000
+        )
+        if exclusion_hold is None:
+            print(
+                f"WARNING: could not acquire pilot exclusion mutex ({_mutex_reason})",
+                flush=True,
+            )
+        expected_token = (os.environ.get("ELYSIA_PILOT_SHUTDOWN_TOKEN") or "").strip()
+        marker = (os.environ.get("ELYSIA_PILOT_MARKER") or "").strip()
+
         import time
 
         while True:
-            time.sleep(1)
+            if expected_token and marker:
+                req = read_shutdown_request()
+                # read_shutdown_request uses pilot RUNTIME paths; also check disposable runtime
+                if req is None:
+                    req_path = disposable / "runtime" / "shutdown.request"
+                    if req_path.is_file():
+                        try:
+                            req = json.loads(req_path.read_text(encoding="utf-8"))
+                        except (OSError, json.JSONDecodeError):
+                            req = None
+                if (
+                    isinstance(req, dict)
+                    and req.get("shutdown_token") == expected_token
+                    and req.get("marker") == marker
+                ):
+                    print("Pilot shutdown.request accepted; stopping contained Guardian...", flush=True)
+                    break
+            time.sleep(0.5)
     except KeyboardInterrupt:
         print("Shutting down contained Guardian...", flush=True)
     finally:
+        if exclusion_hold is not None:
+            try:
+                exclusion_hold.release()
+            except Exception:
+                pass
         if hasattr(guardian, "shutdown"):
             try:
                 guardian.shutdown()

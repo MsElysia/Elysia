@@ -139,7 +139,20 @@ def main() -> int:
         )
         return 0
 
-    from pilot_exclusion import writer_exclusion_status
+    from pilot_exclusion import (
+        try_acquire_launch_claim,
+        wait_for_lifetime_ready,
+        writer_exclusion_status,
+    )
+
+    # Launch claim spans spawn→child-ready so a second launcher cannot open the same store.
+    claim, claim_reason = try_acquire_launch_claim(data_root=PILOT_DATA_ROOT, blocking=False)
+    if claim is None:
+        print(
+            f"REFUSING launch: cannot acquire launch claim ({claim_reason}).",
+            file=sys.stderr,
+        )
+        return 3
 
     excl = writer_exclusion_status(entry=entry, data_root=PILOT_DATA_ROOT)
     launch_hold = excl.get("hold")
@@ -149,6 +162,7 @@ def main() -> int:
             f"({excl.get('reason')}).",
             file=sys.stderr,
         )
+        claim.release()
         return 3
 
     # Startup inbox scan only after exclusion — still before UI spawn.
@@ -175,6 +189,7 @@ def main() -> int:
         ):
             if launch_hold is not None:
                 launch_hold.release()
+            claim.release()
             return 3
     except Exception as exc:
         print(f"WARNING: inbox scan skipped ({exc})", flush=True)
@@ -218,11 +233,6 @@ def main() -> int:
         "--keep-alive",
     ]
 
-    # Release launch exclusion before spawn so the child can hold the instance mutex.
-    if launch_hold is not None:
-        launch_hold.release()
-        launch_hold = None
-
     log_f = LAUNCH_LOG.open("a", encoding="utf-8")
     log_f.write(
         f"\n--- launch {datetime.now(timezone.utc).isoformat()} "
@@ -231,6 +241,9 @@ def main() -> int:
     )
     log_f.flush()
 
+    # Keep mutex held through Popen so an interloper at the spawn boundary cannot
+    # acquire the instance mutex. Release immediately after spawn returns so the
+    # child can take the lifetime hold; launch claim remains until lifetime.ready.
     proc = subprocess.Popen(
         cmd,
         cwd=str(PILOT_SOURCE_ROOT),
@@ -239,6 +252,24 @@ def main() -> int:
         stderr=subprocess.STDOUT,
         creationflags=creationflags,
     )
+    if launch_hold is not None:
+        launch_hold.release()
+        launch_hold = None
+
+    if not wait_for_lifetime_ready(data_root=PILOT_DATA_ROOT, timeout_sec=90.0):
+        print(
+            "ERROR: child did not publish lifetime.ready under launch claim. "
+            "Refusing to treat this as a successful exclusive launch.",
+            file=sys.stderr,
+        )
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        claim.release()
+        return 1
+    claim.release()
+    claim = None
 
     # Capture live identity via OS handle (creation time + image path), then cmdline
     from pilot_winprocess import BoundProcess

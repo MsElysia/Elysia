@@ -86,6 +86,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     from project_guardian.guardian_singleton import reset_singleton
 
+    # For keep-alive pilot runs: acquire the lifetime exclusion mutex BEFORE any
+    # UI/listener is started, then publish lifetime.ready for the launcher claim.
+    exclusion_hold = None
+    if args.keep_alive:
+        pilot_dir = Path(__file__).resolve().parents[1] / "pilot"
+        if str(pilot_dir) not in sys.path:
+            sys.path.insert(0, str(pilot_dir))
+        from pilot_exclusion import try_acquire_exclusion, write_lifetime_ready
+
+        exclusion_hold, mutex_reason = try_acquire_exclusion(
+            data_root=disposable, timeout_ms=120_000
+        )
+        if exclusion_hold is None:
+            print(
+                f"ERROR: refusing to start UI — could not acquire pilot exclusion "
+                f"mutex ({mutex_reason}).",
+                file=sys.stderr,
+            )
+            return 3
+        write_lifetime_ready(data_root=disposable)
+
     try:
         guardian, config = start_contained_guardian(
             disposable,
@@ -96,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     except ContainedStartupError as e:
         print(f"CONTAINED_STARTUP_FAILED: {e}", file=sys.stderr)
+        if exclusion_hold is not None:
+            exclusion_hold.release()
         return 1
 
     status = {
@@ -129,24 +152,12 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(status, indent=2))
     print("Contained Guardian running. Ctrl+C or pilot shutdown.request to stop.", flush=True)
 
-    # Pilot cooperative shutdown: poll disposable_root/runtime/shutdown.request
-    # for a matching ELYSIA_PILOT_SHUTDOWN_TOKEN (set by verified pilot launcher).
-    exclusion_hold = None
     try:
         pilot_dir = Path(__file__).resolve().parents[1] / "pilot"
         if str(pilot_dir) not in sys.path:
             sys.path.insert(0, str(pilot_dir))
-        from pilot_exclusion import try_acquire_exclusion
         from pilot_identity import read_shutdown_request
 
-        exclusion_hold, _mutex_reason = try_acquire_exclusion(
-            data_root=disposable, timeout_ms=60_000
-        )
-        if exclusion_hold is None:
-            print(
-                f"WARNING: could not acquire pilot exclusion mutex ({_mutex_reason})",
-                flush=True,
-            )
         expected_token = (os.environ.get("ELYSIA_PILOT_SHUTDOWN_TOKEN") or "").strip()
         marker = (os.environ.get("ELYSIA_PILOT_MARKER") or "").strip()
 
@@ -155,7 +166,6 @@ def main(argv: list[str] | None = None) -> int:
         while True:
             if expected_token and marker:
                 req = read_shutdown_request()
-                # read_shutdown_request uses pilot RUNTIME paths; also check disposable runtime
                 if req is None:
                     req_path = disposable / "runtime" / "shutdown.request"
                     if req_path.is_file():

@@ -69,6 +69,128 @@ class ExclusionHold:
             self.handle = 0
 
 
+def lifetime_ready_path(data_root: Path = PILOT_DATA_ROOT) -> Path:
+    return Path(data_root) / "runtime" / "lifetime.ready"
+
+
+def launch_claim_path(data_root: Path = PILOT_DATA_ROOT) -> Path:
+    return Path(data_root) / "runtime" / "launch.claim"
+
+
+@dataclass
+class LaunchClaim:
+    """Exclusive launch reservation spanning spawn until child lifetime mutex is ready."""
+
+    path: Path
+    _fh: Any = None
+
+    def release(self) -> None:
+        if self._fh is not None:
+            try:
+                import msvcrt
+
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def launch_claim_is_held(data_root: Path = PILOT_DATA_ROOT) -> bool:
+    """True if another process currently holds the launch claim lock."""
+    import msvcrt
+
+    path = launch_claim_path(data_root)
+    if not path.is_file():
+        return False
+    try:
+        with open(path, "a+b") as fh:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        return False
+    except OSError:
+        return True
+
+
+def try_acquire_launch_claim(
+    *,
+    data_root: Path = PILOT_DATA_ROOT,
+    blocking: bool = False,
+) -> Tuple[Optional[LaunchClaim], str]:
+    """
+    Cross-process launch reservation. Held by the launcher from pre-spawn through
+    child lifetime.ready — closes the mutex release-before-spawn gap.
+    """
+    import msvcrt
+
+    path = launch_claim_path(data_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    claim = LaunchClaim(path=path)
+    try:
+        claim._fh = open(path, "a+b")
+        claim._fh.seek(0)
+        if claim._fh.tell() == 0 and claim._fh.read(1) == b"":
+            claim._fh.write(b"claim")
+            claim._fh.flush()
+        claim._fh.seek(0)
+        flags = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+        msvcrt.locking(claim._fh.fileno(), flags, 1)
+        # Clear stale ready marker from a previous instance
+        lifetime_ready_path(data_root).unlink(missing_ok=True)
+        return claim, "acquired"
+    except OSError as exc:
+        if claim._fh is not None:
+            try:
+                claim._fh.close()
+            except Exception:
+                pass
+            claim._fh = None
+        return None, f"launch_claim_held_or_failed:{exc}"
+
+
+def wait_for_lifetime_ready(
+    *,
+    data_root: Path = PILOT_DATA_ROOT,
+    timeout_sec: float = 90.0,
+) -> bool:
+    import time
+
+    ready = lifetime_ready_path(data_root)
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if ready.is_file():
+            try:
+                raw = ready.read_text(encoding="utf-8").strip()
+            except OSError:
+                raw = ""
+            if raw.startswith("ready:"):
+                return True
+        time.sleep(0.1)
+    return False
+
+
+def write_lifetime_ready(*, data_root: Path = PILOT_DATA_ROOT) -> Path:
+    path = lifetime_ready_path(data_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"ready:{os_getpid()}", encoding="utf-8")
+    return path
+
+
+def os_getpid() -> int:
+    import os
+
+    return os.getpid()
+
+
 def try_acquire_exclusion(
     *,
     data_root: Path = PILOT_DATA_ROOT,
@@ -195,6 +317,10 @@ def writer_exclusion_status(
         "mutex": None,
         "listener": None,
     }
+
+    if launch_claim_is_held(data_root):
+        result["reason"] = "launch_claim_held_by_other"
+        return result
 
     hold, mutex_reason = try_acquire_exclusion(data_root=data_root, timeout_ms=0)
     result["mutex"] = mutex_reason

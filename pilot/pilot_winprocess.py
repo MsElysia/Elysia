@@ -11,7 +11,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple  # noqa: used throughout
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 shell32 = ctypes.WinDLL("shell32", use_last_error=True)
@@ -187,16 +187,41 @@ class BoundProcess:
             return False
         return str(_filetime_to_uint64(creation)) == str(expected_filetime)
 
-    def is_still_running(self) -> bool:
+    def exit_state(self) -> Tuple[str, Optional[int]]:
+        """
+        Return (state, exit_code_or_None).
+
+        state is one of: 'running', 'exited', 'query_failed'.
+        GetExitCodeProcess failure must NOT be treated as exited.
+        """
         code = wintypes.DWORD()
         if not GetExitCodeProcess(self.handle, ctypes.byref(code)):
-            return False
-        return int(code.value) == STILL_ACTIVE
+            return "query_failed", None
+        value = int(code.value)
+        if value == STILL_ACTIVE:
+            return "running", None
+        return "exited", value
 
-    def wait(self, timeout_ms: int) -> bool:
-        """True if process exited within timeout."""
+    def is_still_running(self) -> bool:
+        state, _ = self.exit_state()
+        return state == "running"
+
+    def wait(self, timeout_ms: int) -> str:
+        """
+        Wait for handle signal. Returns 'exited', 'timeout', or 'wait_failed'.
+        """
         rc = WaitForSingleObject(self.handle, int(timeout_ms))
-        return rc == WAIT_OBJECT_0
+        if rc == WAIT_OBJECT_0:
+            state, _ = self.exit_state()
+            if state == "exited":
+                return "exited"
+            if state == "query_failed":
+                return "wait_failed"
+            # Signaled but still reports running — treat as uncertain
+            return "wait_failed"
+        if rc == WAIT_TIMEOUT:
+            return "timeout"
+        return "wait_failed"
 
     def terminate(self) -> Tuple[bool, str]:
         """Terminate via this handle only (never a fresh PID lookup)."""

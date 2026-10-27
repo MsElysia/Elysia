@@ -22,6 +22,7 @@ if str(_PILOT_DIR) not in sys.path:
 
 from pilot_paths import (
     APPLICATION_BASE_SHA,
+    PILOT_DATA_ROOT,
     PILOT_MARKER,
     PILOT_PYTHON,
     PILOT_SOURCE_ROOT,
@@ -115,8 +116,13 @@ def read_delivery_identity(source_root: Path = PILOT_SOURCE_ROOT) -> Dict[str, A
     if not commit:
         return _fail("git_head_empty", "git rev-parse HEAD returned empty stdout")
     commit_l = commit.lower()
-    if len(commit_l) < 7 or any(c not in "0123456789abcdef" for c in commit_l):
-        return _fail("git_head_malformed", f"unexpected HEAD output: {commit!r}")
+    # SHA-1 object IDs from `git rev-parse HEAD` are exactly 40 lowercase hex chars.
+    # Truncated or padded hex strings must not receive exact_verified_delivery.
+    if len(commit_l) != 40 or any(c not in "0123456789abcdef" for c in commit_l):
+        return _fail(
+            "git_head_malformed",
+            f"unexpected HEAD output (want 40 hex chars): {commit!r}",
+        )
     info["delivery_commit"] = commit_l
 
     try:
@@ -285,7 +291,13 @@ def argv_matches_expected(
     expected_data_root: Path,
     recorded_executable: str = "",
 ) -> Tuple[bool, str]:
-    """Exact parsed-argv checks — no basename-only or decoy substring acceptance."""
+    """
+    Exact parsed-argv checks against the configured installation.
+
+    The entry script must be argv[1] (immediate script argument), not a decoy
+    elsewhere (e.g. --note <entry>). argv[0] must be the configured interpreter
+    or the recorded process image — not an unrelated executable.
+    """
     try:
         argv = list(parse_command_line(cmdline))
     except OSError as exc:
@@ -299,17 +311,15 @@ def argv_matches_expected(
     recorded_n = _norm_path(recorded_executable) if recorded_executable else ""
 
     argv0 = _norm_path(argv[0])
-    if argv0 not in {py_n, recorded_n} and Path(argv0).name not in {
-        Path(py_n).name,
-        "python.exe",
-        "pythonw.exe",
-    }:
-        # Allow venv launcher vs base image only when entry/data-root exact below
-        if recorded_n and argv0 != recorded_n and py_n not in argv0:
-            pass  # continue to entry checks; executable checked separately via handle
-    entry_indexes = [i for i, a in enumerate(argv) if _norm_path(a) == entry_n]
-    if len(entry_indexes) != 1:
-        return False, "exact_entry_path_not_in_argv"
+    allowed_argv0 = {py_n}
+    if recorded_n:
+        allowed_argv0.add(recorded_n)
+    if argv0 not in allowed_argv0:
+        return False, "argv0_not_configured_interpreter"
+
+    # Entry must be the script operand at argv[1], not a later decoy flag value.
+    if _norm_path(argv[1]) != entry_n:
+        return False, "argv1_not_exact_configured_entry"
 
     root_indexes = [i for i, a in enumerate(argv) if a.lower() == "--disposable-root"]
     if len(root_indexes) != 1:
@@ -392,23 +402,38 @@ def verify_live_ownership(
     if not recorded_ft or recorded_ft != snap.create_filetime:
         return _reject("process creation time mismatch (stale or reused PID)", snap)
 
+    # Membership in the configured pilot installation — not self-authored runtime paths.
+    configured_py = PILOT_PYTHON.resolve()
+    configured_entry = expected_entry_path()
+    configured_data = PILOT_DATA_ROOT.resolve()
+
     recorded_exe = _norm_path(str(runtime.get("process_executable") or ""))
     live_exe = _norm_path(snap.executable)
-    expected_py = _norm_path(str(runtime.get("python") or PILOT_PYTHON))
-    # Exact executable match against recorded image and/or configured interpreter path.
-    # Never accept merely because the command line mentions the interpreter string.
-    if live_exe != recorded_exe and live_exe != expected_py:
-        return _reject("live executable does not match recorded pilot interpreter", snap)
+    configured_py_n = _norm_path(str(configured_py))
+    # Live image must match the recorded handle image and the configured interpreter
+    # (venv launcher path or resolved base image stored at launch).
+    if live_exe != recorded_exe:
+        return _reject("live executable does not match recorded process image", snap)
+    runtime_py = _norm_path(str(runtime.get("python") or ""))
+    if runtime_py != configured_py_n:
+        return _reject("runtime python is not the configured pilot interpreter", snap)
+    if live_exe != configured_py_n and live_exe != recorded_exe:
+        return _reject("live executable is not the configured pilot interpreter image", snap)
 
-    entry = Path(str(runtime["entry_point"]))
-    data_root = Path(str(runtime["data_root"]))
+    runtime_entry = _norm_path(str(runtime.get("entry_point") or ""))
+    runtime_data = _norm_path(str(runtime.get("data_root") or ""))
+    if runtime_entry != _norm_path(str(configured_entry)):
+        return _reject("runtime entry_point is not the configured pilot entry", snap)
+    if runtime_data != _norm_path(str(configured_data)):
+        return _reject("runtime data_root is not the configured pilot data root", snap)
+
     if not snap.command_line:
         return _reject("command line empty", snap)
     args_ok, args_reason = argv_matches_expected(
         snap.command_line,
-        expected_python=Path(str(runtime.get("python") or PILOT_PYTHON)),
-        expected_entry=entry,
-        expected_data_root=data_root,
+        expected_python=configured_py,
+        expected_entry=configured_entry,
+        expected_data_root=configured_data,
         recorded_executable=str(runtime.get("process_executable") or ""),
     )
     if not args_ok:
@@ -416,7 +441,7 @@ def verify_live_ownership(
 
     return OwnershipVerdict(
         True,
-        "live process identity matches pilot runtime record",
+        "live process identity matches configured pilot installation",
         snap,
         action_bound,
     )

@@ -81,8 +81,9 @@ def _fake_bound(pid: int = 424242, ft: str = "133000000000000000", image: str = 
     b.create_filetime = ft
     b.image_path = image or str(PILOT_PYTHON)
     b.refresh_times_match.return_value = True
-    b.is_still_running.side_effect = [True, True, False]
-    b.wait.return_value = True
+    b.exit_state.return_value = ("running", None)
+    b.is_still_running.return_value = True
+    b.wait.return_value = "exited"
     b.terminate.return_value = (True, "terminated_via_handle")
     b.close = MagicMock()
     return b
@@ -242,8 +243,8 @@ class TestStopMainMocked(unittest.TestCase):
         runtime = _complete_runtime()
         fake_pid, fake_rt = self._patch_files("424242", runtime)
         bound = _fake_bound()
-        bound.wait.return_value = True
-        bound.is_still_running.return_value = False
+        bound.exit_state.return_value = ("running", None)
+        bound.wait.return_value = "exited"
         verdict = MagicMock(owned=True, reason="ok", bound=bound)
         with patch.object(self.mod, "PID_FILE", fake_pid), patch.object(
             self.mod, "RUNTIME_JSON", fake_rt
@@ -266,9 +267,9 @@ class TestStopMainMocked(unittest.TestCase):
         runtime = _complete_runtime()
         fake_pid, fake_rt = self._patch_files("424242", runtime)
         bound = _fake_bound()
-        # Cooperative wait fails; still running; then terminate + wait ok
-        bound.wait.side_effect = [False, True]
-        bound.is_still_running.side_effect = [True, False]
+        # Cooperative wait times out while still running; then terminate + wait ok
+        bound.exit_state.side_effect = [("running", None), ("running", None)]
+        bound.wait.side_effect = ["timeout", "exited"]
         bound.terminate.return_value = (True, "terminated_via_handle")
         verdict = MagicMock(owned=True, reason="ok", bound=bound)
         with patch.object(self.mod, "PID_FILE", fake_pid), patch.object(
@@ -292,8 +293,8 @@ class TestStopMainMocked(unittest.TestCase):
         runtime = _complete_runtime()
         fake_pid, fake_rt = self._patch_files("424242", runtime)
         bound = _fake_bound()
-        bound.wait.return_value = True
-        bound.is_still_running.return_value = False
+        bound.exit_state.return_value = ("running", None)
+        bound.wait.return_value = "exited"
         verdict = MagicMock(owned=True, reason="ok", bound=bound)
         with patch.object(self.mod, "PID_FILE", fake_pid), patch.object(
             self.mod, "RUNTIME_JSON", fake_rt
@@ -318,8 +319,8 @@ class TestStopMainMocked(unittest.TestCase):
         runtime = _complete_runtime()
         fake_pid, fake_rt = self._patch_files("424242", runtime)
         bound = _fake_bound()
-        bound.wait.side_effect = [False, True]
-        bound.is_still_running.side_effect = [True, False]
+        bound.exit_state.side_effect = [("running", None), ("running", None)]
+        bound.wait.side_effect = ["timeout", "exited"]
         calls = []
 
         def term():
@@ -344,6 +345,73 @@ class TestStopMainMocked(unittest.TestCase):
             code = self.mod.main()
         self.assertEqual(code, 0)
         self.assertEqual(calls, [("terminate_handle", 1, 424242)])
+
+    def test_exit_query_failure_refuses_success(self):
+        runtime = _complete_runtime()
+        fake_pid, fake_rt = self._patch_files("424242", runtime)
+        bound = _fake_bound()
+        bound.exit_state.return_value = ("running", None)
+        bound.wait.return_value = "wait_failed"
+        verdict = MagicMock(owned=True, reason="ok", bound=bound)
+        with patch.object(self.mod, "PID_FILE", fake_pid), patch.object(
+            self.mod, "RUNTIME_JSON", fake_rt
+        ), patch.object(
+            self.mod.BoundProcess, "open", return_value=(bound, "")
+        ), patch.object(
+            self.mod, "verify_live_ownership", return_value=verdict
+        ), patch.object(
+            self.mod, "send_ctrl_c", return_value=(False, "intercepted")
+        ), patch.object(self.mod, "write_shutdown_request"), patch.object(
+            self.mod, "clear_shutdown_request"
+        ), patch.object(self.mod.time, "sleep"):
+            code = self.mod.main()
+        self.assertEqual(code, 3)
+        bound.terminate.assert_not_called()
+        fake_pid.unlink.assert_not_called()
+
+    def test_entry_as_note_decoy_refused(self):
+        rt = _complete_runtime()
+        cmd = (
+            f'"{rt["python"]}" C:\\other\\unrelated.py --note "{rt["entry_point"]}" '
+            f'--disposable-root "{rt["data_root"]}"'
+        )
+        ok, reason = argv_matches_expected(
+            cmd,
+            expected_python=Path(rt["python"]),
+            expected_entry=Path(rt["entry_point"]),
+            expected_data_root=Path(rt["data_root"]),
+        )
+        self.assertFalse(ok)
+        self.assertIn("argv1", reason)
+
+    def test_wrong_argv0_refused(self):
+        rt = _complete_runtime()
+        cmd = f'C:\\other\\evil.exe "{rt["entry_point"]}" --disposable-root "{rt["data_root"]}"'
+        ok, reason = argv_matches_expected(
+            cmd,
+            expected_python=Path(rt["python"]),
+            expected_entry=Path(rt["entry_point"]),
+            expected_data_root=Path(rt["data_root"]),
+        )
+        self.assertFalse(ok)
+        self.assertIn("argv0", reason)
+
+    def test_runtime_self_authored_unrelated_paths_refused(self):
+        other = _complete_runtime(
+            python=r"C:\unrelated\python.exe",
+            entry_point=r"C:\unrelated\unrelated.py",
+            data_root=r"C:\unrelated\data",
+            process_executable=r"C:\unrelated\python.exe",
+        )
+        cmd = (
+            f'"{other["python"]}" "{other["entry_point"]}" '
+            f'--disposable-root "{other["data_root"]}"'
+        )
+        snap = _owned_snapshot(
+            executable=other["process_executable"], command_line=cmd
+        )
+        v = verify_live_ownership(424242, other, snapshot=snap)
+        self.assertFalse(v.owned)
 
 
 if __name__ == "__main__":

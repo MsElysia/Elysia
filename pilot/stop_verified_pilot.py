@@ -122,36 +122,72 @@ def main() -> int:
             flush=True,
         )
         write_shutdown_request(token)
-        # Optional console signal (runtime must also poll shutdown.request)
-        ctrl_ok, ctrl_msg = send_ctrl_c(pid)
-        print(f"Cooperative Ctrl+C: ok={ctrl_ok} ({ctrl_msg})", flush=True)
-
-        exited = action_bound.wait(timeout_ms=15000)
-        if not exited and action_bound.is_still_running():
+        # Console Ctrl+C only while the bound instance is still running.
+        pre_state, _ = action_bound.exit_state()
+        if pre_state == "running":
+            ctrl_ok, ctrl_msg = send_ctrl_c(pid)
+            print(f"Cooperative Ctrl+C: ok={ctrl_ok} ({ctrl_msg})", flush=True)
+        elif pre_state == "query_failed":
             print(
-                "Cooperative shutdown timed out; terminating via verified process handle "
-                "(not numeric PID taskkill)...",
-                flush=True,
+                "REFUSING success: cannot determine whether the bound process is still "
+                "running (exit query failed).",
+                file=sys.stderr,
             )
-            tok, tmsg = action_bound.terminate()
-            print(f"Handle terminate: ok={tok} ({tmsg})", flush=True)
-            if not tok:
+            clear_shutdown_request()
+            return 3
+        else:
+            print("Bound process already exited before Ctrl+C.", flush=True)
+
+        wait_rc = action_bound.wait(timeout_ms=15000)
+        if wait_rc == "wait_failed":
+            print(
+                "REFUSING success: process wait/exit query failed after cooperative request. "
+                "Not treating uncertain exit as stopped.",
+                file=sys.stderr,
+            )
+            clear_shutdown_request()
+            return 3
+        if wait_rc == "timeout":
+            state, _ = action_bound.exit_state()
+            if state == "query_failed":
                 print(
-                    f"REFUSING success: safe termination could not be established ({tmsg}).",
+                    "REFUSING success: exit query failed while waiting for cooperative stop.",
                     file=sys.stderr,
                 )
                 clear_shutdown_request()
                 return 3
-            exited = action_bound.wait(timeout_ms=10000)
-
-        if not exited and action_bound.is_still_running():
+            if state == "running":
+                print(
+                    "Cooperative shutdown timed out; terminating via verified process handle "
+                    "(not numeric PID taskkill)...",
+                    flush=True,
+                )
+                tok, tmsg = action_bound.terminate()
+                print(f"Handle terminate: ok={tok} ({tmsg})", flush=True)
+                if not tok:
+                    print(
+                        f"REFUSING success: safe termination could not be established ({tmsg}).",
+                        file=sys.stderr,
+                    )
+                    clear_shutdown_request()
+                    return 3
+                wait_rc = action_bound.wait(timeout_ms=10000)
+                if wait_rc != "exited":
+                    print(
+                        f"ERROR: bound process not confirmed exited after terminate "
+                        f"(wait={wait_rc}). Not claiming stop_ok.",
+                        file=sys.stderr,
+                    )
+                    clear_shutdown_request()
+                    return 1
+            # state == exited: fall through
+        elif wait_rc != "exited":
             print(
-                f"ERROR: PID {pid} still running after handle terminate. "
-                "Reporting failure; not claiming stop_ok.",
+                f"REFUSING success: unexpected wait result {wait_rc!r}.",
                 file=sys.stderr,
             )
             clear_shutdown_request()
-            return 1
+            return 3
 
         port = int(runtime.get("ui_port") or 0)
         host = str(runtime.get("ui_host") or PREFERRED_UI_HOST)

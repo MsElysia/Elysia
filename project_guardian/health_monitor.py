@@ -3,13 +3,15 @@
 
 import logging
 import time
-import psutil
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from threading import Lock
 from enum import Enum
 
+# psutil is an optional dependency (see OPTIONAL_DEPENDENCIES.md); without it the monitor
+# still imports and reports health from component status alone, with no resource metrics.
 try:
+    import psutil
     PSUTIL_AVAILABLE = True
 except ImportError:
     PSUTIL_AVAILABLE = False

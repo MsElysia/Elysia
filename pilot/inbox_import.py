@@ -166,7 +166,6 @@ def scan_inbox_to_memory(
     inbox_path, inbox_final = ensure_inbox_dirs()
     delivery = read_delivery_identity()
     max_bytes = int(max_file_mb * 1024 * 1024)
-    known = _read_known_hashes(INBOX_MANIFEST) if apply else set()
 
     report: Dict[str, Any] = {
         "ok": True,
@@ -225,6 +224,9 @@ def scan_inbox_to_memory(
                     pass
             return report
 
+    # Load dedupe state only while the import lock is held.
+    known = _read_known_hashes(INBOX_MANIFEST) if apply else set()
+
     try:
         return _scan_inbox_body(
             report=report,
@@ -253,15 +255,15 @@ def _scan_inbox_body(
     delivery: Dict[str, Any],
     inbox_final: str,
 ) -> Dict[str, Any]:
-    from pilot_fs import assert_file_inside_inbox
+    from pilot_fs import assert_file_inside_inbox, open_validate_and_read_inbox_file
 
     memory = None
+    mem_path = PILOT_DATA_ROOT / "memory" / "guardian_memory.json"
     if apply:
         if str(PILOT_SOURCE_ROOT) not in sys.path:
             sys.path.insert(0, str(PILOT_SOURCE_ROOT))
         from project_guardian.memory import MemoryCore
 
-        mem_path = PILOT_DATA_ROOT / "memory" / "guardian_memory.json"
         mem_path.parent.mkdir(parents=True, exist_ok=True)
         if not mem_path.exists():
             mem_path.write_text("[]", encoding="utf-8")
@@ -271,6 +273,22 @@ def _scan_inbox_body(
             enable_timeline_logging=False,
             enable_vector_search=False,
         )
+
+    def _disk_has_digest(digest: str, normalized: str) -> bool:
+        """Trust only durable on-disk JSON — never in-memory-only leftovers."""
+        try:
+            disk = json.loads(mem_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(disk, list):
+            return False
+        for mem in disk:
+            meta = mem.get("metadata") or {}
+            if meta.get("source_sha256") == digest:
+                return True
+            if (mem.get("thought") or "") == normalized and meta.get("source") == "pilot_inbox":
+                return True
+        return False
 
     for entry in sorted(INBOX_DIR.iterdir()):
         if not entry.is_file():
@@ -285,16 +303,6 @@ def _scan_inbox_body(
             "extension": ext,
         }
 
-        inside, final_or_err = assert_file_inside_inbox(entry, inbox_final)
-        if not inside:
-            result["status"] = "unsupported"
-            result["error"] = f"Path containment failed: {final_or_err}"
-            report["rejected"] += 1
-            report["errors"].append(result["error"] + f" ({entry.name})")
-            report["results"].append(result)
-            continue
-        result["path"] = final_or_err
-
         if ext not in INBOX_SUPPORTED_EXTENSIONS:
             result["status"] = "unsupported"
             result["error"] = (
@@ -306,33 +314,29 @@ def _scan_inbox_body(
             report["results"].append(result)
             continue
 
-        try:
-            size = entry.stat().st_size
-        except OSError as exc:
-            result["status"] = "error"
-            result["error"] = f"stat failed: {exc}"
-            report["rejected"] += 1
-            report["errors"].append(result["error"])
-            report["results"].append(result)
-            continue
-
-        if size > max_bytes:
+        # Early containment probe (also the injection point used by swap reproducers),
+        # then open→validate→read under one OS handle so a post-check junction swap
+        # cannot supply outside bytes with an inside provenance path.
+        early_ok, early_detail = assert_file_inside_inbox(entry, inbox_final)
+        if not early_ok:
             result["status"] = "unsupported"
-            result["error"] = f"File exceeds size limit ({size} bytes > {max_bytes})"
+            result["error"] = f"Path containment failed: {early_detail}"
             report["rejected"] += 1
             report["errors"].append(result["error"] + f" ({entry.name})")
             report["results"].append(result)
             continue
 
-        try:
-            raw = entry.read_bytes()
-        except OSError as exc:
-            result["status"] = "error"
-            result["error"] = f"read failed: {exc}"
+        raw, final_or_err, read_err = open_validate_and_read_inbox_file(
+            entry, inbox_final, max_bytes=max_bytes
+        )
+        if read_err or raw is None:
+            result["status"] = "unsupported" if "outside" in (read_err or "") or "reparse" in (read_err or "") else "error"
+            result["error"] = f"Path containment/read failed: {read_err}"
             report["rejected"] += 1
-            report["errors"].append(result["error"])
+            report["errors"].append(result["error"] + f" ({entry.name})")
             report["results"].append(result)
             continue
+        result["path"] = final_or_err
 
         text = _decode_text(raw)
         if text is None:
@@ -358,39 +362,33 @@ def _scan_inbox_body(
         result["sha256"] = digest
 
         if digest in known:
-            result["status"] = "duplicate"
-            report["duplicates"] += 1
-            report["results"].append(result)
-            continue
-
-        if memory is not None:
-            memory.load_if_needed()
-            already = False
-            for mem in memory.memory_log:
-                meta = mem.get("metadata") or {}
-                if meta.get("source_sha256") == digest:
-                    already = True
-                    break
-                if (mem.get("thought") or "") == normalized and meta.get("source") == "pilot_inbox":
-                    already = True
-                    break
-            if already:
+            # Manifest says imported — confirm durable store still has it.
+            if apply and not _disk_has_digest(digest, normalized):
+                # Stale ghost ack: drop from known and allow re-import.
+                known.discard(digest)
+            else:
                 result["status"] = "duplicate"
                 report["duplicates"] += 1
                 report["results"].append(result)
-                if apply:
-                    _append_manifest(
-                        INBOX_MANIFEST,
-                        {
-                            "status": "imported",
-                            "sha256": digest,
-                            "filename": entry.name,
-                            "note": "already_in_memory",
-                            "imported_at": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
-                    known.add(digest)
                 continue
+
+        if apply and _disk_has_digest(digest, normalized):
+            result["status"] = "duplicate"
+            report["duplicates"] += 1
+            report["results"].append(result)
+            # Repair manifest without claiming a new import success beyond duplicate.
+            _append_manifest(
+                INBOX_MANIFEST,
+                {
+                    "status": "imported",
+                    "sha256": digest,
+                    "filename": entry.name,
+                    "note": "already_on_disk",
+                    "imported_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            known.add(digest)
+            continue
 
         if not apply:
             result["status"] = "would_import"

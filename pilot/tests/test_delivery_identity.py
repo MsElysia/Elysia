@@ -60,6 +60,21 @@ class TestDeliveryIdentity(unittest.TestCase):
         self.assertFalse(info["exact_verified_delivery"])
         self.assertEqual(info["delivery_status"], "git_head_malformed")
 
+    def test_truncated_or_padded_hex_head_not_exact(self):
+        for length in (7, 41, 64):
+            with self.subTest(length=length):
+                with patch.object(
+                    ident,
+                    "_GIT_RUNNER",
+                    side_effect=[
+                        Mock(returncode=0, stdout=("a" * length) + "\n", stderr=""),
+                        Mock(returncode=0, stdout="", stderr=""),
+                    ],
+                ):
+                    info = ident.read_delivery_identity(Path("C:/x"))
+                self.assertFalse(info["exact_verified_delivery"])
+                self.assertEqual(info["delivery_status"], "git_head_malformed")
+
     def test_real_fixture_clean_dirty_untracked(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

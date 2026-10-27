@@ -80,41 +80,79 @@ class TestInboxIntegrity(unittest.TestCase):
                 }
             ]
             mem.write_text(json.dumps(baseline), encoding="utf-8")
-            (ind / "new.txt").write_text(
-                "Fictional failure probe: the copper library has eleven doors.",
-                encoding="utf-8",
-            )
+            content = "Fictional ghost import identical content after failed persistence."
+            (ind / "a.txt").write_text(content, encoding="utf-8")
+            (ind / "b.txt").write_text(content, encoding="utf-8")
             hold = MagicMock()
-            real_dump = json.dump
-
-            def broken_dump(obj, handle, *a, **kw):
-                if Path(getattr(handle, "name", "")) == mem or str(
-                    getattr(handle, "name", "")
-                ).endswith(".tmp"):
-                    handle.write("{partial")
-                    handle.flush()
-                    raise OSError("injected interrupted memory write")
-                return real_dump(obj, handle, *a, **kw)
-
             with patch.object(inbox, "INBOX_DIR", ind), patch.object(
                 inbox, "INBOX_STATE_DIR", state
             ), patch.object(
                 inbox, "INBOX_MANIFEST", state / "import_manifest.jsonl"
             ), patch.object(inbox, "PILOT_DATA_ROOT", root), patch(
-                "project_guardian.memory.json.dump", side_effect=broken_dump
+                "project_guardian.memory.os.replace",
+                side_effect=OSError("injected durable failure"),
             ):
                 failed = inbox.scan_inbox_to_memory(apply=True, exclusion_hold=hold)
-            self.assertNotEqual(failed.get("imported"), 1)
-            self.assertTrue(
-                failed.get("ok") is False
-                or any("persist" in e.lower() or "integrity" in e.lower() for e in failed.get("errors", []))
-                or any(r.get("status") == "error" for r in failed.get("results", []))
-            )
-            # Manifest must not claim imported for the failed write
+            self.assertEqual(failed.get("imported"), 0)
             man = state / "import_manifest.jsonl"
-            if man.exists():
-                lines = [json.loads(x) for x in man.read_text(encoding="utf-8").splitlines() if x.strip()]
-                self.assertFalse(any(x.get("status") == "imported" for x in lines))
+            self.assertFalse(man.exists() and "imported" in man.read_text(encoding="utf-8"))
+            self.assertEqual(json.loads(mem.read_text(encoding="utf-8")), baseline)
+            # Retry after removing injection must be able to import (no ghost ack).
+            with patch.object(inbox, "INBOX_DIR", ind), patch.object(
+                inbox, "INBOX_STATE_DIR", state
+            ), patch.object(
+                inbox, "INBOX_MANIFEST", state / "import_manifest.jsonl"
+            ), patch.object(inbox, "PILOT_DATA_ROOT", root):
+                retry = inbox.scan_inbox_to_memory(apply=True, exclusion_hold=hold)
+            self.assertEqual(retry.get("imported"), 1)
+
+    def test_junction_swap_during_open_read_refused(self):
+        """Exact Codex edge-probe pattern: swap after assert_file_inside, before read."""
+        import pilot_fs
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ind, state, mem = self._scope(root)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "a.txt").write_text(
+                "Fictional outside-only content escaped by a junction swap.",
+                encoding="utf-8",
+            )
+            (ind / "a.txt").write_text(
+                "Fictional inside-only document before swap.", encoding="utf-8"
+            )
+            hold = MagicMock()
+            original = pilot_fs.assert_file_inside_inbox
+
+            def swap(path, base):
+                v = original(path, base)
+                if path.name == "a.txt" and (root / "inbox").exists() and not (
+                    root / "original-inbox"
+                ).exists():
+                    (root / "inbox").rename(root / "original-inbox")
+                    cp = subprocess.run(
+                        ["cmd", "/c", "mklink", "/J", str(root / "inbox"), str(outside)],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if cp.returncode != 0:
+                        self.skipTest(cp.stdout + cp.stderr)
+                return v
+
+            with patch.object(inbox, "INBOX_DIR", ind), patch.object(
+                inbox, "INBOX_STATE_DIR", state
+            ), patch.object(
+                inbox, "INBOX_MANIFEST", state / "import_manifest.jsonl"
+            ), patch.object(inbox, "PILOT_DATA_ROOT", root), patch.object(
+                pilot_fs, "assert_file_inside_inbox", side_effect=swap
+            ):
+                report = inbox.scan_inbox_to_memory(apply=True, exclusion_hold=hold)
+            self.assertEqual(report.get("imported", 1), 0)
+            store = json.loads(mem.read_text(encoding="utf-8"))
+            self.assertFalse(
+                any("outside-only" in str(m.get("thought", "")) for m in store)
+            )
 
     def test_import_lock_serializes(self):
         with tempfile.TemporaryDirectory() as td:

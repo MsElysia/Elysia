@@ -239,7 +239,14 @@ class MemoryCore:
             "metadata": metadata or {}
         }
         self.memory_log.append(entry)
-        self._save()
+        try:
+            self._save()
+        except Exception:
+            # Roll back the in-memory append so failed persistence cannot poison
+            # subsequent dedupe / "already in memory" acknowledgements.
+            if self.memory_log and self.memory_log[-1] is entry:
+                self.memory_log.pop()
+            raise
         
         # Add to vector search index (only if embeddings are enabled)
         if self.vector_search and self._embeddings_enabled:

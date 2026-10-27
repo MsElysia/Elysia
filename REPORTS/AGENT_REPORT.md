@@ -3604,4 +3604,4 @@ python -m pytest -q
 
 **Next action:** Leave `TASK-0053` unmerged. A later product run can correct another unclaimed dashboard/API error path that is outside PRs #147–#149 and #153–#160.
 
-**Commit:** filled in after `git rev-parse HEAD` of the implementation commit.
+**Commit:** `4b75d4ad25b39081209e7ae38e22576ca9b5e5bb` on `cursor/elysia-product-workflow-process-85af`. Base `722d8e4fe85d7e42ac34066c2d651849d15e734c`.

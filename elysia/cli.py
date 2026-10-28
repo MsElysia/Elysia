@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import time
 import urllib.error
@@ -66,12 +67,32 @@ def main(argv: list[str] | None = None) -> None:
 
         cfg = load_runtime_config(mode=args.mode, env=args.env, overrides=overrides)
         runtime = ElysiaRuntime(cfg)
-        runtime.start()
+
+        def _stop_from_signal(signum, frame):
+            raise KeyboardInterrupt
+
+        previous_handlers = {}
+        for sig in (signal.SIGINT, getattr(signal, "SIGTERM", None)):
+            if sig is None:
+                continue
+            try:
+                previous_handlers[sig] = signal.getsignal(sig)
+                signal.signal(sig, _stop_from_signal)
+            except (ValueError, OSError):
+                pass
 
         try:
+            runtime.start()
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
+            pass
+        finally:
+            for sig, handler in previous_handlers.items():
+                try:
+                    signal.signal(sig, handler)
+                except (ValueError, OSError):
+                    pass
             runtime.stop()
         return
 

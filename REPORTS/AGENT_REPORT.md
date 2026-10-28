@@ -3577,3 +3577,37 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — implement HTTP status (2026-10-28)
+
+**Status:** COMPLETE on this branch. Not integrated to `main`.
+
+**Lane:** Product workflow. Unclaimed. `CONTROL.md` `CURRENT_TASK` remains `NONE`. Reconciliation queue `TASKS/TASK-0053.md` on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`) stays OPEN review-only. Do not merge `elysia-local-reconciliation-20260909-1657`. Codex Campaign 41 tip remains `3223ebb` on `origin/codex/limited-live-activation-wrapper`. `elysia/api/server.py` was not part of that handoff. This run did not implement live memory or vector writes.
+
+**Why this gap:** The `/api/events` limit fix is already on `origin/cursor/elysia-product-workflow-process-85af` (`4b75d4a`, handoff `f4eae95`) and was not copied. Before this change, a live `POST /api/proposals/fictional-draft/implement` for a fictional proposal in `proposal` status returned HTTP 200 with `success: false`.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c` (`main`). No other branch dependency. Not based on the events-limit branch.
+
+**Ownership checked:** Did not edit files owned by today's sibling lanes. Memory workflow `bc-c6e02e6d` is `11691e2` on `origin/cursor/elysia-memory-workflow-e6ab` (`project_guardian/memory.py`, `tests/test_memory_core_persistence.py`). Application runtime safety `bc-246a51cc` is `f865645` on `origin/cursor/application-runtime-safety-c6a9` (`elysia/cli.py`, `elysia/core/proposal_system.py`, `elysia/runtime.py`, `tests/test_elysia_runtime_lifecycle.py`). Left dashboard drafts #147–#149 and #153–#160, chat-failure PR #161, and the PR #154 repairs alone. Open issues #150 and #152 remain non-implementation backlogs. #139 remains the Windows vertical slice.
+
+**Acceptance:**
+- `POST /api/proposals/<id>/implement` for a fictional proposal still in `proposal` status returns HTTP 400 JSON with `success: false` and leaves that status unchanged
+- A missing proposal id returns HTTP 404 JSON `Proposal <id> not found`
+- An approved proposal with no plan returns HTTP 400, not 404, with the implementer's plan-missing error
+- An approved proposal whose only step is `Create file` with no path returns HTTP 400, `success: false`, and `steps_completed: 0` (no repository file is written)
+- An approved proposal with one generic step and `dry_run: true` returns HTTP 200, `success: true`, and `step_results[0].dry_run: true`
+- A JSON array body returns HTTP 400 `{"error": "request body must be a JSON object"}`
+- With no proposal system, the same route still returns HTTP 503 `Proposal system not available`
+- The same contract holds through Flask's test client and through a live Werkzeug HTTP server on 127.0.0.1
+
+**Command:** `python3 -m pytest tests/test_runtime_api_implement.py -v --tb=short` — 3 passed.
+
+**Files:** `elysia/api/server.py`, `tests/test_runtime_api_implement.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`.
+
+**Remaining limitations:** The route still constructs a new `ImplementerAgent` with `repo_root=Path(".")` and does not use the stored `self._implementer`. A failed step can still change proposal metadata through the real implementer. `dry_run` is still whatever JSON value was sent, so a non-boolean truthy value still enables dry-run. WebScout `POST /api/webscout/research` can still answer HTTP 200 with `status: accepted` when no research was queued. This does not change memory, governance, CI, or deployment settings. A branch commit is not integrated product readiness.
+
+**Next action:** Leave `TASK-0053` unmerged. A later product run can make `POST /api/webscout/research` report that research was not queued, unless that route has been claimed. Do not repeat the events-limit fix or this implement-status fix.
+
+**Commit:** filled in after `git rev-parse HEAD` of the implementation commit.

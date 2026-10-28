@@ -491,6 +491,13 @@
   - ReviewQueue enqueue is allowed (permitted side-effect)
 - **Acceptance**: All tests pass, invariants locked, no violations found
 
+## Product API — implement result status
+
+- `POST /api/proposals/<id>/implement` returns HTTP 200 only when the implementer reports `success: true`.
+- A missing proposal returns HTTP 404. Any other unsuccessful implementer result returns HTTP 400. The implementer body is unchanged.
+- A JSON body that is not an object returns HTTP 400 (`request body must be a JSON object`) instead of an internal error.
+- Contract: `tests/test_runtime_api_implement.py` (Flask client and live Werkzeug HTTP, fictional proposals, no external services).
+
 - **Gateways audit**: Verified WebReader, FileWriter, SubprocessRunner allow/deny/review/replay paths
 - **Context safety**: Verified only safe data stored (domain only, filename only, command name only)
 - **Forbidden patterns**: Verified no shell=True, no arbitrary commands, mode restrictions enforced

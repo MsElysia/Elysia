@@ -19,6 +19,27 @@ from ..events import EventBus
 logger = logging.getLogger(__name__)
 
 
+def _implement_http_response(result: Any):
+    """Map an implementer result to JSON without reporting failure as HTTP success.
+
+    A missing proposal is 404. Any other unsuccessful result is 400. Only an
+    explicit success stays 200. The implementer's body is left unchanged.
+    """
+    if not isinstance(result, dict):
+        return jsonify({"success": False, "error": "Implementer returned an unusable result"}), 500
+    if result.get("success") is True:
+        return jsonify(result), 200
+    error = result.get("error")
+    if (
+        result.get("success") is False
+        and isinstance(error, str)
+        and error.startswith("Proposal ")
+        and error.endswith(" not found")
+    ):
+        return jsonify(result), 404
+    return jsonify(result), 400
+
+
 class RuntimeAPIServer:
     """Wrap a Flask server that exposes runtime status and events."""
 
@@ -213,7 +234,11 @@ class RuntimeAPIServer:
             if not self._proposal_system:
                 return jsonify({"error": "Proposal system not available"}), 503
 
-            data = request.get_json(force=True, silent=True) or {}
+            data = request.get_json(force=True, silent=True)
+            if data is None:
+                data = {}
+            elif not isinstance(data, dict):
+                return jsonify({"error": "request body must be a JSON object"}), 400
             dry_run = data.get("dry_run", False)
 
             try:
@@ -228,7 +253,7 @@ class RuntimeAPIServer:
                 )
 
                 result = implementer.run_for_proposal(proposal_id)
-                return jsonify(result)
+                return _implement_http_response(result)
             except ImportError:
                 return jsonify({"error": "Implementer agent not available"}), 503
             except Exception as e:

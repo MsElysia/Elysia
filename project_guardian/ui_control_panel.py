@@ -749,7 +749,7 @@ CONTROL_PANEL_TEMPLATE = """
                 <div class="input-group">
                     <label>Fact:</label>
                     <input type="text" id="restricted-fact-statement" placeholder="Fictional fact, 12 or more characters" autocomplete="off">
-                    <button type="button" onclick="saveRestrictedFact()">Save fact</button>
+                    <button type="button" id="save-restricted-fact" onclick="saveRestrictedFact()">Save fact</button>
                 </div>
                 <div class="input-group">
                     <label>Retrieve with different wording:</label>
@@ -990,8 +990,14 @@ CONTROL_PANEL_TEMPLATE = """
             if (tabName === 'introspection' && typeof window.refreshIntrospectionDebug === 'function')
                 window.refreshIntrospectionDebug();
             if (tabName === 'learning') {
-                if (typeof window.refreshLinkedAccounts === 'function') window.refreshLinkedAccounts();
-                if (typeof window.refreshLearningSettings === 'function') window.refreshLearningSettings();
+                if (CONTAINED_DASHBOARD) {
+                    ['link-fb-status', 'link-twitter-status', 'learning-results'].forEach(function(id) {
+                        document.getElementById(id).textContent = 'Unavailable in this contained session';
+                    });
+                } else {
+                    if (typeof window.refreshLinkedAccounts === 'function') window.refreshLinkedAccounts();
+                    if (typeof window.refreshLearningSettings === 'function') window.refreshLearningSettings();
+                }
             }
             if (tabName === 'dashboard') {
                 if (typeof window.suggestNextAction === 'function') window.suggestNextAction();
@@ -1012,6 +1018,7 @@ CONTROL_PANEL_TEMPLATE = """
             try {
                 // Presentation only; backend authorization remains mandatory.
                 if (CONTAINED_DASHBOARD) {
+                    document.querySelectorAll('#learning .badge.success').forEach(function(el) { el.classList.remove('success'); });
                     document.querySelectorAll('#autonomy-enabled, #learning input, #learning select, #learning button, button[onclick="runPromptEvolution()"], button[onclick="speakMessage()"], button[onclick="triggerDreamCycle()"]')
                         .forEach(function(el) { el.disabled = true; el.title = 'Unavailable in this contained session'; });
                     document.getElementById('learning-status').textContent = 'Unavailable in this contained session';
@@ -1820,12 +1827,20 @@ CONTROL_PANEL_TEMPLATE = """
         };
 
         window.saveRestrictedFact = function() {
+            if (window._restrictedSavePending) return;
             if (!restrictedReady()) {
                 setRestrictedStatus('Restricted fact routes are mounted only when this panel is bound to loopback.', true);
                 return;
             }
             var input = document.getElementById('restricted-fact-statement');
-            var statement = input ? input.value : '';
+            var statement = input ? input.value.trim() : '';
+            if (statement.length < 12) {
+                setRestrictedStatus('statement must be at least 12 characters', true);
+                return;
+            }
+            window._restrictedSavePending = true;
+            var saveButton = document.getElementById('save-restricted-fact');
+            if (saveButton) saveButton.disabled = true;
             fetch('/api/restricted/v1/facts', {
                 method: 'POST',
                 headers: restrictedHeaders(),
@@ -1839,10 +1854,15 @@ CONTROL_PANEL_TEMPLATE = """
                     }
                     selectRestrictedFact(res.data.fact.fact_id);
                     document.getElementById('restricted-fact-matches').textContent = '';
+                    if (input) input.value = '';
                     setRestrictedStatus('Saved ' + res.data.fact.fact_id + ' revision ' + res.data.fact.revision, false);
                     addLog('Restricted fact saved ' + res.data.fact.fact_id, 'info');
                 })
-                .catch(function(err) { setRestrictedStatus(String(err), true); });
+                .catch(function(err) { setRestrictedStatus(String(err), true); })
+                .finally(function() {
+                    window._restrictedSavePending = false;
+                    if (saveButton) saveButton.disabled = false;
+                });
         };
 
         window.retrieveRestrictedFacts = function() {

@@ -196,3 +196,34 @@ def test_unconfigured_openrouter_never_constructs_client(isolated_chat, monkeypa
     reply, err = system._llm_completion_cloud_openrouter([], 5)
     assert not reply
     assert "key not loaded" in err
+
+
+@pytest.mark.parametrize("provider", ["openai", "openrouter"])
+def test_unified_router_cannot_replace_provider_failure_with_local_error(
+    isolated_chat, monkeypatch, provider
+):
+    system, _, _ = isolated_chat
+    monkeypatch.setenv(
+        "OPENAI_API_KEY" if provider == "openai" else "OPENROUTER_API_KEY",
+        "synthetic-never-send",
+    )
+    system._unified_chat_llm_router_enabled = lambda: True
+    system._mistral_model_for_chat = lambda: "synthetic-local"
+    system.guardian = None
+
+    failure = "synthetic provider authentication failure"
+    setattr(system, f"_llm_completion_cloud_{provider}", lambda *a: ("", failure))
+    router = ModuleType("project_guardian.unified_llm_route")
+
+    def after_provider_failure(**kwargs):
+        answer, error = kwargs[f"cloud_{provider}_call"]([], 5)
+        assert (answer, error) == ("", failure)
+        # The real unified router may return the *last* Ollama error instead.
+        return "", "synthetic local backend unavailable", {"backend": "ollama"}
+
+    router.unified_chat_completion = after_provider_failure
+    monkeypatch.setitem(sys.modules, "project_guardian.unified_llm_route", router)
+    reply, err = system.chat_with_llm("hello")
+    assert not reply
+    assert "synthetic provider authentication failure" in err
+    assert "offline chat mode" not in err

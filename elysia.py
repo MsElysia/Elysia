@@ -778,19 +778,39 @@ class UnifiedElysiaSystem:
         try:
             from project_guardian.unified_llm_route import unified_chat_completion
 
+            # The unified router can overwrite a provider's 401/timeout with a
+            # later Ollama/other-fallback error. Preserve each attempted cloud
+            # failure independently of the router's final error.
+            cloud_failures = []
+
+            def _record_cloud_failure(provider, completion):
+                def _call(messages, max_tokens):
+                    try:
+                        answer, failure = completion(messages, max_tokens)
+                    except Exception as exc:
+                        cloud_failures.append(f"{provider}: {exc}")
+                        raise
+                    if failure:
+                        cloud_failures.append(f"{provider}: {failure}")
+                    return answer, failure
+
+                return _call
+
             msgs = [{"role": "user", "content": message}]
             reply, err, _meta = unified_chat_completion(
                 messages=msgs,
                 max_tokens=500,
                 guardian=self.guardian,
-                cloud_openai_call=lambda m, mt: self._llm_completion_cloud_openai(m, mt),
-                cloud_openrouter_call=lambda m, mt: self._llm_completion_cloud_openrouter(m, mt),
+                cloud_openai_call=_record_cloud_failure("OpenAI", self._llm_completion_cloud_openai),
+                cloud_openrouter_call=_record_cloud_failure("OpenRouter", self._llm_completion_cloud_openrouter),
                 mistral_model=self._mistral_model_for_chat(),
                 module_name="planner",
                 agent_name="orchestrator",
             )
             if reply:
                 return reply, err
+            if cloud_failures and self._cloud_chat_configured():
+                return "", "; ".join(cloud_failures)
             return self._offline_chat_reply(message, err)
         except Exception as e:
             logger.warning("Unified chat router failed (%s); falling back to cloud-only", e)

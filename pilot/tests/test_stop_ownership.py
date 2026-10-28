@@ -23,6 +23,7 @@ from pilot_paths import (  # noqa: E402
     PILOT_DATA_ROOT,
     PILOT_MARKER,
     PILOT_PYTHON,
+    PILOT_SOURCE_ROOT,
 )
 from pilot_winprocess import BoundProcess  # noqa: E402
 
@@ -38,9 +39,7 @@ def _load_stop_module():
 
 
 def _complete_runtime(pid: int = 424242, **overrides):
-    entry = str(
-        Path(r"C:\Users\Owner\Elysia-Verified-Pilot\scripts\start_contained_browser_memory.py")
-    )
+    entry = str((PILOT_SOURCE_ROOT / "scripts" / "start_contained_browser_memory.py").resolve())
     base = {
         "marker": PILOT_MARKER,
         "pid": pid,
@@ -60,7 +59,7 @@ def _complete_runtime(pid: int = 424242, **overrides):
 
 
 def _owned_snapshot(pid: int = 424242, **overrides):
-    entry = r"C:\Users\Owner\Elysia-Verified-Pilot\scripts\start_contained_browser_memory.py"
+    entry = str((PILOT_SOURCE_ROOT / "scripts" / "start_contained_browser_memory.py").resolve())
     data = str(PILOT_DATA_ROOT)
     snap = ProcessSnapshot(
         pid=pid,

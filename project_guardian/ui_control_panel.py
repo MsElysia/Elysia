@@ -486,7 +486,7 @@ CONTROL_PANEL_TEMPLATE = """
         </header>
 
         {% if contained_dashboard %}
-        <p role="note">Contained session: autonomy, online learning and providers are disabled. Delivery acceptance remains unresolved; inbox apply is excluded.</p>
+        <p role="note">Contained session: autonomy, online learning, and paid providers are disabled. Chat reads the durable restricted fact store. Inbox .txt/.md import runs at startup.</p>
         {% endif %}
         <div id="action-feedback" role="status" aria-live="polite" style="padding: 10px; min-height: 20px; white-space: pre-wrap;">Action results appear here. Detailed session messages are in Logs.</div>
 
@@ -1019,10 +1019,15 @@ CONTROL_PANEL_TEMPLATE = """
                 // Presentation only; backend authorization remains mandatory.
                 if (CONTAINED_DASHBOARD) {
                     document.querySelectorAll('#learning .badge.success').forEach(function(el) { el.classList.remove('success'); });
-                    document.querySelectorAll('#autonomy-enabled, #learning input, #learning select, #learning button, button[onclick="runPromptEvolution()"], button[onclick="speakMessage()"], button[onclick="triggerDreamCycle()"]')
+                    document.querySelectorAll('#autonomy-enabled, #learning input, #learning select, #learning button, button[onclick="runPromptEvolution()"], button[onclick="speakMessage()"], button[onclick="triggerDreamCycle()"], button[onclick="refreshIncomeStatus()"], button[onclick="runHarvestReport()"], button[onclick="runResearchProposal()"]')
                         .forEach(function(el) { el.disabled = true; el.title = 'Unavailable in this contained session'; });
                     document.getElementById('learning-status').textContent = 'Unavailable in this contained session';
                     document.getElementById('learning-status').style.color = 'var(--text-secondary)';
+                    document.querySelectorAll('label').forEach(function(label) {
+                        if (label.textContent.indexOf('Chat with AI') === 0) label.textContent = 'Chat with durable memory:';
+                    });
+                    var chatInput = document.getElementById('api-chat-message');
+                    if (chatInput) chatInput.placeholder = 'Ask using words from a saved fact';
                 }
                 document.querySelectorAll('label').forEach(function(label) {
                     var input = label.parentElement.querySelector('input[id], select[id], textarea[id]');
@@ -2907,12 +2912,58 @@ class UIControlPanel:
 
         @self.app.route('/api/chat', methods=['POST'])
         def api_chat():
-            """Chat with AI (OpenAI/OpenRouter via unified system or guardian.ask_ai fallback)."""
+            """Chat. Contained sessions read durable restricted facts and do not call providers."""
             try:
                 data = request.get_json() or {}
                 message = (data.get('message') or '').strip()
                 if not message:
                     return jsonify({"error": "message is required"}), 400
+                if self._contained_startup_active():
+                    try:
+                        adapter = self._restricted_adapter()
+                    except Exception as exc:
+                        logger.error("Contained chat could not attach restricted runtime: %s", exc)
+                        return jsonify({
+                            "success": False,
+                            "error": "restricted runtime is not attached",
+                            "reply": None,
+                            "provider": "none",
+                        }), 503
+                    result = adapter.handle(
+                        "POST",
+                        "/api/restricted/v1/facts/retrieve",
+                        headers={
+                            "X-Elysia-Identity": _DASHBOARD_OPERATOR_IDENTITY,
+                            "X-Elysia-Token": self._dashboard_operator_token(),
+                        },
+                        body={"query": message},
+                    )
+                    body = result.body if isinstance(result.body, dict) else {}
+                    if result.status != 200 or not body.get("ok"):
+                        detail = body.get("detail") or body.get("error") or "fact retrieval failed"
+                        return jsonify({
+                            "success": False,
+                            "error": detail,
+                            "reply": None,
+                            "provider": "restricted-memory",
+                        }), result.status
+                    matches = body.get("matches") or []
+                    if not matches:
+                        reply = "No current durable fact matched that wording."
+                    else:
+                        lines = [
+                            f"{item.get('fact_id')} revision {item.get('revision')}: {item.get('statement')}"
+                            for item in matches
+                        ]
+                        reply = "Durable facts:\n" + "\n".join(lines)
+                    return jsonify({
+                        "success": True,
+                        "reply": reply,
+                        "error": None,
+                        "provider": "restricted-memory",
+                        "matches": matches,
+                        "memory_store": body.get("memory_store"),
+                    })
                 us = _get_unified_system()
                 if us and hasattr(us, 'chat_with_llm'):
                     reply, err = us.chat_with_llm(message)

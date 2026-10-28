@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Source checkout (this repo / worktree)
-PILOT_SOURCE_ROOT = Path(r"C:\Users\Owner\Elysia-Verified-Pilot").resolve()
+# This checkout. The frozen pilot at Elysia-Verified-Pilot is left untouched.
+PILOT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
-# Persistent store OUTSIDE the source checkout
-PILOT_DATA_ROOT = Path(r"C:\Users\Owner\Elysia-Verified-Pilot-Data").resolve()
+# Durable store outside source, and outside the already-running verified-pilot data.
+PILOT_DATA_ROOT = Path(r"C:\Users\Owner\Elysia-Windows-Integration-Data").resolve()
 
 # Verified interpreter (read-only use; do not modify this venv from the pilot)
 PILOT_PYTHON = Path(r"C:\Users\Owner\Project guardian\.venv\Scripts\python.exe").resolve()

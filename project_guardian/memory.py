@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import logging
+import tempfile
 import threading
 from typing import List, Dict, Any, Optional
 
@@ -50,6 +51,12 @@ class MemoryCore:
         self.loaded: bool = False
         self._load_lock = threading.Lock()
         self._save_file_lock = threading.Lock()
+        # Last persistence failure (None when the latest save/load succeeded); status surfaces can
+        # read these instead of trusting the in-memory count.
+        self.last_save_error: Optional[str] = None
+        self.last_load_error: Optional[str] = None
+        # Path of the unreadable history file preserved by load(), if any.
+        self.quarantined_history_path: Optional[str] = None
         
         # Embeddings control (defer until startup completes)
         self._embeddings_enabled = False
@@ -122,6 +129,11 @@ class MemoryCore:
         """
         if load_if_needed:
             self.load_if_needed()
+        persistence = {
+            "last_save_error": self.last_save_error,
+            "last_load_error": self.last_load_error,
+            "quarantined_history_path": self.quarantined_history_path,
+        }
         if self.loaded:
             n = len(self.memory_log)
             return {
@@ -129,12 +141,14 @@ class MemoryCore:
                 "json_loaded": True,
                 "memory_count": n,
                 "memory_count_authoritative": True,
+                **persistence,
             }
         return {
             "memory_loaded": False,
             "json_loaded": False,
             "memory_count": None,
             "memory_count_authoritative": False,
+            **persistence,
         }
     
     def _build_vector_index(self):
@@ -175,7 +189,7 @@ class MemoryCore:
         category: str = "general",
         priority: float = 0.5,
         metadata: Optional[Dict[str, Any]] = None
-    ) -> None:
+    ) -> bool:
         """
         Store a new memory entry with timestamp and metadata.
         Enhanced with TimelineMemory integration for persistent event logging.
@@ -185,6 +199,11 @@ class MemoryCore:
             category: Memory category (e.g., 'safety', 'task', 'mutation', 'conversation')
             priority: Priority level (0.0 to 1.0)
             metadata: Optional additional metadata
+
+        Returns:
+            True only when the entry was written to the JSON history on disk. False when the
+            entry was filtered, rejected as non-serializable, or the save failed (the on-disk
+            history is left untouched in every False case).
         """
         self.load_if_needed()
         try:
@@ -192,7 +211,7 @@ class MemoryCore:
 
             if should_skip_nonessential_remember(category, float(priority or 0), thought or ""):
                 logger.debug("MemoryCore.remember skipped (startup memory-thin mode)")
-                return
+                return False
         except Exception:
             pass
         try:
@@ -200,7 +219,7 @@ class MemoryCore:
 
             if routine_autonomy_remember_suppressed(category, float(priority or 0), thought):
                 logger.debug("MemoryCore.remember skipped (host RAM pressure + routine duplicate)")
-                return
+                return False
         except Exception:
             pass
         try:
@@ -208,7 +227,7 @@ class MemoryCore:
 
             if is_low_value_memory_text(thought, min_chars_for_substantive=22) and float(priority or 0) < 0.52:
                 logger.debug("Memory remember skipped (noise text, low priority)")
-                return
+                return False
         except Exception:
             pass
         # Reject low-value writes under memory pressure to reduce junk growth
@@ -222,14 +241,10 @@ class MemoryCore:
                 count_thresh = pressure_cfg.get("low_value_write_reject_when_count_above", 1600)
                 priority_thresh = pressure_cfg.get("low_value_write_reject_priority_below", 0.25)
                 if len(self.memory_log) >= count_thresh and priority < priority_thresh:
-                    return
+                    return False
         except Exception:
             pass
-        # Enforce max_memories limit if set
-        if self.max_memories is not None and len(self.memory_log) >= self.max_memories:
-            # Remove oldest memory to make room
-            self.memory_log.pop(0)
-        
+
         timestamp = datetime.datetime.now().isoformat()
         entry = {
             "time": timestamp,
@@ -238,8 +253,23 @@ class MemoryCore:
             "priority": priority,
             "metadata": metadata or {}
         }
+        # A single non-serializable entry would make every later save fail, so reject it before
+        # it reaches the in-memory log or the file.
+        try:
+            json.dumps(entry)
+        except (TypeError, ValueError) as e:
+            self.last_save_error = f"rejected non-serializable memory entry: {e}"
+            logger.warning("MemoryCore.remember rejected entry (%s)", e)
+            print(f"[Guardian Memory] Rejected non-serializable memory entry: {e}")
+            return False
+
+        # Enforce max_memories limit if set
+        if self.max_memories is not None and len(self.memory_log) >= self.max_memories:
+            # Remove oldest memory to make room
+            self.memory_log.pop(0)
+
         self.memory_log.append(entry)
-        self._save()
+        persisted = self._save()
         
         # Add to vector search index (only if embeddings are enabled)
         if self.vector_search and self._embeddings_enabled:
@@ -290,8 +320,9 @@ class MemoryCore:
         logger.debug(f"[Guardian Memory] {timestamp}: {thought}")
         # Avoid flooding console with heartbeat pulses and startup lines
         if "[Heartbeat]" in thought:
-            return
+            return persisted
         print(f"[Guardian Memory] {timestamp}: {thought}")
+        return persisted
         
     def recall_last(
         self,
@@ -523,42 +554,109 @@ class MemoryCore:
             os.remove(self.filepath)
         print("[Guardian Memory] All memories cleared.")
         
-    def _save(self) -> None:
+    def _save(self) -> bool:
         """
-        Save memories to JSON file.
+        Save memories to the JSON file atomically.
+
+        The payload is serialized first and written to a temp file in the same directory,
+        then moved over the target with os.replace, so a serialization error, a crash, or a
+        failed write never leaves a truncated history behind. Returns True on success.
         """
         import time as _time
 
         with self._save_file_lock:
+            try:
+                payload = json.dumps(self.memory_log, indent=2)
+            except (TypeError, ValueError) as e:
+                self.last_save_error = str(e)
+                print(f"[Guardian Memory] Save failed (history not serializable, file untouched): {e}")
+                return False
+
             last_err: Optional[Exception] = None
             for attempt in range(3):
                 try:
-                    with open(self.filepath, "w", encoding="utf-8") as f:
-                        json.dump(self.memory_log, f, indent=2)
+                    self._write_atomic(payload)
+                    self.last_save_error = None
                     try:
                         from memory_storage_config import notify_usb_persist_mirror
 
                         notify_usb_persist_mirror(self.filepath)
                     except ImportError:
                         pass
-                    return
+                    return True
                 except Exception as e:
                     last_err = e
                     _time.sleep(0.04 * (attempt + 1))
-            if last_err:
-                print(f"[Guardian Memory] Save failed after retries: {last_err}")
-            
+            self.last_save_error = str(last_err)
+            print(f"[Guardian Memory] Save failed after retries (existing file untouched): {last_err}")
+            return False
+
+    def _write_atomic(self, payload: str) -> None:
+        parent = os.path.dirname(os.path.abspath(self.filepath)) or "."
+        base = os.path.basename(self.filepath)
+        fd, tmp_path = tempfile.mkstemp(prefix=f".{base}.", suffix=".tmp", dir=parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.filepath)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+            raise
+
     def load(self) -> None:
         """
         Load memories from JSON file.
+
+        If the file exists but is not a JSON list, it is moved aside to
+        ``<filepath>.corrupt.<UTC stamp>`` (never overwritten) so the next save cannot
+        destroy the only copy of the history, and the in-memory log starts empty.
         """
-        if os.path.exists(self.filepath):
-            try:
-                with open(self.filepath, "r", encoding="utf-8") as f:
-                    self.memory_log = json.load(f)
-                print(f"[Guardian Memory] Loaded {len(self.memory_log)} past memories.")
-            except Exception as e:
-                print(f"[Guardian Memory] Load failed: {e}")
+        self.last_load_error = None
+        if not os.path.exists(self.filepath):
+            return
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                raise ValueError(f"memory history must be a JSON list, got {type(data).__name__}")
+            self.memory_log = data
+            print(f"[Guardian Memory] Loaded {len(self.memory_log)} past memories.")
+        except (ValueError, UnicodeDecodeError) as e:
+            # json.JSONDecodeError is a ValueError. Content corruption: preserve the bytes.
+            self.last_load_error = str(e)
+            self.memory_log = []
+            self._quarantine_unreadable_history(e)
+        except Exception as e:
+            # I/O failure (permissions, lock): the file may be fine, so leave it in place.
+            self.last_load_error = str(e)
+            print(f"[Guardian Memory] Load failed: {e}")
+
+    def _quarantine_unreadable_history(self, error: Exception) -> None:
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        corrupt_copy = f"{self.filepath}.corrupt.{stamp}"
+        suffix = 0
+        while os.path.exists(corrupt_copy):
+            suffix += 1
+            corrupt_copy = f"{self.filepath}.corrupt.{stamp}.{suffix}"
+        try:
+            os.replace(self.filepath, corrupt_copy)
+            self.quarantined_history_path = corrupt_copy
+            logger.warning(
+                "MemoryCore: unreadable history %s (%s); preserved as %s and starting with an empty log",
+                self.filepath,
+                error,
+                corrupt_copy,
+            )
+            print(f"[Guardian Memory] Load failed: {error}. Unreadable history preserved at {corrupt_copy}")
+        except Exception as move_err:
+            logger.warning("MemoryCore: unreadable history %s (%s); could not preserve it: %s", self.filepath, error, move_err)
+            print(f"[Guardian Memory] Load failed: {error} (could not preserve file: {move_err})")
                 
     def consolidate(self, max_memories: int = 5000, keep_recent_days: int = 30) -> Dict[str, Any]:
         """

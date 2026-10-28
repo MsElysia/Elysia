@@ -485,6 +485,11 @@ CONTROL_PANEL_TEMPLATE = """
             </div>
         </header>
 
+        {% if contained_dashboard %}
+        <p role="note">Contained session: autonomy, online learning and providers are disabled. Delivery acceptance remains unresolved; inbox apply is excluded.</p>
+        {% endif %}
+        <div id="action-feedback" role="status" aria-live="polite" style="padding: 10px; min-height: 20px; white-space: pre-wrap;">Action results appear here. Detailed session messages are in Logs.</div>
+
         <div class="tabs">
             <button class="tab active" onclick="showTab('dashboard', this)">📊 Dashboard</button>
             <button class="tab" onclick="showTab('learning', this)">📚 Learning</button>
@@ -699,7 +704,7 @@ CONTROL_PANEL_TEMPLATE = """
                     </div>
                     <div style="margin-top: 20px; padding: 12px; background: var(--bg-dark); border-radius: 8px;">
                         <strong style="color: var(--text-primary);">Status:</strong>
-                        <div id="learning-status" style="margin-top: 8px; color: var(--success);">Learning system ready</div>
+                        <div id="learning-status" style="margin-top: 8px; color: var(--text-secondary);">Source availability has not been verified</div>
                     </div>
                 </div>
             </div>
@@ -721,6 +726,7 @@ CONTROL_PANEL_TEMPLATE = """
         <div id="security" class="tab-content">
             <div class="card">
                 <h2>Security Events</h2>
+                <p>No event feed is connected to this panel. Dashboard security counters are a limited summary, not a security audit.</p>
                 <div id="security-events"></div>
             </div>
         </div>
@@ -729,6 +735,7 @@ CONTROL_PANEL_TEMPLATE = """
         <div id="memory" class="tab-content">
             <div class="card">
                 <h2>Memory Operations</h2>
+                <p>Keyword search includes historical revisions. Use Retrieve below for current facts with different wording.</p>
                 <div class="input-group">
                     <label>Search Memories:</label>
                     <input type="text" id="memory-search" placeholder="Enter search query">
@@ -897,6 +904,8 @@ CONTROL_PANEL_TEMPLATE = """
                 <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
                     <button onclick="refreshIncomeStatus()">Income / API Status</button>
                     <button onclick="runHarvestReport()">Harvest Report</button>
+                    <label for="research-topic">Research topic:</label>
+                    <input id="research-topic" type="text" value="AI safety" maxlength="500">
                     <button onclick="runResearchProposal()">Research Proposal (WebScout)</button>
                     <button onclick="runPromptEvolution()">Run Prompt Evolution</button>
                 </div>
@@ -925,10 +934,16 @@ CONTROL_PANEL_TEMPLATE = """
     <script>
         var RESTRICTED_IDENTITY = {{ restricted_identity|tojson }};
         var RESTRICTED_TOKEN = {{ restricted_token|tojson }};
+        var CONTAINED_DASHBOARD = {{ contained_dashboard|default(false)|tojson }};
 
         // Define addLog function FIRST so it's available immediately
         function addLog(message, level) {
             if (level === undefined) level = 'info';
+            var feedback = document.getElementById('action-feedback');
+            if (feedback) {
+                feedback.textContent = message;
+                feedback.style.color = level === 'error' ? 'var(--danger)' : (level === 'warning' ? 'var(--warning)' : 'var(--text-primary)');
+            }
             try {
                 const console = document.getElementById('console-logs');
                 if (console) {
@@ -995,6 +1010,17 @@ CONTROL_PANEL_TEMPLATE = """
         // Initialize on page load - show UI immediately
         document.addEventListener('DOMContentLoaded', function() {
             try {
+                // Presentation only; backend authorization remains mandatory.
+                if (CONTAINED_DASHBOARD) {
+                    document.querySelectorAll('#autonomy-enabled, #learning input, #learning select, #learning button, button[onclick="runPromptEvolution()"], button[onclick="speakMessage()"], button[onclick="triggerDreamCycle()"]')
+                        .forEach(function(el) { el.disabled = true; el.title = 'Unavailable in this contained session'; });
+                    document.getElementById('learning-status').textContent = 'Unavailable in this contained session';
+                    document.getElementById('learning-status').style.color = 'var(--text-secondary)';
+                }
+                document.querySelectorAll('label').forEach(function(label) {
+                    var input = label.parentElement.querySelector('input[id], select[id], textarea[id]');
+                    if (input && !label.htmlFor && !label.querySelector('input')) label.htmlFor = input.id;
+                });
                 addLog('Control Panel loaded at ' + window.location.href, 'info');
                 const spinner = document.getElementById('loading-spinner');
                 if (spinner) spinner.style.display = 'none';
@@ -1057,17 +1083,17 @@ CONTROL_PANEL_TEMPLATE = """
             const statusTextEl = document.getElementById('status-text');
             const spinner = document.getElementById('loading-spinner');
             if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
-                statusTextEl.textContent = 'Connected (Limited)';
+                statusTextEl.textContent = 'Waiting for server status';
                 if (spinner) spinner.style.display = 'none';
                 const ind = document.getElementById('status-indicator');
-                if (ind) ind.className = 'status-indicator status-running';
-                addLog('Status: using limited mode - buttons should work', 'info');
+                if (ind) ind.className = 'status-indicator';
+                addLog('Waiting for server status; controls remain visible', 'warning');
             }
         }, 2000);
         setTimeout(function() {
             const statusTextEl = document.getElementById('status-text');
             if (statusTextEl && statusTextEl.textContent === 'Connecting...') {
-                statusTextEl.textContent = 'Connected (Limited)';
+                statusTextEl.textContent = 'Waiting for server status';
             }
         }, 4000);
 
@@ -1091,17 +1117,17 @@ CONTROL_PANEL_TEMPLATE = """
             }
             const indicator = document.getElementById('status-indicator');
             if (indicator) {
-                indicator.className = 'status-indicator status-running';
+                indicator.className = 'status-indicator';
             }
             
-            // Set a timeout to show "Connected" status if API doesn't respond quickly
+            // A slow response is not proof that the runtime is connected.
             let timeoutId = setTimeout(function() {
                 if (statusTextEl && (statusTextEl.textContent === 'Initializing...' || statusTextEl.textContent === 'Connecting...')) {
-                    statusTextEl.textContent = 'Connected';
+                    statusTextEl.textContent = 'Waiting for server status';
                     if (indicator) {
-                        indicator.className = 'status-indicator status-running';
+                        indicator.className = 'status-indicator';
                     }
-                    addLog('Connected to server (waiting for status)', 'info');
+                    addLog('Waiting for server status', 'warning');
                 }
             }, 2000); // 2 second timeout (reduced from 3)
             
@@ -1133,21 +1159,10 @@ CONTROL_PANEL_TEMPLATE = """
                     clearTimeout(timeoutId2);
                     const msg = err.name === 'AbortError' ? 'Status timed out (5s)' : (err.message || String(err));
                     addLog('Status fetch failed: ' + msg + ' - using fallback', 'warning');
-                    // Use fallback status to show UI is working
-                    // Check if we have any indicators that system is running
-                    updateDashboard({
-                        system: { running: true, initialized: true, uptime: 0 },
-                        loop: { running: true, paused: false, queue_size: 0 },
-                        memory: { total_entries: 0, total_memories: 0 },
-                        security: { policy_loaded: false, recent_violations: 0, pending_reviews: 0 },
-                        trust: { components: 0, average_trust: 0 }
-                    });
-                    
-                    // Ensure UI is visible even on error
                     const statusTextEl = document.getElementById('status-text');
-                    if (statusTextEl && statusTextEl.textContent === 'Initializing...') {
-                        statusTextEl.textContent = 'Connected (Limited)';
-                    }
+                    if (statusTextEl) statusTextEl.textContent = 'Status unavailable';
+                    const indicator = document.getElementById('status-indicator');
+                    if (indicator) indicator.className = 'status-indicator status-stopped';
                 });
             
             // Then set up interval
@@ -1176,6 +1191,8 @@ CONTROL_PANEL_TEMPLATE = """
                     })
                     .catch(function(err) {
                         clearTimeout(timeoutId);
+                        const statusTextEl = document.getElementById('status-text');
+                        if (statusTextEl) statusTextEl.textContent = 'Disconnected — last values may be stale';
                         if (err.name !== 'AbortError') {
                             console.log('Status fetch error:', err);
                         }
@@ -1330,8 +1347,11 @@ CONTROL_PANEL_TEMPLATE = """
 
         window.createSnapshot = function() {
             fetch('/api/memory/snapshot', { method: 'POST' })
-                .then(function(r) { return r.json(); })
-                .then(function(data) { addLog('Snapshot created: ' + (data.path || 'success'), 'info'); })
+                .then(function(r) { return r.json().then(function(data) { return {ok: r.ok, data: data}; }); })
+                .then(function(res) {
+                    var data = res.data;
+                    addLog(res.ok && data.success ? (data.message || 'Memory saved; no snapshot path returned') : (data.error || data.message || 'Snapshot failed'), res.ok && data.success ? 'info' : 'error');
+                })
                 .catch(function(err) { addLog('Error: ' + err, 'error'); });
         };
 
@@ -1405,6 +1425,8 @@ CONTROL_PANEL_TEMPLATE = """
                     div.innerHTML = html;
                     if (execBtn) {
                         execBtn.style.display = (data.can_auto_execute && data.action) ? 'inline-block' : 'none';
+                        execBtn.disabled = CONTAINED_DASHBOARD;
+                        execBtn.title = CONTAINED_DASHBOARD ? 'Autonomy execution is disabled in this contained session' : '';
                         execBtn.onclick = function() {
                             if (data.action === 'consider_learning') {
                                 var learnHeaders = { 'Content-Type': 'application/json' };
@@ -1487,17 +1509,26 @@ CONTROL_PANEL_TEMPLATE = """
         };
 
         window.submitTask = function() {
-            const code = document.getElementById('task-code').value;
-            const priority = parseInt(document.getElementById('task-priority').value);
+            const code = document.getElementById('task-code').value.trim();
+            const priority = Number(document.getElementById('task-priority').value);
+            if (!code || !Number.isInteger(priority) || priority < 1 || priority > 10) {
+                addLog('Enter task code and an integer priority from 1 to 10.', 'warning');
+                return;
+            }
             
             fetch('/api/tasks/submit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ code: code, priority: priority })
             })
-            .then(function(r) { return r.json(); })
-            .then(function(data) { 
-                addLog('Task submitted: ' + (data.task_id || 'success'), 'info');
+            .then(function(r) { return r.json().then(function(data) { return {ok: r.ok, data: data}; }); })
+            .then(function(res) {
+                var data = res.data;
+                if (!res.ok || !data.success) {
+                    addLog(data.error || data.message || 'Task submission failed', 'error');
+                    return;
+                }
+                addLog('Task route accepted' + (data.task_id ? ': ' + data.task_id : '; no task ID returned'), 'info');
                 if (typeof window.refreshTaskQueue === 'function') window.refreshTaskQueue();
             })
             .catch(function(err) { 
@@ -1563,13 +1594,14 @@ CONTROL_PANEL_TEMPLATE = """
         window.sendApiChat = function() {
             const msg = (document.getElementById('api-chat-message') || {}).value;
             const el = document.getElementById('api-chat-result');
-            if (!msg) { if (el) el.textContent = 'Enter a message first.'; return; }
+            if (!msg || !msg.trim()) { if (el) el.textContent = 'Enter a message first.'; return; }
             if (el) el.textContent = 'Sending...';
             fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) })
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                     if (el) el.textContent = data.reply || data.error || JSON.stringify(data);
-                    addLog('Chat: ' + (data.success ? 'OK' : (data.error || '')), data.success ? 'info' : 'error');
+                    var failed = !data.success || data.error || /^Error:/i.test(data.reply || '');
+                    addLog(failed ? ('Chat unavailable: ' + (data.error || data.reply || 'No reply')) : 'Chat reply received', failed ? 'error' : 'info');
                 })
                 .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Chat error: ' + err, 'error'); });
         };
@@ -1613,8 +1645,8 @@ CONTROL_PANEL_TEMPLATE = """
             fetch('/api/income-status')
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
-                    if (el) el.textContent = JSON.stringify(data.income_modules || data, null, 2);
-                    addLog('Income status refreshed', 'info');
+                    if (el) el.textContent = data.message || data.error || JSON.stringify(data.income_modules || data, null, 2);
+                    addLog(data.message || data.error || 'Income status refreshed', data.message || data.error ? 'warning' : 'info');
                 })
                 .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Income status error: ' + err, 'error'); });
         };
@@ -1634,7 +1666,8 @@ CONTROL_PANEL_TEMPLATE = """
         window.runResearchProposal = function() {
             const el = document.getElementById('api-tools-result');
             if (el) el.textContent = 'Creating research proposal...';
-            const topic = prompt('Research topic (or leave default):', 'AI safety') || 'AI safety';
+            const topic = (document.getElementById('research-topic').value || '').trim();
+            if (!topic) { if (el) el.textContent = 'Enter a research topic first.'; return; }
             fetch('/api/research-proposal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ topic: topic }) })
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
@@ -1662,7 +1695,10 @@ CONTROL_PANEL_TEMPLATE = """
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                     const results = document.getElementById('memory-results');
-                    results.innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+                    results.textContent = '';
+                    var pre = document.createElement('pre');
+                    pre.textContent = JSON.stringify(data, null, 2);
+                    results.appendChild(pre);
                 })
                 .catch(function(err) { addLog('Error: ' + err, 'error'); });
         };
@@ -1702,6 +1738,10 @@ CONTROL_PANEL_TEMPLATE = """
         }
 
         function selectRestrictedFact(factId) {
+            if (window._restrictedFactId !== (factId || '')) {
+                var history = document.getElementById('restricted-fact-history');
+                if (history) history.textContent = '';
+            }
             window._restrictedFactId = factId || '';
             var idEl = document.getElementById('restricted-fact-id');
             if (idEl) idEl.textContent = factId || 'none';
@@ -1798,6 +1838,7 @@ CONTROL_PANEL_TEMPLATE = """
                         return;
                     }
                     selectRestrictedFact(res.data.fact.fact_id);
+                    document.getElementById('restricted-fact-matches').textContent = '';
                     setRestrictedStatus('Saved ' + res.data.fact.fact_id + ' revision ' + res.data.fact.revision, false);
                     addLog('Restricted fact saved ' + res.data.fact.fact_id, 'info');
                 })
@@ -1828,6 +1869,7 @@ CONTROL_PANEL_TEMPLATE = """
                         selectRestrictedFact(matches[0].fact_id);
                         setRestrictedStatus('Retrieved ' + matches.length + ' current fact(s). Selected ' + matches[0].fact_id, false);
                     } else {
+                        selectRestrictedFact('');
                         setRestrictedStatus('No current fact matched that wording.', true);
                     }
                 })
@@ -1858,6 +1900,7 @@ CONTROL_PANEL_TEMPLATE = """
                         return;
                     }
                     setRestrictedStatus('Corrected ' + factId + ' to revision ' + res.data.fact.revision, false);
+                    document.getElementById('restricted-fact-matches').textContent = '';
                     addLog('Restricted fact corrected ' + factId, 'info');
                     window.showRestrictedFactHistory();
                 })
@@ -2073,7 +2116,12 @@ CONTROL_PANEL_TEMPLATE = """
                 .then(function(data) {
                     if (data.success) {
                         const resultsDiv = document.getElementById('correlation-results');
-                        if (data.correlations && data.correlations.length > 0) {
+                        if (data.correlations && data.correlations.note) {
+                            resultsDiv.textContent = data.correlations.note;
+                            addLog(data.correlations.note, 'warning');
+                            return;
+                        }
+                        if (Array.isArray(data.correlations) && data.correlations.length > 0) {
                             const html = data.correlations.map(function(corr) {
                                 const score = (corr.correlation_score * 100).toFixed(1);
                                 const timeDiff = corr.time_diff_hours.toFixed(1);
@@ -2366,6 +2414,7 @@ class UIControlPanel:
                 CONTROL_PANEL_TEMPLATE,
                 restricted_identity=identity,
                 restricted_token=token,
+                contained_dashboard=bool((getattr(self.orchestrator, 'config', None) or {}).get('contained_startup')),
             )
         
         @self.app.route('/favicon.ico')

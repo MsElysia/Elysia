@@ -596,18 +596,36 @@ class UnifiedElysiaSystem:
         return "mistral"
 
     def _openai_client_direct(self):
-        """Build an OpenAI client from env when income APIManager is unavailable."""
-        api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
-        if not api_key:
-            return None
+        """Use the existing credential manager and routing policy, never a raw env-key bypass."""
         try:
-            from openai import OpenAI
-            return OpenAI(api_key=api_key)
+            from project_guardian.cloud_api_state import (
+                cloud_credentials_snapshot,
+                openai_usable_for_routing,
+            )
+            from project_guardian.api_key_manager import get_api_key_manager
+
+            cloud_credentials_snapshot(refresh=True)
+            if not openai_usable_for_routing():
+                return None
+            return get_api_key_manager().get_openai_client()
         except Exception as e:
-            logger.debug("Direct OpenAI client unavailable: %s", e)
+            logger.debug("Routed OpenAI client unavailable: %s", e)
             return None
 
     def _llm_completion_cloud_openai(self, messages: List[Dict[str, Any]], max_tokens: int) -> Tuple[str, str]:
+        # All client sources, including the legacy income API manager, respect the existing routing gate.
+        try:
+            from project_guardian.cloud_api_state import (
+                cloud_credentials_snapshot,
+                openai_usable_for_routing,
+                openai_routing_block_reason,
+            )
+
+            cloud_credentials_snapshot(refresh=True)
+            if not openai_usable_for_routing():
+                return "", "OpenAI routing unavailable: " + openai_routing_block_reason()
+        except Exception:
+            return "", "OpenAI routing unavailable: policy state unreadable"
         reply, err = "", ""
         client = None
         ig = self.get_income_generator()
@@ -641,6 +659,14 @@ class UnifiedElysiaSystem:
         return reply, err
 
     def _llm_completion_cloud_openrouter(self, messages: List[Dict[str, Any]], max_tokens: int) -> Tuple[str, str]:
+        # The shared credential manager must recognize OpenRouter before either transport is used.
+        try:
+            from project_guardian.cloud_api_state import cloud_credentials_snapshot
+
+            if not cloud_credentials_snapshot(refresh=True).get("openrouter"):
+                return "", "OpenRouter routing unavailable: key not loaded"
+        except Exception:
+            return "", "OpenRouter routing unavailable: credential state unreadable"
         reply, err = "", ""
         ig = self.get_income_generator()
         if ig and getattr(ig, "api_manager", None):
@@ -660,7 +686,8 @@ class UnifiedElysiaSystem:
                     err = str(e)
                 return reply, err
             # API manager present but no openrouter key — fall through to env direct
-        or_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+        from project_guardian.api_key_manager import get_api_key_manager
+        or_key = (get_api_key_manager().keys.openrouter or "").strip()
         if or_key:
             try:
                 from openai import OpenAI
@@ -679,10 +706,17 @@ class UnifiedElysiaSystem:
         return reply, err
 
     def _llm_completion_cloud_preferred(self, messages: List[Dict[str, Any]], max_tokens: int) -> Tuple[str, str]:
-        reply, err = self._llm_completion_cloud_openai(messages, max_tokens)
-        if reply or not err:
-            return reply, err
-        return self._llm_completion_cloud_openrouter(messages, max_tokens)
+        reply, openai_err = self._llm_completion_cloud_openai(messages, max_tokens)
+        if reply:
+            return reply, ""
+        router_reply, router_err = self._llm_completion_cloud_openrouter(messages, max_tokens)
+        if router_reply:
+            return router_reply, ""
+        # A later unavailable fallback must not erase an earlier provider failure.
+        details = [f"OpenAI: {openai_err}" if openai_err else ""]
+        if router_err:
+            details.append(f"OpenRouter: {router_err}")
+        return "", "; ".join(part for part in details if part) or "No cloud chat backend returned a response."
 
     def _chat_with_llm_cloud_only(self, message: str) -> Tuple[str, str]:
         """Cloud APIs only when unified routing is off; uses Guardian prompt stack (see elysia_llm_fallback)."""
@@ -695,8 +729,23 @@ class UnifiedElysiaSystem:
             caller="UnifiedElysiaSystem._chat_with_llm_cloud_only",
         )
 
+    def _cloud_chat_configured(self) -> bool:
+        """Treat unknown credential state as configured, so errors cannot become fake success."""
+        if any((os.environ.get(name) or "").strip() for name in
+               ("OPENAI_API_KEY", "OPENROUTER_API_KEY")):
+            return True
+        try:
+            from project_guardian.cloud_api_state import cloud_credentials_snapshot
+
+            keys = cloud_credentials_snapshot(refresh=True)
+            return bool(keys.get("openai") or keys.get("openrouter"))
+        except Exception:
+            return True
+
     def _offline_chat_reply(self, message: str, err: str) -> Tuple[str, str]:
-        """Local status reply when no LLM backend (Ollama/cloud) is available."""
+        """Return a local status reply only when no cloud backend is configured."""
+        if self._cloud_chat_configured():
+            return "", err or "Configured cloud chat backend failed to return a response."
         try:
             st = self.get_status() if hasattr(self, "get_status") else {}
             comps = (st or {}).get("components") or {}
@@ -729,19 +778,39 @@ class UnifiedElysiaSystem:
         try:
             from project_guardian.unified_llm_route import unified_chat_completion
 
+            # The unified router can overwrite a provider's 401/timeout with a
+            # later Ollama/other-fallback error. Preserve each attempted cloud
+            # failure independently of the router's final error.
+            cloud_failures = []
+
+            def _record_cloud_failure(provider, completion):
+                def _call(messages, max_tokens):
+                    try:
+                        answer, failure = completion(messages, max_tokens)
+                    except Exception as exc:
+                        cloud_failures.append(f"{provider}: {exc}")
+                        raise
+                    if failure:
+                        cloud_failures.append(f"{provider}: {failure}")
+                    return answer, failure
+
+                return _call
+
             msgs = [{"role": "user", "content": message}]
             reply, err, _meta = unified_chat_completion(
                 messages=msgs,
                 max_tokens=500,
                 guardian=self.guardian,
-                cloud_openai_call=lambda m, mt: self._llm_completion_cloud_openai(m, mt),
-                cloud_openrouter_call=lambda m, mt: self._llm_completion_cloud_openrouter(m, mt),
+                cloud_openai_call=_record_cloud_failure("OpenAI", self._llm_completion_cloud_openai),
+                cloud_openrouter_call=_record_cloud_failure("OpenRouter", self._llm_completion_cloud_openrouter),
                 mistral_model=self._mistral_model_for_chat(),
                 module_name="planner",
                 agent_name="orchestrator",
             )
             if reply:
                 return reply, err
+            if cloud_failures and self._cloud_chat_configured():
+                return "", "; ".join(cloud_failures)
             return self._offline_chat_reply(message, err)
         except Exception as e:
             logger.warning("Unified chat router failed (%s); falling back to cloud-only", e)

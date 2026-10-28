@@ -154,7 +154,16 @@ def main() -> int:
         )
         return 3
 
-    excl = writer_exclusion_status(entry=entry, data_root=PILOT_DATA_ROOT)
+    # Own claim must be passed through: launch_claim_is_held cannot see self-held locks.
+    # Pass this module's PID/runtime paths so disposable/configured roots are not
+    # confused with the default installation pilot_paths constants.
+    excl = writer_exclusion_status(
+        entry=entry,
+        data_root=PILOT_DATA_ROOT,
+        own_launch_claim=claim,
+        pid_file=PID_FILE,
+        runtime_json=RUNTIME_JSON,
+    )
     launch_hold = excl.get("hold")
     if not excl.get("safe_to_write"):
         print(
@@ -244,14 +253,26 @@ def main() -> int:
     # Keep mutex held through Popen so an interloper at the spawn boundary cannot
     # acquire the instance mutex. Release immediately after spawn returns so the
     # child can take the lifetime hold; launch claim remains until lifetime.ready.
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(PILOT_SOURCE_ROOT),
-        env=env,
-        stdout=log_f,
-        stderr=subprocess.STDOUT,
-        creationflags=creationflags,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(PILOT_SOURCE_ROOT),
+            env=env,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            creationflags=creationflags,
+        )
+    except Exception:
+        if launch_hold is not None:
+            launch_hold.release()
+            launch_hold = None
+        claim.release()
+        claim = None
+        try:
+            log_f.close()
+        except Exception:
+            pass
+        raise
     if launch_hold is not None:
         launch_hold.release()
         launch_hold = None
@@ -267,6 +288,7 @@ def main() -> int:
         except OSError:
             pass
         claim.release()
+        claim = None
         return 1
     claim.release()
     claim = None

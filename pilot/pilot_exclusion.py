@@ -297,6 +297,7 @@ def writer_exclusion_status(
     data_root: Path = PILOT_DATA_ROOT,
     pid_file: Optional[Path] = None,
     runtime_json: Optional[Path] = None,
+    own_launch_claim: Optional[LaunchClaim] = None,
 ) -> Dict[str, Any]:
     """
     Fail-closed status for whether it is safe to write the pilot memory store.
@@ -304,6 +305,10 @@ def writer_exclusion_status(
     safe_to_write=True only when exclusion mutex can be acquired AND no conflicting
     listener is found AND any pid/runtime record is either absent or clearly dead
     without uncertain ownership.
+
+    Pass own_launch_claim when the caller already holds the launch claim (launcher
+    path). A second open/lock of the same claim file always fails under msvcrt, so
+    launch_claim_is_held cannot distinguish self vs other for the holder.
     """
     from pilot_identity import load_runtime_record, verify_live_ownership
     from pilot_paths import PID_FILE, RUNTIME_JSON
@@ -318,7 +323,7 @@ def writer_exclusion_status(
         "listener": None,
     }
 
-    if launch_claim_is_held(data_root):
+    if own_launch_claim is None and launch_claim_is_held(data_root):
         result["reason"] = "launch_claim_held_by_other"
         return result
 

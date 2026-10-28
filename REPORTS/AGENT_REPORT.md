@@ -3610,4 +3610,4 @@ python -m pytest -q
 
 **Next action:** Leave `TASK-0053` unmerged. A later product run can make `POST /api/webscout/research` report that research was not queued, unless that route has been claimed. Do not repeat the events-limit fix or this implement-status fix.
 
-**Commit:** filled in after `git rev-parse HEAD` of the implementation commit.
+**Commit:** `695663e28eda4293e585cf45d73174104c36b8cc` on `cursor/elysia-product-workflow-process-9429`. Base `722d8e4fe85d7e42ac34066c2d651849d15e734c`.

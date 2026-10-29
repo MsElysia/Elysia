@@ -13,6 +13,54 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_memory_time(value: Any, fallback: datetime) -> datetime:
+    """
+    Parse a memory entry's ``time`` into a naive local datetime comparable with
+    ``datetime.now()``.
+
+    MemoryCore stamps entries with naive local isoformat, but imported or
+    merged records may carry ``Z`` / ``+HH:MM`` offsets. Comparing an aware
+    datetime against the naive cutoff raises TypeError, which previously
+    aborted the whole cleanup pass. Unparseable or missing values fall back to
+    ``fallback`` (treated as recent, i.e. kept).
+    """
+    if not isinstance(value, str) or not value.strip():
+        return fallback
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except Exception:
+        return fallback
+    if parsed.tzinfo is not None:
+        try:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        except Exception:
+            return fallback
+    return parsed
+
+
+def _persist_memory_log(json_mem: Any) -> Optional[bool]:
+    """
+    Call ``json_mem._save()`` and report the outcome.
+
+    Returns True when the save reported success, False when it reported
+    failure or raised, and None when the outcome is unknown (legacy ``_save``
+    returning None, or no ``_save`` at all). Callers must not restore state on
+    None; they only treat an explicit False as a failed write.
+    """
+    save = getattr(json_mem, "_save", None)
+    if save is None:
+        return None
+    try:
+        outcome = save()
+    except Exception as e:
+        logger.warning(f"Memory cleanup save raised: {e}")
+        return False
+    if outcome is None:
+        return None
+    return bool(outcome)
+
+
 class MemoryCleanup:
     """Memory cleanup and optimization utilities"""
     
@@ -94,22 +142,17 @@ class MemoryCleanup:
         
         try:
             # Get cutoff date
-            cutoff_date = datetime.now() - timedelta(days=keep_recent_days)
+            now = datetime.now()
+            cutoff_date = now - timedelta(days=keep_recent_days)
             
             # Separate memories into categories
             recent_memories = []
             high_priority_memories = []
             old_low_priority = []
             
-            for memory in json_mem.memory_log:
-                memory_time = memory.get("time", "")
-                try:
-                    if memory_time:
-                        mem_date = datetime.fromisoformat(memory_time.replace('Z', '+00:00'))
-                    else:
-                        mem_date = datetime.now()
-                except Exception:
-                    mem_date = datetime.now()
+            original_log = json_mem.memory_log
+            for memory in original_log:
+                mem_date = _parse_memory_time(memory.get("time", ""), now)
                 
                 priority = memory.get("priority", 0.5)
                 
@@ -133,6 +176,36 @@ class MemoryCleanup:
             # Update JSON memory log
             removed_count = original_count - len(memories_to_keep)
             json_mem.memory_log = memories_to_keep
+
+            # Persist the JSON history before touching the vector index so a
+            # failed write leaves JSON (authoritative) and vector consistent.
+            # On an explicit failure, restore the in-memory log: the file on
+            # disk still holds the full history and must stay the recall source.
+            persisted = _persist_memory_log(json_mem)
+            if persisted is False:
+                json_mem.memory_log = original_log
+                logger.warning(
+                    f"Memory consolidation aborted: save failed; restored {original_count} in-memory memories"
+                )
+                return {
+                    "action": "save_failed",
+                    "attempted": True,
+                    "action_taken": False,
+                    "no_op_reason": "save_failed",
+                    "original_count": original_count,
+                    "final_count": original_count,
+                    "removed": 0,
+                    "metadata_before": 0,
+                    "metadata_after": 0,
+                    "faiss_before": 0,
+                    "faiss_after": 0,
+                    "rss_before_mb": rss_before_mb,
+                    "rss_after_mb": rss_before_mb,
+                    "vector_rebuild_status": "not_attempted",
+                    "vector_rebuild_success": False,
+                    "persisted": False,
+                    "error": f"save failed; {removed_count} removals not persisted",
+                }
 
             # Vector reconciliation (EnhancedMemoryCore only)
             from .memory_vector import VECTOR_REBUILD_SAFE_MAX
@@ -227,10 +300,6 @@ class MemoryCleanup:
             except Exception:
                 pass
             
-            # Save consolidated memories
-            if hasattr(json_mem, '_save'):
-                json_mem._save()
-            
             logger.info(f"Memory consolidation: {original_count} -> {len(memories_to_keep)} (removed {removed_count})")
             
             return {
@@ -249,6 +318,7 @@ class MemoryCleanup:
                 "rss_after_mb": rss_after_mb,
                 "vector_rebuild_status": vector_rebuild_status,
                 "vector_rebuild_success": vector_rebuild_success,
+                "persisted": persisted,
                 "error": vector_error,
             }
             
@@ -287,24 +357,18 @@ class MemoryCleanup:
         if not hasattr(self.memory_core, 'memory_log'):
             return {"error": "Memory core does not have memory_log"}
         
-        original_count = len(self.memory_core.memory_log)
-        cutoff_date = datetime.now() - timedelta(days=days)
+        original_log = self.memory_core.memory_log
+        original_count = len(original_log)
+        now = datetime.now()
+        cutoff_date = now - timedelta(days=days)
         
         try:
             kept_memories = []
             removed_memories = []
             
-            for memory in self.memory_core.memory_log:
-                memory_time = memory.get("time", "")
+            for memory in original_log:
                 priority = memory.get("priority", 0.5)
-                
-                try:
-                    if memory_time:
-                        mem_date = datetime.fromisoformat(memory_time.replace('Z', '+00:00'))
-                    else:
-                        mem_date = datetime.now()
-                except Exception:
-                    mem_date = datetime.now()
+                mem_date = _parse_memory_time(memory.get("time", ""), now)
                 
                 # Keep if recent OR high priority
                 if mem_date >= cutoff_date or priority >= min_priority:
@@ -315,9 +379,20 @@ class MemoryCleanup:
             # Update memory log
             self.memory_core.memory_log = kept_memories
             
-            # Save
-            if hasattr(self.memory_core, '_save'):
-                self.memory_core._save()
+            persisted = _persist_memory_log(self.memory_core)
+            if persisted is False:
+                self.memory_core.memory_log = original_log
+                logger.warning(
+                    f"Memory cleanup aborted: save failed; restored {original_count} in-memory memories"
+                )
+                return {
+                    "action": "save_failed",
+                    "original_count": original_count,
+                    "final_count": original_count,
+                    "removed": 0,
+                    "persisted": False,
+                    "error": f"save failed; {len(removed_memories)} removals not persisted",
+                }
             
             logger.info(f"Memory cleanup: {original_count} -> {len(kept_memories)} (removed {len(removed_memories)})")
             
@@ -325,7 +400,8 @@ class MemoryCleanup:
                 "action": "cleaned",
                 "original_count": original_count,
                 "final_count": len(kept_memories),
-                "removed": len(removed_memories)
+                "removed": len(removed_memories),
+                "persisted": persisted,
             }
             
         except Exception as e:

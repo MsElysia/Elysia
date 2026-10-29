@@ -3577,3 +3577,40 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — WebScout research status (2026-10-29)
+
+**Status:** COMPLETE on this branch. Not integrated to `main`.
+
+**Lane:** Product workflow. Unclaimed. `CONTROL.md` `CURRENT_TASK` remains `NONE`. Reconciliation queue `TASKS/TASK-0053.md` on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`) stays OPEN review-only. Do not merge `elysia-local-reconciliation-20260909-1657`. Codex Campaign 41 tip remains `3223ebb` on `origin/codex/limited-live-activation-wrapper`. This run did not implement live memory or vector writes.
+
+**Why this gap:** The `/api/events` limit fix is on `origin/cursor/elysia-product-workflow-process-85af` (`4b75d4a`, handoff `f4eae95`) and was not copied. The implement HTTP-status fix is on `origin/cursor/elysia-product-workflow-process-9429` (`695663e`, handoff `a73309a`) and was not copied. Before this change, a live `POST /api/webscout/research` for fictional topic `fictional-lattice-routing` returned HTTP 200 with `{"status":"error","message":"WebScout not available"}`.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c` (`main`). No other branch dependency. Not based on the events-limit or implement-status branches.
+
+**Ownership checked:** Did not edit files owned by today's sibling lanes. Memory workflow `bc-61a5d9b6` is `df15fba` on `cursor/elysia-memory-workflow-45cd` (`project_guardian/memory_cleanup.py`, `tests/test_memory_cleanup_persistence.py`). Application runtime safety `bc-c2ccd793` is `de2f4b993b29f0a84dd8425d4970714ee9bdbda8` on `cursor/application-runtime-safety-7695` (`elysia/core/proposal_system.py`, `tests/test_elysia_proposal_approval_persistence.py`). Left dashboard drafts #147–#149 and #153–#160, chat-failure PR #161, and the PR #154 repairs alone. Open issues #150 and #152 remain non-implementation backlogs. #139 remains the Windows vertical slice.
+
+**Acceptance:**
+- With the real `WebScoutAgent` whose `ElysiaWebScout` import failed, `POST /api/webscout/research` for fictional topic `fictional-lattice-routing` returns HTTP 503 JSON `status: error`, `message: WebScout not available`, `queued: false`
+- With that same agent given a stand-in instance so `research_topic` runs its real placeholder return, the same post returns HTTP 501 JSON `status: not_queued`, `queued: false`, `message: Research was not queued`, and keeps the runtime text `Research task queued` as `runtime_message`
+- No proposal directory is created for that topic
+- A missing topic, a blank topic, or a non-string topic returns HTTP 400 `{"error":"topic is required"}`
+- A JSON array body returns HTTP 400 `{"error":"request body must be a JSON object"}`
+- With no WebScout object, the route still returns HTTP 503 `{"error":"WebScout not available"}`
+- An exception from `research_topic` returns JSON HTTP 500 with `queued: false`
+- `research_result_response` maps a dict that already contains `proposal_id` to HTTP 200. That check does not show the runtime queued anything
+- The unavailable and not-queued contract holds through Flask's test client and through a live Werkzeug HTTP server on 127.0.0.1
+
+**Command:** `python3 -m pytest tests/test_runtime_api_webscout.py -v --tb=short` — 5 passed.
+
+**Live HTTP after the change:** unavailable `503 {"message":"WebScout not available","queued":false,"status":"error"}`; placeholder `501 {"domain":"elysia_core","message":"Research was not queued","queued":false,"runtime_message":"Research task queued","status":"not_queued","topic":"fictional-lattice-routing"}`.
+
+**Files:** `elysia/api/server.py`, `tests/test_runtime_api_webscout.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`.
+
+**Remaining limitations:** `WebScoutAgent.research_topic` still does not queue research or create a proposal. On this checkout `ElysiaWebScout` cannot be imported because `project_guardian/__init__.py` loads `GuardianCore`, which imports missing `project_guardian.module_activity`. That import belongs to the claimed dashboard repair (PR #157), not this lane. HTTP 200 is reserved for a queue receipt the current runtime does not produce. This does not change memory, governance, CI, or deployment settings. A branch commit is not integrated product readiness.
+
+**Next action:** Leave `TASK-0053` unmerged. Do not repeat the events-limit fix, the implement-status fix, or this research-status fix from `main`. A later product run can pick a different unclaimed API or dashboard error path. Do not wire research to paid search from this lane.
+
+**Commit:** `f97f34579046971056418e4ffcb33d416f4f0767` on `cursor/elysia-product-workflow-process-e025`. Base `722d8e4fe85d7e42ac34066c2d651849d15e734c`.

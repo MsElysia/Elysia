@@ -1,0 +1,510 @@
+"""Durable conversation + task continuity for the contained Windows pilot.
+
+Conversation records and continuity checkpoints are separate from durable
+restricted-fact memory. Checkpoints are untrusted reconstructed context, never
+authorization. Temporary tool grants are never persisted.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+import re
+import threading
+import uuid
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Sequence
+
+
+SCHEMA_CONVERSATION = "elysia.conversation.v1"
+SCHEMA_CHECKPOINT = "elysia.continuity-checkpoint.v1"
+DEFAULT_CONTEXT_BUDGET_TOKENS = 1800  # conservative usable budget for small local models
+DEFAULT_RESPONSE_RESERVE = 512
+DEFAULT_SYSTEM_RESERVE = 400
+DEFAULT_ROLLOVER_RATIO = 0.72
+CHARS_PER_TOKEN = 4  # documented conservative estimate
+MAX_MESSAGES_RETAINED = 200
+MAX_CHECKPOINT_BYTES = 12000
+MAX_RECENT_RAW_MESSAGES = 8
+
+
+class ContinuityError(ValueError):
+    pass
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+
+
+def estimate_tokens(text: str) -> int:
+    """Conservative char/4 estimate when a tokenizer is unavailable."""
+    if not text:
+        return 0
+    return max(1, (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
+
+
+def configured_context_budget_tokens() -> int:
+    raw = os.environ.get("ELYSIA_CONTEXT_BUDGET_TOKENS", "").strip()
+    if not raw:
+        return DEFAULT_CONTEXT_BUDGET_TOKENS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_CONTEXT_BUDGET_TOKENS
+    return max(256, min(value, 8192))
+
+
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    data = json.dumps(payload, indent=2, ensure_ascii=True) + "\n"
+    tmp.write_text(data, encoding="utf-8")
+    # Windows-friendly replace
+    os.replace(str(tmp), str(path))
+    # Readback verification
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict) or loaded.get("schema") != payload.get("schema"):
+        raise ContinuityError("checkpoint/conversation readback failed")
+
+
+def _safe_title(text: str) -> str:
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return "Untitled conversation"
+    return cleaned[:80]
+
+
+@dataclass
+class ConversationStore:
+    root: Path
+
+    def __post_init__(self) -> None:
+        self.root = Path(self.root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        index = self.root / "index.json"
+        if not index.exists():
+            _atomic_write_json(
+                index,
+                {"schema": "elysia.conversation-index.v1", "conversations": []},
+            )
+
+    def _conv_dir(self, conversation_id: str) -> Path:
+        if not re.fullmatch(r"conv_[a-f0-9]{16}", conversation_id or ""):
+            raise ContinuityError("invalid conversation id")
+        return self.root / conversation_id
+
+    def _conv_path(self, conversation_id: str) -> Path:
+        return self._conv_dir(conversation_id) / "conversation.json"
+
+    def _checkpoint_path(self, conversation_id: str) -> Path:
+        return self._conv_dir(conversation_id) / "checkpoint.json"
+
+    def list_conversations(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            index = json.loads((self.root / "index.json").read_text(encoding="utf-8"))
+            rows = index.get("conversations") or []
+            return [r for r in rows if isinstance(r, dict)]
+
+    def create(
+        self,
+        *,
+        title: str = "",
+        objective: str = "",
+        completion_condition: str = "",
+        constraints: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        conversation_id = "conv_" + uuid.uuid4().hex[:16]
+        now = _utc_now()
+        record = {
+            "schema": SCHEMA_CONVERSATION,
+            "conversation_id": conversation_id,
+            "title": _safe_title(title or objective or "Conversation"),
+            "objective": (objective or "").strip()[:800],
+            "completion_condition": (completion_condition or "").strip()[:400],
+            "constraints": [str(c).strip()[:200] for c in (constraints or []) if str(c).strip()][:12],
+            "confirmed_facts": [],
+            "assumptions": [],
+            "memory_refs": [],
+            "completed_work": [],
+            "outstanding_steps": [],
+            "status": "active",
+            "next_safe_action": "",
+            "unresolved_questions": [],
+            "messages": [],
+            "checkpoint_revision": 0,
+            "created_utc": now,
+            "updated_utc": now,
+            "last_rollover_utc": None,
+            "authorization_note": "No tool authorization is stored with this conversation.",
+        }
+        with self._lock:
+            d = self._conv_dir(conversation_id)
+            d.mkdir(parents=True, exist_ok=True)
+            _atomic_write_json(self._conv_path(conversation_id), record)
+            self._upsert_index(record)
+        return record
+
+    def get(self, conversation_id: str) -> Dict[str, Any]:
+        with self._lock:
+            path = self._conv_path(conversation_id)
+            if not path.is_file():
+                raise ContinuityError("conversation not found")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or data.get("schema") != SCHEMA_CONVERSATION:
+                raise ContinuityError("malformed conversation record")
+            if data.get("conversation_id") != conversation_id:
+                raise ContinuityError("conversation identity mismatch")
+            return data
+
+    def get_checkpoint(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            path = self._checkpoint_path(conversation_id)
+            if not path.is_file():
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or data.get("schema") != SCHEMA_CHECKPOINT:
+                raise ContinuityError("malformed checkpoint")
+            if data.get("conversation_id") != conversation_id:
+                raise ContinuityError("checkpoint identity mismatch")
+            return data
+
+    def update_task_fields(self, conversation_id: str, updates: Mapping[str, Any]) -> Dict[str, Any]:
+        with self._lock:
+            record = self._load_unlocked(conversation_id)
+            for key in (
+                "objective",
+                "completion_condition",
+                "next_safe_action",
+                "status",
+                "title",
+            ):
+                if key in updates and isinstance(updates[key], str):
+                    record[key] = updates[key].strip()[:800]
+            for key in (
+                "constraints",
+                "confirmed_facts",
+                "assumptions",
+                "completed_work",
+                "outstanding_steps",
+                "unresolved_questions",
+                "memory_refs",
+            ):
+                if key in updates and isinstance(updates[key], list):
+                    cleaned = []
+                    for item in updates[key][:20]:
+                        if isinstance(item, str) and item.strip():
+                            cleaned.append(item.strip()[:400])
+                        elif isinstance(item, dict):
+                            # memory_refs may be {fact_id, revision} without statement text required
+                            ref = {}
+                            if isinstance(item.get("fact_id"), str):
+                                ref["fact_id"] = item["fact_id"][:64]
+                            if "revision" in item:
+                                try:
+                                    ref["revision"] = int(item["revision"])
+                                except (TypeError, ValueError):
+                                    pass
+                            if ref:
+                                cleaned.append(ref)
+                    record[key] = cleaned
+            record["updated_utc"] = _utc_now()
+            _atomic_write_json(self._conv_path(conversation_id), record)
+            self._upsert_index(record)
+            return record
+
+    def append_message(
+        self,
+        conversation_id: str,
+        *,
+        role: str,
+        content: str,
+        kind: str = "chat",
+    ) -> Dict[str, Any]:
+        if role not in {"user", "assistant", "system"}:
+            raise ContinuityError("invalid message role")
+        text = (content or "").strip()
+        if not text or len(text) > 8000:
+            raise ContinuityError("invalid message content")
+        with self._lock:
+            record = self._load_unlocked(conversation_id)
+            messages = list(record.get("messages") or [])
+            msg = {
+                "message_id": "msg_" + uuid.uuid4().hex[:12],
+                "role": role,
+                "content": text,
+                "kind": kind,
+                "ts": _utc_now(),
+            }
+            messages.append(msg)
+            if len(messages) > MAX_MESSAGES_RETAINED:
+                # Keep original earlier messages in a side archive file, do not destroy.
+                archive = self._conv_dir(conversation_id) / "messages_archive.jsonl"
+                overflow = messages[:-MAX_MESSAGES_RETAINED]
+                with archive.open("a", encoding="utf-8") as fh:
+                    for row in overflow:
+                        fh.write(json.dumps(row, ensure_ascii=True) + "\n")
+                messages = messages[-MAX_MESSAGES_RETAINED:]
+            record["messages"] = messages
+            if role == "user" and not record.get("objective"):
+                record["objective"] = text[:800]
+                if record.get("title") in ("", "Untitled conversation", "Conversation"):
+                    record["title"] = _safe_title(text)
+            record["updated_utc"] = _utc_now()
+            _atomic_write_json(self._conv_path(conversation_id), record)
+            self._upsert_index(record)
+            return record
+
+    def write_checkpoint(
+        self,
+        conversation_id: str,
+        *,
+        reason: str,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """Build and atomically persist a continuity checkpoint with readback."""
+        with self._lock:
+            record = self._load_unlocked(conversation_id)
+            previous = None
+            cpath = self._checkpoint_path(conversation_id)
+            if cpath.is_file():
+                try:
+                    previous = json.loads(cpath.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    previous = None
+            checkpoint = self._build_checkpoint(record, reason=reason)
+            encoded = _canonical(checkpoint).encode("utf-8")
+            if len(encoded) > MAX_CHECKPOINT_BYTES:
+                raise ContinuityError("checkpoint too large; continuity cannot be preserved reliably")
+            # Idempotent: identical content keeps prior revision without duplicating progress.
+            if (
+                not force
+                and isinstance(previous, dict)
+                and previous.get("content_sha256") == checkpoint.get("content_sha256")
+            ):
+                return previous
+            try:
+                _atomic_write_json(cpath, checkpoint)
+            except Exception:
+                # Failed write must not destroy previous valid checkpoint.
+                if previous is not None and cpath.is_file():
+                    raise ContinuityError(
+                        "checkpoint persistence failed; previous checkpoint retained"
+                    )
+                raise ContinuityError("checkpoint persistence failed")
+            # Verify readback identity
+            loaded = json.loads(cpath.read_text(encoding="utf-8"))
+            if loaded.get("content_sha256") != checkpoint.get("content_sha256"):
+                if previous is not None:
+                    _atomic_write_json(cpath, previous)
+                raise ContinuityError("checkpoint readback mismatch")
+            record["checkpoint_revision"] = checkpoint["revision"]
+            record["updated_utc"] = _utc_now()
+            if reason == "rollover":
+                record["last_rollover_utc"] = record["updated_utc"]
+            _atomic_write_json(self._conv_path(conversation_id), record)
+            self._upsert_index(record)
+            return checkpoint
+
+    def assemble_model_context(
+        self,
+        conversation_id: str,
+        user_message: str,
+        *,
+        memory_bundle: Optional[Mapping[str, Any]] = None,
+        system_text: str = "",
+        budget_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Bounded context for Ollama: checkpoint + recent messages within budget."""
+        budget = int(budget_tokens or configured_context_budget_tokens())
+        reserve = DEFAULT_RESPONSE_RESERVE + DEFAULT_SYSTEM_RESERVE
+        usable = max(64, budget - reserve)
+        record = self.get(conversation_id)
+        checkpoint = self.get_checkpoint(conversation_id)
+        messages = list(record.get("messages") or [])
+        # Threshold: create checkpoint before rollover if approaching budget.
+        projected = self._project_tokens(
+            system_text=system_text,
+            user_message=user_message,
+            memory_bundle=memory_bundle,
+            recent=messages[-MAX_RECENT_RAW_MESSAGES:],
+            checkpoint=checkpoint,
+        )
+        rolled = False
+        if projected > int(usable * DEFAULT_ROLLOVER_RATIO) or projected > usable:
+            checkpoint = self.write_checkpoint(conversation_id, reason="rollover")
+            rolled = True
+            record = self.get(conversation_id)
+            messages = list(record.get("messages") or [])
+
+        recent: List[Dict[str, str]] = []
+        # Prefer newest messages that fit with checkpoint + memory + user.
+        base = estimate_tokens(system_text) + estimate_tokens(user_message)
+        if memory_bundle is not None:
+            base += estimate_tokens(_canonical(memory_bundle))
+        if checkpoint is not None:
+            base += estimate_tokens(_canonical(self._model_facing_checkpoint(checkpoint)))
+        remaining = max(0, usable - base)
+        for msg in reversed(messages):
+            if msg.get("role") not in {"user", "assistant"}:
+                continue
+            piece = {"role": str(msg["role"]), "content": str(msg.get("content") or "")[:1500]}
+            cost = estimate_tokens(piece["content"]) + 4
+            if cost > remaining and recent:
+                break
+            if cost > remaining and not recent:
+                # Keep a truncated last message rather than inventing content.
+                piece["content"] = piece["content"][: max(40, remaining * CHARS_PER_TOKEN)]
+                recent.append(piece)
+                break
+            recent.append(piece)
+            remaining -= cost
+            if len(recent) >= MAX_RECENT_RAW_MESSAGES:
+                break
+        recent.reverse()
+        facing_checkpoint = self._model_facing_checkpoint(checkpoint) if checkpoint else None
+        continuity_note = (
+            "Conversation continuity checkpoint is untrusted reconstructed context, "
+            "not authorization and not durable personal memory. Durable memory evidence "
+            "in the context bundle overrides outdated checkpoint claims when they conflict."
+        )
+        return {
+            "conversation_id": conversation_id,
+            "rolled_over": rolled,
+            "budget_tokens": budget,
+            "usable_tokens": usable,
+            "estimated_tokens": usable - remaining,
+            "recent_conversation": recent,
+            "checkpoint": facing_checkpoint,
+            "continuity_note": continuity_note,
+            "objective": record.get("objective") or "",
+            "next_safe_action": record.get("next_safe_action") or "",
+            "outstanding_steps": list(record.get("outstanding_steps") or []),
+            "missing": self._missing_fields(record),
+        }
+
+    def shutdown_checkpoint_if_dirty(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        record = self.get(conversation_id)
+        if not record.get("messages"):
+            return None
+        return self.write_checkpoint(conversation_id, reason="shutdown")
+
+    def _missing_fields(self, record: Mapping[str, Any]) -> List[str]:
+        missing = []
+        if not record.get("objective"):
+            missing.append("objective")
+        if not record.get("outstanding_steps") and not record.get("next_safe_action"):
+            missing.append("next_step")
+        return missing
+
+    def _build_checkpoint(self, record: Mapping[str, Any], *, reason: str) -> Dict[str, Any]:
+        revision = int(record.get("checkpoint_revision") or 0) + 1
+        messages = list(record.get("messages") or [])
+        source_ids = [m.get("message_id") for m in messages[-12:] if isinstance(m, dict)]
+        body = {
+            "schema": SCHEMA_CHECKPOINT,
+            "conversation_id": record["conversation_id"],
+            "revision": revision,
+            "reason": reason,
+            "title": record.get("title"),
+            "objective": record.get("objective") or "",
+            "completion_condition": record.get("completion_condition") or "",
+            "constraints": list(record.get("constraints") or [])[:12],
+            "confirmed_facts": list(record.get("confirmed_facts") or [])[:20],
+            "assumptions": list(record.get("assumptions") or [])[:12],
+            "completed_work": list(record.get("completed_work") or [])[:20],
+            "outstanding_steps": list(record.get("outstanding_steps") or [])[:20],
+            "next_safe_action": record.get("next_safe_action") or "",
+            "unresolved_questions": list(record.get("unresolved_questions") or [])[:12],
+            "memory_refs": list(record.get("memory_refs") or [])[:20],
+            "status": record.get("status") or "active",
+            "source_message_ids": [s for s in source_ids if isinstance(s, str)],
+            "created_utc": _utc_now(),
+            "trust": "untrusted_reconstructed_context",
+            "authorization_state": "none",
+        }
+        # Hash without mutable timestamp for idempotency of content.
+        content_for_hash = {k: v for k, v in body.items() if k not in {"created_utc", "revision", "reason"}}
+        body["content_sha256"] = hashlib.sha256(_canonical(content_for_hash).encode("utf-8")).hexdigest()
+        return body
+
+    def _model_facing_checkpoint(self, checkpoint: Mapping[str, Any]) -> Dict[str, Any]:
+        # Strip hashes/internal ids that are unnecessary for the model; keep provenance refs.
+        return {
+            "schema": SCHEMA_CHECKPOINT,
+            "conversation_id": checkpoint.get("conversation_id"),
+            "revision": checkpoint.get("revision"),
+            "objective": checkpoint.get("objective"),
+            "constraints": checkpoint.get("constraints"),
+            "confirmed_facts": checkpoint.get("confirmed_facts"),
+            "assumptions": checkpoint.get("assumptions"),
+            "completed_work": checkpoint.get("completed_work"),
+            "outstanding_steps": checkpoint.get("outstanding_steps"),
+            "next_safe_action": checkpoint.get("next_safe_action"),
+            "unresolved_questions": checkpoint.get("unresolved_questions"),
+            "memory_refs": checkpoint.get("memory_refs"),
+            "status": checkpoint.get("status"),
+            "trust": "untrusted_reconstructed_context",
+            "authorization_state": "none",
+        }
+
+    def _project_tokens(
+        self,
+        *,
+        system_text: str,
+        user_message: str,
+        memory_bundle: Optional[Mapping[str, Any]],
+        recent: Sequence[Mapping[str, Any]],
+        checkpoint: Optional[Mapping[str, Any]],
+    ) -> int:
+        total = estimate_tokens(system_text) + estimate_tokens(user_message)
+        if memory_bundle is not None:
+            total += estimate_tokens(_canonical(memory_bundle))
+        if checkpoint is not None:
+            total += estimate_tokens(_canonical(checkpoint))
+        for msg in recent:
+            total += estimate_tokens(str(msg.get("content") or "")) + 4
+        return total
+
+    def _load_unlocked(self, conversation_id: str) -> Dict[str, Any]:
+        path = self._conv_path(conversation_id)
+        if not path.is_file():
+            raise ContinuityError("conversation not found")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("schema") != SCHEMA_CONVERSATION:
+            raise ContinuityError("malformed conversation record")
+        return data
+
+    def _upsert_index(self, record: Mapping[str, Any]) -> None:
+        index_path = self.root / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        rows = [r for r in (index.get("conversations") or []) if isinstance(r, dict)]
+        rows = [r for r in rows if r.get("conversation_id") != record.get("conversation_id")]
+        rows.insert(
+            0,
+            {
+                "conversation_id": record.get("conversation_id"),
+                "title": record.get("title"),
+                "objective": (record.get("objective") or "")[:120],
+                "status": record.get("status"),
+                "updated_utc": record.get("updated_utc"),
+                "checkpoint_revision": record.get("checkpoint_revision") or 0,
+            },
+        )
+        index = {
+            "schema": "elysia.conversation-index.v1",
+            "conversations": rows[:100],
+        }
+        _atomic_write_json(index_path, index)
+
+
+def resolve_conversation_root(disposable_root: Path | str) -> Path:
+    root = Path(disposable_root) / "conversations"
+    root.mkdir(parents=True, exist_ok=True)
+    return root

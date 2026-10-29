@@ -923,6 +923,20 @@ CONTROL_PANEL_TEMPLATE = """
                             <input type="checkbox" id="allow-labor-calculator">
                             Allow the labor calculator for this question
                         </label>
+                        <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);">
+                            <label for="conversation-select" style="font-size: 13px;">Conversation continuity:</label>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px;">
+                                <select id="conversation-select" style="flex: 1; min-width: 180px;">
+                                    <option value="">New conversation</option>
+                                </select>
+                                <button type="button" onclick="refreshConversations()">Refresh</button>
+                                <button type="button" onclick="startNewConversation()">Start new</button>
+                                <button type="button" onclick="resumeSelectedConversation()">Resume</button>
+                                <button type="button" onclick="saveConversationCheckpoint()">Save checkpoint</button>
+                            </div>
+                            <p id="conversation-continuity-status" style="font-size: 12px; color: var(--text-secondary); margin-top: 6px;">No conversation selected.</p>
+                            <pre id="conversation-checkpoint-view" style="font-size: 11px; max-height: 120px; overflow: auto; margin-top: 6px; white-space: pre-wrap; background: var(--bg-dark); padding: 8px; border-radius: 6px;"></pre>
+                        </div>
                         <button type="button" onclick="sendLocalModelChat()" style="margin-top: 8px;">Ask local model</button>
                         <p id="local-model-chat-hint" style="font-size: 12px; color: var(--text-secondary); margin-top: 6px;"></p>
                     </div>
@@ -1059,6 +1073,8 @@ CONTROL_PANEL_TEMPLATE = """
                     if (chatInput) chatInput.placeholder = 'Ask using words from a saved fact, or ask the local model';
                     var localControls = document.getElementById('local-model-chat-controls');
                     if (localControls) localControls.style.display = 'block';
+                    window._activeConversationId = null;
+                    if (typeof window.refreshConversations === 'function') window.refreshConversations();
                     fetch('/api/local-model/status')
                         .then(function(r) { return r.json(); })
                         .then(function(data) {
@@ -1760,25 +1776,133 @@ CONTROL_PANEL_TEMPLATE = """
                 });
         };
 
+        window.refreshConversations = function() {
+            var sel = document.getElementById('conversation-select');
+            var status = document.getElementById('conversation-continuity-status');
+            if (!sel) return;
+            fetch('/api/conversations')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var rows = (data && data.conversations) || [];
+                    var current = window._activeConversationId || '';
+                    sel.innerHTML = '<option value="">New conversation</option>';
+                    rows.forEach(function(row) {
+                        var opt = document.createElement('option');
+                        opt.value = row.conversation_id || '';
+                        opt.textContent = (row.title || row.conversation_id || 'conversation') +
+                            (row.checkpoint_revision ? (' · ckpt r' + row.checkpoint_revision) : '');
+                        if (opt.value === current) opt.selected = true;
+                        sel.appendChild(opt);
+                    });
+                    if (status && !current) status.textContent = 'No conversation selected.';
+                })
+                .catch(function(err) {
+                    if (status) status.textContent = 'Could not load conversations: ' + err;
+                });
+        };
+
+        window.startNewConversation = function() {
+            var status = document.getElementById('conversation-continuity-status');
+            var view = document.getElementById('conversation-checkpoint-view');
+            fetch('/api/conversations', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: 'Dashboard conversation' })
+            })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data || !data.success) {
+                        if (status) status.textContent = (data && data.error) || 'Create failed';
+                        return;
+                    }
+                    window._activeConversationId = data.conversation_id;
+                    if (status) status.textContent = 'Started ' + data.conversation_id + ' (no authorization carried).';
+                    if (view) view.textContent = '';
+                    window.refreshConversations();
+                })
+                .catch(function(err) { if (status) status.textContent = 'Create error: ' + err; });
+        };
+
+        window.resumeSelectedConversation = function() {
+            var sel = document.getElementById('conversation-select');
+            var status = document.getElementById('conversation-continuity-status');
+            var view = document.getElementById('conversation-checkpoint-view');
+            var id = (sel && sel.value) || '';
+            if (!id) {
+                if (status) status.textContent = 'Select a saved conversation to resume.';
+                return;
+            }
+            fetch('/api/conversations/' + encodeURIComponent(id) + '/resume', { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data || !data.success) {
+                        if (status) status.textContent = (data && data.error) || 'Resume failed';
+                        return;
+                    }
+                    window._activeConversationId = id;
+                    var recovered = data.continuity_recovered ? 'recovered' : 'partial';
+                    var missing = (data.missing || []).join(', ') || 'none';
+                    if (status) {
+                        status.textContent = 'Resumed ' + id + ' · continuity ' + recovered +
+                            ' · missing: ' + missing +
+                            ' · authorization not inherited.';
+                    }
+                    if (view) view.textContent = JSON.stringify(data.checkpoint || { note: 'No checkpoint yet' }, null, 2);
+                    var calc = document.getElementById('allow-labor-calculator');
+                    if (calc) calc.checked = false;
+                })
+                .catch(function(err) { if (status) status.textContent = 'Resume error: ' + err; });
+        };
+
+        window.saveConversationCheckpoint = function() {
+            var status = document.getElementById('conversation-continuity-status');
+            var view = document.getElementById('conversation-checkpoint-view');
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            if (!id) {
+                if (status) status.textContent = 'No active conversation to checkpoint.';
+                return;
+            }
+            fetch('/api/conversations/' + encodeURIComponent(id) + '/checkpoint', { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data || !data.success) {
+                        if (status) status.textContent = (data && data.error) || 'Checkpoint failed';
+                        return;
+                    }
+                    if (status) status.textContent = 'Checkpoint saved revision ' + ((data.checkpoint || {}).revision || '?');
+                    if (view) view.textContent = JSON.stringify(data.checkpoint || {}, null, 2);
+                })
+                .catch(function(err) { if (status) status.textContent = 'Checkpoint error: ' + err; });
+        };
+
         window.sendLocalModelChat = function() {
             const msg = (document.getElementById('api-chat-message') || {}).value;
             const el = document.getElementById('api-chat-result');
             const allowCalc = !!(document.getElementById('allow-labor-calculator') || {}).checked;
+            const sel = document.getElementById('conversation-select');
             if (!msg || !msg.trim()) { if (el) el.textContent = 'Enter a message first.'; return; }
             if (el) el.textContent = 'Asking local model...';
+            var body = {
+                message: msg,
+                use_local_model: true,
+                allow_calculator: allowCalc
+            };
+            var convId = window._activeConversationId || (sel && sel.value) || '';
+            if (convId) body.conversation_id = convId;
             fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    message: msg,
-                    use_local_model: true,
-                    allow_calculator: allowCalc
-                })
+                body: JSON.stringify(body)
             })
                 .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
                 .then(function(res) {
                     var data = res.data || {};
+                    if (data.conversation_id) {
+                        window._activeConversationId = data.conversation_id;
+                        if (sel) sel.value = data.conversation_id;
+                    }
                     var text = data.reply || data.error || JSON.stringify(data);
+                    if (data.rolled_over) text += '\\n\\n[context rollover used continuity checkpoint]';
                     if (data.tools_executed && data.tools_executed.length) {
                         text += '\\n\\ntools_executed: ' + JSON.stringify(data.tools_executed, null, 2);
                     }
@@ -1786,6 +1910,12 @@ CONTROL_PANEL_TEMPLATE = """
                         text += '\\n\\nevidence: ' + data.evidence_supplied.length + ' item(s); model=' + (data.model || '');
                     }
                     if (el) el.textContent = text;
+                    var status = document.getElementById('conversation-continuity-status');
+                    if (status && data.conversation_id) {
+                        status.textContent = 'Active ' + data.conversation_id +
+                            (data.rolled_over ? ' · rolled over' : '') +
+                            ' · calculator auth is per-request only.';
+                    }
                     var failed = !data.success || !!data.error || res.status >= 400;
                     addLog(failed ? ('Local model chat failed: ' + (data.error || text)) : 'Local model reply received', failed ? 'error' : 'info');
                 })
@@ -3101,6 +3231,142 @@ class UIControlPanel:
                 "contained": self._contained_startup_active(),
             })
 
+        @self.app.route('/api/conversations', methods=['GET', 'POST'])
+        def api_conversations():
+            """List or create durable conversations (contained disposable store only)."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden"}), 403
+            if not self._contained_startup_active():
+                return jsonify({"success": False, "error": "contained startup required"}), 400
+            from project_guardian.conversation_continuity import ContinuityError
+
+            try:
+                store = self._conversation_store()
+            except ContinuityError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 400
+            except Exception as exc:
+                logger.error("Conversation store unavailable: %s", exc)
+                return jsonify({"success": False, "error": "conversation store unavailable"}), 503
+            if request.method == "GET":
+                return jsonify({
+                    "success": True,
+                    "conversations": store.list_conversations(),
+                    "authorization_note": "No tool authorization is stored with conversations.",
+                })
+            data = request.get_json(silent=True) or {}
+            try:
+                record = store.create(
+                    title=str(data.get("title") or ""),
+                    objective=str(data.get("objective") or ""),
+                    completion_condition=str(data.get("completion_condition") or ""),
+                    constraints=data.get("constraints") if isinstance(data.get("constraints"), list) else None,
+                )
+            except ContinuityError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 400
+            return jsonify({
+                "success": True,
+                "conversation_id": record["conversation_id"],
+                "conversation": record,
+            }), 201
+
+        @self.app.route('/api/conversations/<conversation_id>', methods=['GET', 'PATCH'])
+        def api_conversation_detail(conversation_id: str):
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden"}), 403
+            if not self._contained_startup_active():
+                return jsonify({"success": False, "error": "contained startup required"}), 400
+            from project_guardian.conversation_continuity import ContinuityError
+
+            try:
+                store = self._conversation_store()
+                if request.method == "GET":
+                    record = store.get(conversation_id)
+                    checkpoint = store.get_checkpoint(conversation_id)
+                    return jsonify({
+                        "success": True,
+                        "conversation": record,
+                        "checkpoint": checkpoint,
+                        "authorization_inherited": False,
+                    })
+                data = request.get_json(silent=True) or {}
+                # Never accept authorization or credential fields into durable state.
+                for banned in (
+                    "authorization",
+                    "allow_calculator",
+                    "token",
+                    "credential",
+                    "api_key",
+                    "password",
+                    "scopes",
+                ):
+                    data.pop(banned, None)
+                record = store.update_task_fields(conversation_id, data)
+                return jsonify({"success": True, "conversation": record})
+            except ContinuityError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 404
+
+        @self.app.route('/api/conversations/<conversation_id>/resume', methods=['POST'])
+        def api_conversation_resume(conversation_id: str):
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden"}), 403
+            if not self._contained_startup_active():
+                return jsonify({"success": False, "error": "contained startup required"}), 400
+            from project_guardian.conversation_continuity import ContinuityError
+
+            try:
+                store = self._conversation_store()
+                record = store.get(conversation_id)
+                checkpoint = store.get_checkpoint(conversation_id)
+            except ContinuityError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 404
+            missing = []
+            if not (record.get("objective") or (checkpoint or {}).get("objective")):
+                missing.append("objective")
+            next_step = record.get("next_safe_action") or (checkpoint or {}).get("next_safe_action")
+            outstanding = record.get("outstanding_steps") or (checkpoint or {}).get("outstanding_steps") or []
+            if not next_step and not outstanding:
+                missing.append("next_step")
+            recovered = bool(checkpoint) or bool(record.get("messages"))
+            return jsonify({
+                "success": True,
+                "conversation_id": conversation_id,
+                "continuity_recovered": recovered and not missing,
+                "missing": missing,
+                "objective": record.get("objective") or (checkpoint or {}).get("objective") or "",
+                "next_safe_action": next_step or "",
+                "outstanding_steps": outstanding,
+                "checkpoint": checkpoint,
+                "message_count": len(record.get("messages") or []),
+                "authorization_inherited": False,
+                "authorization_note": "Resume never inherits calculator or tool authorization.",
+            })
+
+        @self.app.route('/api/conversations/<conversation_id>/checkpoint', methods=['GET', 'POST'])
+        def api_conversation_checkpoint(conversation_id: str):
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden"}), 403
+            if not self._contained_startup_active():
+                return jsonify({"success": False, "error": "contained startup required"}), 400
+            from project_guardian.conversation_continuity import ContinuityError
+
+            try:
+                store = self._conversation_store()
+                if request.method == "GET":
+                    checkpoint = store.get_checkpoint(conversation_id)
+                    return jsonify({
+                        "success": True,
+                        "checkpoint": checkpoint,
+                        "authorization_inherited": False,
+                    })
+                checkpoint = store.write_checkpoint(conversation_id, reason="operator")
+                return jsonify({
+                    "success": True,
+                    "checkpoint": checkpoint,
+                    "authorization_inherited": False,
+                })
+            except ContinuityError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 400
+
         @self.app.route('/api/local-model/capabilities', methods=['GET'])
         def api_local_model_capabilities():
             """Read-only capability snapshot. Never activates tools or changes permissions."""
@@ -3165,10 +3431,19 @@ class UIControlPanel:
                     return jsonify({"error": "message is required"}), 400
                 use_local_model = data.get("use_local_model") is True
                 allow_calculator = data.get("allow_calculator") is True
+                conversation_id = data.get("conversation_id")
+                if conversation_id is not None and not isinstance(conversation_id, str):
+                    return jsonify({"success": False, "error": "invalid conversation_id"}), 400
+                task_update = data.get("task_update")
+                if task_update is not None and not isinstance(task_update, dict):
+                    return jsonify({"success": False, "error": "invalid task_update"}), 400
                 if self._contained_startup_active():
                     if use_local_model:
                         return self._contained_local_model_chat(
-                            message, allow_calculator=allow_calculator
+                            message,
+                            allow_calculator=allow_calculator,
+                            conversation_id=conversation_id or None,
+                            task_update=task_update,
                         )
                     try:
                         adapter = self._restricted_adapter()
@@ -4228,6 +4503,20 @@ class UIControlPanel:
         config = getattr(self.orchestrator, "config", None)
         return isinstance(config, dict) and bool(config.get("contained_startup"))
 
+    def _conversation_store(self):
+        """Durable conversation store under the contained disposable root."""
+        from project_guardian.conversation_continuity import (
+            ContinuityError,
+            ConversationStore,
+            resolve_conversation_root,
+        )
+
+        config = getattr(self.orchestrator, "config", None) or {}
+        disposable = config.get("disposable_root")
+        if not disposable:
+            raise ContinuityError("disposable_root required for conversation continuity")
+        return ConversationStore(resolve_conversation_root(disposable))
+
     def _deny_privileged_control_if_blocked(self, *, kind: str):
         """
         Shared entry gate for privileged panel routes.
@@ -4337,10 +4626,18 @@ class UIControlPanel:
             self._restricted_runtime_adapter = adapter
             return adapter
 
-    def _contained_local_model_chat(self, message: str, *, allow_calculator: bool):
+    def _contained_local_model_chat(
+        self,
+        message: str,
+        *,
+        allow_calculator: bool,
+        conversation_id: Optional[str] = None,
+        task_update: Optional[Dict[str, Any]] = None,
+    ):
         """Memory-bounded local Ollama chat; calculator only with host checkbox authorization."""
         import secrets
 
+        from project_guardian.conversation_continuity import ContinuityError
         from project_guardian.local_memory_chat import (
             LOCAL_MODEL_ENV,
             ChatBoundaryError,
@@ -4422,6 +4719,7 @@ class UIControlPanel:
             "X-Elysia-Identity": _DASHBOARD_OPERATOR_IDENTITY,
             "X-Elysia-Token": self._dashboard_operator_token(),
         }
+        # Authorization is request-scoped only — never loaded from conversation state.
         scopes = {"local.chat", "memory.read"}
         if allow_calculator:
             scopes.add("calculator.execute")
@@ -4439,15 +4737,84 @@ class UIControlPanel:
                 **refusal,
             }), 403
 
+        continuity_payload = None
+        recent = ()
+        rolled_over = False
+        active_conversation_id = None
+        store = None
+        try:
+            if conversation_id or task_update is not None:
+                store = self._conversation_store()
+                if conversation_id:
+                    record = store.get(conversation_id)
+                else:
+                    record = store.create(title="Dashboard conversation", objective=message[:800])
+                active_conversation_id = record["conversation_id"]
+                if task_update:
+                    safe_update = {
+                        k: v
+                        for k, v in task_update.items()
+                        if k
+                        not in {
+                            "authorization",
+                            "allow_calculator",
+                            "token",
+                            "credential",
+                            "api_key",
+                            "password",
+                            "scopes",
+                        }
+                    }
+                    store.update_task_fields(active_conversation_id, safe_update)
+        except ContinuityError as exc:
+            return jsonify({
+                "success": False,
+                "error": str(exc),
+                "reply": None,
+                "provider": "local-ollama",
+                "memory_written": False,
+                "tools_executed": [],
+                "authorization_inherited": False,
+            }), 400
+
         try:
             model = LocalOllama(model_name)
             bundle = build_context_from_adapter(adapter, message, headers)
-            result = converse_bundle(bundle, message, authorization, model)
+            if store is not None and active_conversation_id:
+                assembled = store.assemble_model_context(
+                    active_conversation_id,
+                    message,
+                    memory_bundle=bundle,
+                )
+                rolled_over = bool(assembled.get("rolled_over"))
+                recent = assembled.get("recent_conversation") or ()
+                continuity_payload = {
+                    "note": assembled.get("continuity_note"),
+                    "objective": assembled.get("objective"),
+                    "next_safe_action": assembled.get("next_safe_action"),
+                    "outstanding_steps": assembled.get("outstanding_steps"),
+                    "missing": assembled.get("missing") or [],
+                    "checkpoint": assembled.get("checkpoint"),
+                    "authorization_state": "none",
+                }
+            result = converse_bundle(
+                bundle,
+                message,
+                authorization,
+                model,
+                recent=recent,
+                continuity_context=continuity_payload,
+            )
         except ChatBoundaryError as exc:
             detail = str(exc)
             status = 503 if "unavailable" in detail.casefold() or "not installed" in detail.casefold() else 400
             if "authorization" in detail.casefold():
                 status = 403
+            if store is not None and active_conversation_id:
+                try:
+                    store.append_message(active_conversation_id, role="user", content=message)
+                except ContinuityError:
+                    pass
             return jsonify({
                 "success": False,
                 "error": detail,
@@ -4455,6 +4822,8 @@ class UIControlPanel:
                 "provider": "local-ollama",
                 "memory_written": False,
                 "tools_executed": [],
+                "conversation_id": active_conversation_id,
+                "authorization_inherited": False,
             }), status
         except Exception as exc:
             logger.error("Local model chat failed: %s", exc, exc_info=True)
@@ -4465,7 +4834,21 @@ class UIControlPanel:
                 "provider": "local-ollama",
                 "memory_written": False,
                 "tools_executed": [],
+                "conversation_id": active_conversation_id,
+                "authorization_inherited": False,
             }), 500
+
+        if store is not None and active_conversation_id:
+            try:
+                store.append_message(active_conversation_id, role="user", content=message)
+                if result.get("answer"):
+                    store.append_message(
+                        active_conversation_id,
+                        role="assistant",
+                        content=str(result.get("answer")),
+                    )
+            except ContinuityError as exc:
+                logger.warning("Could not persist conversation turn: %s", exc)
 
         return jsonify({
             "success": True,
@@ -4480,6 +4863,11 @@ class UIControlPanel:
             "memory_written": False,
             "calculation_verified": bool(result.get("calculation_verified")),
             "assumptions_require_review": bool(result.get("assumptions_require_review")),
+            "conversation_id": active_conversation_id,
+            "rolled_over": rolled_over,
+            "continuity": continuity_payload,
+            "authorization_inherited": False,
+            "calculator_authorized_this_request": bool(allow_calculator),
         })
 
     def _restricted_request_body(self) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[int, Dict[str, Any]]]]:

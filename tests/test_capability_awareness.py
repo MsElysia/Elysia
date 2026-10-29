@@ -10,6 +10,7 @@ from project_guardian.capability_awareness import (
     capability_catalog_from_snapshot,
     discover_capabilities,
     model_facing_catalog,
+    reset_execution_evidence_for_tests,
 )
 from project_guardian.local_memory_chat import (
     ChatBoundaryError,
@@ -49,6 +50,10 @@ def _ollama_down(model: str = "llama3.2:3b") -> dict:
 
 
 class DiscoveryContractTests(unittest.TestCase):
+    def setUp(self):
+        # Process-local execution evidence must not leak across test modules.
+        reset_execution_evidence_for_tests()
+
     def test_installed_vs_available_distinction(self):
         snap = discover_capabilities(
             _auth("local.chat", "memory.read"),

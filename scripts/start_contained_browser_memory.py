@@ -184,6 +184,24 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("Shutting down contained Guardian...", flush=True)
     finally:
+        # Persist continuity checkpoints for dirty conversations before exit.
+        try:
+            from project_guardian.conversation_continuity import (
+                ConversationStore,
+                resolve_conversation_root,
+            )
+
+            conv_root = resolve_conversation_root(config["disposable_root"])
+            store = ConversationStore(conv_root)
+            for row in store.list_conversations():
+                cid = row.get("conversation_id")
+                if isinstance(cid, str):
+                    try:
+                        store.shutdown_checkpoint_if_dirty(cid)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         if exclusion_hold is not None:
             try:
                 exclusion_hold.release()

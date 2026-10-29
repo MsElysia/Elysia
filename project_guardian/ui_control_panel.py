@@ -935,6 +935,23 @@ CONTROL_PANEL_TEMPLATE = """
                                 <button type="button" onclick="saveConversationCheckpoint()">Save checkpoint</button>
                             </div>
                             <p id="conversation-continuity-status" style="font-size: 12px; color: var(--text-secondary); margin-top: 6px;">No conversation selected.</p>
+                            <div id="task-state-panel" style="display: none; margin-top: 10px; padding: 10px; background: var(--bg-dark); border-radius: 8px;">
+                                <strong style="font-size: 13px;">Task State</strong>
+                                <p style="font-size: 12px; color: var(--text-secondary); margin: 4px 0 8px 0;">Operator edits of outstanding steps and next action become the authoritative continuity checkpoint. Objective and constraints stay read-only here.</p>
+                                <div style="font-size: 12px; margin-bottom: 6px;"><span style="color: var(--text-secondary);">Title:</span> <span id="task-state-title">—</span></div>
+                                <div style="font-size: 12px; margin-bottom: 6px;"><span style="color: var(--text-secondary);">Objective:</span> <span id="task-state-objective">—</span></div>
+                                <div style="font-size: 12px; margin-bottom: 6px;"><span style="color: var(--text-secondary);">Checkpoint:</span> r<span id="task-state-revision">0</span> · <span id="task-state-saved-at">never</span></div>
+                                <label for="task-state-outstanding" style="font-size: 12px;">Outstanding steps (one per line)</label>
+                                <textarea id="task-state-outstanding" rows="3" style="width: 100%; margin: 4px 0 8px 0;"></textarea>
+                                <label for="task-state-next-action" style="font-size: 12px;">Next action</label>
+                                <input type="text" id="task-state-next-action" style="width: 100%; margin: 4px 0 8px 0;" maxlength="800">
+                                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                    <button type="button" onclick="saveTaskState()">Save task state</button>
+                                    <button type="button" onclick="cancelTaskStateEdit()">Cancel</button>
+                                </div>
+                                <p id="task-state-save-status" style="font-size: 12px; margin-top: 6px; color: var(--text-secondary);"></p>
+                                <input type="hidden" id="task-state-expected-revision" value="0">
+                            </div>
                             <pre id="conversation-checkpoint-view" style="font-size: 11px; max-height: 120px; overflow: auto; margin-top: 6px; white-space: pre-wrap; background: var(--bg-dark); padding: 8px; border-radius: 6px;"></pre>
                         </div>
                         <button type="button" onclick="sendLocalModelChat()" style="margin-top: 8px;">Ask local model</button>
@@ -1819,6 +1836,7 @@ CONTROL_PANEL_TEMPLATE = """
                     if (status) status.textContent = 'Started ' + data.conversation_id + ' (no authorization carried).';
                     if (view) view.textContent = '';
                     window.refreshConversations();
+                    window.loadTaskStatePanel(data.conversation_id);
                 })
                 .catch(function(err) { if (status) status.textContent = 'Create error: ' + err; });
         };
@@ -1850,6 +1868,7 @@ CONTROL_PANEL_TEMPLATE = """
                     if (view) view.textContent = JSON.stringify(data.checkpoint || { note: 'No checkpoint yet' }, null, 2);
                     var calc = document.getElementById('allow-labor-calculator');
                     if (calc) calc.checked = false;
+                    window.loadTaskStatePanel(id);
                 })
                 .catch(function(err) { if (status) status.textContent = 'Resume error: ' + err; });
         };
@@ -1871,8 +1890,124 @@ CONTROL_PANEL_TEMPLATE = """
                     }
                     if (status) status.textContent = 'Checkpoint saved revision ' + ((data.checkpoint || {}).revision || '?');
                     if (view) view.textContent = JSON.stringify(data.checkpoint || {}, null, 2);
+                    window.loadTaskStatePanel(id);
                 })
                 .catch(function(err) { if (status) status.textContent = 'Checkpoint error: ' + err; });
+        };
+
+        window._taskStateSnapshot = null;
+
+        window.loadTaskStatePanel = function(conversationId) {
+            var panel = document.getElementById('task-state-panel');
+            var saveStatus = document.getElementById('task-state-save-status');
+            if (!conversationId) {
+                if (panel) panel.style.display = 'none';
+                return;
+            }
+            fetch('/api/conversations/' + encodeURIComponent(conversationId))
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data || !data.success) {
+                        if (saveStatus) saveStatus.textContent = (data && data.error) || 'Could not load task state';
+                        return;
+                    }
+                    var conv = data.conversation || {};
+                    var ckpt = data.checkpoint || {};
+                    var rev = conv.checkpoint_revision || (ckpt.revision || 0) || 0;
+                    var steps = conv.outstanding_steps || [];
+                    var nextAction = conv.next_safe_action || '';
+                    window._taskStateSnapshot = {
+                        outstanding: steps.slice(),
+                        next: nextAction,
+                        revision: rev
+                    };
+                    if (panel) panel.style.display = 'block';
+                    var titleEl = document.getElementById('task-state-title');
+                    var objEl = document.getElementById('task-state-objective');
+                    var revEl = document.getElementById('task-state-revision');
+                    var savedEl = document.getElementById('task-state-saved-at');
+                    var outEl = document.getElementById('task-state-outstanding');
+                    var nextEl = document.getElementById('task-state-next-action');
+                    var expEl = document.getElementById('task-state-expected-revision');
+                    if (titleEl) titleEl.textContent = conv.title || conversationId;
+                    if (objEl) objEl.textContent = conv.objective || '—';
+                    if (revEl) revEl.textContent = String(rev);
+                    if (savedEl) savedEl.textContent = (ckpt.created_utc || conv.updated_utc || 'never');
+                    if (outEl) outEl.value = (steps || []).join('\\n');
+                    if (nextEl) nextEl.value = nextAction || '';
+                    if (expEl) expEl.value = String(rev);
+                    if (saveStatus) saveStatus.textContent = '';
+                })
+                .catch(function(err) {
+                    if (saveStatus) saveStatus.textContent = 'Load error: ' + err;
+                });
+        };
+
+        window.cancelTaskStateEdit = function() {
+            var snap = window._taskStateSnapshot;
+            var saveStatus = document.getElementById('task-state-save-status');
+            if (!snap) {
+                if (saveStatus) saveStatus.textContent = 'Nothing to cancel.';
+                return;
+            }
+            var outEl = document.getElementById('task-state-outstanding');
+            var nextEl = document.getElementById('task-state-next-action');
+            var expEl = document.getElementById('task-state-expected-revision');
+            if (outEl) outEl.value = (snap.outstanding || []).join('\\n');
+            if (nextEl) nextEl.value = snap.next || '';
+            if (expEl) expEl.value = String(snap.revision || 0);
+            if (saveStatus) saveStatus.textContent = 'Edits cancelled; form restored.';
+        };
+
+        window.saveTaskState = function() {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var saveStatus = document.getElementById('task-state-save-status');
+            var view = document.getElementById('conversation-checkpoint-view');
+            if (!id) {
+                if (saveStatus) saveStatus.textContent = 'Select or start a conversation first.';
+                return;
+            }
+            var outRaw = ((document.getElementById('task-state-outstanding') || {}).value || '');
+            var nextRaw = ((document.getElementById('task-state-next-action') || {}).value || '').trim();
+            var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
+            var steps = outRaw.split(/\\r?\\n/).map(function(s) { return s.trim(); }).filter(Boolean);
+            if (!nextRaw) {
+                if (saveStatus) saveStatus.textContent = 'Save rejected: next action is required.';
+                return;
+            }
+            if (saveStatus) saveStatus.textContent = 'Saving task state...';
+            fetch('/api/conversations/' + encodeURIComponent(id) + '/task-state', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    expected_revision: expected,
+                    outstanding_steps: steps,
+                    next_safe_action: nextRaw
+                })
+            })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    if (!data.success || res.status >= 400) {
+                        if (saveStatus) {
+                            saveStatus.textContent = 'Save rejected: ' + (data.error || ('HTTP ' + res.status));
+                        }
+                        return;
+                    }
+                    var ckpt = data.checkpoint || {};
+                    if (saveStatus) {
+                        saveStatus.textContent = 'Saved successfully · checkpoint r' +
+                            (ckpt.revision || '?') +
+                            (data.idempotent ? ' (idempotent retry)' : '') +
+                            ' · operator authoritative.';
+                    }
+                    if (view) view.textContent = JSON.stringify(ckpt, null, 2);
+                    window.loadTaskStatePanel(id);
+                    window.refreshConversations();
+                })
+                .catch(function(err) {
+                    if (saveStatus) saveStatus.textContent = 'Save failed: ' + err;
+                });
         };
 
         window.sendLocalModelChat = function() {
@@ -3367,6 +3502,88 @@ class UIControlPanel:
             except ContinuityError as exc:
                 return jsonify({"success": False, "error": str(exc)}), 400
 
+        @self.app.route('/api/conversations/<conversation_id>/task-state', methods=['GET', 'POST'])
+        def api_conversation_task_state(conversation_id: str):
+            """Inspect or commit operator-authoritative outstanding steps / next action."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden"}), 403
+            if not self._contained_startup_active():
+                return jsonify({"success": False, "error": "contained startup required"}), 400
+            from project_guardian.conversation_continuity import ContinuityError, StaleTaskEditError
+
+            try:
+                store = self._conversation_store()
+                if request.method == "GET":
+                    record = store.get(conversation_id)
+                    checkpoint = store.get_checkpoint(conversation_id)
+                    return jsonify({
+                        "success": True,
+                        "conversation_id": conversation_id,
+                        "title": record.get("title"),
+                        "objective": record.get("objective"),
+                        "constraints": list(record.get("constraints") or []),
+                        "outstanding_steps": list(record.get("outstanding_steps") or []),
+                        "next_safe_action": record.get("next_safe_action") or "",
+                        "checkpoint_revision": int(record.get("checkpoint_revision") or 0),
+                        "updated_utc": record.get("updated_utc"),
+                        "checkpoint_created_utc": (checkpoint or {}).get("created_utc"),
+                        "operator_task_state": record.get("operator_task_state"),
+                        "authorization_inherited": False,
+                        "editable_fields": ["outstanding_steps", "next_safe_action"],
+                        "read_only_fields": ["objective", "constraints", "title"],
+                    })
+                data = request.get_json(silent=True) or {}
+                for banned in (
+                    "authorization",
+                    "allow_calculator",
+                    "token",
+                    "credential",
+                    "api_key",
+                    "password",
+                    "scopes",
+                ):
+                    data.pop(banned, None)
+                # Objective/constraints remain read-only on this endpoint.
+                for readonly in ("objective", "constraints", "title", "completion_condition"):
+                    data.pop(readonly, None)
+                expected = data.get("expected_revision")
+                try:
+                    expected_revision = int(expected)
+                except (TypeError, ValueError):
+                    return jsonify({
+                        "success": False,
+                        "error": "expected_revision is required",
+                        "saved": False,
+                    }), 400
+                result = store.commit_operator_task_state(
+                    conversation_id,
+                    expected_revision=expected_revision,
+                    outstanding_steps=data.get("outstanding_steps"),
+                    next_safe_action=data.get("next_safe_action"),
+                )
+                return jsonify({
+                    "success": True,
+                    "saved": True,
+                    "idempotent": bool(result.get("idempotent")),
+                    "conversation": result.get("conversation"),
+                    "checkpoint": result.get("checkpoint"),
+                    "authorization_inherited": False,
+                    "task_state_source": "operator",
+                })
+            except StaleTaskEditError as exc:
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "error": str(exc),
+                    "stale": True,
+                }), 409
+            except ContinuityError as exc:
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "error": str(exc),
+                }), 400
+
         @self.app.route('/api/local-model/capabilities', methods=['GET'])
         def api_local_model_capabilities():
             """Read-only capability snapshot. Never activates tools or changes permissions."""
@@ -4793,6 +5010,7 @@ class UIControlPanel:
                     "objective": assembled.get("objective"),
                     "next_safe_action": assembled.get("next_safe_action"),
                     "outstanding_steps": assembled.get("outstanding_steps"),
+                    "operator_task_state": assembled.get("operator_task_state"),
                     "missing": assembled.get("missing") or [],
                     "checkpoint": assembled.get("checkpoint"),
                     "authorization_state": "none",

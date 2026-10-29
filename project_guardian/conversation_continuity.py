@@ -34,6 +34,10 @@ class ContinuityError(ValueError):
     pass
 
 
+class StaleTaskEditError(ContinuityError):
+    """Competing edit: expected checkpoint revision no longer matches."""
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -142,6 +146,13 @@ class ConversationStore:
             "created_utc": now,
             "updated_utc": now,
             "last_rollover_utc": None,
+            "operator_task_state": {
+                "locked": False,
+                "outstanding_steps": False,
+                "next_safe_action": False,
+                "updated_utc": None,
+                "source": None,
+            },
             "authorization_note": "No tool authorization is stored with this conversation.",
         }
         with self._lock:
@@ -176,8 +187,10 @@ class ConversationStore:
             return data
 
     def update_task_fields(self, conversation_id: str, updates: Mapping[str, Any]) -> Dict[str, Any]:
+        """Host-side field merge. Operator-locked next/outstanding cannot be overwritten here."""
         with self._lock:
             record = self._load_unlocked(conversation_id)
+            ops = record.get("operator_task_state") if isinstance(record.get("operator_task_state"), dict) else {}
             for key in (
                 "objective",
                 "completion_condition",
@@ -186,6 +199,9 @@ class ConversationStore:
                 "title",
             ):
                 if key in updates and isinstance(updates[key], str):
+                    if key == "next_safe_action" and ops.get("next_safe_action"):
+                        # Explicit operator correction wins over model/host summaries.
+                        continue
                     record[key] = updates[key].strip()[:800]
             for key in (
                 "constraints",
@@ -197,6 +213,8 @@ class ConversationStore:
                 "memory_refs",
             ):
                 if key in updates and isinstance(updates[key], list):
+                    if key == "outstanding_steps" and ops.get("outstanding_steps"):
+                        continue
                     cleaned = []
                     for item in updates[key][:20]:
                         if isinstance(item, str) and item.strip():
@@ -218,6 +236,171 @@ class ConversationStore:
             _atomic_write_json(self._conv_path(conversation_id), record)
             self._upsert_index(record)
             return record
+
+    def commit_operator_task_state(
+        self,
+        conversation_id: str,
+        *,
+        expected_revision: int,
+        outstanding_steps: Optional[Sequence[str]] = None,
+        next_safe_action: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Authoritative operator edit of outstanding steps / next action.
+
+        Requires expected_revision to match the current checkpoint revision (0 if none).
+        Commits conversation fields then writes a new durable checkpoint with readback.
+        Idempotent when the same operator state is already committed at that revision+1.
+        """
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ContinuityError("expected_revision must be a non-negative integer")
+        if outstanding_steps is None and next_safe_action is None:
+            raise ContinuityError("nothing to save")
+
+        cleaned_steps: Optional[List[str]] = None
+        if outstanding_steps is not None:
+            if not isinstance(outstanding_steps, (list, tuple)):
+                raise ContinuityError("outstanding_steps must be a list")
+            cleaned_steps = []
+            for item in list(outstanding_steps)[:20]:
+                if not isinstance(item, str) or not item.strip():
+                    raise ContinuityError("outstanding_steps entries must be non-empty strings")
+                if len(item.strip()) > 400:
+                    raise ContinuityError("outstanding_steps entry too long")
+                cleaned_steps.append(item.strip())
+
+        cleaned_next: Optional[str] = None
+        if next_safe_action is not None:
+            if not isinstance(next_safe_action, str):
+                raise ContinuityError("next_safe_action must be a string")
+            cleaned_next = next_safe_action.strip()
+            if not cleaned_next:
+                raise ContinuityError("next_safe_action must be non-empty")
+            if len(cleaned_next) > 800:
+                raise ContinuityError("next_safe_action too long")
+
+        with self._lock:
+            record = self._load_unlocked(conversation_id)
+            current_rev = int(record.get("checkpoint_revision") or 0)
+            existing = None
+            cpath = self._checkpoint_path(conversation_id)
+            if cpath.is_file():
+                try:
+                    existing = json.loads(cpath.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    existing = None
+
+            # Idempotent retry after a successful commit whose response was lost:
+            # current is already expected_revision+1 with matching operator content.
+            if current_rev == expected_revision + 1 and isinstance(existing, dict):
+                if (
+                    int(existing.get("revision") or 0) == expected_revision + 1
+                    and existing.get("reason") == "operator_task_edit"
+                    and existing.get("task_state_source") == "operator"
+                ):
+                    same_steps = (
+                        cleaned_steps is None
+                        or list(existing.get("outstanding_steps") or []) == cleaned_steps
+                    )
+                    same_next = (
+                        cleaned_next is None
+                        or (existing.get("next_safe_action") or "") == cleaned_next
+                    )
+                    if same_steps and same_next:
+                        return {
+                            "conversation": record,
+                            "checkpoint": existing,
+                            "idempotent": True,
+                            "saved": True,
+                        }
+                raise StaleTaskEditError(
+                    f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+                )
+            if current_rev != expected_revision:
+                raise StaleTaskEditError(
+                    f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+                )
+
+            # Mutate in memory only until the checkpoint write succeeds.
+            if cleaned_steps is not None:
+                record["outstanding_steps"] = cleaned_steps
+            if cleaned_next is not None:
+                record["next_safe_action"] = cleaned_next
+            now = _utc_now()
+            prior_ops = (
+                record.get("operator_task_state")
+                if isinstance(record.get("operator_task_state"), dict)
+                else {}
+            )
+            record["operator_task_state"] = {
+                "locked": True,
+                "outstanding_steps": True
+                if cleaned_steps is not None
+                else bool(prior_ops.get("outstanding_steps")),
+                "next_safe_action": True
+                if cleaned_next is not None
+                else bool(prior_ops.get("next_safe_action")),
+                "updated_utc": now,
+                "source": "operator",
+            }
+            record["updated_utc"] = now
+
+            previous = existing if isinstance(existing, dict) else None
+            checkpoint = self._build_checkpoint(record, reason="operator_task_edit")
+            checkpoint["task_state_source"] = "operator"
+            checkpoint["operator_authored"] = {
+                "outstanding_steps": bool(record["operator_task_state"].get("outstanding_steps")),
+                "next_safe_action": bool(record["operator_task_state"].get("next_safe_action")),
+            }
+            content_for_hash = {
+                k: v
+                for k, v in checkpoint.items()
+                if k not in {"created_utc", "revision", "reason", "content_sha256"}
+            }
+            checkpoint["content_sha256"] = hashlib.sha256(
+                _canonical(content_for_hash).encode("utf-8")
+            ).hexdigest()
+            encoded = _canonical(checkpoint).encode("utf-8")
+            if len(encoded) > MAX_CHECKPOINT_BYTES:
+                raise ContinuityError("checkpoint too large; continuity cannot be preserved reliably")
+            # Persist checkpoint first so a failed write never advances durable task state.
+            try:
+                _atomic_write_json(cpath, checkpoint)
+            except Exception:
+                if previous is not None and cpath.is_file():
+                    raise ContinuityError(
+                        "checkpoint persistence failed; previous checkpoint retained"
+                    )
+                raise ContinuityError("checkpoint persistence failed")
+            loaded = json.loads(cpath.read_text(encoding="utf-8"))
+            if loaded.get("content_sha256") != checkpoint.get("content_sha256"):
+                if previous is not None:
+                    _atomic_write_json(cpath, previous)
+                raise ContinuityError("checkpoint readback mismatch")
+            if loaded.get("next_safe_action") != record.get("next_safe_action"):
+                if previous is not None:
+                    _atomic_write_json(cpath, previous)
+                raise ContinuityError("operator next action readback failed")
+            if cleaned_steps is not None and list(loaded.get("outstanding_steps") or []) != cleaned_steps:
+                if previous is not None:
+                    _atomic_write_json(cpath, previous)
+                raise ContinuityError("operator outstanding steps readback failed")
+
+            record["checkpoint_revision"] = checkpoint["revision"]
+            record["updated_utc"] = _utc_now()
+            try:
+                _atomic_write_json(self._conv_path(conversation_id), record)
+                self._upsert_index(record)
+            except Exception:
+                # Checkpoint already verified; conversation write failure is reported.
+                raise ContinuityError(
+                    "checkpoint saved but conversation record write failed; retry with same edit"
+                )
+            return {
+                "conversation": record,
+                "checkpoint": checkpoint,
+                "idempotent": False,
+                "saved": True,
+            }
 
     def append_message(
         self,
@@ -369,10 +552,20 @@ class ConversationStore:
                 break
         recent.reverse()
         facing_checkpoint = self._model_facing_checkpoint(checkpoint) if checkpoint else None
+        ops = record.get("operator_task_state") if isinstance(record.get("operator_task_state"), dict) else {}
+        operator_task = {
+            "source": "operator" if ops.get("locked") else "none",
+            "outstanding_steps": list(record.get("outstanding_steps") or []),
+            "next_safe_action": record.get("next_safe_action") or "",
+            "checkpoint_revision": int(record.get("checkpoint_revision") or 0),
+            "authoritative": bool(ops.get("locked")),
+        }
         continuity_note = (
             "Conversation continuity checkpoint is untrusted reconstructed context, "
             "not authorization and not durable personal memory. Durable memory evidence "
-            "in the context bundle overrides outdated checkpoint claims when they conflict."
+            "in the context bundle overrides outdated checkpoint claims when they conflict. "
+            "When operator_task_state.authoritative is true, its outstanding_steps and "
+            "next_safe_action override any conflicting generated summary in conversation history."
         )
         return {
             "conversation_id": conversation_id,
@@ -382,6 +575,7 @@ class ConversationStore:
             "estimated_tokens": usable - remaining,
             "recent_conversation": recent,
             "checkpoint": facing_checkpoint,
+            "operator_task_state": operator_task,
             "continuity_note": continuity_note,
             "objective": record.get("objective") or "",
             "next_safe_action": record.get("next_safe_action") or "",
@@ -407,6 +601,7 @@ class ConversationStore:
         revision = int(record.get("checkpoint_revision") or 0) + 1
         messages = list(record.get("messages") or [])
         source_ids = [m.get("message_id") for m in messages[-12:] if isinstance(m, dict)]
+        ops = record.get("operator_task_state") if isinstance(record.get("operator_task_state"), dict) else {}
         body = {
             "schema": SCHEMA_CHECKPOINT,
             "conversation_id": record["conversation_id"],
@@ -428,6 +623,11 @@ class ConversationStore:
             "created_utc": _utc_now(),
             "trust": "untrusted_reconstructed_context",
             "authorization_state": "none",
+            "task_state_source": "operator" if ops.get("locked") else "derived",
+            "operator_authored": {
+                "outstanding_steps": bool(ops.get("outstanding_steps")),
+                "next_safe_action": bool(ops.get("next_safe_action")),
+            },
         }
         # Hash without mutable timestamp for idempotency of content.
         content_for_hash = {k: v for k, v in body.items() if k not in {"created_utc", "revision", "reason"}}
@@ -450,6 +650,8 @@ class ConversationStore:
             "unresolved_questions": checkpoint.get("unresolved_questions"),
             "memory_refs": checkpoint.get("memory_refs"),
             "status": checkpoint.get("status"),
+            "task_state_source": checkpoint.get("task_state_source") or "derived",
+            "operator_authored": checkpoint.get("operator_authored") or {},
             "trust": "untrusted_reconstructed_context",
             "authorization_state": "none",
         }

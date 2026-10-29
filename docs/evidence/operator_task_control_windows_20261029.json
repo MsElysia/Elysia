@@ -1,0 +1,111 @@
+{
+  "disposable_root": "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-taskctl-zjr3yvnu",
+  "port": 5072,
+  "model": "llama3.2:3b",
+  "steps": {
+    "pre_rollover_0": {
+      "status": 200,
+      "success": true,
+      "rolled_over": false,
+      "reply": "The fictional observatory checklist objective is acknowledged, and the dome simulation is open."
+    },
+    "pre_rollover_1": {
+      "status": 200,
+      "success": true,
+      "rolled_over": false,
+      "reply": "The fictional observatory checklist objective is acknowledged, and the dome simulation is open."
+    },
+    "pre_rollover_2": {
+      "status": 200,
+      "success": true,
+      "rolled_over": false,
+      "reply": "The fictional observatory checklist objective is acknowledged, and the dome simulation is open."
+    },
+    "pre_rollover_success_count": 3,
+    "operator_save": {
+      "status": 200,
+      "revision": 1,
+      "next": "Log weather",
+      "source": "operator",
+      "constraints": [
+        "Stay fictional",
+        "No purchases",
+        "No network tools"
+      ]
+    },
+    "stale_edit": {
+      "status": 409,
+      "error": "stale task edit: expected revision 0, current is 1",
+      "stale": true
+    },
+    "summary_override_blocked": "Log weather",
+    "accumulate_0": {
+      "status": 200,
+      "rolled_over": false,
+      "success": true
+    },
+    "accumulate_1": {
+      "status": 200,
+      "rolled_over": true,
+      "success": true
+    },
+    "accumulate_2": {
+      "status": 200,
+      "rolled_over": true,
+      "success": true
+    },
+    "accumulate_3": {
+      "status": 200,
+      "rolled_over": true,
+      "success": true
+    },
+    "accumulate_4": {
+      "status": 200,
+      "rolled_over": true,
+      "success": true
+    },
+    "multi_turn_rollover": {
+      "turn": 0,
+      "has_checkpoint": true,
+      "constraints": [
+        "Stay fictional",
+        "No purchases",
+        "No network tools"
+      ],
+      "next": "Log weather"
+    },
+    "multi_turn_rolled": true,
+    "tiny_budget_rollover_turn": 0,
+    "tiny_budget_rollover": true,
+    "resume": {
+      "next": "Log weather",
+      "auth": false,
+      "objective": "Prepare a fictional three-step observatory night checklist",
+      "constraints_in_checkpoint": [
+        "Stay fictional",
+        "No purchases",
+        "No network tools"
+      ]
+    },
+    "post_restart_model": {
+      "status": 200,
+      "reply": "Log weather",
+      "operator_task": {
+        "authoritative": true,
+        "checkpoint_revision": 7,
+        "next_safe_action": "Log weather",
+        "outstanding_steps": [
+          "Log weather",
+          "Set tracking rate"
+        ],
+        "source": "operator"
+      }
+    },
+    "auth_isolation": {
+      "status": 200,
+      "tools": []
+    }
+  },
+  "conversation_id": "conv_244798435617455a",
+  "ok": true
+}

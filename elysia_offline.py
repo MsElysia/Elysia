@@ -46,6 +46,26 @@ def install_offline_guard(workspace: Path) -> list[str]:
         denied.append(str(detail))
         raise OfflineBoundaryError(str(detail))
 
+    def audited_path(value, dir_fd=None):
+        # POSIX shutil.rmtree uses directory descriptors. Resolve their actual
+        # target instead of treating a relative child as relative to cwd.
+        def descriptor_path(fd):
+            if sys.platform != "linux" or type(fd) is not int or fd < 0:
+                deny("unresolvable directory descriptor")
+            try:
+                target = os.readlink(f"/proc/self/fd/{fd}")
+            except OSError:
+                deny("unresolvable directory descriptor")
+            if not os.path.isabs(target) or target.endswith(" (deleted)"):
+                deny("unresolvable directory descriptor")
+            return Path(target).resolve()
+        if isinstance(value, int):
+            return descriptor_path(value)
+        path = Path(os.fsdecode(value if value is not None else os.getcwd()))
+        if not path.is_absolute() and dir_fd is not None and dir_fd != -1:
+            path = descriptor_path(dir_fd) / path
+        return path.resolve()
+
     def audit(event, args):
         if event == "open" and not isinstance(args[0], int):
             path = Path(os.fsdecode(args[0])).resolve()
@@ -53,19 +73,34 @@ def install_offline_guard(workspace: Path) -> list[str]:
             writing = flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)
             if writing and not within(path, data):
                 deny("write outside synthetic workspace")
+            if writing:
+                try:
+                    if path.exists() and path.lstat().st_nlink != 1:
+                        deny("write to multiply-linked synthetic file")
+                except OSError:
+                    deny("synthetic write target identity unavailable")
             if not writing and not within(path, data):
                 if not (any(within(path, root) for root in (code, *runtimes))
                         and path.suffix.lower() in {".py", ".pyc", ".pyd", ".dll", ".zip"}):
                     deny("read outside synthetic workspace/code")
         elif event in {"os.listdir", "os.scandir"}:
-            path = Path(os.fsdecode(args[0] if args[0] is not None else os.getcwd())).resolve()
+            path = audited_path(args[0])
             if not any(within(path, root) for root in (code, *runtimes, data)):
                 deny("enumeration outside synthetic workspace/code")
         elif event in {"os.mkdir", "os.remove", "os.rmdir", "os.rename", "os.link", "os.symlink", "os.chmod", "os.truncate"}:
             # Validate both source and target for mutations which take two paths.
             paths = args[:2] if event in {"os.rename", "os.link", "os.symlink"} else args[:1]
-            for value in paths:
-                if not within(Path(os.fsdecode(value)).resolve(), data):
+            for number, value in enumerate(paths):
+                dir_fd = None
+                if event in {"os.rename", "os.link"} and len(args) > 2 + number:
+                    dir_fd = args[2 + number]
+                elif event in {"os.mkdir", "os.chmod"} and len(args) > 2:
+                    dir_fd = args[2]
+                elif event in {"os.remove", "os.rmdir"} and len(args) > 1:
+                    dir_fd = args[1]
+                elif event == "os.symlink" and number == 1 and len(args) > 2:
+                    dir_fd = args[2]
+                if not within(audited_path(value, dir_fd), data):
                     deny("mutation outside synthetic workspace")
         elif event.startswith(("socket.", "subprocess.")) or event in {"os.system", "os.startfile", "os.exec", "os.spawn"}:
             deny(event)
@@ -165,13 +200,51 @@ class RestrictedElysia:
         return answer, evidence
 
 
+def calculate_local(expression: str) -> str:
+    """Bounded arithmetic only: no names, calls, attributes, powers or eval."""
+    import ast
+    from decimal import Decimal, DecimalException, localcontext
+    if not expression.strip() or len(expression) > 120:
+        raise ValueError("Use an arithmetic expression of 1 to 120 characters.")
+    try:
+        source = expression.strip()
+        tree = ast.parse(source, mode="eval")
+        if sum(1 for _ in ast.walk(tree)) > 40:
+            raise ValueError("Expression is too complex.")
+        def number(node):
+            if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+                result = Decimal(ast.get_source_segment(source, node))
+            elif isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+                value = number(node.operand)
+                result = value if isinstance(node.op, ast.UAdd) else -value
+            elif isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+                left, right = number(node.left), number(node.right)
+                if isinstance(node.op, ast.Add): result = left + right
+                elif isinstance(node.op, ast.Sub): result = left - right
+                elif isinstance(node.op, ast.Mult): result = left * right
+                else: result = left / right
+            else:
+                raise ValueError("Only numbers, parentheses and + - * / are allowed.")
+            if not result.is_finite() or abs(result) > Decimal("1e12"):
+                raise ValueError("Each value must be finite and no larger than 1 trillion.")
+            if result and result.adjusted() < -12:
+                raise ValueError("Nonzero values must be at least 0.000000000001 in magnitude.")
+            return result
+        with localcontext() as context:
+            context.prec = 28
+            return format(number(tree.body).normalize(), "f")
+    except (SyntaxError, DecimalException, OverflowError) as exc:
+        raise ValueError("Invalid arithmetic or division by zero.") from exc
+
+
 def interactive_session(system: RestrictedElysia):
     """One existing restricted system, multiple ephemeral input turns."""
     state = {"query": None, "answer": "", "recall": None,
              "turn_count": 0, "unavailable_count": 0, "restart_count": 0}
     print("Elysia offline pilot ready. Synthetic memories only; no personal data.", flush=True)
     print("Try: damaged flashing; water seedlings; reserved library books.", flush=True)
-    print("Commands: /help, /memories, /restart, /exit. Answers quote recorded facts; no inference.", flush=True)
+    print("Commands: /help, /status, /memories, /restart, /exit. Answers quote recorded facts; no inference.", flush=True)
+    print("Local task: /calculate (12 * 8) - 20. Arithmetic input is not saved.", flush=True)
     if system.learning:
         print("Persistent fictional learning and offline research are ready. Internet and providers disabled.", flush=True)
         print("Teach: /teach key | Fictional fact. Correct: /correct key | Fictional fact. History: /history key.", flush=True)
@@ -198,6 +271,32 @@ def interactive_session(system: RestrictedElysia):
             print("Enter a synthetic question or /exit.", flush=True)
             continue
         command = query.strip().casefold()
+        if command == "/status":
+            if system.snapshot() != system.expected_snapshot:
+                raise OfflineBoundaryError("synthetic store changed before status")
+            revisions = None
+            if system.learning is not None:
+                system.learning.validate()
+                revisions = sum(len(items) for items in system.learning.facts.values())
+            print("Runtime status: " + json.dumps({
+                "runtime_mode": "restricted_offline",
+                "running": system.running,
+                "owner_pid": os.getpid(),
+                "providers": False,
+                "autonomy": False,
+                "synthetic_only": True,
+                "memory_store": str(system.workspace),
+                "persistent_memory": system.learning is not None,
+                "learned_revisions": revisions,
+            }, sort_keys=True), flush=True)
+            continue
+        if command.startswith("/calculate "):
+            try:
+                expression = query.strip().split(" ", 1)[1]
+                print("Calculation: " + calculate_local(expression), flush=True)
+            except ValueError as exc:
+                print(f"Calculation unavailable: {exc}", flush=True)
+            continue
         if command.startswith("/research "):
             if system.learning is None:
                 print("Research requires --synthetic-store NAME. Controlled fictional fixtures only; internet disabled.", flush=True)
@@ -243,7 +342,9 @@ def interactive_session(system: RestrictedElysia):
             print("Exit requested.", flush=True)
             break
         if command == "/help":
+            print("/status reports this process. /calculate (12 * 8) - 20 performs local arithmetic without saving input.", flush=True)
             print("Ask with words from the samples. /memories shows all synthetic facts; /restart reopens them; /exit ends the session.", flush=True)
+            print("/status reports this process, active synthetic store, and disabled providers/autonomy.", flush=True)
             print("Persistent fictional mode: --interactive --synthetic-store NAME. /teach key | Fictional fact; /correct key | Fictional fact; /history key.", flush=True)
             print("/research Skylark Composite researches five controlled fictional sources. No internet research.", flush=True)
             continue
@@ -275,7 +376,7 @@ def interactive_session(system: RestrictedElysia):
     return state
 
 
-def main(argv=None) -> int:
+def _main_owned(argv=None) -> tuple[int, list[str]]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--offline", action="store_true", help="Restricted offline startup (the draft default)")
     inputs = parser.add_mutually_exclusive_group()
@@ -356,15 +457,40 @@ def main(argv=None) -> int:
         payload["temporary_data_removed"] = not workspace.exists()
         if (not args.synthetic_store and not payload["temporary_data_removed"]) or denied:
             raise OfflineBoundaryError("temporary-data cleanup verification failed")
+        final_output = []
         if args.interactive:
-            print(f"Session ended: {state['turn_count']} questions; {state['unavailable_count']} unavailable; {state['restart_count']} restarts.", flush=True)
+            final_output.append(f"Session ended: {state['turn_count']} questions; {state['unavailable_count']} unavailable; {state['restart_count']} restarts.")
             if args.synthetic_store:
-                print("Security evidence: " + json.dumps(payload, sort_keys=True), flush=True)
+                final_output.append("Security evidence: " + json.dumps(payload, sort_keys=True))
         if args.demo or args.interactive:
-            print("Shutdown complete. Named fictional store retained." if args.synthetic_store else "Shutdown complete. Temporary synthetic data removed.", flush=True)
+            final_output.append("Shutdown complete. Named fictional store retained." if args.synthetic_store else "Shutdown complete. Temporary synthetic data removed.")
         else:
-            print(json.dumps(payload, sort_keys=True))
-        return 0
+            final_output.append(json.dumps(payload, sort_keys=True))
+        return 0, final_output
     except (ValueError, OSError, OfflineBoundaryError) as exc:
         print(f"Offline startup failed: {exc}", file=sys.stderr)
+        return 2, []
+
+
+def main(argv=None) -> int:
+    if sys.version_info < (3, 12):
+        print("Elysia restricted runtime requires Python 3.12 or newer.", file=sys.stderr)
         return 2
+    # Ownership precedes store creation and remains held through data cleanup.
+    from elysia_runtime_owner import runtime_owner, RuntimeOwnershipError
+    try:
+        with runtime_owner(Path(__file__).absolute().parent):
+            result, final_output = _main_owned(argv)
+        # A shutdown receipt is truthful only after ownership release succeeds.
+        for line in final_output:
+            print(line, flush=True)
+        return result
+    except (RuntimeOwnershipError, OSError, ValueError) as exc:
+        print(f"Offline startup failed: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        # Transaction and system finally blocks have already run; do not claim
+        # that an interrupted operation committed or automatically retry it.
+        print("Runtime interrupted and ownership released. Reopen the synthetic store to inspect recovery.",
+              file=sys.stderr)
+        return 130

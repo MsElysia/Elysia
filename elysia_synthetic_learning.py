@@ -99,11 +99,14 @@ class SyntheticLearningStore:
                 for source_id in ids:
                     old = (self.path / self.records[source_id]["raw_source_path"]).read_text(encoding="utf-8")
                     if old.casefold() == text.casefold():
+                        if old_key != key or source_id != ids[-1]:
+                            raise ValueError("Duplicate conflicts with the requested key's current revision.")
                         return "Duplicate fact; no record written."
             if correction != (key in facts):
                 raise ValueError("Use /correct for an existing key; /teach for a new key.")
             if sum(map(len, facts.values())) >= self.MAX_REVISIONS:
                 raise ValueError("This bounded pilot allows seven learned revisions per store.")
+            before_count = len(facts.get(key, []))
             tx = ApplyTransaction(self.path)
             try:
                 report = persist_source_intelligence(dest_dir=self.path, raw_bytes=text.encode("utf-8"),
@@ -115,6 +118,12 @@ class SyntheticLearningStore:
                 tx.abort()
                 raise
             self.validate()
+            # Both the normal console and browser must acknowledge the durable
+            # requested revision, never merely the transaction method's return.
+            revisions = self.history(key)
+            if (len(revisions) != before_count + 1
+                    or revisions[-1].split(": ", 2)[-1] != text):
+                raise ValueError("Requested durable revision was not verified.")
         return "Fictional fact corrected; source history preserved." if correction else "Fictional fact learned."
 
     def history(self, key):

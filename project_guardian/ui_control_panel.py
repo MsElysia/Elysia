@@ -496,6 +496,7 @@ CONTROL_PANEL_TEMPLATE = """
             <button class="tab" onclick="showTab('tasks', this)">📋 Tasks</button>
             <button class="tab" onclick="showTab('security', this)">🔒 Security</button>
             <button class="tab" onclick="showTab('memory', this)">🧠 Memory</button>
+            <button class="tab" onclick="showTab('capabilities', this)">🧭 Capabilities</button>
             <button class="tab" onclick="showTab('introspection', this)">🔍 Introspection</button>
             <button class="tab" onclick="showTab('control', this)">🎮 Control</button>
             <button class="tab" onclick="showTab('logs', this)">📝 Logs</button>
@@ -728,6 +729,24 @@ CONTROL_PANEL_TEMPLATE = """
                 <h2>Security Events</h2>
                 <p>No event feed is connected to this panel. Dashboard security counters are a limited summary, not a security audit.</p>
                 <div id="security-events"></div>
+            </div>
+        </div>
+
+        <!-- Capabilities Tab -->
+        <div id="capabilities" class="tab-content">
+            <div class="card">
+                <h2>Capabilities</h2>
+                <p style="color: var(--text-secondary); font-size: 13px;">
+                    Read-only view of what Elysia has installed, what is running, and what you have authorized.
+                    This panel cannot enable autonomy, cloud providers, or tools.
+                </p>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0;">
+                    <button type="button" onclick="refreshCapabilities()">Refresh status</button>
+                </div>
+                <div id="capabilities-summary" style="margin-bottom: 12px; font-size: 13px; color: var(--text-secondary);"></div>
+                <div id="capabilities-next" style="margin-bottom: 16px; white-space: pre-wrap; font-size: 13px;"></div>
+                <div id="capabilities-panel" style="overflow-x: auto;"></div>
+                <p id="capabilities-status" style="margin-top: 10px; font-size: 12px; color: var(--text-secondary); white-space: pre-wrap;"></p>
             </div>
         </div>
 
@@ -1015,6 +1034,8 @@ CONTROL_PANEL_TEMPLATE = """
                 window.refreshTaskQueue();
             if (tabName === 'memory' && typeof window.refreshRestrictedMemoryStore === 'function')
                 window.refreshRestrictedMemoryStore();
+            if (tabName === 'capabilities' && typeof window.refreshCapabilities === 'function')
+                window.refreshCapabilities();
         };
         
         const socket = (typeof io !== 'undefined') ? io() : null;
@@ -1638,6 +1659,90 @@ CONTROL_PANEL_TEMPLATE = """
                     addLog(failed ? ('Chat unavailable: ' + (data.error || data.reply || 'No reply')) : 'Chat reply received', failed ? 'error' : 'info');
                 })
                 .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Chat error: ' + err, 'error'); });
+        };
+
+        window.refreshCapabilities = function() {
+            var panel = document.getElementById('capabilities-panel');
+            var summary = document.getElementById('capabilities-summary');
+            var nextEl = document.getElementById('capabilities-next');
+            var status = document.getElementById('capabilities-status');
+            if (panel) panel.textContent = 'Loading capability status...';
+            if (status) status.textContent = '';
+            fetch('/api/local-model/capabilities')
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    if (!data.ok) {
+                        if (panel) panel.textContent = data.detail || data.error || 'Capability status unavailable';
+                        if (status) status.textContent = 'Status ' + res.status;
+                        return;
+                    }
+                    var lm = data.local_model || {};
+                    var sum = data.summary || {};
+                    if (summary) {
+                        summary.textContent =
+                            'Local model: ' + (lm.model || 'none') +
+                            (lm.installed ? ' (installed & reachable)' : ' (not ready)') +
+                            ' · Available ' + (sum.available || 0) +
+                            ' · Authorized ' + (sum.authorized || 0) +
+                            ' · Unknown operational ' + (sum.operational_unknown || 0);
+                    }
+                    var next = data.safe_next_actions || [];
+                    if (nextEl) {
+                        if (!next.length) nextEl.textContent = 'Safe next steps: none suggested right now.';
+                        else {
+                            nextEl.textContent = 'What Elysia can safely do next:\\n' + next.map(function(item, i) {
+                                return (i + 1) + '. ' + item.action;
+                            }).join('\\n');
+                        }
+                    }
+                    var cats = { intelligence: [], memory: [], tools: [], system: [] };
+                    (data.capabilities || []).forEach(function(cap) {
+                        var key = cap.category || 'system';
+                        if (!cats[key]) cats[key] = [];
+                        cats[key].push(cap);
+                    });
+                    function modeLabel(cap) {
+                        var mode = cap.permission_mode || '';
+                        if (mode === 'per_request') return 'Per request';
+                        if (mode === 'allowed' || mode === 'allowed_this_request') return 'Allowed';
+                        if (mode === 'disabled') return 'Disabled';
+                        if (mode === 'not_authorized') return 'Not authorized';
+                        if (mode === 'unavailable') return 'Unavailable';
+                        return mode || 'Unknown';
+                    }
+                    function runtimeLabel(cap) {
+                        if (!cap.installed) return 'Not installed';
+                        if (!cap.available) return 'Unavailable';
+                        if (cap.operational === true) return 'Operational';
+                        if (cap.operational === false) return 'Available (not verified)';
+                        return 'Available';
+                    }
+                    var html = '';
+                    Object.keys(cats).forEach(function(cat) {
+                        if (!cats[cat].length) return;
+                        html += '<h3 style="margin: 16px 0 8px 0; text-transform: capitalize;">' + cat + '</h3>';
+                        html += '<table style="width:100%; border-collapse: collapse; font-size: 13px;">';
+                        html += '<thead><tr style="text-align:left; border-bottom: 1px solid var(--border);">';
+                        html += '<th style="padding: 6px;">Capability</th><th style="padding: 6px;">Runtime</th>';
+                        html += '<th style="padding: 6px;">Authorization</th><th style="padding: 6px;">Notes</th></tr></thead><tbody>';
+                        cats[cat].forEach(function(cap) {
+                            html += '<tr style="border-bottom: 1px solid var(--border); vertical-align: top;">';
+                            html += '<td style="padding: 8px 6px;"><strong>' + window._escapeHtml(cap.name || '') + '</strong>';
+                            html += '<div style="color: var(--text-secondary); font-size: 12px;">' + window._escapeHtml(cap.description || '') + '</div></td>';
+                            html += '<td style="padding: 8px 6px;">' + window._escapeHtml(runtimeLabel(cap)) + '</td>';
+                            html += '<td style="padding: 8px 6px;">' + window._escapeHtml(modeLabel(cap)) + '</td>';
+                            html += '<td style="padding: 8px 6px; color: var(--text-secondary);">' + window._escapeHtml(cap.unavailable_reason || cap.safe_next_action || '') + '</td>';
+                            html += '</tr>';
+                        });
+                        html += '</tbody></table>';
+                    });
+                    if (panel) panel.innerHTML = html || 'No capabilities reported.';
+                    if (status) status.textContent = data.policy_note || '';
+                })
+                .catch(function(err) {
+                    if (panel) panel.textContent = 'Error: ' + err;
+                });
         };
 
         window.sendLocalModelChat = function() {
@@ -2980,6 +3085,60 @@ class UIControlPanel:
                 "cloud_fallback": False,
                 "contained": self._contained_startup_active(),
             })
+
+        @self.app.route('/api/local-model/capabilities', methods=['GET'])
+        def api_local_model_capabilities():
+            """Read-only capability snapshot. Never activates tools or changes permissions."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({
+                    "ok": False,
+                    "error": "forbidden",
+                    "detail": "loopback only",
+                }), 403
+            if request.method != "GET":
+                return jsonify({"ok": False, "error": "method_not_allowed"}), 405
+            import secrets
+
+            from project_guardian.capability_awareness import discover_capabilities
+            from project_guardian.local_memory_chat import ManualAuthorization
+
+            try:
+                memory_attached = False
+                memory_filepath = None
+                if self._contained_startup_active():
+                    try:
+                        adapter = self._restricted_adapter()
+                        memory_attached = adapter is not None
+                        store = adapter.store_identity() if adapter is not None else {}
+                        # Expose presence only — never return file contents.
+                        memory_filepath = "present" if store.get("filepath") else None
+                    except Exception:
+                        memory_attached = False
+                        memory_filepath = None
+                # Dashboard view: chat/memory read scopes; calculator remains per-request
+                # (not granted here). Discovery cannot elevate privileges.
+                authorization = ManualAuthorization(
+                    secrets.token_hex(16),
+                    True,
+                    True,
+                    frozenset({"local.chat", "memory.read"}),
+                )
+                snapshot = discover_capabilities(
+                    authorization,
+                    contained=self._contained_startup_active(),
+                    memory_attached=memory_attached,
+                    memory_filepath=memory_filepath,
+                )
+                return jsonify(snapshot)
+            except Exception as exc:
+                logger.error("Capability discovery failed: %s", exc, exc_info=True)
+                return jsonify({
+                    "ok": False,
+                    "error": "capability_discovery_failed",
+                    "detail": "Capability inspection failed; chat and memory remain usable.",
+                    "read_only": True,
+                    "activates_tools": False,
+                }), 500
 
         @self.app.route('/api/chat', methods=['POST'])
         def api_chat():

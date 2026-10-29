@@ -566,7 +566,27 @@ def converse_bundle(
         raise ChatBoundaryError("invalid question")
     if not isinstance(bundle, Mapping) or bundle.get("schema") != "elysia.local-context.v1":
         raise ChatBoundaryError("invalid context bundle")
-    catalog = capability_catalog(authorization)
+    # Same authoritative policy snapshot as the Capabilities dashboard.
+    from project_guardian.capability_awareness import (
+        capability_catalog_from_snapshot,
+        discover_capabilities,
+    )
+
+    policy_snapshot = discover_capabilities(
+        authorization,
+        contained=True,
+        memory_attached=True,
+        ollama_probe={
+            "configured": True,
+            "model": model.model,
+            "reachable": True,
+            "model_installed": True,
+            "installed_models": [model.model],
+            "error": None,
+            "verified_utc": None,
+        },
+    )
+    catalog = capability_catalog_from_snapshot(authorization, snapshot=policy_snapshot)
     labor_authorized = any(
         r.get("name") == "calculator.labor" and r.get("available") and r.get("authorized")
         for r in catalog

@@ -949,6 +949,8 @@ CONTROL_PANEL_TEMPLATE = """
                                     <button type="button" onclick="saveTaskState()">Save task state</button>
                                     <button type="button" onclick="cancelTaskStateEdit()">Cancel</button>
                                 </div>
+                                <div id="task-steps-list" style="margin-top: 10px; font-size: 12px;"></div>
+                                <p id="task-state-review-note" style="font-size: 12px; margin-top: 6px; color: var(--text-secondary);"></p>
                                 <p id="task-state-save-status" style="font-size: 12px; margin-top: 6px; color: var(--text-secondary);"></p>
                                 <input type="hidden" id="task-state-expected-revision" value="0">
                             </div>
@@ -1916,6 +1918,7 @@ CONTROL_PANEL_TEMPLATE = """
                     var rev = conv.checkpoint_revision || (ckpt.revision || 0) || 0;
                     var steps = conv.outstanding_steps || [];
                     var nextAction = conv.next_safe_action || '';
+                    var taskSteps = conv.task_steps || [];
                     window._taskStateSnapshot = {
                         outstanding: steps.slice(),
                         next: nextAction,
@@ -1929,6 +1932,8 @@ CONTROL_PANEL_TEMPLATE = """
                     var outEl = document.getElementById('task-state-outstanding');
                     var nextEl = document.getElementById('task-state-next-action');
                     var expEl = document.getElementById('task-state-expected-revision');
+                    var listEl = document.getElementById('task-steps-list');
+                    var reviewEl = document.getElementById('task-state-review-note');
                     if (titleEl) titleEl.textContent = conv.title || conversationId;
                     if (objEl) objEl.textContent = conv.objective || '—';
                     if (revEl) revEl.textContent = String(rev);
@@ -1936,10 +1941,77 @@ CONTROL_PANEL_TEMPLATE = """
                     if (outEl) outEl.value = (steps || []).join('\\n');
                     if (nextEl) nextEl.value = nextAction || '';
                     if (expEl) expEl.value = String(rev);
+                    if (reviewEl) {
+                        reviewEl.textContent = conv.advancement_needs_review
+                            ? 'Task progression needs operator review: next action was preserved and is not linked to the completed step.'
+                            : '';
+                    }
+                    if (listEl) {
+                        if (!taskSteps.length) {
+                            listEl.innerHTML = '<div style="color: var(--text-secondary);">No structured steps yet. Save outstanding steps to create them.</div>';
+                        } else {
+                            var html = '<div style="margin-bottom: 4px;"><strong>Steps</strong></div>';
+                            taskSteps.forEach(function(step) {
+                                var done = step.status === 'completed';
+                                html += '<div style="display: flex; gap: 8px; align-items: center; margin: 4px 0; flex-wrap: wrap;">';
+                                html += '<span style="flex: 1; min-width: 140px;">' +
+                                    (done ? '✓ ' : '') +
+                                    window._escapeHtml(step.description || '') +
+                                    (done ? ' <span style="color: var(--text-secondary);">(completed)</span>' : '') +
+                                    '</span>';
+                                if (!done) {
+                                    html += '<button type="button" onclick="completeTaskStep(\\'' +
+                                        window._escapeHtml(step.step_id || '') +
+                                        '\\')">Mark complete</button>';
+                                }
+                                html += '</div>';
+                            });
+                            listEl.innerHTML = html;
+                        }
+                    }
                     if (saveStatus) saveStatus.textContent = '';
                 })
                 .catch(function(err) {
                     if (saveStatus) saveStatus.textContent = 'Load error: ' + err;
+                });
+        };
+
+        window.completeTaskStep = function(stepId) {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var saveStatus = document.getElementById('task-state-save-status');
+            var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
+            if (!id || !stepId) {
+                if (saveStatus) saveStatus.textContent = 'No conversation or step selected.';
+                return;
+            }
+            if (saveStatus) saveStatus.textContent = 'Recording completion...';
+            fetch('/api/conversations/' + encodeURIComponent(id) + '/task-steps/' + encodeURIComponent(stepId) + '/complete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ expected_revision: expected })
+            })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    if (!data.success || res.status >= 400) {
+                        if (saveStatus) saveStatus.textContent = 'Completion rejected: ' + (data.error || ('HTTP ' + res.status));
+                        return;
+                    }
+                    var next = ((data.conversation || {}).next_safe_action) || '';
+                    var note = data.advancement_needs_review
+                        ? ' Completion recorded; next action preserved — review needed.'
+                        : (' Next action: ' + next);
+                    if (saveStatus) {
+                        saveStatus.textContent = 'Step completed · checkpoint r' +
+                            ((data.checkpoint || {}).revision || '?') +
+                            (data.idempotent ? ' (idempotent)' : '') +
+                            note;
+                    }
+                    window.loadTaskStatePanel(id);
+                    window.refreshConversations();
+                })
+                .catch(function(err) {
+                    if (saveStatus) saveStatus.textContent = 'Completion failed: ' + err;
                 });
         };
 
@@ -3523,7 +3595,10 @@ class UIControlPanel:
                         "objective": record.get("objective"),
                         "constraints": list(record.get("constraints") or []),
                         "outstanding_steps": list(record.get("outstanding_steps") or []),
+                        "task_steps": list(record.get("task_steps") or []),
+                        "completed_work": list(record.get("completed_work") or []),
                         "next_safe_action": record.get("next_safe_action") or "",
+                        "advancement_needs_review": bool(record.get("advancement_needs_review")),
                         "checkpoint_revision": int(record.get("checkpoint_revision") or 0),
                         "updated_utc": record.get("updated_utc"),
                         "checkpoint_created_utc": (checkpoint or {}).get("created_utc"),
@@ -3565,6 +3640,74 @@ class UIControlPanel:
                     "success": True,
                     "saved": True,
                     "idempotent": bool(result.get("idempotent")),
+                    "conversation": result.get("conversation"),
+                    "checkpoint": result.get("checkpoint"),
+                    "authorization_inherited": False,
+                    "task_state_source": "operator",
+                })
+            except StaleTaskEditError as exc:
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "error": str(exc),
+                    "stale": True,
+                }), 409
+            except ContinuityError as exc:
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "error": str(exc),
+                }), 400
+
+        @self.app.route(
+            '/api/conversations/<conversation_id>/task-steps/<step_id>/complete',
+            methods=['POST'],
+        )
+        def api_complete_task_step(conversation_id: str, step_id: str):
+            """Operator marks one structured step complete; advances next action when safe."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden", "saved": False}), 403
+            if not self._contained_startup_active():
+                return jsonify({
+                    "success": False,
+                    "error": "contained startup required",
+                    "saved": False,
+                }), 400
+            from project_guardian.conversation_continuity import ContinuityError, StaleTaskEditError
+
+            data = request.get_json(silent=True) or {}
+            for banned in (
+                "authorization",
+                "allow_calculator",
+                "token",
+                "credential",
+                "api_key",
+                "password",
+                "scopes",
+            ):
+                data.pop(banned, None)
+            try:
+                expected_revision = int(data.get("expected_revision"))
+            except (TypeError, ValueError):
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "error": "expected_revision is required",
+                }), 400
+            try:
+                store = self._conversation_store()
+                result = store.complete_operator_step(
+                    conversation_id,
+                    step_id=step_id,
+                    expected_revision=expected_revision,
+                )
+                return jsonify({
+                    "success": True,
+                    "saved": True,
+                    "idempotent": bool(result.get("idempotent")),
+                    "advanced": bool(result.get("advanced")),
+                    "advancement_needs_review": bool(result.get("advancement_needs_review")),
+                    "completed_step": result.get("completed_step"),
                     "conversation": result.get("conversation"),
                     "checkpoint": result.get("checkpoint"),
                     "authorization_inherited": False,

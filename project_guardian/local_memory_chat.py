@@ -332,6 +332,13 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         },
     }
     bundle["bundle_sha256"] = hashlib.sha256(canonical(bundle).encode("utf-8")).hexdigest()
+    # Empty/malformed retrieval does not establish operational memory recall.
+    if selected:
+        from project_guardian.capability_awareness import record_capability_success
+
+        record_capability_success(
+            "memory.retrieve", verification_method="restricted_fact_context_bundle"
+        )
     return bundle
 
 
@@ -644,7 +651,20 @@ def converse_bundle(
             ),
         },
     ]
-    output = model.generate(messages, json_mode=True)
+    from project_guardian.capability_awareness import (
+        record_capability_failure,
+        record_capability_success,
+    )
+
+    try:
+        output = model.generate(messages, json_mode=True)
+    except ChatBoundaryError as exc:
+        record_capability_failure(
+            "intelligence.ollama.chat",
+            verification_method="local_ollama_generate",
+            reason=str(exc),
+        )
+        raise
     cleaned = output.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
@@ -652,22 +672,44 @@ def converse_bundle(
     try:
         proposal = json.loads(cleaned)
     except (ValueError, TypeError) as exc:
+        record_capability_failure(
+            "intelligence.ollama.chat",
+            verification_method="local_ollama_generate",
+            reason="invalid JSON proposal",
+        )
         raise ChatBoundaryError(
             "local model did not return a valid answer or tool proposal"
         ) from exc
     if type(proposal) is not dict:
+        record_capability_failure(
+            "intelligence.ollama.chat",
+            verification_method="local_ollama_generate",
+            reason="invalid proposal type",
+        )
         raise ChatBoundaryError("invalid model proposal")
     executed: list = []
     if set(proposal) == {"answer"}:
         answer = proposal["answer"]
         if not isinstance(answer, str) or not answer.strip() or len(answer) > 4000:
+            record_capability_failure(
+                "intelligence.ollama.chat",
+                verification_method="local_ollama_generate",
+                reason="invalid generated answer",
+            )
             raise ChatBoundaryError("invalid generated answer")
+        record_capability_success(
+            "intelligence.ollama.chat", verification_method="local_ollama_generate"
+        )
     elif set(proposal) == {"tool", "arguments"}:
         name = proposal["tool"]
         row = next((r for r in catalog if r["name"] == name), None)
         if row is None or not row["available"]:
             raise ChatBoundaryError("selected capability unavailable")
-        authorization.require(row["required_scope"])
+        try:
+            authorization.require(row["required_scope"])
+        except ChatBoundaryError:
+            # Unauthorized proposal is not calculator execution evidence.
+            raise
         if name != "calculator.labor":
             raise ChatBoundaryError("selected capability has no execution binding")
         args = proposal["arguments"]
@@ -677,13 +719,28 @@ def converse_bundle(
             "days",
             "hours_per_day",
         }:
+            record_capability_failure(
+                "tools.calculator.labor",
+                verification_method="deterministic_calculate_local",
+                reason="invalid calculator inputs",
+            )
             raise ChatBoundaryError("invalid calculator inputs")
         if not isinstance(args.get("rate_source_id"), str) or not args["rate_source_id"].strip():
+            record_capability_failure(
+                "tools.calculator.labor",
+                verification_method="deterministic_calculate_local",
+                reason="invalid calculator inputs",
+            )
             raise ChatBoundaryError("invalid calculator inputs")
         coerced = {"rate_source_id": args["rate_source_id"].strip()}
         for key, limit in (("painters", 100), ("days", 366), ("hours_per_day", 24)):
             raw = args[key]
             if type(raw) is bool:
+                record_capability_failure(
+                    "tools.calculator.labor",
+                    verification_method="deterministic_calculate_local",
+                    reason="invalid calculator quantity",
+                )
                 raise ChatBoundaryError("invalid calculator quantity")
             if type(raw) is int:
                 value = raw
@@ -692,8 +749,18 @@ def converse_bundle(
             elif isinstance(raw, str) and re.fullmatch(r"[1-9][0-9]{0,3}", raw.strip()):
                 value = int(raw.strip())
             else:
+                record_capability_failure(
+                    "tools.calculator.labor",
+                    verification_method="deterministic_calculate_local",
+                    reason="invalid calculator quantity",
+                )
                 raise ChatBoundaryError("invalid calculator quantity")
             if not 1 <= value <= limit:
+                record_capability_failure(
+                    "tools.calculator.labor",
+                    verification_method="deterministic_calculate_local",
+                    reason="invalid calculator quantity",
+                )
                 raise ChatBoundaryError("invalid calculator quantity")
             coerced[key] = value
         args = coerced
@@ -703,18 +770,33 @@ def converse_bundle(
             None,
         )
         if source is None:
+            record_capability_failure(
+                "tools.calculator.labor",
+                verification_method="deterministic_calculate_local",
+                reason="missing rate source",
+            )
             raise ChatBoundaryError("calculator requires a current retrieved rate source")
         texts = " ".join(
             h["text"] for h in (source.get("highlights") or []) if isinstance(h, dict) and "text" in h
         )
         rates = _LABOR_RATE_RE.findall(texts)
         if len(set(rates)) != 1:
+            record_capability_failure(
+                "tools.calculator.labor",
+                verification_method="deterministic_calculate_local",
+                reason="ambiguous rate memory",
+            )
             raise ChatBoundaryError("memory must establish one unambiguous USD hourly rate")
         rate = rates[0]
         expression = f"{rate} * {args['painters']} * {args['days']} * {args['hours_per_day']}"
         try:
             total = calculate_local(expression)
         except ValueError as exc:
+            record_capability_failure(
+                "tools.calculator.labor",
+                verification_method="deterministic_calculate_local",
+                reason="arithmetic failed",
+            )
             raise ChatBoundaryError(str(exc)) from exc
         executed = [
             {
@@ -733,7 +815,19 @@ def converse_bundle(
             "Labor only; excludes materials, overtime and taxes. "
             f"Memory source: {source['source_id']}, revision {source['revision']}."
         )
+        # Successful model turn + authorized deterministic execution.
+        record_capability_success(
+            "intelligence.ollama.chat", verification_method="local_ollama_generate"
+        )
+        record_capability_success(
+            "tools.calculator.labor", verification_method="deterministic_calculate_local"
+        )
     else:
+        record_capability_failure(
+            "intelligence.ollama.chat",
+            verification_method="local_ollama_generate",
+            reason="invalid proposal fields",
+        )
         raise ChatBoundaryError("invalid model proposal fields")
     return {
         "ok": True,

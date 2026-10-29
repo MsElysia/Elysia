@@ -1,6 +1,7 @@
 """Read-only capability discovery for the Windows contained pilot.
 
 Installed / available / authorized / operational are distinct.
+Operational requires process-local verified execution evidence.
 Discovery never activates tools, changes permissions, or writes durable state.
 Dashboard and model-facing catalogs derive from the same policy snapshot.
 """
@@ -8,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import os
+import threading
 from typing import Any, Dict, List, Mapping, Optional
 
 from project_guardian.local_memory_chat import (
@@ -21,6 +24,132 @@ from project_guardian.local_memory_chat import (
 
 SCHEMA = "elysia.capability-snapshot.v1"
 OLLAMA_ENDPOINT = "http://127.0.0.1:11434"
+
+# Capabilities that may receive process-local execution evidence in this phase.
+EVIDENCE_CAPABILITY_IDS = frozenset(
+    {
+        "intelligence.ollama.chat",
+        "memory.retrieve",
+        "tools.calculator.labor",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ExecutionEvidence:
+    capability_id: str
+    success: bool
+    verification_method: str
+    timestamp_utc: str
+    process_id: int
+    failure_reason: Optional[str] = None
+
+    def public_dict(self) -> Dict[str, Any]:
+        return {
+            "capability_id": self.capability_id,
+            "success": self.success,
+            "verification_method": self.verification_method,
+            "timestamp_utc": self.timestamp_utc,
+            "process_id": self.process_id,
+            "failure_reason": self.failure_reason,
+        }
+
+
+class ExecutionEvidenceStore:
+    """Process-local, non-durable execution evidence. Never grants authorization."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._by_id: Dict[str, ExecutionEvidence] = {}
+        self._process_id = os.getpid()
+
+    @property
+    def process_id(self) -> int:
+        return self._process_id
+
+    def clear(self) -> None:
+        with self._lock:
+            self._by_id.clear()
+
+    def record_success(self, capability_id: str, *, verification_method: str) -> None:
+        if capability_id not in EVIDENCE_CAPABILITY_IDS:
+            return
+        method = _sanitize_reason(verification_method, limit=80) or "verified_execution"
+        entry = ExecutionEvidence(
+            capability_id=capability_id,
+            success=True,
+            verification_method=method,
+            timestamp_utc=_utc_now(),
+            process_id=self._process_id,
+            failure_reason=None,
+        )
+        with self._lock:
+            self._by_id[capability_id] = entry
+
+    def record_failure(self, capability_id: str, *, verification_method: str, reason: str) -> None:
+        if capability_id not in EVIDENCE_CAPABILITY_IDS:
+            return
+        method = _sanitize_reason(verification_method, limit=80) or "failed_execution"
+        fail = _sanitize_reason(reason, limit=160) or "execution failed"
+        entry = ExecutionEvidence(
+            capability_id=capability_id,
+            success=False,
+            verification_method=method,
+            timestamp_utc=_utc_now(),
+            process_id=self._process_id,
+            failure_reason=fail,
+        )
+        with self._lock:
+            self._by_id[capability_id] = entry
+
+    def get(self, capability_id: str) -> Optional[ExecutionEvidence]:
+        with self._lock:
+            return self._by_id.get(capability_id)
+
+    def operational_map(self) -> Dict[str, Optional[bool]]:
+        """True=verified, False=degraded/failed, absent=unknown."""
+        with self._lock:
+            out: Dict[str, Optional[bool]] = {}
+            for cid, entry in self._by_id.items():
+                out[cid] = True if entry.success else False
+            return out
+
+    def public_records(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [entry.public_dict() for entry in self._by_id.values()]
+
+
+_EVIDENCE_STORE = ExecutionEvidenceStore()
+
+
+def get_execution_evidence_store() -> ExecutionEvidenceStore:
+    return _EVIDENCE_STORE
+
+
+def reset_execution_evidence_for_tests() -> None:
+    """Test helper: clear process-local evidence without affecting authorization."""
+    _EVIDENCE_STORE.clear()
+
+
+def record_capability_success(capability_id: str, *, verification_method: str) -> None:
+    _EVIDENCE_STORE.record_success(capability_id, verification_method=verification_method)
+
+
+def record_capability_failure(
+    capability_id: str, *, verification_method: str, reason: str
+) -> None:
+    _EVIDENCE_STORE.record_failure(
+        capability_id, verification_method=verification_method, reason=reason
+    )
+
+
+def _sanitize_reason(value: str, *, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    lowered = text.casefold()
+    for tok in ("password", "api_key", "token=", "secret=", "bearer ", "sk-"):
+        if tok in lowered:
+            return "redacted_failure_detail"
+    return text[:limit]
 
 
 @dataclass(frozen=True)
@@ -43,6 +172,8 @@ class CapabilityDescriptor:
     safe_next_action: str
     model_selectable: bool = False
     executable_binding: bool = False
+    runtime_status: str = "unknown"
+    last_failure_reason: Optional[str] = None
 
     def public_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -52,6 +183,64 @@ class CapabilityDescriptor:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _runtime_status(
+    *,
+    installed: bool,
+    available: bool,
+    authorized: bool,
+    operational: Optional[bool],
+    per_request: bool,
+    disabled: bool,
+) -> str:
+    if disabled:
+        return "unavailable"
+    if not installed:
+        return "unavailable"
+    if not available:
+        return "unavailable"
+    # Verified/degraded reflect execution evidence independently of current auth.
+    if operational is True:
+        return "verified_operational"
+    if operational is False:
+        return "degraded"
+    if per_request and not authorized:
+        return "authorization_required"
+    return "not_yet_verified"
+
+
+def _apply_evidence(
+    capability_id: str,
+    *,
+    installed: bool,
+    available: bool,
+    authorized: bool,
+    per_request: bool = False,
+    disabled: bool = False,
+    fallback_operational: Optional[bool] = None,
+) -> tuple[Optional[bool], Optional[str], Optional[str], str]:
+    """Return operational, last_verified_utc, last_failure_reason, runtime_status."""
+    evidence = _EVIDENCE_STORE.get(capability_id)
+    operational = fallback_operational
+    last_verified: Optional[str] = None
+    last_failure: Optional[str] = None
+    if evidence is not None and evidence.process_id == _EVIDENCE_STORE.process_id:
+        operational = True if evidence.success else False
+        if evidence.success:
+            last_verified = evidence.timestamp_utc
+        else:
+            last_failure = evidence.failure_reason
+            last_verified = None
+    status = _runtime_status(
+        installed=installed,
+        available=available,
+        authorized=authorized,
+        operational=operational,
+        per_request=per_request,
+        disabled=disabled,
+    )
+    return operational, last_verified, last_failure, status
 
 
 def _scope_authorized(authorization: ManualAuthorization, scope: Optional[str]) -> bool:
@@ -118,17 +307,43 @@ def discover_capabilities(
 ) -> Dict[str, Any]:
     """Build a read-only capability snapshot from runtime + authorization.
 
-    operational_hints may mark capabilities verified in this process (e.g. after
-    a successful calculator run). Absence means operational=None (unknown).
+    Operational status comes from process-local execution evidence only.
+    operational_hints are ignored when evidence exists; they remain for tests
+    that inject synthetic maps without mutating the store.
     """
     hints = dict(operational_hints or {})
     probe = dict(ollama_probe) if ollama_probe is not None else _probe_ollama(configured_local_model_name())
-    verified = probe.get("verified_utc") or _utc_now()
+    snapshot_utc = probe.get("verified_utc") or _utc_now()
     caps: List[CapabilityDescriptor] = []
 
     # --- Intelligence ---
     ollama_available = bool(probe.get("reachable") and probe.get("model_installed"))
     ollama_auth = _scope_authorized(authorization, "local.chat")
+    # Probe reachability can mark degraded only when evidence already failed or
+    # when probe says unreachable — never invent operational success from probe.
+    ollama_op, ollama_verified, ollama_fail, ollama_status = _apply_evidence(
+        "intelligence.ollama.chat",
+        installed=True,
+        available=ollama_available,
+        authorized=ollama_auth,
+        fallback_operational=hints.get("intelligence.ollama.chat"),
+    )
+    if not ollama_available and ollama_op is not False:
+        # Dependency down: do not keep a misleading healthy claim.
+        ollama_op = False if _EVIDENCE_STORE.get("intelligence.ollama.chat") else None
+        if probe.get("error"):
+            ollama_fail = _sanitize_reason(str(probe.get("error")), limit=160)
+        ollama_verified = None
+        ollama_status = _runtime_status(
+            installed=True,
+            available=False,
+            authorized=ollama_auth,
+            operational=ollama_op if ollama_op is False else None,
+            per_request=False,
+            disabled=False,
+        )
+        if ollama_op is not False:
+            ollama_status = "unavailable"
     caps.append(
         CapabilityDescriptor(
             id="intelligence.ollama.chat",
@@ -138,7 +353,7 @@ def discover_capabilities(
             installed=True,
             available=ollama_available,
             authorized=ollama_auth,
-            operational=hints.get("intelligence.ollama.chat"),
+            operational=ollama_op,
             permission_mode=_permission_mode(
                 available=ollama_available, authorized=ollama_auth, per_request=False, disabled=False
             ),
@@ -146,7 +361,7 @@ def discover_capabilities(
             dependencies=("ollama_loopback", "ELYSIA_LOCAL_MODEL"),
             execution="local",
             cost_category="local_compute",
-            last_verified_utc=verified,
+            last_verified_utc=ollama_verified,
             unavailable_reason=None if ollama_available else (probe.get("error") or "local model unavailable"),
             safe_next_action=(
                 "Ask a question with Ask local model"
@@ -157,6 +372,8 @@ def discover_capabilities(
             ),
             model_selectable=False,
             executable_binding=False,
+            runtime_status=ollama_status,
+            last_failure_reason=ollama_fail,
         )
     )
     caps.append(
@@ -174,9 +391,10 @@ def discover_capabilities(
             dependencies=("provider_policy",),
             execution="local",
             cost_category="none",
-            last_verified_utc=verified,
+            last_verified_utc=None,
             unavailable_reason="Contained sessions pin one explicit local model; multi-model routing is disabled.",
             safe_next_action="Keep using the configured local model",
+            runtime_status="unavailable",
         )
     )
     caps.append(
@@ -194,9 +412,10 @@ def discover_capabilities(
             dependencies=("cloud_credentials", "provider_policy"),
             execution="cloud",
             cost_category="paid_api",
-            last_verified_utc=verified,
+            last_verified_utc=None,
             unavailable_reason="Cloud providers are disabled in the contained Windows pilot.",
             safe_next_action="Continue with local Ollama only",
+            runtime_status="unavailable",
         )
     )
 
@@ -241,6 +460,28 @@ def discover_capabilities(
     ):
         authorized = mem_auth_read if scope == "memory.read" else mem_ok
         available = mem_ok
+        if cid == "memory.retrieve":
+            op, last_v, last_f, rstatus = _apply_evidence(
+                cid,
+                installed=True,
+                available=available,
+                authorized=authorized,
+                fallback_operational=hints.get(cid),
+            )
+        else:
+            op, last_v, last_f, rstatus = (
+                hints.get(cid),
+                None,
+                None,
+                _runtime_status(
+                    installed=True,
+                    available=available,
+                    authorized=authorized,
+                    operational=hints.get(cid),
+                    per_request=per_req,
+                    disabled=False,
+                ),
+            )
         caps.append(
             CapabilityDescriptor(
                 id=cid,
@@ -250,7 +491,7 @@ def discover_capabilities(
                 installed=True,
                 available=available,
                 authorized=authorized,
-                operational=hints.get(cid),
+                operational=op,
                 permission_mode=_permission_mode(
                     available=available, authorized=authorized, per_request=per_req, disabled=False
                 ),
@@ -258,11 +499,13 @@ def discover_capabilities(
                 dependencies=("restricted_runtime_adapter", "MemoryCore"),
                 execution="local",
                 cost_category="none",
-                last_verified_utc=verified,
+                last_verified_utc=last_v,
                 unavailable_reason=None if available else "Restricted memory runtime is not attached",
                 safe_next_action=next_action if available else "Start the contained pilot so memory attaches",
                 model_selectable=(cid == "memory.retrieve"),
                 executable_binding=False,
+                runtime_status=rstatus,
+                last_failure_reason=last_f,
             )
         )
     caps.append(
@@ -280,11 +523,12 @@ def discover_capabilities(
             dependencies=("memory_ingest_binding",),
             execution="local",
             cost_category="none",
-            last_verified_utc=verified,
+            last_verified_utc=None,
             unavailable_reason="No safe execution binding in this pilot; description only.",
             safe_next_action="Use explicit Save fact / inbox import instead",
             model_selectable=True,
             executable_binding=False,
+            runtime_status="unavailable",
         )
     )
 
@@ -311,6 +555,27 @@ def discover_capabilities(
             reason = row.get("prerequisites") or "No safe execution binding"
         elif not authorized:
             reason = "Operator authorization required for this request"
+        key = operational_key or cap_id
+        if cap_id == "tools.calculator.labor":
+            op, last_v, last_f, rstatus = _apply_evidence(
+                cap_id,
+                installed=installed,
+                available=available,
+                authorized=authorized,
+                per_request=per_request,
+                fallback_operational=hints.get(key),
+            )
+        else:
+            op = hints.get(key)
+            last_v, last_f = None, None
+            rstatus = _runtime_status(
+                installed=installed,
+                available=available,
+                authorized=authorized,
+                operational=op,
+                per_request=per_request,
+                disabled=False,
+            )
         return CapabilityDescriptor(
             id=cap_id,
             name=label,
@@ -319,7 +584,7 @@ def discover_capabilities(
             installed=installed,
             available=available,
             authorized=authorized,
-            operational=hints.get(operational_key or cap_id),
+            operational=op,
             permission_mode=_permission_mode(
                 available=available,
                 authorized=authorized,
@@ -338,7 +603,7 @@ def discover_capabilities(
             ),
             execution="local" if row.get("available") else "none",
             cost_category=str(row.get("cost") or "none"),
-            last_verified_utc=verified,
+            last_verified_utc=last_v,
             unavailable_reason=reason,
             safe_next_action=(
                 "Check Allow the labor calculator, then ask a labor estimate"
@@ -349,6 +614,8 @@ def discover_capabilities(
             ),
             model_selectable=True,
             executable_binding=bool(available and tool_name == "calculator.labor"),
+            runtime_status=rstatus,
+            last_failure_reason=last_f,
         )
 
     caps.append(
@@ -372,6 +639,7 @@ def discover_capabilities(
     )
 
     # --- System ---
+    # Not in the first execution-evidence set: remain not_yet_verified / unavailable.
     caps.append(
         CapabilityDescriptor(
             id="system.runtime",
@@ -379,17 +647,18 @@ def discover_capabilities(
             description="Contained loopback runtime and ownership markers.",
             category="system",
             installed=True,
-            available=True,
+            available=bool(contained),
             authorized=True,
-            operational=True if contained else hints.get("system.runtime"),
-            permission_mode="allowed",
+            operational=None,
+            permission_mode="allowed" if contained else "unavailable",
             required_scope=None,
             dependencies=("contained_startup",),
             execution="local",
             cost_category="none",
-            last_verified_utc=verified,
-            unavailable_reason=None,
+            last_verified_utc=None,
+            unavailable_reason=None if contained else "Not a contained session",
             safe_next_action="Keep using the verified pilot launcher",
+            runtime_status="not_yet_verified" if contained else "unavailable",
         )
     )
     caps.append(
@@ -407,9 +676,10 @@ def discover_capabilities(
             dependencies=("background_workers",),
             execution="local",
             cost_category="none",
-            last_verified_utc=verified,
+            last_verified_utc=None,
             unavailable_reason="Background workers are disabled in contained startup.",
             safe_next_action="Leave background missions off",
+            runtime_status="unavailable",
         )
     )
     caps.append(
@@ -427,9 +697,10 @@ def discover_capabilities(
             dependencies=("autonomy_config", "privileged_control_gate"),
             execution="local",
             cost_category="none",
-            last_verified_utc=verified,
+            last_verified_utc=None,
             unavailable_reason="Autonomy remains disabled; dashboard cannot enable it.",
             safe_next_action="Do not enable autonomy from this panel",
+            runtime_status="unavailable",
         )
     )
     caps.append(
@@ -441,15 +712,16 @@ def discover_capabilities(
             installed=True,
             available=True,
             authorized=True,
-            operational=True,
+            operational=None,
             permission_mode="allowed",
             required_scope=None,
             dependencies=("contained_startup", "local_ollama_transport"),
             execution="local",
             cost_category="none",
-            last_verified_utc=verified,
+            last_verified_utc=None,
             unavailable_reason=None,
             safe_next_action="Keep cloud fallbacks disabled",
+            runtime_status="not_yet_verified",
         )
     )
 
@@ -481,6 +753,8 @@ def discover_capabilities(
                 "permission_mode",
                 "execution",
                 "cost_category",
+                "runtime_status",
+                "last_failure_reason",
             }
         )
         if any(tok in value_blob for tok in _SECRET_VALUE_RE):
@@ -499,11 +773,13 @@ def discover_capabilities(
                 "dependencies": [],
                 "execution": "none",
                 "cost_category": "none",
-                "last_verified_utc": verified,
+                "last_verified_utc": None,
                 "unavailable_reason": "Malformed or unsafe capability descriptor",
                 "safe_next_action": "Use other capabilities; report this descriptor",
                 "model_selectable": False,
                 "executable_binding": False,
+                "runtime_status": "unavailable",
+                "last_failure_reason": None,
             }
         public_caps.append(row)
 
@@ -513,6 +789,13 @@ def discover_capabilities(
         "authorized": sum(1 for c in public_caps if c.get("authorized")),
         "operational_true": sum(1 for c in public_caps if c.get("operational") is True),
         "operational_unknown": sum(1 for c in public_caps if c.get("operational") is None),
+        "verified_operational": sum(
+            1 for c in public_caps if c.get("runtime_status") == "verified_operational"
+        ),
+        "degraded": sum(1 for c in public_caps if c.get("runtime_status") == "degraded"),
+        "not_yet_verified": sum(
+            1 for c in public_caps if c.get("runtime_status") == "not_yet_verified"
+        ),
         "disabled_or_unavailable": sum(
             1
             for c in public_caps
@@ -536,7 +819,8 @@ def discover_capabilities(
         "activates_tools": False,
         "cloud_fallback": False,
         "contained": bool(contained),
-        "generated_utc": verified,
+        "generated_utc": snapshot_utc,
+        "process_id": _EVIDENCE_STORE.process_id,
         "local_model": {
             "configured": bool(probe.get("configured")),
             "model": probe.get("model"),
@@ -550,12 +834,14 @@ def discover_capabilities(
             "attached": bool(memory_attached),
             "store_present": bool(memory_filepath),
         },
+        "execution_evidence": _EVIDENCE_STORE.public_records(),
         "summary": summary,
         "capabilities": public_caps,
         "safe_next_actions": next_actions,
         "policy_note": (
-            "Authorization is host-supplied per request. Discovery cannot grant "
-            "permission, enable autonomy, or activate cloud providers."
+            "Authorization is host-supplied per request. Discovery and execution "
+            "evidence cannot grant permission, enable autonomy, or activate cloud providers. "
+            "Operational means verified in this process only."
         ),
     }
 

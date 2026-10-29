@@ -1684,8 +1684,9 @@ CONTROL_PANEL_TEMPLATE = """
                             'Local model: ' + (lm.model || 'none') +
                             (lm.installed ? ' (installed & reachable)' : ' (not ready)') +
                             ' · Available ' + (sum.available || 0) +
-                            ' · Authorized ' + (sum.authorized || 0) +
-                            ' · Unknown operational ' + (sum.operational_unknown || 0);
+                            ' · Verified ' + (sum.verified_operational || 0) +
+                            ' · Not yet verified ' + (sum.not_yet_verified || 0) +
+                            ' · Degraded ' + (sum.degraded || 0);
                     }
                     var next = data.safe_next_actions || [];
                     if (nextEl) {
@@ -1712,11 +1713,25 @@ CONTROL_PANEL_TEMPLATE = """
                         return mode || 'Unknown';
                     }
                     function runtimeLabel(cap) {
+                        var rs = cap.runtime_status || '';
+                        if (rs === 'verified_operational') return 'Verified operational';
+                        if (rs === 'not_yet_verified') return 'Not yet verified';
+                        if (rs === 'degraded') return 'Degraded';
+                        if (rs === 'authorization_required') return 'Authorization required';
+                        if (rs === 'unavailable') return 'Unavailable';
                         if (!cap.installed) return 'Not installed';
                         if (!cap.available) return 'Unavailable';
-                        if (cap.operational === true) return 'Operational';
-                        if (cap.operational === false) return 'Available (not verified)';
-                        return 'Available';
+                        if (cap.operational === true) return 'Verified operational';
+                        if (cap.operational === false) return 'Degraded';
+                        return 'Not yet verified';
+                    }
+                    function notesFor(cap) {
+                        var parts = [];
+                        if (cap.last_verified_utc) parts.push('Verified ' + cap.last_verified_utc);
+                        if (cap.last_failure_reason) parts.push(cap.last_failure_reason);
+                        else if (cap.unavailable_reason) parts.push(cap.unavailable_reason);
+                        else if (cap.safe_next_action) parts.push(cap.safe_next_action);
+                        return parts.join(' · ');
                     }
                     var html = '';
                     Object.keys(cats).forEach(function(cat) {
@@ -1732,7 +1747,7 @@ CONTROL_PANEL_TEMPLATE = """
                             html += '<div style="color: var(--text-secondary); font-size: 12px;">' + window._escapeHtml(cap.description || '') + '</div></td>';
                             html += '<td style="padding: 8px 6px;">' + window._escapeHtml(runtimeLabel(cap)) + '</td>';
                             html += '<td style="padding: 8px 6px;">' + window._escapeHtml(modeLabel(cap)) + '</td>';
-                            html += '<td style="padding: 8px 6px; color: var(--text-secondary);">' + window._escapeHtml(cap.unavailable_reason || cap.safe_next_action || '') + '</td>';
+                            html += '<td style="padding: 8px 6px; color: var(--text-secondary);">' + window._escapeHtml(notesFor(cap)) + '</td>';
                             html += '</tr>';
                         });
                         html += '</tbody></table>';
@@ -3192,6 +3207,17 @@ class UIControlPanel:
                             for item in matches
                         ]
                         reply = "Durable facts:\n" + "\n".join(lines)
+                        try:
+                            from project_guardian.capability_awareness import (
+                                record_capability_success,
+                            )
+
+                            record_capability_success(
+                                "memory.retrieve",
+                                verification_method="restricted_facts_retrieve",
+                            )
+                        except Exception:
+                            pass
                     return jsonify({
                         "success": True,
                         "reply": reply,

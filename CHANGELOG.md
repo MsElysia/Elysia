@@ -497,3 +497,10 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product API — WebScout research status
+
+- `POST /api/webscout/research` returns HTTP 200 only when `research_topic` includes a queue receipt (`queued: true`, or a non-empty `proposal_id` or `task_id`) and `status` is not `error`.
+- The current runtime, which reports `WebScout not available` or accepts a topic without queuing it, returns HTTP 503 or HTTP 501. The 501 body says research was not queued.
+- A non-object JSON body returns HTTP 400. A missing or non-string topic returns HTTP 400. An exception from `research_topic` returns JSON HTTP 500.
+- Contract: `tests/test_runtime_api_webscout.py` (Flask client and live Werkzeug HTTP, real `WebScoutAgent`, fictional topic, no external services).

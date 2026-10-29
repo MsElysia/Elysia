@@ -19,6 +19,50 @@ from ..events import EventBus
 logger = logging.getLogger(__name__)
 
 
+def research_result_response(result: Any) -> tuple[Dict[str, Any], int]:
+    """Map a WebScout ``research_topic`` result to an HTTP body and status.
+
+    HTTP 200 is reserved for a queue receipt: ``queued`` is true, or
+    ``proposal_id`` / ``task_id`` is a non-empty string, and ``status`` is
+    not ``error``. A placeholder acceptance with no receipt is not success.
+    """
+    if not isinstance(result, dict):
+        return {
+            "error": "WebScout returned an invalid research result",
+            "status": "error",
+            "queued": False,
+        }, 502
+
+    body = dict(result)
+    status = body.get("status")
+    message = body.get("message")
+    message_text = message if isinstance(message, str) else ""
+
+    if status == "error":
+        body["queued"] = False
+        if "not available" in message_text.lower():
+            return body, 503
+        return body, 400
+
+    queued = body.get("queued") is True
+    for key in ("proposal_id", "task_id"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip():
+            queued = True
+            break
+    if queued:
+        body["queued"] = True
+        return body, 200
+
+    runtime_message = message_text
+    body["status"] = "not_queued"
+    body["queued"] = False
+    body["message"] = "Research was not queued"
+    if runtime_message and runtime_message != body["message"]:
+        body["runtime_message"] = runtime_message
+    return body, 501
+
+
 class RuntimeAPIServer:
     """Wrap a Flask server that exposes runtime status and events."""
 
@@ -196,15 +240,30 @@ class RuntimeAPIServer:
             if not self._webscout:
                 return jsonify({"error": "WebScout not available"}), 503
 
-            data = request.get_json(force=True, silent=True) or {}
-            topic = data.get("topic", "").strip()
+            data = request.get_json(force=True, silent=True)
+            if data is None:
+                data = {}
+            elif not isinstance(data, dict):
+                return jsonify({"error": "request body must be a JSON object"}), 400
+
+            topic = data.get("topic", "")
+            if not isinstance(topic, str) or not topic.strip():
+                return jsonify({"error": "topic is required"}), 400
+            topic = topic.strip()
             domain = data.get("domain", "elysia_core")
 
-            if not topic:
-                return jsonify({"error": "topic is required"}), 400
+            try:
+                result = self._webscout.research_topic(topic, domain)
+            except Exception as exc:
+                logger.exception("WebScout research error")
+                return jsonify({
+                    "error": str(exc),
+                    "status": "error",
+                    "queued": False,
+                }), 500
 
-            result = self._webscout.research_topic(topic, domain)
-            return jsonify(result)
+            body, code = research_result_response(result)
+            return jsonify(body), code
 
         # Implementer endpoints
         @self._app.route("/api/proposals/<proposal_id>/implement", methods=["POST"])

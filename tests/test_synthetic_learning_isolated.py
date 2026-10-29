@@ -64,7 +64,7 @@ class LearningLauncherTests(unittest.TestCase):
             if name != "synthetic-learning.json":
                 self.assertEqual((self.store / name).read_bytes(), data)
         output = self.launch(f"/teach alias | {revised}\nmoonberry lantern color\nmoonberry lantern violet\nmoonberry lantern price\nseedlings color\nwater seedlings\nreserved library books\n/exit\n")
-        self.assertIn("Duplicate fact; no record written.", output)
+        self.assertIn("Learning unavailable: Duplicate conflicts", output)
         self.assertIn("Elysia: From synthetic memory: " + revised, output)
         self.assertEqual(output.count("Information unavailable."), 3)
         self.assertIn("Tuesday morning", output)

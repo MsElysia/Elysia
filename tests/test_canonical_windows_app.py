@@ -12,7 +12,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 # Copy only the actual offline runtime closure; no configs, credentials or data.
 FILES = ('Start Project Guardian.bat', 'Start_Elysia_Backend.cmd', 'elysia.py',
-         'elysia_offline.py', 'elysia_synthetic_learning.py', 'offline_research_pilot.py',
+         'elysia_offline.py', 'elysia_local_memory_chat.py', 'elysia_runtime_owner.py', 'elysia_synthetic_learning.py', 'offline_research_pilot.py',
          'project_guardian/__init__.py', 'project_guardian/auto_learning.py',
          'project_guardian/offline_research_recovery.py', 'project_guardian/brain/__init__.py',
          'project_guardian/brain/memory_intelligence_bridge.py',

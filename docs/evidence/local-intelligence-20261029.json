@@ -1,0 +1,63 @@
+{
+  "date": "2026-10-29",
+  "release_status": "STOP",
+  "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+  "python": "3.12.14",
+  "base_commit": "bd3a1c5d7bfa648501f9e18d589c95b5a32082df",
+  "reused_draft": "1d24cc234a622404957b03db90b1a3e6605afa94",
+  "windows_target_unavailable": "4f69bd12eaa30f8aa83e3c731359d9c7ea626e50",
+  "native_windows_verified": false,
+  "real_model_inference_verified": false,
+  "ollama_probe": "127.0.0.1:11434 connection refused; no ollama executable found",
+  "focused": {
+    "command": "/workspace/scratch/9b7e276c51b3/test-env/bin/python -B -m pytest --noconftest tests/test_local_chat_http.py tests/test_local_chat_integration.py tests/test_local_memory_chat.py tests/test_restricted_browser_bridge.py tests/test_delivery_runtime.py -q -p no:cacheprovider",
+    "passed": 95,
+    "skipped": 1,
+    "seconds": 22.53,
+    "skip": "Native Windows junction acceptance still required"
+  },
+  "portable_runner": {
+    "command": "runpy.run_path(scripts/run_windows_offline_tests.py)[main] with TESTS excluding the five cmd.exe-only files listed below",
+    "excluded": [
+      "tests/test_restricted_windows_startup.py",
+      "tests/test_synthetic_learning_isolated.py",
+      "tests/test_research_pilot_launcher.py",
+      "tests/test_canonical_windows_app.py",
+      "tests/test_final_consolidation.py"
+    ],
+    "passed": 168,
+    "skipped": 2,
+    "seconds": 6.85,
+    "skip": "native Windows kernel proof",
+    "note": "Six delivery tests overlap focused suite. Excluded files were not executed."
+  },
+  "independent_review": {
+    "verdict": "PASS for five identified fixes only; release PARTIAL/STOP",
+    "passed": 7,
+    "seconds": 4.93,
+    "native_or_real_model": false
+  },
+  "scan": {
+    "scope": "24 candidate source paths plus manual review of new changes",
+    "rules": [
+      "private key blocks",
+      "provider token patterns",
+      "non-fixture credential literals"
+    ],
+    "findings": 0,
+    "limitations": "pattern scan plus manual review is not a proof of absence; unavailable Windows tree and historical remote objects not certified"
+  },
+  "source_sha256": {
+    "elysia_local_memory_chat.py": "a76dca58f1c64bf37f8898656887567b4e6ba641a3b45d2a9ca98f41463d39c5",
+    "elysia_browser_worker.py": "4737dfba485ca79b68013f0a4c60bce004930ab8d69f3cec6c7a8934e790a2c9",
+    "elysia_restricted_browser.py": "6f7da4a99387103371df37a3833e6bb2f957344b3fe0dc28b10b16444eed06c3",
+    "tests/test_canonical_windows_app.py": "71d40cb6d1d96731e8e1c0a711c412190c55216ca829ffd72f922f4183f99c47",
+    "tests/test_local_memory_chat.py": "d5550e26c8b6974a2bc7ae2f9ac4d9183ee349d792f411969573257d06cf1fe4",
+    "tests/test_local_chat_integration.py": "5462ee4d543a2783434b6597e9c16f793ee689c8c306f8f6765948e64d1fd2e3",
+    "tests/test_local_chat_http.py": "4ccc623622c58b428ee95a65d45271e5594c57ea6c12ea31b16661891df8fbcb",
+    "tests/local_chat_http_probe.py": "f248e12f177aa74521bce2974c2f961fdc2a4f76b6a15a10e72bfd11a72d4752",
+    "elysia_offline.py": "c694ca534bf9b5369bf171d6e034576bd1a0cc0ccf27656018479a613120895b",
+    "core_modules/elysia_core_comprehensive/ai_tool_registry.py": "60bf00e72468ee514bbc41d68faee0f9e306d9cf4ef6ca15b1c1a12d5b628d00"
+  },
+  "preserved": "working Windows pilot, memory, all existing branches, two unrelated untracked directory-structure temporary files"
+}

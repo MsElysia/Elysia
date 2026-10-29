@@ -15,6 +15,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = (
+    "tests/test_delivery_runtime.py",
     "tests/test_restricted_windows_startup.py",
     "tests/test_synthetic_learning_isolated.py",
     "tests/test_research_pilot_launcher.py",

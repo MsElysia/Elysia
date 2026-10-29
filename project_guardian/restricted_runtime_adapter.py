@@ -290,6 +290,7 @@ class RestrictedRuntimeAdapter:
         try:
             statement = _clean_statement(body.get("statement"))
         except ValueError as exc:
+            # Malformed requests never establish operational status (no success record).
             return _error(400, "invalid_request", str(exc))
         fact_id = "fact_" + uuid.uuid4().hex[:16]
         record = self._append_event(
@@ -300,6 +301,20 @@ class RestrictedRuntimeAdapter:
             actor=principal.identity,
             previous_statement=None,
         )
+        # Authoritative readback: HTTP/API success alone is not operational proof.
+        verified, fail_category = self._verify_teach_persisted(
+            fact_id=fact_id, revision=1, statement=statement
+        )
+        if not verified:
+            _record_memory_write_failure("memory.teach", fail_category)
+            return _error(
+                500,
+                "persistence_unverified",
+                "durable teach write could not be verified by authoritative readback",
+            )
+        _record_memory_write_success(
+            "memory.teach", verification_method="restricted_teach_readback"
+        )
         return AdapterResponse(
             201,
             {
@@ -307,6 +322,7 @@ class RestrictedRuntimeAdapter:
                 "operation": "facts.save",
                 "fact": _public_fact(record, current=True),
                 "memory_store": self.store_identity(),
+                "persistence_verified": True,
             },
         )
 
@@ -326,15 +342,35 @@ class RestrictedRuntimeAdapter:
             current = revisions[-1]
             if statement == current["statement"]:
                 return _error(400, "invalid_request", "statement is unchanged")
+            prior_revision = int(current["revision"])
+            prior_statement = current["statement"]
+            new_revision = prior_revision + 1
             record = self._append_event(
                 fact_id=fact_id,
-                revision=int(current["revision"]) + 1,
+                revision=new_revision,
                 statement=statement,
                 operation="correct",
                 actor=principal.identity,
-                previous_statement=current["statement"],
+                previous_statement=prior_statement,
                 hold_lock=True,
             )
+            verified, fail_category = self._verify_correct_persisted(
+                fact_id=fact_id,
+                new_revision=new_revision,
+                new_statement=statement,
+                prior_revision=prior_revision,
+                prior_statement=prior_statement,
+            )
+        if not verified:
+            _record_memory_write_failure("memory.correct", fail_category)
+            return _error(
+                500,
+                "persistence_unverified",
+                "durable correction could not be verified by authoritative readback",
+            )
+        _record_memory_write_success(
+            "memory.correct", verification_method="restricted_correct_readback"
+        )
         return AdapterResponse(
             200,
             {
@@ -342,8 +378,64 @@ class RestrictedRuntimeAdapter:
                 "operation": "facts.correct",
                 "fact": _public_fact(record, current=True),
                 "memory_store": self.store_identity(),
+                "persistence_verified": True,
             },
         )
+
+    def _verify_teach_persisted(
+        self, *, fact_id: str, revision: int, statement: str
+    ) -> Tuple[bool, str]:
+        """Confirm durable current fact matches the committed teach revision."""
+        with self._lock:
+            if not _log_has_revision(self.memory, fact_id, revision):
+                return False, "primary_write_missing"
+            current = None
+            for fact in self._current_facts():
+                if fact["fact_id"] == fact_id:
+                    current = fact
+                    break
+            if current is None:
+                return False, "readback_missing"
+            if int(current["revision"]) != int(revision):
+                return False, "revision_mismatch"
+            if current["statement"] != statement:
+                return False, "content_mismatch"
+        return True, ""
+
+    def _verify_correct_persisted(
+        self,
+        *,
+        fact_id: str,
+        new_revision: int,
+        new_statement: str,
+        prior_revision: int,
+        prior_statement: str,
+    ) -> Tuple[bool, str]:
+        """Confirm corrected revision is current and prior revision remains in history."""
+        if not _log_has_revision(self.memory, fact_id, new_revision):
+            return False, "primary_write_missing"
+        if not _log_has_revision(self.memory, fact_id, prior_revision):
+            return False, "history_missing"
+        revisions = self._revisions_for(fact_id)
+        if len(revisions) < 2:
+            return False, "history_incomplete"
+        # Ordering: revisions must be nondecreasing and include both prior and new.
+        seen_revs = [int(r["revision"]) for r in revisions]
+        if seen_revs != sorted(seen_revs):
+            return False, "revision_order_invalid"
+        if prior_revision not in seen_revs or new_revision not in seen_revs:
+            return False, "revision_missing"
+        prior = next((r for r in revisions if int(r["revision"]) == prior_revision), None)
+        current = revisions[-1]
+        if prior is None or prior["statement"] != prior_statement:
+            return False, "prior_content_mismatch"
+        if int(current["revision"]) != int(new_revision):
+            return False, "current_revision_mismatch"
+        if current["statement"] != new_statement:
+            return False, "content_mismatch"
+        if current["statement"] == prior_statement:
+            return False, "correction_not_applied"
+        return True, ""
 
     def _retrieve_facts(self, body: Mapping[str, Any]) -> AdapterResponse:
         query = body.get("query")
@@ -523,6 +615,31 @@ def _log_has_revision(memory: MemoryCore, fact_id: str, revision: int) -> bool:
         if metadata.get("fact_id") == fact_id and metadata.get("revision") == revision:
             return True
     return False
+
+
+def _record_memory_write_success(capability_id: str, *, verification_method: str) -> None:
+    try:
+        from project_guardian.capability_awareness import record_capability_success
+
+        record_capability_success(capability_id, verification_method=verification_method)
+    except Exception:
+        # Evidence is diagnostic only; persistence already succeeded.
+        pass
+
+
+def _record_memory_write_failure(capability_id: str, fail_category: str) -> None:
+    try:
+        from project_guardian.capability_awareness import record_capability_failure
+
+        # Safe failure category only — never memory contents or credentials.
+        reason = fail_category if fail_category else "persistence_unverified"
+        record_capability_failure(
+            capability_id,
+            verification_method="restricted_write_readback",
+            reason=reason,
+        )
+    except Exception:
+        pass
 
 
 def _now_iso() -> str:

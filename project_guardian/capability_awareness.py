@@ -30,6 +30,8 @@ EVIDENCE_CAPABILITY_IDS = frozenset(
     {
         "intelligence.ollama.chat",
         "memory.retrieve",
+        "memory.teach",
+        "memory.correct",
         "tools.calculator.labor",
     }
 )
@@ -460,7 +462,7 @@ def discover_capabilities(
     ):
         authorized = mem_auth_read if scope == "memory.read" else mem_ok
         available = mem_ok
-        if cid == "memory.retrieve":
+        if cid in {"memory.retrieve", "memory.teach", "memory.correct"}:
             op, last_v, last_f, rstatus = _apply_evidence(
                 cid,
                 installed=True,

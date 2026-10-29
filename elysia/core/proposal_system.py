@@ -129,9 +129,20 @@ class ProposalLifecycleManager:
         )
 
     def transition_status(
-        self, proposal_id: str, new_status: str, actor: str = "system"
+        self,
+        proposal_id: str,
+        new_status: str,
+        actor: str = "system",
+        extra_fields: Optional[Dict[str, Any]] = None,
+        extra_history: Optional[str] = None,
     ) -> tuple[bool, Optional[str]]:
-        """Transition a proposal to a new status."""
+        """Transition a proposal to a new status.
+
+        extra_fields and extra_history are applied only after the transition is
+        allowed, in the same metadata save. They are discarded on invalid or
+        missing-proposal paths so a failed authorization cannot leave a partial
+        approval record.
+        """
         metadata = self._load_metadata(proposal_id)
         if not metadata:
             return False, "Proposal not found"
@@ -155,8 +166,16 @@ class ProposalLifecycleManager:
         if new_status not in allowed:
             return False, f"Invalid transition from {old_status} to {new_status}"
 
+        if extra_fields:
+            for key, value in extra_fields.items():
+                if key == "status":
+                    continue
+                metadata[key] = value
+
         metadata["status"] = new_status
         metadata["last_updated_by"] = actor
+        if extra_history:
+            self._add_history_entry(metadata, actor, extra_history)
         self._add_history_entry(
             metadata, actor, f"Status changed from {old_status} to {new_status}"
         )
@@ -173,37 +192,31 @@ class ProposalLifecycleManager:
         return False, "Failed to save metadata"
 
     def approve_proposal(self, proposal_id: str, approver: str) -> tuple[bool, Optional[str]]:
-        """Approve a proposal."""
-        metadata = self._load_metadata(proposal_id)
-        if not metadata:
-            return False, "Proposal not found"
-
-        metadata["approval_status"] = "approved"
-        metadata["approved_by"] = approver
-        metadata["approved_at"] = datetime.now(timezone.utc).isoformat()
-        metadata["last_updated_by"] = approver
-        self._add_history_entry(metadata, approver, "Proposal approved")
-
-        success, error = self.transition_status(proposal_id, "approved", actor=approver)
-        if success:
-            return True, None
-        return False, error or "Failed to transition status"
+        """Approve a proposal and persist approval identity in the same write."""
+        return self.transition_status(
+            proposal_id,
+            "approved",
+            actor=approver,
+            extra_fields={
+                "approval_status": "approved",
+                "approved_by": approver,
+                "approved_at": datetime.now(timezone.utc).isoformat(),
+            },
+            extra_history="Proposal approved",
+        )
 
     def reject_proposal(self, proposal_id: str, reason: str, rejector: str) -> tuple[bool, Optional[str]]:
-        """Reject a proposal."""
-        metadata = self._load_metadata(proposal_id)
-        if not metadata:
-            return False, "Proposal not found"
-
-        metadata["approval_status"] = "rejected"
-        metadata["rejection_reason"] = reason
-        metadata["last_updated_by"] = rejector
-        self._add_history_entry(metadata, rejector, f"Proposal rejected: {reason}")
-
-        success, error = self.transition_status(proposal_id, "rejected", actor=rejector)
-        if success:
-            return True, None
-        return False, error or "Failed to transition status"
+        """Reject a proposal and persist the rejection reason in the same write."""
+        return self.transition_status(
+            proposal_id,
+            "rejected",
+            actor=rejector,
+            extra_fields={
+                "approval_status": "rejected",
+                "rejection_reason": reason,
+            },
+            extra_history=f"Proposal rejected: {reason}",
+        )
 
 
 class ProposalWatcher:

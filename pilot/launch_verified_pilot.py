@@ -223,6 +223,9 @@ def main() -> int:
     env["TMP"] = str(PILOT_DATA_ROOT / "temp")
     env["ELYSIA_PILOT_MARKER"] = PILOT_MARKER
     env["ELYSIA_PILOT_SHUTDOWN_TOKEN"] = shutdown_token
+    # Local intelligence: explicit installed Ollama model only (no download / no cloud).
+    # Operator may override ELYSIA_LOCAL_MODEL before launch; unset disables Ask local model.
+    env.setdefault("ELYSIA_LOCAL_MODEL", "llama3.2:3b")
 
     creationflags = 0
     if sys.platform == "win32":

@@ -210,6 +210,22 @@ class RestrictedRuntimeAdapter:
     def store_identity(self) -> Dict[str, str]:
         return memory_store_identity(self.memory)
 
+    def current_fact_snapshots(self) -> List[Dict[str, Any]]:
+        """Read-only current fact rows for bounded local-model context (not a write path)."""
+        with self._lock:
+            return [
+                {
+                    "fact_id": fact["fact_id"],
+                    "revision": fact["revision"],
+                    "statement": fact["statement"],
+                    "operation": fact["operation"],
+                    "actor": fact["actor"],
+                    "previous_statement": fact["previous_statement"],
+                    "current": True,
+                }
+                for fact in self._current_facts()
+            ]
+
     def handle(
         self,
         method: str,

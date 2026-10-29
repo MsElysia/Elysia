@@ -899,6 +899,14 @@ CONTROL_PANEL_TEMPLATE = """
                         <input type="text" id="api-chat-message" placeholder="Ask anything..." style="flex: 1; min-width: 200px;">
                         <button onclick="sendApiChat()">Send</button>
                     </div>
+                    <div id="local-model-chat-controls" style="display: none; margin-top: 8px;">
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 13px;">
+                            <input type="checkbox" id="allow-labor-calculator">
+                            Allow the labor calculator for this question
+                        </label>
+                        <button type="button" onclick="sendLocalModelChat()" style="margin-top: 8px;">Ask local model</button>
+                        <p id="local-model-chat-hint" style="font-size: 12px; color: var(--text-secondary); margin-top: 6px;"></p>
+                    </div>
                     <div id="api-chat-result" style="margin-top: 8px; padding: 10px; background: var(--bg-dark); border-radius: 8px; font-size: 13px; min-height: 40px; white-space: pre-wrap;"></div>
                 </div>
                 <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
@@ -1027,7 +1035,21 @@ CONTROL_PANEL_TEMPLATE = """
                         if (label.textContent.indexOf('Chat with AI') === 0) label.textContent = 'Chat with durable memory:';
                     });
                     var chatInput = document.getElementById('api-chat-message');
-                    if (chatInput) chatInput.placeholder = 'Ask using words from a saved fact';
+                    if (chatInput) chatInput.placeholder = 'Ask using words from a saved fact, or ask the local model';
+                    var localControls = document.getElementById('local-model-chat-controls');
+                    if (localControls) localControls.style.display = 'block';
+                    fetch('/api/local-model/status')
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            var hint = document.getElementById('local-model-chat-hint');
+                            if (!hint) return;
+                            if (data && data.configured) {
+                                hint.textContent = 'Local model: ' + (data.model || '') + ' (loopback Ollama only; no cloud fallback).';
+                            } else {
+                                hint.textContent = 'Local model not configured (set ELYSIA_LOCAL_MODEL). Memory retrieve still works.';
+                            }
+                        })
+                        .catch(function() {});
                 }
                 document.querySelectorAll('label').forEach(function(label) {
                     var input = label.parentElement.querySelector('input[id], select[id], textarea[id]');
@@ -1616,6 +1638,38 @@ CONTROL_PANEL_TEMPLATE = """
                     addLog(failed ? ('Chat unavailable: ' + (data.error || data.reply || 'No reply')) : 'Chat reply received', failed ? 'error' : 'info');
                 })
                 .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Chat error: ' + err, 'error'); });
+        };
+
+        window.sendLocalModelChat = function() {
+            const msg = (document.getElementById('api-chat-message') || {}).value;
+            const el = document.getElementById('api-chat-result');
+            const allowCalc = !!(document.getElementById('allow-labor-calculator') || {}).checked;
+            if (!msg || !msg.trim()) { if (el) el.textContent = 'Enter a message first.'; return; }
+            if (el) el.textContent = 'Asking local model...';
+            fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message: msg,
+                    use_local_model: true,
+                    allow_calculator: allowCalc
+                })
+            })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    var text = data.reply || data.error || JSON.stringify(data);
+                    if (data.tools_executed && data.tools_executed.length) {
+                        text += '\\n\\ntools_executed: ' + JSON.stringify(data.tools_executed, null, 2);
+                    }
+                    if (data.evidence_supplied && data.evidence_supplied.length) {
+                        text += '\\n\\nevidence: ' + data.evidence_supplied.length + ' item(s); model=' + (data.model || '');
+                    }
+                    if (el) el.textContent = text;
+                    var failed = !data.success || !!data.error || res.status >= 400;
+                    addLog(failed ? ('Local model chat failed: ' + (data.error || text)) : 'Local model reply received', failed ? 'error' : 'info');
+                })
+                .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Local model chat error: ' + err, 'error'); });
         };
 
         window.refreshWalletAccounts = function() {
@@ -2910,15 +2964,38 @@ class UIControlPanel:
             """Unified Elysia system when guardian is run under Elysia (for chat, income, harvest, etc.)."""
             return getattr(self.orchestrator, '_unified_system', None)
 
+        @self.app.route('/api/local-model/status', methods=['GET'])
+        def api_local_model_status():
+            """Loopback-only status for the configured local Ollama model (no probe downloads)."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"ok": False, "error": "forbidden", "detail": "loopback only"}), 403
+            from project_guardian.local_memory_chat import configured_local_model_name
+
+            model = configured_local_model_name()
+            return jsonify({
+                "ok": True,
+                "configured": bool(model),
+                "model": model,
+                "endpoint": "http://127.0.0.1:11434",
+                "cloud_fallback": False,
+                "contained": self._contained_startup_active(),
+            })
+
         @self.app.route('/api/chat', methods=['POST'])
         def api_chat():
-            """Chat. Contained sessions read durable restricted facts and do not call providers."""
+            """Chat. Contained sessions read durable restricted facts; optional local Ollama path."""
             try:
                 data = request.get_json() or {}
                 message = (data.get('message') or '').strip()
                 if not message:
                     return jsonify({"error": "message is required"}), 400
+                use_local_model = data.get("use_local_model") is True
+                allow_calculator = data.get("allow_calculator") is True
                 if self._contained_startup_active():
+                    if use_local_model:
+                        return self._contained_local_model_chat(
+                            message, allow_calculator=allow_calculator
+                        )
                     try:
                         adapter = self._restricted_adapter()
                     except Exception as exc:
@@ -2964,6 +3041,13 @@ class UIControlPanel:
                         "matches": matches,
                         "memory_store": body.get("memory_store"),
                     })
+                if use_local_model:
+                    return jsonify({
+                        "success": False,
+                        "error": "local model chat requires contained startup",
+                        "reply": None,
+                        "provider": "none",
+                    }), 400
                 us = _get_unified_system()
                 if us and hasattr(us, 'chat_with_llm'):
                     reply, err = us.chat_with_llm(message)
@@ -4067,6 +4151,151 @@ class UIControlPanel:
             )
             self._restricted_runtime_adapter = adapter
             return adapter
+
+    def _contained_local_model_chat(self, message: str, *, allow_calculator: bool):
+        """Memory-bounded local Ollama chat; calculator only with host checkbox authorization."""
+        import secrets
+
+        from project_guardian.local_memory_chat import (
+            LOCAL_MODEL_ENV,
+            ChatBoundaryError,
+            LocalOllama,
+            ManualAuthorization,
+            build_context_from_adapter,
+            configured_local_model_name,
+            converse_bundle,
+            refuse_requested_tool,
+        )
+
+        if not _is_loopback_addr(request.remote_addr):
+            return jsonify({
+                "success": False,
+                "error": "local model chat is loopback only",
+                "reply": None,
+                "provider": "none",
+            }), 403
+
+        model_name = configured_local_model_name()
+        if not model_name:
+            return jsonify({
+                "success": False,
+                "error": "local_model_not_configured",
+                "reply": None,
+                "provider": "none",
+                "detail": f"Set {LOCAL_MODEL_ENV} to an installed Ollama model",
+            }), 503
+
+        # Explicit tool-name / capability requests refuse before model invocation.
+        lowered = message.casefold()
+        explicit_tool = None
+        for candidate in (
+            "email.search",
+            "web.search",
+            "finance.summary",
+            "calendar.read",
+            "documents.read",
+            "construction.estimate",
+            "memory.ingest",
+            "shell.execute",
+            "python.execute",
+            "teleport.moon",
+        ):
+            if candidate in lowered:
+                explicit_tool = candidate
+                break
+        if explicit_tool is None:
+            for phrase, name in (
+                ("send email", "email.search"),
+                ("use the email", "email.search"),
+                ("use email", "email.search"),
+                ("search the web", "web.search"),
+                ("browse the web", "web.search"),
+                ("use web access", "web.search"),
+                ("open the internet", "web.search"),
+                ("run a shell", "shell.execute"),
+                ("execute powershell", "shell.execute"),
+                ("enable cloud", "web.search"),
+                ("nonexistent tool", "teleport.moon"),
+                ("tool that does not exist", "teleport.moon"),
+            ):
+                if phrase in lowered:
+                    explicit_tool = name
+                    break
+
+        try:
+            adapter = self._restricted_adapter()
+        except Exception as exc:
+            logger.error("Local model chat could not attach restricted runtime: %s", exc)
+            return jsonify({
+                "success": False,
+                "error": "restricted runtime is not attached",
+                "reply": None,
+                "provider": "none",
+            }), 503
+
+        headers = {
+            "X-Elysia-Identity": _DASHBOARD_OPERATOR_IDENTITY,
+            "X-Elysia-Token": self._dashboard_operator_token(),
+        }
+        scopes = {"local.chat", "memory.read"}
+        if allow_calculator:
+            scopes.add("calculator.execute")
+        authorization = ManualAuthorization(
+            secrets.token_hex(16), True, True, frozenset(scopes)
+        )
+
+        if explicit_tool is not None and explicit_tool != "calculator.labor":
+            refusal = refuse_requested_tool(explicit_tool, authorization)
+            return jsonify({
+                "success": False,
+                "error": f"tool refused: {refusal['name']}: {refusal['status']}",
+                "reply": None,
+                "provider": "none",
+                **refusal,
+            }), 403
+
+        try:
+            model = LocalOllama(model_name)
+            bundle = build_context_from_adapter(adapter, message, headers)
+            result = converse_bundle(bundle, message, authorization, model)
+        except ChatBoundaryError as exc:
+            detail = str(exc)
+            status = 503 if "unavailable" in detail.casefold() or "not installed" in detail.casefold() else 400
+            if "authorization" in detail.casefold():
+                status = 403
+            return jsonify({
+                "success": False,
+                "error": detail,
+                "reply": None,
+                "provider": "local-ollama",
+                "memory_written": False,
+                "tools_executed": [],
+            }), status
+        except Exception as exc:
+            logger.error("Local model chat failed: %s", exc, exc_info=True)
+            return jsonify({
+                "success": False,
+                "error": "local model chat failed",
+                "reply": None,
+                "provider": "local-ollama",
+                "memory_written": False,
+                "tools_executed": [],
+            }), 500
+
+        return jsonify({
+            "success": True,
+            "reply": result.get("answer"),
+            "error": None,
+            "provider": "local-ollama",
+            "model": result.get("model"),
+            "kind": result.get("kind"),
+            "evidence_supplied": result.get("evidence_supplied") or [],
+            "bundle_sha256": result.get("bundle_sha256"),
+            "tools_executed": result.get("tools_executed") or [],
+            "memory_written": False,
+            "calculation_verified": bool(result.get("calculation_verified")),
+            "assumptions_require_review": bool(result.get("assumptions_require_review")),
+        })
 
     def _restricted_request_body(self) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[int, Dict[str, Any]]]]:
         raw = request.get_data(cache=True, as_text=False) or b""

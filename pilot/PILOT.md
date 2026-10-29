@@ -11,6 +11,7 @@ Separate contained installation for the Windows browser-memory acceptance candid
 | Interpreter | `C:\Users\Owner\Project guardian\.venv\Scripts\python.exe` (read-only; not modified) |
 | Preferred UI | `http://127.0.0.1:5065/` (scans 5066–5085 if busy; never kills unknown listeners) |
 | Entry | `scripts/start_contained_browser_memory.py` with `--enable-ui --auto-start-ui --keep-alive` |
+| Local model | Optional `ELYSIA_LOCAL_MODEL` (launcher defaults to `llama3.2:3b` if unset). Loopback Ollama only; Ask local model + optional labor-calculator checkbox. No cloud fallback. |
 
 ## Launch / stop / inbox
 

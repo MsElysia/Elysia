@@ -49,6 +49,9 @@ HTTP_TESTS = ("tests/test_local_chat_http.py",)
 # The application's stricter process guard remains unchanged and uses -S.
 TEST_GUARD = '''import os,sys,socket
 pair_code=socket.socketpair.__code__
+# Capture test-only allowance once; changing os.environ within a strict test
+# must never turn its deny-network process into a loopback-capable process.
+allow_http_fixture=os.environ.get("ELYSIA_CHAT_HTTP_FIXTURE")=="1"
 def audit(event,args):
     if event=="import" and args[0]=="project_guardian.api_key_manager":
         raise RuntimeError("offline tests refuse credential discovery")
@@ -64,7 +67,7 @@ def audit(event,args):
         # Only the separate HTTP-fixture pytest subprocess may communicate
         # with numeric IPv4 loopback. No DNS names, non-loopback hosts,
         # wildcard listeners, or non-ephemeral fixture binds are accepted.
-        if os.environ.get("ELYSIA_CHAT_HTTP_FIXTURE")=="1":
+        if allow_http_fixture:
             address=args[1] if event!="socket.getaddrinfo" else None
             if event=="socket.getaddrinfo":
                 host,port=args[:2]

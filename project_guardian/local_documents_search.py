@@ -47,6 +47,13 @@ def _is_reparse_point(path: Path) -> bool:
         return True
     if os.name == "nt":
         try:
+            st = os.lstat(path)
+            attrs = getattr(st, "st_file_attributes", None)
+            if attrs is not None and bool(attrs & 0x400):
+                return True
+        except OSError:
+            return True
+        try:
             import ctypes
 
             attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
@@ -54,7 +61,8 @@ def _is_reparse_point(path: Path) -> bool:
                 return False
             return bool(attrs & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
         except Exception:
-            return False
+            # Fail closed when Windows attribute inspection is unavailable.
+            return True
     return False
 
 
@@ -257,6 +265,7 @@ def search_local_documents(
                         "line": 1,
                         "excerpt": excerpt,
                         "excerpt_sha256": hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+                        "source_sha256": hashlib.sha256(data).hexdigest(),
                     }
                 )
             # Literal phrase matches (case-insensitive). Include nearby lines so
@@ -289,6 +298,7 @@ def search_local_documents(
                         "line": line_no,
                         "excerpt": excerpt,
                         "excerpt_sha256": hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+                        "source_sha256": hashlib.sha256(data).hexdigest(),
                     }
                 )
             # Deterministic multi-token fallback (still literal, not semantic):
@@ -353,6 +363,7 @@ def search_local_documents(
                             "line": line_no,
                             "excerpt": excerpt,
                             "excerpt_sha256": hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+                            "source_sha256": hashlib.sha256(data).hexdigest(),
                         }
                     )
 
@@ -371,10 +382,14 @@ def search_local_documents(
             body = src.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             raise DocumentSearchError("could not verify match against source") from exc
-        # Strip ellipsis for containment check of core excerpt text.
-        core = m["excerpt"].strip("…")
-        if core and core.casefold() not in body.casefold() and query_l not in body.casefold():
-            raise DocumentSearchError("excerpt failed source verification")
+        core = m["excerpt"].replace("…", "").replace("...", "").strip()
+        body_l = body.casefold()
+        if core and core.casefold() not in body_l:
+            line_ok = all(
+                ln.strip().casefold() in body_l for ln in core.splitlines() if ln.strip()
+            )
+            if not line_ok and query_l not in body_l:
+                raise DocumentSearchError("excerpt failed source verification")
         verified_excerpts += 1
 
     status = "ok"
@@ -446,3 +461,117 @@ def model_visible_description() -> str:
         "Search .txt/.md files inside one operator-selected local folder "
         "(literal filename/text match; read-only; no writes)"
     )
+
+
+def folder_fingerprint(folder: str) -> str:
+    """Stable non-authorizing identity for an absolute folder (not a grant)."""
+    root = resolve_authorized_root(folder)
+    return hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+
+
+def verify_document_matches(
+    folder: str,
+    matches: Sequence[Mapping[str, Any]],
+    *,
+    authorize_search: bool,
+) -> Dict[str, Any]:
+    """Re-read sources and confirm excerpts / source hashes still match.
+
+    Raises DocumentSearchError if a source escaped the root, became a reparse
+    point, or changed since the match was captured.
+    """
+    if not authorize_search:
+        raise DocumentSearchError("document search not authorized for this request")
+    if not isinstance(matches, Sequence):
+        raise DocumentSearchError("matches must be a sequence")
+    root = resolve_authorized_root(folder)
+    verified = 0
+    safe_matches: List[Dict[str, Any]] = []
+    for raw in matches:
+        if not isinstance(raw, Mapping):
+            raise DocumentSearchError("invalid match entry")
+        rel = raw.get("relative_path")
+        excerpt = raw.get("excerpt")
+        if not isinstance(rel, str) or not rel.strip() or ".." in Path(rel).parts:
+            raise DocumentSearchError("invalid relative_path in match")
+        if not isinstance(excerpt, str):
+            raise DocumentSearchError("invalid excerpt in match")
+        src = (root / Path(rel)).resolve(strict=False)
+        if not _is_within_root(root, src):
+            raise DocumentSearchError("result path escaped authorized root")
+        if _is_reparse_point(src):
+            raise DocumentSearchError("source became a reparse point; refusing certification")
+        if src.suffix.casefold() not in SUPPORTED_EXTENSIONS:
+            raise DocumentSearchError("unsupported source type during verification")
+        try:
+            data = src.read_bytes()[: DEFAULT_MAX_FILE_BYTES]
+        except OSError as exc:
+            raise DocumentSearchError("could not re-read source for verification") from exc
+        digest = hashlib.sha256(data).hexdigest()
+        expected = raw.get("source_sha256")
+        if isinstance(expected, str) and expected and expected != digest:
+            raise DocumentSearchError(
+                "source changed between retrieval and verification; refusing stale result"
+            )
+        try:
+            body = data.decode("utf-8", errors="replace")
+        except Exception as exc:
+            raise DocumentSearchError("could not decode source for verification") from exc
+        core = excerpt.replace("…", "").replace("...", "").strip()
+        body_l = body.casefold()
+        if core:
+            if core.casefold() not in body_l:
+                # Multi-line windows may differ only by whitespace; require each
+                # non-empty line to remain present.
+                line_ok = all(
+                    ln.strip().casefold() in body_l
+                    for ln in core.splitlines()
+                    if ln.strip()
+                )
+                if not line_ok:
+                    raise DocumentSearchError("excerpt no longer present in source")
+        verified += 1
+        safe_matches.append(
+            {
+                "relative_path": _safe_relative(root, src),
+                "filename": src.name,
+                "line": raw.get("line"),
+                "match_kind": raw.get("match_kind"),
+                "excerpt_sha256": hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+                "source_sha256": digest,
+            }
+        )
+    return {
+        "ok": True,
+        "verified_count": verified,
+        "folder_label": root.name,
+        "folder_fingerprint": hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16],
+        "matches": safe_matches,
+    }
+
+
+def meets_evidence_criteria(
+    matches: Sequence[Mapping[str, Any]],
+    *,
+    min_matches: int = 1,
+    required_substring: Optional[str] = None,
+    expected_relative_path: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Deterministic completion check for an evidence-finding task step."""
+    if min_matches < 1:
+        return False, "min_matches must be >= 1"
+    if len(matches) < min_matches:
+        return False, f"match_count {len(matches)} below min_matches {min_matches}"
+    if expected_relative_path:
+        expected = expected_relative_path.replace("\\", "/").casefold()
+        if not any(
+            str(m.get("relative_path") or "").replace("\\", "/").casefold() == expected
+            for m in matches
+        ):
+            return False, "expected_relative_path not found in matches"
+    if required_substring:
+        needle = required_substring.casefold()
+        blob = " ".join(str(m.get("excerpt") or "") for m in matches).casefold()
+        if needle not in blob:
+            return False, "required_substring not found in verified excerpts"
+    return True, "ok"

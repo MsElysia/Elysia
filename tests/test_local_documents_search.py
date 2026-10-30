@@ -109,9 +109,60 @@ def test_symlink_escape_skipped(docs_dir: Path, tmp_path: Path):
     link = docs_dir / "escape-link.txt"
     try:
         link.symlink_to(outside)
-    except OSError:
-        pytest.skip("symlinks not permitted in this environment")
+    except OSError as exc:
+        pytest.skip(f"file symlinks unverified in this environment: {exc}")
     result = search_local_documents(str(docs_dir), "ESCAPED PAYLOAD", authorize_search=True)
+    assert result["match_count"] == 0
+    assert any(s.get("reason") == "reparse_point" for s in result.get("skipped") or [])
+
+
+def test_ntfs_junction_escape_skipped(docs_dir: Path, tmp_path: Path):
+    """Native Windows junction containment (mklink /J; no privilege elevation)."""
+    import subprocess
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("Windows-only junction test")
+    outside_dir = tmp_path / "outside-junction-target"
+    outside_dir.mkdir()
+    (outside_dir / "secret.md").write_text(
+        "JUNCTION ESCAPED Duration USD 777\n", encoding="utf-8"
+    )
+    junction = docs_dir / "escape-junction"
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(outside_dir)],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0 or not junction.exists():
+        pytest.skip(
+            "NTFS junction creation unverified: "
+            + (completed.stderr or completed.stdout or "mklink failed")
+        )
+    result = search_local_documents(
+        str(docs_dir), "JUNCTION ESCAPED", authorize_search=True
+    )
+    assert result["match_count"] == 0
+    assert "777" not in json_dumps(result)
+    reasons = {s.get("reason") for s in result.get("skipped") or []}
+    # Prefer explicit reparse rejection; outside_root after resolve is also fail-closed.
+    assert "reparse_point" in reasons or "outside_root" in reasons, reasons
+
+
+def test_directory_symlink_escape_skipped(docs_dir: Path, tmp_path: Path):
+    outside_dir = tmp_path / "outside-dirlink-target"
+    outside_dir.mkdir()
+    (outside_dir / "secret.md").write_text(
+        "DIRLINK ESCAPED Duration\n", encoding="utf-8"
+    )
+    link = docs_dir / "escape-dirlink"
+    try:
+        link.symlink_to(outside_dir, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unverified in this environment: {exc}")
+    result = search_local_documents(
+        str(docs_dir), "DIRLINK ESCAPED", authorize_search=True
+    )
     assert result["match_count"] == 0
     assert any(s.get("reason") == "reparse_point" for s in result.get("skipped") or [])
 

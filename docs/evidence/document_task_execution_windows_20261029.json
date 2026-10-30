@@ -1,0 +1,103 @@
+{
+  "disposable_root": "elysia-doc-task-23a0n0ts",
+  "fixtures_folder": "construction-estimates",
+  "port": 5076,
+  "model": "llama3.2:3b",
+  "steps": {
+    "bind": {
+      "status": 200,
+      "capability": "local.documents.search",
+      "args_keys": [
+        "expected_relative_path",
+        "folder_label",
+        "min_matches",
+        "query",
+        "required_substring"
+      ]
+    },
+    "model_proposal": {
+      "status": 200,
+      "reply": "local.documents.search"
+    },
+    "unauthorized_search": {
+      "status": 403,
+      "error": "document search not authorized for this request",
+      "executed": false
+    },
+    "unauthorized_completion": {
+      "status": 403,
+      "error": "recording completion not authorized for this request"
+    },
+    "zero_match": {
+      "status": 400,
+      "error": "document search completed but evidence criteria unmet: match_count 0 below min_matches 1"
+    },
+    "authorized_execute": {
+      "status": 200,
+      "verified": true,
+      "advanced": true,
+      "next": "Calculate labor requirements",
+      "match_count": 1,
+      "top": "paint-estimate-duration.md",
+      "receipt_keys": [
+        "capability",
+        "checkpoint_revision",
+        "created_utc",
+        "execution_id",
+        "folder_fingerprint",
+        "folder_label",
+        "forbidden_operations",
+        "hits",
+        "match_count",
+        "operations",
+        "query",
+        "step_id",
+        "verification_rule",
+        "verified"
+      ]
+    },
+    "duplicate": {
+      "status": 200,
+      "idempotent": true
+    },
+    "stale": {
+      "status": 409,
+      "stale": true
+    },
+    "injection": {
+      "status": 403,
+      "tools": []
+    },
+    "grounded_chat": {
+      "status": 200,
+      "reply": "USD 482.50",
+      "tools": [
+        "local.documents.search"
+      ]
+    },
+    "after_restart": {
+      "authorization_inherited": false,
+      "next": "Calculate labor requirements",
+      "objective": "Prepare a painting estimate using prior Duration paint material costs"
+    },
+    "restart_model": {
+      "status": 200,
+      "reply": "step_ba14753d8b79, verified document excerpt from paint-estimate-duration.md, Calculate labor requirements"
+    },
+    "post_restart_no_auth": {
+      "status": 409,
+      "error": "stale task edit: expected revision 4, current is 5",
+      "executed": false,
+      "saved": false
+    }
+  },
+  "windows_security": {
+    "junction": {
+      "exercised": true,
+      "match_count": 0,
+      "status": 200
+    }
+  },
+  "conversation_id": "conv_2c4ecc8a33af43d9",
+  "ok": true
+}

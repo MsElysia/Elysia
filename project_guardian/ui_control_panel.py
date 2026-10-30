@@ -965,6 +965,10 @@ CONTROL_PANEL_TEMPLATE = """
                                         Authorize calculator.labor for the selected bound step (this request only)
                                     </label>
                                     <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-documents">
+                                        Authorize local.documents.search for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
                                         <input type="checkbox" id="authorize-step-record">
                                         Authorize recording the verified result as step completion (this request only)
                                     </label>
@@ -1972,13 +1976,16 @@ CONTROL_PANEL_TEMPLATE = """
                             var html = '<div style="margin-bottom: 4px;"><strong>Steps</strong></div>';
                             taskSteps.forEach(function(step) {
                                 var done = step.status === 'completed';
-                                var bound = step.capability === 'calculator.labor';
+                                var boundLabor = step.capability === 'calculator.labor';
+                                var boundDocs = step.capability === 'local.documents.search';
+                                var bound = boundLabor || boundDocs;
                                 html += '<div style="display: flex; gap: 8px; align-items: center; margin: 4px 0; flex-wrap: wrap;">';
                                 html += '<span style="flex: 1; min-width: 140px;">' +
                                     (done ? '✓ ' : '') +
                                     window._escapeHtml(step.description || '') +
                                     (done ? ' <span style="color: var(--text-secondary);">(completed)</span>' : '') +
-                                    (bound ? ' <span style="color: var(--text-secondary);">[calculator.labor]</span>' : '') +
+                                    (boundLabor ? ' <span style="color: var(--text-secondary);">[calculator.labor]</span>' : '') +
+                                    (boundDocs ? ' <span style="color: var(--text-secondary);">[local.documents.search]</span>' : '') +
                                     '</span>';
                                 if (!done) {
                                     html += '<button type="button" onclick="completeTaskStep(\\'' +
@@ -1988,10 +1995,13 @@ CONTROL_PANEL_TEMPLATE = """
                                         html += '<button type="button" onclick="bindLaborStep(\\'' +
                                             window._escapeHtml(step.step_id || '') +
                                             '\\')">Bind labor calculator</button>';
+                                        html += '<button type="button" onclick="bindDocumentsStep(\\'' +
+                                            window._escapeHtml(step.step_id || '') +
+                                            '\\')">Bind document search</button>';
                                     } else {
                                         html += '<button type="button" onclick="executeBoundStep(\\'' +
                                             window._escapeHtml(step.step_id || '') +
-                                            '\\')">Execute authorized calculation</button>';
+                                            '\\')">Execute verified</button>';
                                     }
                                 } else {
                                     html += '<button type="button" onclick="reopenTaskStep(\\'' +
@@ -2004,8 +2014,10 @@ CONTROL_PANEL_TEMPLATE = """
                         }
                     }
                     var calcAuth = document.getElementById('authorize-step-calculator');
+                    var docsAuth = document.getElementById('authorize-step-documents');
                     var recAuth = document.getElementById('authorize-step-record');
                     if (calcAuth) calcAuth.checked = false;
+                    if (docsAuth) docsAuth.checked = false;
                     if (recAuth) recAuth.checked = false;
                     if (saveStatus) saveStatus.textContent = '';
                 })
@@ -2042,25 +2054,73 @@ CONTROL_PANEL_TEMPLATE = """
                 .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Bind failed: ' + err; });
         };
 
+        window.bindDocumentsStep = function(stepId) {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var saveStatus = document.getElementById('task-state-save-status');
+            var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
+            var folder = ((document.getElementById('documents-search-folder') || {}).value || '').trim();
+            if (!id || !stepId) { if (saveStatus) saveStatus.textContent = 'No conversation or step.'; return; }
+            if (saveStatus) saveStatus.textContent = 'Binding local.documents.search...';
+            var args = {
+                query: 'Duration exterior paint',
+                min_matches: 1,
+                required_substring: '482.50',
+                expected_relative_path: 'paint-estimate-duration.md'
+            };
+            if (folder) {
+                var parts = folder.replace(/\\\\/g, '/').split('/');
+                var label = parts[parts.length - 1] || parts[parts.length - 2] || '';
+                if (label) args.folder_label = label;
+            }
+            fetch('/api/conversations/' + encodeURIComponent(id) + '/task-steps/' + encodeURIComponent(stepId) + '/bind', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    expected_revision: expected,
+                    capability: 'local.documents.search',
+                    arguments: args
+                })
+            })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    if (!data.success || res.status >= 400) {
+                        if (saveStatus) saveStatus.textContent = 'Bind rejected: ' + (data.error || res.status);
+                        return;
+                    }
+                    if (saveStatus) saveStatus.textContent = 'Bound local.documents.search · r' + ((data.checkpoint || {}).revision || '?');
+                    window.loadTaskStatePanel(id);
+                })
+                .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Bind failed: ' + err; });
+        };
+
         window.executeBoundStep = function(stepId) {
             var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
             var saveStatus = document.getElementById('task-state-save-status');
             var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
             var authCalc = !!(document.getElementById('authorize-step-calculator') || {}).checked;
+            var authDocs = !!(document.getElementById('authorize-step-documents') || {}).checked;
             var authRec = !!(document.getElementById('authorize-step-record') || {}).checked;
+            var docsFolder = ((document.getElementById('documents-search-folder') || {}).value || '').trim();
             if (!id || !stepId) { if (saveStatus) saveStatus.textContent = 'No conversation or step.'; return; }
-            if (!authCalc || !authRec) {
-                if (saveStatus) saveStatus.textContent = 'Execution rejected: both request-scoped authorizations are required.';
+            if (!authRec || (!authCalc && !authDocs)) {
+                if (saveStatus) saveStatus.textContent = 'Execution rejected: capability + completion authorizations are required.';
                 return;
             }
-            if (saveStatus) saveStatus.textContent = 'Executing authorized calculation...';
+            if (authDocs && !docsFolder) {
+                if (saveStatus) saveStatus.textContent = 'Document search requires an absolute folder path for this request.';
+                return;
+            }
+            if (saveStatus) saveStatus.textContent = 'Executing authorized bound step...';
             fetch('/api/conversations/' + encodeURIComponent(id) + '/task-steps/' + encodeURIComponent(stepId) + '/execute', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     expected_revision: expected,
-                    authorize_calculator: true,
-                    authorize_record_completion: true
+                    authorize_calculator: authCalc,
+                    authorize_documents_search: authDocs,
+                    authorize_record_completion: true,
+                    documents_folder: authDocs ? docsFolder : null
                 })
             })
                 .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
@@ -2072,7 +2132,7 @@ CONTROL_PANEL_TEMPLATE = """
                     }
                     var receipt = data.receipt || {};
                     if (saveStatus) {
-                        saveStatus.textContent = 'Verified USD ' + (receipt.result || '?') +
+                        saveStatus.textContent = 'Verified ' + (receipt.result || receipt.match_count || '?') +
                             ' · checkpoint r' + ((data.checkpoint || {}).revision || '?') +
                             (data.advanced ? (' · next: ' + ((data.conversation || {}).next_safe_action || '')) : '');
                     }
@@ -4094,7 +4154,16 @@ class UIControlPanel:
 
             data = request.get_json(silent=True) or {}
             authorize_calculator = data.get("authorize_calculator") is True
+            authorize_documents = data.get("authorize_documents_search") is True
             authorize_record = data.get("authorize_record_completion") is True
+            documents_folder = data.get("documents_folder")
+            if documents_folder is not None and not isinstance(documents_folder, str):
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "executed": False,
+                    "error": "invalid documents_folder",
+                }), 400
             # Never accept auth from stored fields named like tokens.
             for banned in ("token", "credential", "api_key", "password", "scopes"):
                 data.pop(banned, None)
@@ -4122,8 +4191,10 @@ class UIControlPanel:
                     step_id=step_id,
                     expected_revision=expected_revision,
                     authorize_calculator=authorize_calculator,
+                    authorize_documents_search=authorize_documents,
                     authorize_record_completion=authorize_record,
                     execution_id=execution_id,
+                    documents_folder=documents_folder if authorize_documents else None,
                 )
                 return jsonify({
                     "success": True,
@@ -4139,6 +4210,7 @@ class UIControlPanel:
                     "checkpoint": result.get("checkpoint"),
                     "authorization_inherited": False,
                     "calculator_authorized_this_request": authorize_calculator,
+                    "documents_search_authorized_this_request": authorize_documents,
                     "record_completion_authorized_this_request": authorize_record,
                 })
             except StaleTaskEditError as exc:

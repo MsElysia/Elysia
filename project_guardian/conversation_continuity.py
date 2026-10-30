@@ -54,7 +54,7 @@ def _new_step_id() -> str:
     return "step_" + uuid.uuid4().hex[:12]
 
 
-SUPPORTED_STEP_CAPABILITIES = frozenset({"calculator.labor"})
+SUPPORTED_STEP_CAPABILITIES = frozenset({"calculator.labor", "local.documents.search"})
 
 
 def _normalize_labor_arguments(raw: Any) -> Dict[str, Any]:
@@ -84,6 +84,87 @@ def _normalize_labor_arguments(raw: Any) -> Dict[str, Any]:
             raise ContinuityError(f"{key} out of range")
         args[key] = num
     return args
+
+
+def _normalize_documents_search_arguments(raw: Any) -> Dict[str, Any]:
+    """Normalize durable bind args for local.documents.search.
+
+    Absolute folder paths are never stored as authorization. An optional
+    folder_label / folder_fingerprint may be recorded as non-authorizing identity.
+    """
+    if not isinstance(raw, dict):
+        raise ContinuityError("local.documents.search arguments must be an object")
+    banned = {
+        "authorization",
+        "authorize_search",
+        "token",
+        "credential",
+        "folder",
+        "folder_path",
+        "absolute_folder",
+    }
+    for key in banned:
+        if key in raw:
+            raise ContinuityError(
+                f"{key} cannot be stored in a durable document-search binding"
+            )
+    query = raw.get("query")
+    if not isinstance(query, str) or not query.strip() or len(query.strip()) > 200:
+        raise ContinuityError("query is required (1..200 chars)")
+    min_matches = raw.get("min_matches", 1)
+    if type(min_matches) is bool or type(min_matches) is not int or not 1 <= min_matches <= 12:
+        raise ContinuityError("min_matches must be an integer 1..12")
+    args: Dict[str, Any] = {
+        "query": query.strip(),
+        "min_matches": min_matches,
+    }
+    required_substring = raw.get("required_substring")
+    if required_substring is not None:
+        if (
+            not isinstance(required_substring, str)
+            or not required_substring.strip()
+            or len(required_substring.strip()) > 120
+        ):
+            raise ContinuityError("required_substring must be 1..120 chars")
+        args["required_substring"] = required_substring.strip()
+    expected_relative_path = raw.get("expected_relative_path")
+    if expected_relative_path is not None:
+        if (
+            not isinstance(expected_relative_path, str)
+            or not expected_relative_path.strip()
+            or ".." in Path(expected_relative_path).parts
+            or len(expected_relative_path.strip()) > 200
+        ):
+            raise ContinuityError("expected_relative_path is invalid")
+        args["expected_relative_path"] = expected_relative_path.strip().replace("\\", "/")
+    folder_label = raw.get("folder_label")
+    if folder_label is not None:
+        if (
+            not isinstance(folder_label, str)
+            or not folder_label.strip()
+            or len(folder_label.strip()) > 120
+            or "/" in folder_label
+            or "\\" in folder_label
+        ):
+            raise ContinuityError("folder_label must be a short directory name")
+        args["folder_label"] = folder_label.strip()
+    folder_fingerprint = raw.get("folder_fingerprint")
+    if folder_fingerprint is not None:
+        if (
+            not isinstance(folder_fingerprint, str)
+            or not re.fullmatch(r"[a-f0-9]{16}", folder_fingerprint)
+        ):
+            raise ContinuityError("folder_fingerprint must be a 16-hex identity")
+        args["folder_fingerprint"] = folder_fingerprint
+    return args
+
+
+def _normalize_step_capability_arguments(capability: str, raw: Any) -> Dict[str, Any]:
+    if capability == "calculator.labor":
+        return _normalize_labor_arguments(raw)
+    if capability == "local.documents.search":
+        return _normalize_documents_search_arguments(raw)
+    raise ContinuityError("unsupported step capability")
 
 
 def _normalize_task_steps(raw: Any) -> List[Dict[str, Any]]:
@@ -683,7 +764,13 @@ class ConversationStore:
             raise ContinuityError("invalid step_id")
         if not isinstance(expected_revision, int) or expected_revision < 0:
             raise ContinuityError("expected_revision must be a non-negative integer")
-        cleaned_args = _normalize_labor_arguments(arguments)
+        cleaned_args = _normalize_step_capability_arguments(capability, arguments)
+        if capability == "calculator.labor":
+            expected_result_type = "usd_total"
+            verification_rule = "deterministic_recompute"
+        else:
+            expected_result_type = "document_evidence"
+            verification_rule = "source_excerpt_reverify"
 
         with self._lock:
             record, existing, current_rev = self._revision_gate_unlocked(
@@ -713,8 +800,8 @@ class ConversationStore:
                 raise ContinuityError("only pending steps can be bound")
             target["capability"] = capability
             target["arguments"] = cleaned_args
-            target["expected_result_type"] = "usd_total"
-            target["verification_rule"] = "deterministic_recompute"
+            target["expected_result_type"] = expected_result_type
+            target["verification_rule"] = verification_rule
             target["execution_status"] = "none"
             target["verification_status"] = "none"
             target["last_failure_category"] = None
@@ -755,15 +842,22 @@ class ConversationStore:
         *,
         step_id: str,
         expected_revision: int,
-        authorize_calculator: bool,
+        authorize_calculator: bool = False,
+        authorize_documents_search: bool = False,
         authorize_record_completion: bool,
         execution_id: Optional[str] = None,
+        documents_folder: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Execute calculator.labor for a bound step, verify, and durably complete."""
+        """Execute a bound calculator or document-search step, verify, and durably complete."""
         from project_guardian.local_memory_chat import calculate_local
+        from project_guardian.local_documents_search import (
+            DocumentSearchError,
+            folder_fingerprint,
+            meets_evidence_criteria,
+            search_local_documents,
+            verify_document_matches,
+        )
 
-        if not authorize_calculator:
-            raise ContinuityError("calculator execution not authorized for this request")
         if not authorize_record_completion:
             raise ContinuityError("recording completion not authorized for this request")
         if not isinstance(step_id, str) or not re.fullmatch(r"step_[a-f0-9]{12}", step_id):
@@ -809,81 +903,237 @@ class ConversationStore:
                 raise ContinuityError("step not found")
             if target.get("status") != "pending":
                 raise ContinuityError("step is not pending")
-            if target.get("capability") != "calculator.labor":
-                raise ContinuityError("step is not bound to calculator.labor")
-            try:
-                args = _normalize_labor_arguments(target.get("arguments") or {})
-            except ContinuityError as exc:
-                target["execution_status"] = "failed"
-                target["verification_status"] = "failed"
-                target["last_failure_category"] = "invalid_arguments"
-                raise ContinuityError(str(exc)) from exc
+            capability = target.get("capability")
+            if capability not in SUPPORTED_STEP_CAPABILITIES:
+                raise ContinuityError("step has no supported capability binding")
 
-            expression = (
-                f"{args['hourly_rate_usd']} * {args['painters']} * "
-                f"{args['days']} * {args['hours_per_day']}"
-            )
-            try:
-                total = calculate_local(expression)
-            except ValueError as exc:
-                target["execution_status"] = "failed"
-                target["verification_status"] = "failed"
-                target["last_failure_category"] = "tool_exception"
-                for idx, step in enumerate(steps):
-                    if step["step_id"] == step_id:
-                        steps[idx] = target
-                        break
-                record["task_steps"] = steps
-                # Do not advance revision on tool failure — leave pending, no success claim.
-                raise ContinuityError(f"calculator failed: {exc}") from exc
+            if capability == "calculator.labor":
+                if not authorize_calculator:
+                    raise ContinuityError(
+                        "calculator execution not authorized for this request"
+                    )
+                try:
+                    args = _normalize_labor_arguments(target.get("arguments") or {})
+                except ContinuityError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "invalid_arguments"
+                    raise ContinuityError(str(exc)) from exc
 
-            # Independent verification: recompute expected product.
-            expected = (
-                Decimal(args["hourly_rate_usd"])
-                * Decimal(args["painters"])
-                * Decimal(args["days"])
-                * Decimal(args["hours_per_day"])
-            )
-            expected_s = format(expected.normalize(), "f")
-            if total != expected_s:
-                target["execution_status"] = "failed"
-                target["verification_status"] = "failed"
-                target["last_failure_category"] = "incorrect_result"
-                raise ContinuityError("calculator result failed independent verification")
+                expression = (
+                    f"{args['hourly_rate_usd']} * {args['painters']} * "
+                    f"{args['days']} * {args['hours_per_day']}"
+                )
+                try:
+                    total = calculate_local(expression)
+                except ValueError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "tool_exception"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(f"calculator failed: {exc}") from exc
 
-            now = _utc_now()
-            next_rev = current_rev + 1
-            receipt = {
-                "execution_id": execution_id,
-                "step_id": step_id,
-                "capability": "calculator.labor",
-                "verified": True,
-                "result": total,
-                "currency": "USD",
-                "expression": expression,
-                "checkpoint_revision": next_rev,
-                "created_utc": now,
-                "verification_rule": "deterministic_recompute",
-            }
-            history = list(target.get("execution_history") or [])
-            history.append(
-                {
+                expected = (
+                    Decimal(args["hourly_rate_usd"])
+                    * Decimal(args["painters"])
+                    * Decimal(args["days"])
+                    * Decimal(args["hours_per_day"])
+                )
+                expected_s = format(expected.normalize(), "f")
+                if total != expected_s:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "incorrect_result"
+                    raise ContinuityError(
+                        "calculator result failed independent verification"
+                    )
+
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": "calculator.labor",
+                    "verified": True,
+                    "result": total,
+                    "currency": "USD",
+                    "expression": expression,
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "deterministic_recompute",
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": total,
+                    "currency": "USD",
+                }
+                history_entry = {
                     "execution_id": execution_id,
                     "result": total,
                     "verified": True,
                     "created_utc": now,
                     "checkpoint_revision": next_rev,
                 }
-            )
+                persist_failure_prefix = "calculation succeeded but completion was not durably recorded"
+            elif capability == "local.documents.search":
+                if not authorize_documents_search:
+                    raise ContinuityError(
+                        "document search not authorized for this request"
+                    )
+                if not isinstance(documents_folder, str) or not documents_folder.strip():
+                    raise ContinuityError(
+                        "documents_folder is required for this request (not inherited)"
+                    )
+                try:
+                    args = _normalize_documents_search_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "invalid_arguments"
+                    raise ContinuityError(str(exc)) from exc
+
+                try:
+                    fp = folder_fingerprint(documents_folder)
+                except DocumentSearchError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                expected_fp = args.get("folder_fingerprint")
+                if expected_fp and expected_fp != fp:
+                    raise ContinuityError(
+                        "documents_folder fingerprint does not match bound identity"
+                    )
+                expected_label = args.get("folder_label")
+                if expected_label and Path(documents_folder).name != expected_label:
+                    raise ContinuityError(
+                        "documents_folder label does not match bound folder_label"
+                    )
+
+                try:
+                    search = search_local_documents(
+                        documents_folder,
+                        args["query"],
+                        authorize_search=True,
+                    )
+                except DocumentSearchError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "tool_exception"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(f"document search failed: {exc}") from exc
+
+                matches = search.get("matches") or []
+                try:
+                    verified = verify_document_matches(
+                        documents_folder,
+                        matches,
+                        authorize_search=True,
+                    )
+                except DocumentSearchError as exc:
+                    target["execution_status"] = "succeeded"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "incorrect_result"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(f"document evidence verification failed: {exc}") from exc
+
+                ok, reason = meets_evidence_criteria(
+                    matches,
+                    min_matches=int(args["min_matches"]),
+                    required_substring=args.get("required_substring"),
+                    expected_relative_path=args.get("expected_relative_path"),
+                )
+                if not ok:
+                    # Tool ran; evidence-finding task remains incomplete.
+                    target["execution_status"] = "succeeded"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "evidence_criteria_unmet"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(
+                        f"document search completed but evidence criteria unmet: {reason}"
+                    )
+
+                now = _utc_now()
+                next_rev = current_rev + 1
+                safe_hits = [
+                    {
+                        "relative_path": m.get("relative_path"),
+                        "filename": m.get("filename"),
+                        "line": m.get("line"),
+                        "excerpt_sha256": m.get("excerpt_sha256"),
+                        "source_sha256": m.get("source_sha256"),
+                    }
+                    for m in verified.get("matches") or []
+                ][:8]
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": "local.documents.search",
+                    "verified": True,
+                    "match_count": int(search.get("match_count") or 0),
+                    "folder_label": verified.get("folder_label"),
+                    "folder_fingerprint": verified.get("folder_fingerprint"),
+                    "query": args["query"],
+                    "hits": safe_hits,
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "source_excerpt_reverify",
+                    "operations": ["read"],
+                    "forbidden_operations": [],
+                }
+                # Summarize without storing full document bodies.
+                result_summary = (
+                    f"{receipt['match_count']} verified match(es) in "
+                    f"{receipt['folder_label']}"
+                )
+                if safe_hits:
+                    result_summary += f"; top={safe_hits[0].get('relative_path')}"
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": result_summary,
+                    "match_count": receipt["match_count"],
+                    "folder_label": receipt["folder_label"],
+                    "folder_fingerprint": receipt["folder_fingerprint"],
+                    "top_relative_path": (safe_hits[0].get("relative_path") if safe_hits else None),
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": result_summary,
+                    "match_count": receipt["match_count"],
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "document search verified but completion was not durably recorded"
+                )
+                total = result_summary  # for shared history shape below
+                args = dict(args)  # durable bind args only; no absolute folder
+            else:
+                raise ContinuityError("unsupported bound capability")
+
+            history = list(target.get("execution_history") or [])
+            history.append(history_entry)
             target["execution_history"] = history[-12:]
             target["execution_status"] = "succeeded"
             target["verification_status"] = "verified"
             target["execution_receipt_id"] = execution_id
-            target["result_reference"] = {
-                "execution_id": execution_id,
-                "result": total,
-                "currency": "USD",
-            }
+            target["result_reference"] = result_reference
             target["last_failure_category"] = None
             target["status"] = "completed"
             target["completed_utc"] = now
@@ -925,7 +1175,6 @@ class ConversationStore:
             }
             record["updated_utc"] = now
 
-            # Stash recoverable receipt before checkpoint so a failed write can be reconciled.
             pending_path = self._conv_dir(conversation_id) / f"{execution_id}.pending.json"
             try:
                 _atomic_write_json(
@@ -962,7 +1211,7 @@ class ConversationStore:
                 )
             except ContinuityError as exc:
                 raise ContinuityError(
-                    f"calculation succeeded but completion was not durably recorded: {exc}; "
+                    f"{persist_failure_prefix}: {exc}; "
                     f"recoverable execution_id={execution_id}"
                 ) from exc
 

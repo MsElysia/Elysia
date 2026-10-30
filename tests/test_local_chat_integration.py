@@ -193,3 +193,64 @@ def test_rate_must_be_an_unambiguous_labor_fact(runtime, monkeypatch, text):
     before = snapshot()
     assert ask(c, csrf).status_code == 503
     assert snapshot() == before
+
+
+def test_cent_rate_is_read_from_current_source_bytes(runtime, monkeypatch):
+    _, c, csrf, save, snapshot = runtime
+    monkeypatch.setattr(LocalOllama, 'generate', lambda self, messages, **kwargs: labor(messages))
+    save('35.50')
+    before = snapshot()
+    r = ask(c, csrf)
+    assert r.status_code == 200, r.json
+    executed = r.json['tools_executed'][0]
+    assert executed['expression'] == '35.50 * 2 * 3 * 8'
+    assert executed['result'] == '1704'
+    assert executed['revision'] == 1
+    assert r.json['memory_written'] is False
+    assert snapshot() == before
+
+
+def test_leading_zero_rate_never_executes_arithmetic(runtime, monkeypatch):
+    _, c, csrf, _, snapshot = runtime
+    assert post(c, '/api/teach', {'key': 'rate', 'text': 'Fictional labor rate is USD 0035 per hour.'}, csrf).status_code == 200
+    monkeypatch.setattr(LocalOllama, 'generate', lambda self, messages, **kwargs: labor(messages))
+    monkeypatch.setattr('elysia_offline.calculate_local', lambda expression: pytest.fail(expression))
+    before = snapshot()
+    r = ask(c, csrf)
+    assert r.status_code == 503, r.json
+    assert r.json['error'] == 'memory must establish one unambiguous USD hourly rate'
+    assert snapshot() == before
+
+
+def test_memory_change_discards_answer_and_clears_session(runtime, monkeypatch):
+    _, c, csrf, save, snapshot = runtime
+    save('35')
+    prompts = []
+
+    def reply(self, messages, **kwargs):
+        prompts.append(json.loads(messages[1]['content']))
+        return json.dumps({'answer': 'Synthetic conversational response'})
+
+    monkeypatch.setattr(LocalOllama, 'generate', reply)
+    assert ask(c, csrf).status_code == 200
+    assert prompts[-1]['recent_conversation'] == []
+    before = snapshot()
+    store = browser.CODE / '.synthetic-pilot-stores' / 'browser-chat'
+    saved = {p.relative_to(store): p.read_bytes() for p in store.rglob('*') if p.is_file()}
+
+    def changed(self, messages, **kwargs):
+        prompts.append(json.loads(messages[1]['content']))
+        target = next(p for p in store.rglob('*') if p.is_file() and b'USD 35' in p.read_bytes())
+        target.write_bytes(target.read_bytes().replace(b'USD 35', b'USD 40', 1))
+        return json.dumps({'answer': 'Discarded stale total'})
+
+    monkeypatch.setattr(LocalOllama, 'generate', changed)
+    r = ask(c, csrf)
+    assert r.status_code == 409, r.json
+    assert r.json['error'] == 'memory_changed_response_discarded'
+    for relative, data in saved.items():
+        (store / relative).write_bytes(data)
+    assert snapshot() == before
+    monkeypatch.setattr(LocalOllama, 'generate', reply)
+    assert ask(c, csrf).status_code == 200
+    assert prompts[-1]['recent_conversation'] == []

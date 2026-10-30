@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -77,6 +78,27 @@ def execute(name: str, command: dict) -> dict:
         elif operation == "context":
             from elysia_local_memory_chat import build_context
             result = {"bundle": build_context(system, command["query"])}
+        elif operation == "source":
+            source_id = command.get("source_id")
+            if type(source_id) is not str or not 1 <= len(source_id) <= 160:
+                raise ValueError("invalid source")
+            if source_id not in system.learning.active_ids():
+                raise ValueError("source is not current")
+            record = system.learning.records[source_id]
+            raw_bytes = (system.workspace / record["raw_source_path"]).read_bytes()
+            if len(raw_bytes) > 4096:
+                raise ValueError("source too large")
+            digest = hashlib.sha256(raw_bytes).hexdigest()
+            if digest != record["source_sha256"]:
+                raise ValueError("source hash mismatch")
+            revision = next((len(ids) for ids in system.learning.facts.values() if ids[-1] == source_id), None)
+            if type(revision) is not int:
+                raise ValueError("source is not current")
+            text = raw_bytes.decode("utf-8")
+            if hashlib.sha256(text.encode("utf-8")).hexdigest() != digest:
+                raise ValueError("source hash mismatch")
+            result = {"source_id": source_id, "source_text": text,
+                      "source_sha256": digest, "revision": revision}
         elif operation == "recall":
             answer, evidence = system.respond(command["query"])
             result = {"answer": answer, "evidence": evidence}

@@ -34,6 +34,7 @@ loopback = sys.argv[1] == "1"
 assert accepted("socket.bind", None, ("127.0.0.1", 0)) == loopback
 assert accepted("socket.connect", None, ("127.0.0.1", 50000)) == loopback
 assert accepted("socket.getaddrinfo", "127.0.0.1", 50000) == loopback
+assert accepted("socket.getaddrinfo", "127.0.0.1", 0) == loopback
 # The allowance is frozen at startup; a test changing its environment
 # cannot promote a strict process to a network-capable one.
 os.environ["ELYSIA_CHAT_HTTP_FIXTURE"] = "0" if loopback else "1"

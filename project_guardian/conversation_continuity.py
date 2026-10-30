@@ -926,6 +926,246 @@ class ConversationStore:
                 require_outstanding=cleaned_steps,
             )
 
+    def evaluate_bound_step(
+        self,
+        conversation_id: str,
+        *,
+        step_id: str,
+        expected_outcome: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Read-only host evaluation of whether a step met its objective."""
+        from project_guardian.capability_composition import (
+            evaluate_step_outcome,
+            list_composable_capabilities,
+        )
+
+        if not isinstance(step_id, str) or not re.fullmatch(r"step_[a-f0-9]{12}", step_id):
+            raise ContinuityError("invalid step_id")
+        record = self.get(conversation_id)
+        steps = _normalize_task_steps(record.get("task_steps"))
+        target = next((s for s in steps if s.get("step_id") == step_id), None)
+        if target is None:
+            raise ContinuityError("step not found")
+        expected = expected_outcome
+        if not expected:
+            # Prefer description after "capability: " when present.
+            desc = str(target.get("description") or "")
+            if ": " in desc:
+                expected = desc.split(": ", 1)[1]
+            else:
+                expected = desc
+        evaluation = evaluate_step_outcome(
+            target,
+            expected_outcome=expected,
+            available_capabilities=list_composable_capabilities(),
+        )
+        return {
+            "conversation_id": conversation_id,
+            "step_id": step_id,
+            "objective": record.get("objective") or "",
+            "evaluation": evaluation,
+            "authorization_granted": False,
+            "authorization_inherited": False,
+        }
+
+    def apply_validated_replan(
+        self,
+        conversation_id: str,
+        *,
+        expected_revision: int,
+        validated_plan: Mapping[str, Any],
+        evaluation: Mapping[str, Any],
+        failed_step_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Apply a host-validated replan without granting execution authority.
+
+        Preserves completed verified steps and archives failed pending attempts.
+        """
+        from project_guardian.capability_composition import (
+            CompositionError,
+            MAX_REPLAN_ATTEMPTS,
+            collect_verified_links,
+            map_validated_plan_to_outstanding_steps,
+            sanitize_prompt_injection_claims,
+        )
+
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ContinuityError("expected_revision must be a non-negative integer")
+        if not isinstance(validated_plan, Mapping) or not validated_plan.get("ok"):
+            raise ContinuityError("validated_plan required")
+        if validated_plan.get("authorization_granted") or validated_plan.get("executable"):
+            raise ContinuityError("validated replan must not claim execution authority")
+        if validated_plan.get("authorization_inherited"):
+            raise ContinuityError("validated replan must not inherit authorization")
+        if not isinstance(evaluation, Mapping) or evaluation.get("met") is True:
+            raise ContinuityError("replan requires unmet step evaluation")
+
+        try:
+            outstanding = map_validated_plan_to_outstanding_steps(validated_plan)
+        except CompositionError as exc:
+            raise ContinuityError(str(exc)) from exc
+
+        with self._lock:
+            record = self._load_unlocked(conversation_id)
+            current_rev = int(record.get("checkpoint_revision") or 0)
+            existing = None
+            cpath = self._checkpoint_path(conversation_id)
+            if cpath.is_file():
+                try:
+                    existing = json.loads(cpath.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    existing = None
+
+            if current_rev == expected_revision + 1 and isinstance(existing, dict):
+                if (
+                    int(existing.get("revision") or 0) == expected_revision + 1
+                    and existing.get("reason") == "adaptive_replan"
+                ):
+                    same_steps = list(existing.get("outstanding_steps") or []) == outstanding
+                    if same_steps:
+                        return {
+                            "conversation": record,
+                            "checkpoint": existing,
+                            "idempotent": True,
+                            "saved": True,
+                            "authorization_granted": False,
+                        }
+                raise StaleTaskEditError(
+                    f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+                )
+            if current_rev != expected_revision:
+                raise StaleTaskEditError(
+                    f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+                )
+
+            original_objective = (record.get("objective") or "").strip()
+            plan_objective = str(validated_plan.get("objective") or "").strip()
+            if original_objective and plan_objective and plan_objective != original_objective:
+                raise ContinuityError("replan cannot change the original objective")
+            if not original_objective and plan_objective:
+                record["objective"] = plan_objective[:800]
+                original_objective = plan_objective
+
+            prior_adaptive = (
+                record.get("adaptive_replan")
+                if isinstance(record.get("adaptive_replan"), dict)
+                else {}
+            )
+            attempt_count = int(prior_adaptive.get("attempt_count") or 0)
+            if attempt_count >= MAX_REPLAN_ATTEMPTS:
+                raise ContinuityError(
+                    f"replan attempt limit reached ({MAX_REPLAN_ATTEMPTS}); "
+                    "operator blocker required"
+                )
+
+            steps = _normalize_task_steps(record.get("task_steps"))
+            failed_archive = list(prior_adaptive.get("failed_attempts") or [])
+            failed_step = None
+            if isinstance(failed_step_id, str):
+                failed_step = next(
+                    (s for s in steps if s.get("step_id") == failed_step_id), None
+                )
+            # Archive pending steps that will be replaced (preserve failure evidence).
+            pending_to_drop = [
+                s for s in steps if s.get("status") == "pending"
+            ]
+            for s in pending_to_drop:
+                failed_archive.append(
+                    {
+                        "step_id": s.get("step_id"),
+                        "description": s.get("description"),
+                        "capability": s.get("capability"),
+                        "execution_status": s.get("execution_status"),
+                        "verification_status": s.get("verification_status"),
+                        "last_failure_category": s.get("last_failure_category"),
+                        "result_reference": s.get("result_reference"),
+                        "archived_utc": _utc_now(),
+                    }
+                )
+            failed_archive = failed_archive[-12:]
+
+            verified_links = collect_verified_links(
+                conversation_id,
+                steps,
+                checkpoint_revision=current_rev,
+            )
+
+            record["task_steps"] = _rebuild_pending_steps(steps, outstanding)
+            _sync_lists_from_task_steps(record)
+            next_action = outstanding[0]
+            record["next_safe_action"] = next_action
+            record["advancement_needs_review"] = True
+
+            history = list(prior_adaptive.get("history") or [])
+            history.append(
+                {
+                    "attempt": attempt_count + 1,
+                    "revision_reason": sanitize_prompt_injection_claims(
+                        str(validated_plan.get("revision_reason") or evaluation.get("reason") or "")
+                    ),
+                    "failure_category": evaluation.get("category"),
+                    "failed_step_id": failed_step_id,
+                    "failed_capability": (failed_step or {}).get("capability")
+                    if isinstance(failed_step, dict)
+                    else None,
+                    "selected_next_capability": validated_plan.get("selected_next_capability"),
+                    "outstanding_steps": outstanding,
+                    "verified_progress_count": len(verified_links),
+                    "created_utc": _utc_now(),
+                }
+            )
+            record["adaptive_replan"] = {
+                "attempt_count": attempt_count + 1,
+                "max_attempts": MAX_REPLAN_ATTEMPTS,
+                "original_objective": original_objective,
+                "latest_failure_category": evaluation.get("category"),
+                "latest_revision_reason": sanitize_prompt_injection_claims(
+                    str(validated_plan.get("revision_reason") or "")
+                ),
+                "history": history[-MAX_REPLAN_ATTEMPTS:],
+                "failed_attempts": failed_archive,
+                "authorization_inherited": False,
+                "authorization_granted": False,
+                "updated_utc": _utc_now(),
+            }
+            now = _utc_now()
+            prior_ops = (
+                record.get("operator_task_state")
+                if isinstance(record.get("operator_task_state"), dict)
+                else {}
+            )
+            record["operator_task_state"] = {
+                "locked": True,
+                "outstanding_steps": True,
+                "next_safe_action": True,
+                "updated_utc": now,
+                "source": "operator",
+            }
+            record["updated_utc"] = now
+
+            result = self._persist_operator_mutation_unlocked(
+                record,
+                previous=existing if isinstance(existing, dict) else None,
+                reason="adaptive_replan",
+                require_outstanding=outstanding,
+                extra_checkpoint_fields={
+                    "adaptive_replan": record["adaptive_replan"],
+                    "authorization_state": "none",
+                    "authorization_inherited": False,
+                },
+            )
+            result["authorization_granted"] = False
+            result["authorization_inherited"] = False
+            result["evaluation"] = dict(evaluation)
+            result["validated_plan"] = {
+                "objective": validated_plan.get("objective"),
+                "steps": validated_plan.get("steps"),
+                "revision_reason": validated_plan.get("revision_reason"),
+                "executable": False,
+                "authorization_inherited": False,
+            }
+            return result
+
     def complete_operator_step(
         self,
         conversation_id: str,
@@ -1443,6 +1683,7 @@ class ConversationStore:
                             steps[idx] = target
                             break
                     record["task_steps"] = steps
+                    self._persist_step_failure_unlocked(record)
                     raise ContinuityError(
                         f"document search completed but evidence criteria unmet: {reason}"
                     )
@@ -1890,6 +2131,30 @@ class ConversationStore:
                     raise ContinuityError(f"compose.extract_fields failed: {exc}") from exc
                 # Model claims of verification are ignored; only host statuses count.
                 if not extracted.get("ok"):
+                    partial_fields = {}
+                    for fid, entry in (extracted.get("fields") or {}).items():
+                        if isinstance(entry, dict):
+                            partial_fields[fid] = {
+                                "field_id": fid,
+                                "status": entry.get("status"),
+                                "normalized_value": entry.get("normalized_value"),
+                                "candidates": (entry.get("candidates") or [])[:4],
+                            }
+                    target["execution_status"] = "succeeded"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "incorrect_result"
+                    target["result_reference"] = {
+                        "result": "extract incomplete",
+                        "result_type": "structured_fields",
+                        "fields": partial_fields,
+                        "required_unverified": extracted.get("required_unverified"),
+                    }
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    self._persist_step_failure_unlocked(record)
                     raise ContinuityError(
                         "compose.extract_fields incomplete: required fields unverified: "
                         + ", ".join(extracted.get("required_unverified") or [])
@@ -2011,6 +2276,20 @@ class ConversationStore:
                         f"compose.extract_records failed: {exc}"
                     ) from exc
                 if not extracted.get("ok"):
+                    target["execution_status"] = "succeeded"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "incorrect_result"
+                    target["result_reference"] = {
+                        "result": "extract_records incomplete",
+                        "result_type": "structured_records",
+                        "records": (extracted.get("records") or [])[:8],
+                    }
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    self._persist_step_failure_unlocked(record)
                     raise ContinuityError(
                         "compose.extract_records incomplete: no verified records"
                     )
@@ -2822,6 +3101,17 @@ class ConversationStore:
                 f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
             )
         return record, existing, current_rev
+
+    def _persist_step_failure_unlocked(self, record: Dict[str, Any]) -> None:
+        """Durably record a failed/incomplete execution without advancing revision.
+
+        Adaptive evaluation requires inspecting last_failure_category after a tool
+        run that did not complete the step. Temporary auth is never stored.
+        """
+        conversation_id = record["conversation_id"]
+        record["updated_utc"] = _utc_now()
+        _atomic_write_json(self._conv_path(conversation_id), record)
+        self._upsert_index(record)
 
     def _persist_operator_mutation_unlocked(
         self,

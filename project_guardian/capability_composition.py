@@ -753,4 +753,456 @@ def recordable_outcome(
     }
 
 
+# --- Bounded adaptive step evaluation and replanning (host-controlled) ---
+
+OUTCOME_VERIFIED_SUCCESS = "verified_success"
+OUTCOME_TOOL_OK_INSUFFICIENT = "tool_ok_insufficient_evidence"
+OUTCOME_MISSING_INFORMATION = "missing_information"
+OUTCOME_AMBIGUOUS = "ambiguous_information"
+OUTCOME_CONFLICTING = "conflicting_evidence"
+OUTCOME_STALE_UPSTREAM = "stale_upstream"
+OUTCOME_UNAVAILABLE_CAPABILITY = "unavailable_capability"
+OUTCOME_AUTHORIZATION_REQUIRED = "authorization_required"
+OUTCOME_RECOVERABLE_FAILURE = "recoverable_failure"
+OUTCOME_TERMINAL_FAILURE = "terminal_failure"
+OUTCOME_NOT_EXECUTED = "not_executed"
+
+MAX_REPLAN_ATTEMPTS = 3
+MAX_REPLAN_ALTERNATIVES = 4
+
+_DETERMINISTIC_CAPS = frozenset(
+    {
+        "calculator.labor",
+        CAPABILITY_AGGREGATE,
+        CAPABILITY_EXTRACT,
+        CAPABILITY_EXTRACT_RECORDS,
+        CAPABILITY_ASSEMBLE,
+    }
+)
+_MODEL_ASSISTED_CAPS = frozenset(
+    {
+        "local.documents.search",
+        CAPABILITY_SYNTHESIZE,
+        CAPABILITY_DRAFT,
+    }
+)
+
+
+def capability_selection_metadata(capability: str) -> Dict[str, Any]:
+    """Known selection factors only; reliability stays unknown unless measured elsewhere."""
+    cap = str(capability or "")
+    known = {c["capability"] for c in list_composable_capabilities()}
+    available = cap in known
+    deterministic = cap in _DETERMINISTIC_CAPS
+    model_assisted = cap in _MODEL_ASSISTED_CAPS
+    return {
+        "capability": cap,
+        "available": available,
+        "authorization_required": True,
+        "data_locality": "local" if available else "unknown",
+        "privacy": "local_only" if available else "unknown",
+        "reliability": "unknown",
+        "estimated_cost": "unknown",
+        "estimated_latency": "lower_when_deterministic" if deterministic else "unknown",
+        "verification_potential": (
+            "high" if deterministic else ("medium" if model_assisted else "unknown")
+        ),
+        "prefers_deterministic": deterministic,
+        "model_assisted": model_assisted,
+    }
+
+
+def evaluate_step_outcome(
+    step: Mapping[str, Any],
+    *,
+    expected_outcome: Optional[str] = None,
+    available_capabilities: Optional[Sequence[Any]] = None,
+) -> Dict[str, Any]:
+    """Host evaluation of whether a step satisfies its objective (no model trust)."""
+    if not isinstance(step, Mapping):
+        raise CompositionError("step must be an object")
+    cap = step.get("capability")
+    available = _capability_name_set(available_capabilities or list_composable_capabilities())
+    if cap and available and cap not in available:
+        return {
+            "met": False,
+            "category": OUTCOME_UNAVAILABLE_CAPABILITY,
+            "reason": f"capability unavailable: {cap}",
+            "expected_outcome": (expected_outcome or "")[:400] or None,
+            "replanning_recommended": True,
+            "authorization_granted": False,
+        }
+
+    ref = step.get("result_reference") if isinstance(step.get("result_reference"), dict) else {}
+    if ref.get("stale") or step.get("last_failure_category") == "upstream_stale":
+        return {
+            "met": False,
+            "category": OUTCOME_STALE_UPSTREAM,
+            "reason": str(ref.get("stale_reason") or "upstream evidence is stale"),
+            "expected_outcome": (expected_outcome or "")[:400] or None,
+            "replanning_recommended": True,
+            "authorization_granted": False,
+        }
+
+    status = step.get("status")
+    verification = step.get("verification_status")
+    execution = step.get("execution_status")
+    failure = step.get("last_failure_category")
+
+    def _field_status_hits() -> Tuple[List[str], List[str]]:
+        fields = ref.get("fields") if isinstance(ref.get("fields"), dict) else None
+        records = ref.get("records") if isinstance(ref.get("records"), list) else None
+        conflict_hits: List[str] = []
+        ambiguous_hits: List[str] = []
+        if fields:
+            for fid, fval in fields.items():
+                if not isinstance(fval, dict):
+                    continue
+                st = fval.get("status")
+                if st == "conflicting":
+                    conflict_hits.append(str(fid))
+                elif st == "ambiguous":
+                    ambiguous_hits.append(str(fid))
+        if records:
+            for rec in records:
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("status") == "conflicting":
+                    conflict_hits.append(str(rec.get("record_id") or "record"))
+                elif rec.get("status") == "ambiguous":
+                    ambiguous_hits.append(str(rec.get("record_id") or "record"))
+                rec_fields = rec.get("fields") if isinstance(rec.get("fields"), dict) else {}
+                for fid, fval in rec_fields.items():
+                    if isinstance(fval, dict) and fval.get("status") == "conflicting":
+                        conflict_hits.append(f"{rec.get('record_id')}.{fid}")
+                    if isinstance(fval, dict) and fval.get("status") == "ambiguous":
+                        ambiguous_hits.append(f"{rec.get('record_id')}.{fid}")
+        return conflict_hits, ambiguous_hits
+
+    conflict_hits, ambiguous_hits = _field_status_hits()
+    if conflict_hits:
+        return {
+            "met": False,
+            "category": OUTCOME_CONFLICTING,
+            "reason": "conflicting observations retained: " + ", ".join(conflict_hits[:8]),
+            "expected_outcome": (expected_outcome or "")[:400] or None,
+            "replanning_recommended": True,
+            "authorization_granted": False,
+        }
+    if ambiguous_hits and not (status == "completed" and verification == "verified"):
+        return {
+            "met": False,
+            "category": OUTCOME_AMBIGUOUS,
+            "reason": "ambiguous fields remain: " + ", ".join(ambiguous_hits[:8]),
+            "expected_outcome": (expected_outcome or "")[:400] or None,
+            "replanning_recommended": True,
+            "authorization_granted": False,
+        }
+
+    if status == "completed" and verification == "verified":
+        if ambiguous_hits:
+            return {
+                "met": False,
+                "category": OUTCOME_AMBIGUOUS,
+                "reason": "ambiguous fields remain: " + ", ".join(ambiguous_hits[:8]),
+                "expected_outcome": (expected_outcome or "")[:400] or None,
+                "replanning_recommended": True,
+                "authorization_granted": False,
+            }
+        return {
+            "met": True,
+            "category": OUTCOME_VERIFIED_SUCCESS,
+            "reason": "step completed with host-verified result",
+            "expected_outcome": (expected_outcome or "")[:400] or None,
+            "replanning_recommended": False,
+            "authorization_granted": False,
+        }
+
+    if execution == "succeeded" and verification == "failed":
+        if failure == "evidence_criteria_unmet":
+            return {
+                "met": False,
+                "category": OUTCOME_TOOL_OK_INSUFFICIENT,
+                "reason": "tool succeeded but evidence criteria were unmet",
+                "expected_outcome": (expected_outcome or "")[:400] or None,
+                "replanning_recommended": True,
+                "authorization_granted": False,
+                "failure_category": failure,
+            }
+        if failure in {"incorrect_result", "invalid_arguments"}:
+            return {
+                "met": False,
+                "category": OUTCOME_RECOVERABLE_FAILURE,
+                "reason": f"host rejected intermediate result ({failure})",
+                "expected_outcome": (expected_outcome or "")[:400] or None,
+                "replanning_recommended": True,
+                "authorization_granted": False,
+                "failure_category": failure,
+            }
+        return {
+            "met": False,
+            "category": OUTCOME_TOOL_OK_INSUFFICIENT,
+            "reason": "tool operation succeeded without verified task evidence",
+            "expected_outcome": (expected_outcome or "")[:400] or None,
+            "replanning_recommended": True,
+            "authorization_granted": False,
+            "failure_category": failure,
+        }
+
+    if execution == "failed":
+        if failure == "tool_exception":
+            return {
+                "met": False,
+                "category": OUTCOME_RECOVERABLE_FAILURE,
+                "reason": "tool raised a recoverable exception",
+                "expected_outcome": (expected_outcome or "")[:400] or None,
+                "replanning_recommended": True,
+                "authorization_granted": False,
+                "failure_category": failure,
+            }
+        return {
+            "met": False,
+            "category": OUTCOME_TERMINAL_FAILURE
+            if failure in {"unauthorized", "policy_denied"}
+            else OUTCOME_RECOVERABLE_FAILURE,
+            "reason": f"execution failed ({failure or 'unknown'})",
+            "expected_outcome": (expected_outcome or "")[:400] or None,
+            "replanning_recommended": failure not in {"unauthorized", "policy_denied"},
+            "authorization_granted": False,
+            "failure_category": failure,
+        }
+
+    if execution in {None, "none"} and verification in {None, "none"}:
+        return {
+            "met": False,
+            "category": OUTCOME_NOT_EXECUTED,
+            "reason": "step has not been executed",
+            "expected_outcome": (expected_outcome or "")[:400] or None,
+            "replanning_recommended": False,
+            "authorization_granted": False,
+        }
+
+    return {
+        "met": False,
+        "category": OUTCOME_MISSING_INFORMATION,
+        "reason": "required verified evidence is not present",
+        "expected_outcome": (expected_outcome or "")[:400] or None,
+        "replanning_recommended": True,
+        "authorization_granted": False,
+    }
+
+
+def rank_replan_candidates(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    available_capabilities: Optional[Sequence[Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Order alternatives using known metadata only (no invented success rates)."""
+    available = _capability_name_set(available_capabilities or list_composable_capabilities())
+    ranked: List[Dict[str, Any]] = []
+    for raw in list(candidates)[:MAX_REPLAN_ALTERNATIVES]:
+        if not isinstance(raw, Mapping):
+            continue
+        cap = raw.get("capability")
+        if not isinstance(cap, str) or cap not in available:
+            continue
+        meta = capability_selection_metadata(cap)
+        score = 0
+        if meta["available"]:
+            score += 10
+        if meta["prefers_deterministic"]:
+            score += 5
+        if meta["verification_potential"] == "high":
+            score += 3
+        elif meta["verification_potential"] == "medium":
+            score += 1
+        # Penalize repeating the exact same capability+notes without change.
+        ranked.append(
+            {
+                "capability": cap,
+                "expected_outcome": str(raw.get("expected_outcome") or "")[:400],
+                "notes": str(raw.get("notes") or "")[:200],
+                "depends_on": [
+                    d
+                    for d in (raw.get("depends_on") or [])
+                    if isinstance(d, int) and d >= 0
+                ][:8],
+                "selection": meta,
+                "usefulness_score": score,
+                "reliability": "unknown",
+            }
+        )
+    ranked.sort(key=lambda c: (-int(c["usefulness_score"]), c["capability"]))
+    return ranked
+
+
+def compose_replan_prompt(
+    goal: str,
+    *,
+    evaluation: Mapping[str, Any],
+    verified_progress: Sequence[Mapping[str, Any]],
+    failed_attempt: Optional[Mapping[str, Any]] = None,
+    available_capabilities: Optional[Sequence[Any]] = None,
+    constraints: Optional[Sequence[str]] = None,
+    prior_attempt_summaries: Optional[Sequence[str]] = None,
+) -> str:
+    caps = list_composable_capabilities()
+    if available_capabilities:
+        allowed = _capability_name_set(available_capabilities)
+        caps = [c for c in caps if c["capability"] in allowed] or caps
+    catalog = "\n".join(f"- {c['capability']}: {c['role']}" for c in caps)
+    progress_lines = []
+    for link in list(verified_progress)[:8]:
+        if not isinstance(link, Mapping):
+            continue
+        progress_lines.append(
+            f"- verified {link.get('capability')}: "
+            f"{link.get('result_value') or link.get('source_reference') or 'ok'}"
+        )
+    progress_block = "\n".join(progress_lines) or "- (none yet)"
+    failed = failed_attempt if isinstance(failed_attempt, Mapping) else {}
+    prior = [
+        str(p)[:200]
+        for p in (prior_attempt_summaries or [])
+        if isinstance(p, str) and p.strip()
+    ][:MAX_REPLAN_ATTEMPTS]
+    constraint_lines = [
+        str(c)[:200] for c in (constraints or []) if str(c).strip()
+    ][:8]
+    return (
+        "The operator goal is unchanged. A prior authorized step did not satisfy the "
+        "objective. Propose a bounded alternative plan using only listed capabilities. "
+        "Do not change the goal, grant authorization, invent evidence, or claim "
+        "completion. Prefer deterministic local capabilities when they can fully "
+        "satisfy the need. Do not repeat the identical failing approach.\n"
+        f"Available capabilities:\n{catalog}\n\n"
+        f"Goal (immutable): {goal.strip()[:800]}\n"
+        f"Failure category: {evaluation.get('category')}\n"
+        f"Failure reason: {str(evaluation.get('reason') or '')[:400]}\n"
+        f"Failed capability: {failed.get('capability')}\n"
+        f"Failed step description: {str(failed.get('description') or '')[:300]}\n"
+        f"Verified progress:\n{progress_block}\n"
+        f"Prior replan attempts:\n"
+        + ("\n".join(f"- {p}" for p in prior) or "- (none)")
+        + "\n"
+        f"Operator constraints:\n"
+        + ("\n".join(f"- {c}" for c in constraint_lines) or "- (none)")
+        + "\n\n"
+        'Return JSON only: {"objective":"...","revision_reason":"...","steps":['
+        '{"capability":"...","expected_outcome":"...","depends_on":[],"notes":""}]}'
+    )
+
+
+def validate_replan_proposal(
+    proposal: Mapping[str, Any],
+    *,
+    original_objective: str,
+    available_capabilities: Sequence[Any],
+    evaluation: Mapping[str, Any],
+    prior_attempt_count: int = 0,
+    failed_capability: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Validate a model replan; preserve objective; grant no authority."""
+    if prior_attempt_count >= MAX_REPLAN_ATTEMPTS:
+        raise CompositionError(
+            f"replan attempt limit reached ({MAX_REPLAN_ATTEMPTS}); operator blocker required"
+        )
+    if not isinstance(evaluation, Mapping) or evaluation.get("met") is True:
+        raise CompositionError("replan requires a failed step evaluation")
+    if not evaluation.get("replanning_recommended", True):
+        raise CompositionError("evaluation does not recommend replanning")
+
+    # Objective must remain the original operator goal (model cannot redefine it).
+    forced = dict(proposal) if isinstance(proposal, Mapping) else {}
+    forced["objective"] = (original_objective or "").strip()[:800]
+    if not forced["objective"]:
+        raise CompositionError("original objective required for replan")
+
+    validated = validate_proposed_plan(forced, available_capabilities)
+    steps = list(validated["steps"])
+    if len(steps) > MAX_REPLAN_ALTERNATIVES + 2:
+        raise CompositionError("replan has too many steps")
+
+    # Reject blind identical single-step retry of the same failing capability.
+    if (
+        failed_capability
+        and len(steps) == 1
+        and steps[0]["capability"] == failed_capability
+        and not str(steps[0].get("notes") or "").strip()
+    ):
+        raise CompositionError(
+            "replan must not blindly retry the same failing capability without a changed approach"
+        )
+
+    revision_reason = ""
+    if isinstance(proposal, Mapping):
+        revision_reason = str(proposal.get("revision_reason") or "").strip()[:400]
+    if not revision_reason:
+        revision_reason = str(evaluation.get("reason") or "prior approach insufficient")[:400]
+
+    ranked = rank_replan_candidates(steps, available_capabilities=available_capabilities)
+    return {
+        "ok": True,
+        "objective": validated["objective"],
+        "steps": validated["steps"],
+        "revision_reason": revision_reason,
+        "failure_category": evaluation.get("category"),
+        "ranked_alternatives": ranked,
+        "selected_next_capability": (ranked[0]["capability"] if ranked else None),
+        "executable": False,
+        "authorization_inherited": False,
+        "authorization_granted": False,
+        "replan_attempt_index": int(prior_attempt_count) + 1,
+        "note": (
+            "Validated replan is not an execution grant. "
+            "Each new step still requires request-scoped authorization."
+        ),
+    }
+
+
+def map_validated_plan_to_outstanding_steps(
+    validated: Mapping[str, Any],
+) -> List[str]:
+    steps = validated.get("steps") if isinstance(validated, Mapping) else None
+    if not isinstance(steps, list) or not steps:
+        raise CompositionError("validated plan has no steps")
+    out: List[str] = []
+    for step in steps[:12]:
+        if not isinstance(step, Mapping):
+            continue
+        cap = step.get("capability")
+        outcome = step.get("expected_outcome")
+        if not isinstance(cap, str) or not isinstance(outcome, str):
+            continue
+        notes = str(step.get("notes") or "").strip()
+        desc = f"{cap}: {outcome.strip()}"
+        if notes:
+            desc = f"{desc} ({notes[:80]})"
+        out.append(desc[:400])
+    if not out:
+        raise CompositionError("validated plan produced no outstanding steps")
+    return out
+
+
+def sanitize_prompt_injection_claims(text: str) -> str:
+    """Strip common injection phrases from untrusted source/plan text for logs."""
+    cleaned = str(text or "")
+    banned = (
+        "authorization granted",
+        "enable cloud",
+        "ignore previous",
+        "you are now",
+        "mark task complete",
+        "bypass restriction",
+    )
+    lower = cleaned.lower()
+    for phrase in banned:
+        if phrase in lower:
+            cleaned = cleaned.replace(phrase, "[redacted-injection]")
+            cleaned = cleaned.replace(phrase.title(), "[redacted-injection]")
+            cleaned = cleaned.replace(phrase.upper(), "[redacted-injection]")
+            lower = cleaned.lower()
+    return cleaned[:800]
+
+
 EstimateWorkflowError = CompositionError  # compatibility alias

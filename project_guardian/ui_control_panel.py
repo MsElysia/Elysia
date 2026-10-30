@@ -4164,6 +4164,281 @@ class UIControlPanel:
                 ),
             })
 
+        @self.app.route('/api/composition/evaluate-step', methods=['POST'])
+        def api_composition_evaluate_step():
+            """Host evaluates whether a bound step satisfied its expected outcome."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden"}), 403
+            if not self._contained_startup_active():
+                return jsonify({"success": False, "error": "contained startup required"}), 400
+            data = request.get_json(silent=True) or {}
+            conversation_id = str(data.get("conversation_id") or "").strip()
+            step_id = str(data.get("step_id") or "").strip()
+            if not conversation_id or not step_id:
+                return jsonify({
+                    "success": False,
+                    "error": "conversation_id and step_id required",
+                }), 400
+            from project_guardian.conversation_continuity import ContinuityError
+
+            try:
+                store = self._conversation_store()
+                result = store.evaluate_bound_step(
+                    conversation_id,
+                    step_id=step_id,
+                    expected_outcome=(
+                        str(data["expected_outcome"]).strip()
+                        if isinstance(data.get("expected_outcome"), str)
+                        else None
+                    ),
+                )
+            except ContinuityError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 400
+            return jsonify({"success": True, **result})
+
+        @self.app.route('/api/composition/propose-replan', methods=['POST'])
+        def api_composition_propose_replan():
+            """Model proposes a bounded replan; host validates. No execution grant."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden"}), 403
+            if not self._contained_startup_active():
+                return jsonify({"success": False, "error": "contained startup required"}), 400
+            data = request.get_json(silent=True) or {}
+            conversation_id = str(data.get("conversation_id") or "").strip()
+            step_id = str(data.get("step_id") or "").strip()
+            if not conversation_id or not step_id:
+                return jsonify({
+                    "success": False,
+                    "error": "conversation_id and step_id required",
+                }), 400
+            from project_guardian.capability_composition import (
+                CompositionError,
+                collect_verified_links,
+                compose_replan_prompt,
+                list_composable_capabilities,
+                parse_model_plan_json,
+                sanitize_prompt_injection_claims,
+                validate_replan_proposal,
+            )
+            from project_guardian.conversation_continuity import ContinuityError
+            from project_guardian.local_memory_chat import (
+                LocalOllama,
+                configured_local_model_name,
+            )
+
+            try:
+                store = self._conversation_store()
+                evaluated = store.evaluate_bound_step(
+                    conversation_id,
+                    step_id=step_id,
+                    expected_outcome=(
+                        str(data["expected_outcome"]).strip()
+                        if isinstance(data.get("expected_outcome"), str)
+                        else None
+                    ),
+                )
+            except ContinuityError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 400
+
+            evaluation = evaluated.get("evaluation") or {}
+            if evaluation.get("met"):
+                return jsonify({
+                    "success": False,
+                    "error": "step_already_met",
+                    "evaluation": evaluation,
+                }), 400
+            if not evaluation.get("replanning_recommended", True):
+                return jsonify({
+                    "success": False,
+                    "error": "replanning_not_recommended",
+                    "evaluation": evaluation,
+                    "blocker": True,
+                }), 409
+
+            record = store.get(conversation_id)
+            steps = record.get("task_steps") or []
+            failed = next((s for s in steps if s.get("step_id") == step_id), {})
+            adaptive = (
+                record.get("adaptive_replan")
+                if isinstance(record.get("adaptive_replan"), dict)
+                else {}
+            )
+            capabilities = list_composable_capabilities()
+            # Optional restriction: caller may pass available_capabilities subset.
+            if isinstance(data.get("available_capabilities"), list):
+                allowed = {
+                    c for c in data["available_capabilities"] if isinstance(c, str)
+                }
+                if allowed:
+                    filtered = [
+                        c for c in capabilities if c.get("capability") in allowed
+                    ]
+                    if not filtered:
+                        return jsonify({
+                            "success": False,
+                            "error": "unavailable_capability",
+                            "detail": (
+                                "requested capabilities are unavailable in the "
+                                "authoritative registry"
+                            ),
+                            "requested": sorted(allowed),
+                            "evaluation": evaluation,
+                            "blocker": True,
+                            "authorization_granted": False,
+                        }), 409
+                    capabilities = filtered
+
+            model_name = configured_local_model_name()
+            if not model_name:
+                return jsonify({
+                    "success": False,
+                    "error": "local_model_not_configured",
+                }), 503
+
+            verified = collect_verified_links(
+                conversation_id,
+                steps,
+                checkpoint_revision=int(record.get("checkpoint_revision") or 0),
+            )
+            prior_summaries = [
+                str(h.get("revision_reason") or h.get("failure_category") or "")
+                for h in (adaptive.get("history") or [])
+                if isinstance(h, dict)
+            ]
+            prompt = compose_replan_prompt(
+                str(record.get("objective") or evaluated.get("objective") or ""),
+                evaluation=evaluation,
+                verified_progress=verified,
+                failed_attempt=failed if isinstance(failed, dict) else None,
+                available_capabilities=capabilities,
+                constraints=record.get("constraints") or [],
+                prior_attempt_summaries=prior_summaries,
+            )
+            # Reject prompt-injection attempts that try to self-authorize via goal text.
+            if "authorization granted" in prompt.lower() or "enable cloud" in prompt.lower():
+                prompt = sanitize_prompt_injection_claims(prompt)
+            try:
+                raw = LocalOllama(model_name).generate(
+                    [{"role": "user", "content": prompt}],
+                    json_mode=True,
+                )
+            except Exception as exc:
+                logger.error("Composition replan propose failed: %s", exc)
+                return jsonify({
+                    "success": False,
+                    "error": "model_generate_failed",
+                    "detail": str(exc)[:200],
+                    "evaluation": evaluation,
+                }), 503
+            proposed = parse_model_plan_json(raw)
+            if proposed is None:
+                return jsonify({
+                    "success": False,
+                    "error": "unparseable_plan",
+                    "raw_excerpt": (raw or "")[:400],
+                    "evaluation": evaluation,
+                    "note": "Model output is not trusted until validated.",
+                }), 422
+            # Ignore any model-claimed authority flags.
+            if isinstance(proposed, dict):
+                proposed.pop("executable", None)
+                proposed.pop("authorization_inherited", None)
+                proposed.pop("authorization_granted", None)
+            try:
+                validated = validate_replan_proposal(
+                    proposed,
+                    original_objective=str(
+                        record.get("objective") or evaluated.get("objective") or ""
+                    ),
+                    available_capabilities=capabilities,
+                    evaluation=evaluation,
+                    prior_attempt_count=int(adaptive.get("attempt_count") or 0),
+                    failed_capability=(
+                        failed.get("capability") if isinstance(failed, dict) else None
+                    ),
+                )
+            except CompositionError as exc:
+                return jsonify({
+                    "success": False,
+                    "error": "replan_validation_failed",
+                    "detail": str(exc),
+                    "proposed": proposed,
+                    "evaluation": evaluation,
+                    "note": "Model proposals are not trusted until validated.",
+                }), 422
+            return jsonify({
+                "success": True,
+                "conversation_id": conversation_id,
+                "step_id": step_id,
+                "evaluation": evaluation,
+                "proposed": proposed,
+                "validated": validated,
+                "authorization_granted": False,
+                "authorization_inherited": False,
+                "authorization_note": (
+                    "Validated replan is not an execution grant. "
+                    "Apply preserves progress; each new step still needs request auth."
+                ),
+            })
+
+        @self.app.route('/api/composition/apply-replan', methods=['POST'])
+        def api_composition_apply_replan():
+            """Persist a host-validated replan. Does not authorize tool execution."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden"}), 403
+            if not self._contained_startup_active():
+                return jsonify({"success": False, "error": "contained startup required"}), 400
+            data = request.get_json(silent=True) or {}
+            conversation_id = str(data.get("conversation_id") or "").strip()
+            if not conversation_id:
+                return jsonify({"success": False, "error": "conversation_id required"}), 400
+            if "expected_revision" not in data:
+                return jsonify({"success": False, "error": "expected_revision required"}), 400
+            try:
+                expected_revision = int(data.get("expected_revision"))
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "error": "expected_revision invalid"}), 400
+            validated = data.get("validated")
+            evaluation = data.get("evaluation")
+            if not isinstance(validated, dict) or not isinstance(evaluation, dict):
+                return jsonify({
+                    "success": False,
+                    "error": "validated and evaluation objects required",
+                }), 400
+            # Strip any client-supplied authority claims before apply.
+            validated = dict(validated)
+            validated["executable"] = False
+            validated["authorization_inherited"] = False
+            validated["authorization_granted"] = False
+            from project_guardian.conversation_continuity import (
+                ContinuityError,
+                StaleTaskEditError,
+            )
+
+            try:
+                store = self._conversation_store()
+                result = store.apply_validated_replan(
+                    conversation_id,
+                    expected_revision=expected_revision,
+                    validated_plan=validated,
+                    evaluation=evaluation,
+                    failed_step_id=(
+                        str(data["step_id"]).strip()
+                        if isinstance(data.get("step_id"), str)
+                        else None
+                    ),
+                )
+            except StaleTaskEditError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 409
+            except ContinuityError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 400
+            return jsonify({
+                "success": True,
+                "authorization_granted": False,
+                "authorization_inherited": False,
+                **result,
+            })
+
         @self.app.route('/api/conversations', methods=['GET', 'POST'])
         def api_conversations():
             """List or create durable conversations (contained disposable store only)."""

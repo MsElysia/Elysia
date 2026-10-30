@@ -1,0 +1,26 @@
+﻿{
+    "bundle_path":  "D:\\ElysiaBackups\\windows-intel-checkpoint-extract-records-20261030\\elysia-windows-extract-records-1a1af2e.bundle",
+    "bundle_sha256":  "3a8683401c26e623fe6a15f21764fe6e01554acee5834060e1ba283b5cc441fd",
+    "backup_volume":  {
+                          "label":  "ESD-USB",
+                          "drive":  "D:",
+                          "note":  "Separate USB volume from system C: drive"
+                      },
+    "bundle_bytes":  3861284,
+    "source_worktree":  "C:\\Users\\Owner\\Project guardian\\.worktrees\\windows-local-intel-20261029",
+    "independent_destination_available":  true,
+    "created_utc":  "2026-10-30T22:23:13Z",
+    "source_sha":  "1a1af2e4c00eab8f2a9b3c7d0c5eca3b80be118e",
+    "cloud_copy":  false,
+    "restore_test":  {
+                         "note":  "Clone used -b cursor/windows-extract-records-20261030 and one-shot git -c safe.directory=*",
+                         "key_blobs_match_source":  true,
+                         "directory":  "D:\\ElysiaBackups\\windows-intel-checkpoint-extract-records-20261030\\restore-verify",
+                         "key_files_intact":  true,
+                         "restored_sha":  "1a1af2e4c00eab8f2a9b3c7d0c5eca3b80be118e",
+                         "matches_source":  true
+                     },
+    "source_branch":  "cursor/windows-extract-records-20261030",
+    "prior_bundle_preserved":  "D:\\ElysiaBackups\\windows-intel-checkpoint-20261030\\elysia-windows-structured-field-extraction-de47c45.bundle",
+    "prior_source_sha":  "de47c45cc1e7cbedd1453d37d28aa2fce1738f85"
+}

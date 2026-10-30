@@ -229,11 +229,32 @@ def create_app(*, password: str, port: int, store: str = "pilot", runner=run_wor
             before = runner(store, command)
             if not before.get("ok"):
                 return error("memory_context_unavailable", 409)
-            result = converse_bundle(before["bundle"], body["query"], authorization, model,
-                                     g.pilot_session.get("recent", ()))
+
+            def source_text_for(source_id):
+                if type(source_id) is not str or not 1 <= len(source_id) <= 160:
+                    raise ChatBoundaryError("calculator requires a current retrieved rate source")
+                loaded = runner(store, {"operation": "source", "source_id": source_id})
+                if (not loaded.get("ok") or loaded.get("source_id") != source_id
+                        or type(loaded.get("source_text")) is not str
+                        or type(loaded.get("source_sha256")) is not str
+                        or type(loaded.get("revision")) is not int):
+                    raise ChatBoundaryError("calculator requires a current retrieved rate source")
+                return {"source_text": loaded["source_text"],
+                        "source_sha256": loaded["source_sha256"],
+                        "revision": loaded["revision"]}
+
+            failure = None
+            try:
+                result = converse_bundle(before["bundle"], body["query"], authorization, model,
+                                         g.pilot_session.get("recent", ()), source_text_for)
+            except ChatBoundaryError as exc:
+                failure = exc
             after = runner(store, command)
             if not after.get("ok") or after.get("bundle") != before["bundle"]:
+                g.pilot_session.pop("recent", None)
                 return error("memory_changed_response_discarded", 409)
+            if failure is not None:
+                raise failure
             g.pilot_session["recent"] = [
                 {"question": body["query"], "answer": result["answer"][:1200]}]
             return jsonify(result)

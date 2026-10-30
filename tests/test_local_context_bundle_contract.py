@@ -107,3 +107,87 @@ def test_payload_tamper_detected_even_when_schema_looks_valid():
     value["evidence"][0]["highlights"][0]["text"] = "Fictional labor rate is USD 99 per hour."
     with pytest.raises(ChatBoundaryError, match="digest mismatch"):
         validate_context_bundle(value, QUESTION)
+
+
+RATE_CENTS = "Fictional labor rate is USD 35.50 per hour."
+
+
+def proposal(source_id="fictional-source"):
+    return json.dumps({"tool": "calculator.labor", "arguments": {
+        "rate_source_id": source_id, "painters": 2, "days": 3, "hours_per_day": 8}})
+
+
+def source_reader(text, revision=2):
+    def read(source_id):
+        assert source_id == "fictional-source"
+        return {"source_text": text,
+                "source_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                "revision": revision}
+    return read
+
+
+def cents_bundle():
+    value = with_rate()
+    value["evidence"][0]["source_sha256"] = hashlib.sha256(RATE_CENTS.encode()).hexdigest()
+    value["evidence"][0]["highlights"][0]["text"] = "Fictional labor rate is USD 35. 50 per hour."
+    return sign(value)
+
+
+def test_split_highlight_still_calculates_from_hashed_source(monkeypatch):
+    model = LocalOllama("synthetic:local")
+    monkeypatch.setattr(model, "generate", lambda *a, **k: proposal())
+    result = converse_bundle(cents_bundle(), QUESTION, auth("calculator.execute"), model,
+                             source_text_for=source_reader(RATE_CENTS))
+    assert result["tools_executed"][0]["expression"] == "35.50 * 2 * 3 * 8"
+    assert result["tools_executed"][0]["result"] == "1704"
+    assert result["memory_written"] is False
+
+
+def test_calculator_without_source_reader_does_not_use_highlights(monkeypatch):
+    model = LocalOllama("synthetic:local")
+    monkeypatch.setattr(model, "generate", lambda *a, **k: proposal())
+    monkeypatch.setattr("elysia_offline.calculate_local", lambda expression: pytest.fail(expression))
+    with pytest.raises(ChatBoundaryError, match="current source bytes"):
+        converse_bundle(cents_bundle(), QUESTION, auth("calculator.execute"), model)
+
+
+@pytest.mark.parametrize("text", [
+    "Fictional labor rate is USD 0035 per hour.",
+    "Fictional labor rate is USD 08 per hour.",
+    "Fictional labor rate is USD 00.50 per hour.",
+])
+def test_noncanonical_rate_literal_never_reaches_arithmetic(text, monkeypatch):
+    value = with_rate()
+    value["evidence"][0]["source_sha256"] = hashlib.sha256(text.encode()).hexdigest()
+    value["evidence"][0]["highlights"][0]["text"] = text
+    model = LocalOllama("synthetic:local")
+    monkeypatch.setattr(model, "generate", lambda *a, **k: proposal())
+    monkeypatch.setattr("elysia_offline.calculate_local", lambda expression: pytest.fail(expression))
+    with pytest.raises(ChatBoundaryError, match="unambiguous USD hourly rate"):
+        converse_bundle(sign(value), QUESTION, auth("calculator.execute"), model,
+                        source_text_for=source_reader(text))
+
+
+def test_source_hash_or_revision_mismatch_refuses_calculation(monkeypatch):
+    model = LocalOllama("synthetic:local")
+    monkeypatch.setattr(model, "generate", lambda *a, **k: proposal())
+    monkeypatch.setattr("elysia_offline.calculate_local", lambda expression: pytest.fail(expression))
+    with pytest.raises(ChatBoundaryError, match="not the current source"):
+        converse_bundle(with_rate(), QUESTION, auth("calculator.execute"), model,
+                        source_text_for=source_reader("Fictional labor rate is USD 99 per hour."))
+    with pytest.raises(ChatBoundaryError, match="not the current source"):
+        converse_bundle(with_rate(), QUESTION, auth("calculator.execute"), model,
+                        source_text_for=source_reader(RATE, revision=1))
+
+
+def test_arithmetic_failure_stays_a_boundary_error(monkeypatch):
+    model = LocalOllama("synthetic:local")
+    monkeypatch.setattr(model, "generate", lambda *a, **k: proposal())
+
+    def refused(expression):
+        raise ValueError("invalid arithmetic")
+
+    monkeypatch.setattr("elysia_offline.calculate_local", refused)
+    with pytest.raises(ChatBoundaryError, match="calculator refused the expression"):
+        converse_bundle(with_rate(), QUESTION, auth("calculator.execute"), model,
+                        source_text_for=source_reader(RATE))

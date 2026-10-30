@@ -372,7 +372,24 @@ def capability_catalog(authorization):
     return catalog
 
 
-def converse_bundle(bundle, question, authorization, model, recent=()):
+def _current_source_text(source, source_text_for):
+    """Return source bytes whose hash and revision match this context item."""
+    if source_text_for is None:
+        raise ChatBoundaryError("calculator requires the current source bytes")
+    loaded = source_text_for(source["source_id"])
+    if type(loaded) is not dict or set(loaded) != {"source_text", "source_sha256", "revision"}:
+        raise ChatBoundaryError("calculator requires the current source bytes")
+    text = loaded["source_text"]
+    if (type(text) is not str or len(text.encode("utf-8")) > 4096
+            or type(loaded["revision"]) is not int or loaded["revision"] != source["revision"]
+            or type(loaded["source_sha256"]) is not str
+            or loaded["source_sha256"] != source["source_sha256"]
+            or hashlib.sha256(text.encode("utf-8")).hexdigest() != source["source_sha256"]):
+        raise ChatBoundaryError("calculator rate is not the current source")
+    return text
+
+
+def converse_bundle(bundle, question, authorization, model, recent=(), source_text_for=None):
     """Host supplies validated worker evidence and authorization, never model scope."""
     authorization.require("local.chat")
     authorization.require("memory.read")
@@ -422,14 +439,19 @@ def converse_bundle(bundle, question, authorization, model, recent=()):
         source = next((r for r in bundle["evidence"] if r["source_id"] == args["rate_source_id"]), None)
         if source is None:
             raise ChatBoundaryError("calculator requires a current retrieved rate source")
-        texts = " ".join(h["text"] for h in source["highlights"])
+        # Recall highlights split on "." so a stored "35.50" can be shown as
+        # "35. 50". Arithmetic uses the hashed source bytes, never that excerpt.
+        texts = _current_source_text(source, source_text_for)
         rates = re.findall(r"^Fictional labor rate is (?:USD\s*|\$)([0-9]{1,4}(?:\.[0-9]{1,2})?)\s*(?:per\s+hour|/\s*(?:hour|hr)|an?\s+hour)\.?$", texts, re.I)
-        if len(set(rates)) != 1:
+        if len(set(rates)) != 1 or re.fullmatch(r"(?:0|[1-9][0-9]{0,3})(?:\.[0-9]{1,2})?", rates[0]) is None:
             raise ChatBoundaryError("memory must establish one unambiguous USD hourly rate")
         from elysia_offline import calculate_local
         rate = rates[0]
         expression = f"{rate} * {args['painters']} * {args['days']} * {args['hours_per_day']}"
-        total = calculate_local(expression)
+        try:
+            total = calculate_local(expression)
+        except ValueError as exc:
+            raise ChatBoundaryError("calculator refused the expression") from exc
         executed = [{"name": name, "arguments": args, "expression": expression,
                      "result": total, "currency": "USD", "source_id": source["source_id"], "revision": source["revision"]}]
         answer = (f"Labor expense: USD {total}. Assumptions: {args['painters']} painters × "

@@ -200,11 +200,12 @@ class ConverseBundleTests(unittest.TestCase):
             }
         )
         with mock.patch.object(LocalOllama, "generate", return_value=proposal):
-            with self.assertRaises(ChatBoundaryError) as ctx:
-                converse_bundle(
-                    bundle, "estimate labor", _auth("local.chat", "memory.read"), model
-                )
-        self.assertIn("authorization", str(ctx.exception).casefold())
+            out = converse_bundle(
+                bundle, "estimate labor", _auth("local.chat", "memory.read"), model
+            )
+        self.assertEqual(out.get("tools_executed"), [])
+        self.assertFalse(out.get("calculation_verified"))
+        self.assertIn("not authorize", str(out.get("answer") or "").casefold())
 
     def test_authorized_calculator_executes_deterministically(self):
         bundle = {

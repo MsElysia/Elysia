@@ -558,7 +558,7 @@ def discover_capabilities(
         elif not authorized:
             reason = "Operator authorization required for this request"
         key = operational_key or cap_id
-        if cap_id == "tools.calculator.labor":
+        if cap_id in {"tools.calculator.labor", "tools.local.documents.search"}:
             op, last_v, last_f, rstatus = _apply_evidence(
                 cap_id,
                 installed=installed,
@@ -612,10 +612,16 @@ def discover_capabilities(
                 if tool_name == "calculator.labor" and available and not authorized
                 else "Ask a labor estimate with the calculator checkbox enabled"
                 if tool_name == "calculator.labor" and available and authorized
+                else "Select a folder, authorize documents.search, then ask a document question"
+                if tool_name == "local.documents.search" and available and not authorized
+                else "Ask a document question with folder + documents.search authorized"
+                if tool_name == "local.documents.search" and available and authorized
                 else "Do not expect this tool to run in the current pilot"
             ),
             model_selectable=True,
-            executable_binding=bool(available and tool_name == "calculator.labor"),
+            executable_binding=bool(
+                available and tool_name in {"calculator.labor", "local.documents.search"}
+            ),
             runtime_status=rstatus,
             last_failure_reason=last_f,
         )
@@ -625,6 +631,14 @@ def discover_capabilities(
             "calculator.labor",
             cap_id="tools.calculator.labor",
             label="Labor calculator",
+            per_request=True,
+        )
+    )
+    caps.append(
+        _tool_cap(
+            "local.documents.search",
+            cap_id="tools.local.documents.search",
+            label="Local document search",
             per_request=True,
         )
     )

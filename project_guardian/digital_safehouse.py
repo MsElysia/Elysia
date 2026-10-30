@@ -2,11 +2,15 @@
 # Digital Safehouse: Encrypted Backup System
 # Based on elysia 4 (Main Consolidation) designs
 
+from __future__ import annotations
+
+import io
 import logging
 import json
 import os
 import zipfile
 import shutil
+import tempfile
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from pathlib import Path
@@ -19,9 +23,9 @@ try:
     CRYPTO_AVAILABLE = True
 except ImportError:
     CRYPTO_AVAILABLE = False
-    logger.warning("cryptography library not available - encryption disabled")
 
 logger = logging.getLogger(__name__)
+MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
 
 
 class DigitalSafehouse:
@@ -75,7 +79,8 @@ class DigitalSafehouse:
                 logger.info(f"Loaded encryption key from {self.key_file}")
             except Exception as e:
                 logger.error(f"Error loading key: {e}")
-                self._generate_key()
+                # Do not overwrite an existing key that may open prior backups.
+                self.encryption_key = None
         else:
             self._generate_key()
     
@@ -126,182 +131,129 @@ class DigitalSafehouse:
                 self.backup_files.remove(filepath)
                 logger.info(f"Removed from backup list: {filepath}")
     
-    def create_backup(
-        self,
-        backup_name: Optional[str] = None,
-        files: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> Optional[str]:
-        """
-        Create an encrypted backup.
-        
-        Args:
-            backup_name: Optional custom backup name
-            files: Optional list of files to back up (defaults to backup_files)
-            metadata: Optional metadata to include
-            
-        Returns:
-            Path to backup file or None if failed
-        """
-        files_to_backup = files or self.backup_files
-        
-        if backup_name is None:
-            backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        backup_filename = f"{backup_name}.zip"
-        backup_path = self.safehouse_dir / backup_filename
-        
+    def create_backup(self, backup_name: Optional[str] = None, files: Optional[List[str]] = None,
+                      metadata: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """Encrypt in memory first; never publish or stage a plaintext backup ZIP."""
+        temp_path = None
         try:
-            # Create ZIP archive
-            with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                # Add files
-                for filepath in files_to_backup:
-                    file_path = Path(filepath)
-                    if file_path.exists():
-                        # Add file to archive (preserve relative paths)
-                        zipf.write(filepath, arcname=file_path.name)
-                        logger.debug(f"Added to backup: {filepath}")
-                    else:
-                        logger.warning(f"File not found, skipping: {filepath}")
-                
-                # Add metadata
-                if metadata:
-                    metadata_json = json.dumps(metadata, indent=2)
-                    zipf.writestr("_metadata.json", metadata_json)
-            
-            # Encrypt backup if encryption available
-            if CRYPTO_AVAILABLE and self.encryption_key:
-                encrypted_path = self.safehouse_dir / f"{backup_name}.encrypted"
-                fernet = self._get_fernet()
-                if fernet:
-                    with open(backup_path, 'rb') as f:
-                        data = f.read()
-                    
-                    encrypted_data = fernet.encrypt(data)
-                    
-                    with open(encrypted_path, 'wb') as f:
-                        f.write(encrypted_data)
-                    
-                    # Remove unencrypted backup
-                    backup_path.unlink()
-                    backup_path = encrypted_path
-                    
-                    logger.info(f"Created encrypted backup: {backup_path}")
-                else:
-                    logger.warning("Encryption failed, backup not encrypted")
-            else:
-                logger.info(f"Created backup: {backup_path}")
-            
-            return str(backup_path)
-            
-        except Exception as e:
-            logger.error(f"Error creating backup: {e}")
+            cipher = self._get_fernet()
+            if cipher is None:
+                logger.error("Backup refused: encryption is unavailable or key invalid")
+                return None
+            sources = self.backup_files if files is None else files
+            if not sources:
+                logger.error("Backup refused: no source files")
+                return None
+            if backup_name is None:
+                backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            if (not isinstance(backup_name, str) or not backup_name or
+                    any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in backup_name)):
+                logger.error("Backup refused: invalid name")
+                return None
+            entries, names, size = [], set(), 0
+            for source in sources:
+                path = Path(source)
+                if not path.is_file() or path.is_symlink() or path.name in names or path.name == "_metadata.json":
+                    logger.error("Backup refused: source absent, linked, or duplicate: %s", path)
+                    return None
+                names.add(path.name)
+                size += path.stat().st_size
+                if size > MAX_ARCHIVE_BYTES:
+                    logger.error("Backup refused: source size exceeds in-memory bound")
+                    return None
+                entries.append(path)
+            payload = io.BytesIO()
+            with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as zipf:
+                for path in entries:
+                    zipf.write(path, arcname=path.name)
+                if metadata is not None:
+                    zipf.writestr("_metadata.json", json.dumps(metadata, indent=2))
+            if payload.tell() > MAX_ARCHIVE_BYTES:
+                logger.error("Backup refused: ZIP size exceeds in-memory bound")
+                return None
+            encrypted = cipher.encrypt(payload.getvalue())
+            target = self.safehouse_dir / (backup_name + ".encrypted")
+            with tempfile.NamedTemporaryFile("wb", prefix=".encrypted-", suffix=".part",
+                                              dir=self.safehouse_dir, delete=False) as out:
+                temp_path = Path(out.name)
+                out.write(encrypted)
+            os.replace(temp_path, target)
+            temp_path = None
+            logger.info("Created encrypted backup: %s", target)
+            return str(target)
+        except Exception as exc:
+            logger.error("Encrypted backup failed: %s", exc)
             return None
-    
-    def restore_backup(
-        self,
-        backup_path: str,
-        restore_dir: str = ".",
-        overwrite: bool = False
-    ) -> bool:
-        """
-        Restore files from a backup.
-        
-        Args:
-            backup_path: Path to backup file
-            restore_dir: Directory to restore files to
-            overwrite: Whether to overwrite existing files
-            
-        Returns:
-            True if successful
-        """
-        backup_file = Path(backup_path)
-        if not backup_file.exists():
-            logger.error(f"Backup file not found: {backup_path}")
-            return False
-        
-        restore_path = Path(restore_dir)
-        restore_path.mkdir(parents=True, exist_ok=True)
-        
-        try:
-            # Decrypt if needed
-            temp_zip = None
-            if backup_file.suffix == '.encrypted' or backup_file.name.endswith('.encrypted'):
-                if not CRYPTO_AVAILABLE or not self.encryption_key:
-                    logger.error("Encrypted backup but encryption not available")
-                    return False
-                
-                fernet = self._get_fernet()
-                if not fernet:
-                    logger.error("Failed to initialize encryption")
-                    return False
-                
-                # Decrypt to temporary file
-                temp_zip = backup_file.with_suffix('.zip.tmp')
-                with open(backup_file, 'rb') as f:
-                    encrypted_data = f.read()
-                
+        finally:
+            if temp_path is not None:
                 try:
-                    decrypted_data = fernet.decrypt(encrypted_data)
-                except Exception as e:
-                    logger.error(f"Decryption failed: {e}")
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.error("Could not clean encrypted staging file")
+
+    def restore_backup(self, backup_path: str, restore_dir: str = ".",
+                       overwrite: bool = False) -> bool:
+        """Restore a bounded archive; no decrypted ZIP is stored on disk."""
+        try:
+            source = Path(backup_path)
+            if not source.is_file():
+                return False
+            if source.suffix == ".encrypted":
+                cipher = self._get_fernet()
+                if cipher is None or source.stat().st_size > 2 * MAX_ARCHIVE_BYTES:
                     return False
-                
-                with open(temp_zip, 'wb') as f:
-                    f.write(decrypted_data)
-                
-                zip_file = temp_zip
+                payload = io.BytesIO(cipher.decrypt(source.read_bytes()))
+            elif source.suffix == ".zip":
+                payload = source  # Read-only compatibility with old unencrypted backups.
             else:
-                zip_file = backup_file
-            
-            # Extract files
-            with zipfile.ZipFile(zip_file, 'r') as zipf:
-                # List files
-                file_list = zipf.namelist()
-                
-                for filename in file_list:
-                    if filename == '_metadata.json':
+                return False
+            destination = Path(restore_dir).resolve()
+            with zipfile.ZipFile(payload) as zipf:
+                members = [m for m in zipf.infolist() if m.filename != "_metadata.json"]
+                if not members or sum(m.file_size for m in members) > MAX_ARCHIVE_BYTES:
+                    return False
+                names = set()
+                for m in members:
+                    name = m.filename
+                    if (m.is_dir() or not name or name in {".", ".."} or
+                            "/" in name or "\\" in name or ":" in name or name in names):
+                        return False
+                    names.add(name)
+                    target = destination / name
+                    if target.resolve() != target or target.is_symlink():
+                        return False
+                if zipf.testzip() is not None:
+                    return False
+                destination.mkdir(parents=True, exist_ok=True)
+                for member in members:
+                    target = destination / member.filename
+                    if target.exists() and not overwrite:
+                        logger.info("Restore skipped existing file: %s", target)
                         continue
-                    
-                    # Extract file
-                    dest_path = restore_path / filename
-                    
-                    if dest_path.exists() and not overwrite:
-                        logger.warning(f"File exists, skipping: {dest_path}")
-                        continue
-                    
-                    # Ensure parent directory exists
-                    dest_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Extract
-                    with zipf.open(filename) as source:
-                        with open(dest_path, 'wb') as target:
-                            target.write(source.read())
-                    
-                    logger.info(f"Restored: {filename} -> {dest_path}")
-            
-            # Clean up temp file
-            if temp_zip and temp_zip.exists():
-                temp_zip.unlink()
-            
-            logger.info(f"Restore complete from: {backup_path}")
+                    staging = None
+                    try:
+                        with tempfile.NamedTemporaryFile("wb", prefix=".restore-", suffix=".part",
+                                                          dir=destination, delete=False) as out:
+                            staging = Path(out.name)
+                            with zipf.open(member) as archived:
+                                shutil.copyfileobj(archived, out)
+                        os.replace(staging, target)
+                        staging = None
+                    finally:
+                        if staging is not None:
+                            staging.unlink(missing_ok=True)
+            logger.info("Restore complete from: %s", source)
             return True
-            
-        except Exception as e:
-            logger.error(f"Error restoring backup: {e}")
-            
-            # Clean up temp file
-            if temp_zip and temp_zip.exists():
-                temp_zip.unlink()
-            
+        except Exception as exc:
+            logger.error("Restore failed: %s", exc)
             return False
-    
+
     def list_backups(self) -> List[Dict[str, Any]]:
         """List all available backups."""
         backups = []
         
         for backup_file in self.safehouse_dir.iterdir():
-            if backup_file.is_file():
+            if backup_file.is_file() and backup_file.suffix in {'.encrypted', '.zip'}:
                 # Check if encrypted or plain zip
                 is_encrypted = backup_file.suffix == '.encrypted' or backup_file.name.endswith('.encrypted')
                 
@@ -339,58 +291,33 @@ class DigitalSafehouse:
             return False
     
     def get_backup_metadata(self, backup_path: str) -> Optional[Dict[str, Any]]:
-        """Get metadata from a backup."""
-        backup_file = Path(backup_path)
-        if not backup_file.exists():
-            return None
-        
+        """Read metadata without creating decrypted temporary files."""
         try:
-            # Decrypt if needed
-            temp_zip = None
-            if backup_file.suffix == '.encrypted' or backup_file.name.endswith('.encrypted'):
-                if not CRYPTO_AVAILABLE or not self.encryption_key:
+            source = Path(backup_path)
+            if not source.is_file():
+                return None
+            if source.suffix == ".encrypted":
+                cipher = self._get_fernet()
+                if cipher is None or source.stat().st_size > 2 * MAX_ARCHIVE_BYTES:
                     return None
-                
-                fernet = self._get_fernet()
-                if not fernet:
-                    return None
-                
-                temp_zip = backup_file.with_suffix('.zip.tmp')
-                with open(backup_file, 'rb') as f:
-                    encrypted_data = f.read()
-                
-                decrypted_data = fernet.decrypt(encrypted_data)
-                with open(temp_zip, 'wb') as f:
-                    f.write(decrypted_data)
-                
-                zip_file = temp_zip
+                payload = io.BytesIO(cipher.decrypt(source.read_bytes()))
+            elif source.suffix == ".zip":
+                payload = source
             else:
-                zip_file = backup_file
-            
-            # Read metadata
-            with zipfile.ZipFile(zip_file, 'r') as zipf:
-                if '_metadata.json' in zipf.namelist():
-                    metadata_json = zipf.read('_metadata.json').decode('utf-8')
-                    metadata = json.loads(metadata_json)
-                    
-                    # Clean up
-                    if temp_zip and temp_zip.exists():
-                        temp_zip.unlink()
-                    
-                    return metadata
-            
-            # Clean up
-            if temp_zip and temp_zip.exists():
-                temp_zip.unlink()
-            
+                return None
+            with zipfile.ZipFile(payload) as zipf:
+                try:
+                    entry = zipf.getinfo("_metadata.json")
+                except KeyError:
+                    return None
+                if entry.file_size > 1024 * 1024:
+                    return None
+                value = json.loads(zipf.read(entry).decode("utf-8"))
+                return value if isinstance(value, dict) else None
+        except Exception as exc:
+            logger.error("Backup metadata failed: %s", exc)
             return None
-            
-        except Exception as e:
-            logger.error(f"Error reading backup metadata: {e}")
-            if temp_zip and temp_zip.exists():
-                temp_zip.unlink()
-            return None
-    
+
     def cleanup_old_backups(self, keep_count: int = 10):
         """
         Delete old backups, keeping only the most recent ones.

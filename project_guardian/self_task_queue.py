@@ -267,6 +267,15 @@ class SelfTaskQueue:
             t["value_reason"] = (value_reason or "")[:500]
         t["value_type"] = (value_type or "none")[:64]
         t["value_verified"] = vv
+        vstat = str(t.get("verification_status") or "").strip().lower()
+        if exec_stage and ex_out not in ("none", "", "readiness_only") and vstat != "verified":
+            vv = False
+            t["value_verified"] = False
+            if ex_out == "succeeded":
+                ex_out = "failed" if vstat in {"failed", "blocked"} else "partial"
+                t["execution_outcome"] = ex_out
+            if vstat in {"", "verified"}:
+                t["verification_status"] = "partial"
         cbv = True
         coc = (cycle_opportunity_cost or "low").strip().lower()
         if cycle_best_choice_verified is not None:
@@ -295,8 +304,24 @@ class SelfTaskQueue:
             succ_no_val[arch] = 0
         elif tier == "weak":
             t["status"] = "completed"
-            t["last_outcome"] = "weak_success"
-            if adv:
+            if exec_stage and ex_out == "succeeded" and vstat == "verified":
+                t["last_outcome"] = (
+                    "execution_succeeded_value" if vv else "execution_succeeded_no_value"
+                )
+                streak[arch] = 0
+                adv_not_ready[arch] = 0
+                self.adjust_archetype(arch, 0.03 if vv else 0.015)
+            elif exec_stage and ex_out == "readiness_only":
+                t["last_outcome"] = "execution_readiness_only"
+                self.adjust_archetype(arch, 0.01)
+            elif exec_stage and ex_out == "failed":
+                t["last_outcome"] = "execution_failed"
+                self.adjust_archetype(arch, -0.04)
+            elif exec_stage and ex_out == "partial":
+                t["last_outcome"] = "execution_partial_no_value"
+                self.adjust_archetype(arch, -0.02)
+            elif adv:
+                t["last_outcome"] = "weak_success"
                 streak[arch] = 0
                 if not op_ready:
                     adv_not_ready[arch] = int(adv_not_ready.get(arch, 0) or 0) + 1
@@ -308,6 +333,7 @@ class SelfTaskQueue:
                 else:
                     self.adjust_archetype(arch, (0.012 if useful else 0.008) - mild)
             else:
+                t["last_outcome"] = "weak_success"
                 n = int(streak.get(arch, 0) or 0) + 1
                 streak[arch] = n
                 adv_not_ready[arch] = 0

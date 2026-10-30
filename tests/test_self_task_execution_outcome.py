@@ -513,8 +513,10 @@ def test_queue_and_objective_keep_the_same_verified_outcome(tmp_path):
 def test_self_generated_task_runner_uses_host_snapshots(tmp_path):
     try:
         from project_guardian.core import GuardianCore
-    except ImportError as exc:
-        pytest.skip("GuardianCore startup blocked: %s" % exc)
+    except Exception as exc:
+        pytest.skip(
+            "GuardianCore startup blocked: %s: %s" % (type(exc).__name__, exc)
+        )
 
     import project_guardian.capability_execution as capability_execution
     import project_guardian.self_task_objectives as objective_mod

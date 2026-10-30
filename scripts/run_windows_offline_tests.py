@@ -22,6 +22,7 @@ TESTS = (
     "tests/test_canonical_windows_app.py",
     "tests/test_final_consolidation.py",
     "tests/test_main_based_boundary.py",
+    "tests/test_digital_safehouse_security.py",
     "project_guardian/tests/test_memory_intelligence_ingestion.py",
     "project_guardian/tests/test_chatgpt_apply_transaction.py",
     "project_guardian/tests/test_windows_apply_lock.py",

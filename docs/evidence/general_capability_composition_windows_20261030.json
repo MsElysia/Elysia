@@ -1,0 +1,80 @@
+{
+  "disposable_root": "elysia-compose-g7slykmc",
+  "port": 5078,
+  "model": "llama3.2:3b",
+  "scenarios": {
+    "plan_propose_event": {
+      "status": 200,
+      "success": true,
+      "validated_caps": [
+        "local.documents.search",
+        "estimate.assemble",
+        "estimate.draft",
+        "calculator.labor",
+        "compose.aggregate_usd",
+        "compose.synthesize"
+      ],
+      "executable": false,
+      "auth_note": "Validated plan is not an execution grant. Each step still requires request-scoped authorization."
+    },
+    "test_a_painting": {
+      "status": 200,
+      "subtotal": "2162.50",
+      "draft_has_banner": true,
+      "draft_has_subtotal": true,
+      "ollama": true,
+      "error": null
+    },
+    "test_b_event_budget": {
+      "status": 200,
+      "subtotal": "2050.00",
+      "preview": "DRAFT / NOT APPROVED FOR CUSTOMER DELIVERY\nHost-assembled grounded summary (model draft rejected).\n- venue-rental.md: verified amount USD 850.00\n- catering.md: verified amount USD 1200.00\n- venue: USD 850.00\n- catering: USD 1200.00\nVerified subtotal USD 2050.00\nMissing / not included: contingency, taxes, gratuity, insurance, overtime staffing",
+      "has_amounts": true,
+      "ollama": true,
+      "no_domain_module": true
+    },
+    "test_c_research": {
+      "status": 200,
+      "preview": "COMPARISON DRAFT / SOURCE-GROUNDED ONLY\nHost-assembled grounded summary (model draft rejected).\n- study-alpha.md: 1 verified match(es) in research-notes; top=study-alpha.md\n- study-beta.md: 1 verified match(es) in research-notes; top=study-beta.md\nSource reference: oak\nSource reference: pine",
+      "has_sources": true,
+      "ollama": true,
+      "no_domain_module": true
+    },
+    "test_d_trails": {
+      "status": 200,
+      "preview": "COMPARISON DRAFT / SOURCE-GROUNDED ONLY\nHost-assembled grounded summary (model draft rejected).\n- north-ridge.md: 1 verified match(es) in trail-guides; top=north-ridge.md\n- south-loop.md: 1 verified match(es) in trail-guides; top=south-loop.md\nSource reference: trekking poles\nSource reference: headlamp",
+      "verified": true,
+      "no_new_workflow_module": true,
+      "clarification_needed": false
+    },
+    "test_e_restart": {
+      "authorization_inherited": false,
+      "next": "No outstanding steps"
+    }
+  },
+  "security": {
+    "paint_assemble_unauthorized": {
+      "status": 403
+    },
+    "event_aggregate_unauthorized": {
+      "status": 403
+    },
+    "event_aggregate_duplicate": {
+      "status": 200,
+      "idempotent": true
+    },
+    "stale_revision": {
+      "status": 409,
+      "error": "stale task edit: expected revision 6, current is 9"
+    },
+    "post_restart_no_auth": {
+      "status": 400,
+      "error": "step is not pending"
+    },
+    "invented_upstream_rejected": {
+      "status": 400,
+      "error": "compose.aggregate_usd failed: upstream step not found: step_aaaaaaaaaaaa"
+    }
+  },
+  "ok": true
+}

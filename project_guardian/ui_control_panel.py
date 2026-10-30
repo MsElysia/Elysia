@@ -977,6 +977,14 @@ CONTROL_PANEL_TEMPLATE = """
                                         Authorize estimate.draft for the selected bound step (this request only)
                                     </label>
                                     <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-compose-aggregate">
+                                        Authorize compose.aggregate_usd for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-compose-synthesize">
+                                        Authorize compose.synthesize for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
                                         <input type="checkbox" id="authorize-step-record">
                                         Authorize recording the verified result as step completion (this request only)
                                     </label>
@@ -1997,11 +2005,15 @@ CONTROL_PANEL_TEMPLATE = """
                                 var boundDocs = step.capability === 'local.documents.search';
                                 var boundAssemble = step.capability === 'estimate.assemble';
                                 var boundDraft = step.capability === 'estimate.draft';
-                                var bound = boundLabor || boundDocs || boundAssemble || boundDraft;
+                                var boundComposeAgg = step.capability === 'compose.aggregate_usd';
+                                var boundComposeSyn = step.capability === 'compose.synthesize';
+                                var bound = boundLabor || boundDocs || boundAssemble || boundDraft || boundComposeAgg || boundComposeSyn;
                                 var capLabel = boundLabor ? '[calculator.labor]' :
                                     boundDocs ? '[local.documents.search]' :
                                     boundAssemble ? '[estimate.assemble]' :
-                                    boundDraft ? '[estimate.draft]' : '';
+                                    boundDraft ? '[estimate.draft]' :
+                                    boundComposeAgg ? '[compose.aggregate_usd]' :
+                                    boundComposeSyn ? '[compose.synthesize]' : '';
                                 html += '<div style="display: flex; gap: 8px; align-items: center; margin: 4px 0; flex-wrap: wrap;">';
                                 html += '<span style="flex: 1; min-width: 140px;">' +
                                     (done ? '✓ ' : '') +
@@ -2026,6 +2038,12 @@ CONTROL_PANEL_TEMPLATE = """
                                         html += '<button type="button" onclick="bindDraftStep(\\'' +
                                             window._escapeHtml(step.step_id || '') +
                                             '\\')">Bind draft</button>';
+                                        html += '<button type="button" onclick="bindComposeAggregateStep(\\'' +
+                                            window._escapeHtml(step.step_id || '') +
+                                            '\\')">Bind compose aggregate</button>';
+                                        html += '<button type="button" onclick="bindComposeSynthesizeStep(\\'' +
+                                            window._escapeHtml(step.step_id || '') +
+                                            '\\')">Bind compose synthesize</button>';
                                     } else {
                                         html += '<button type="button" onclick="executeBoundStep(\\'' +
                                             window._escapeHtml(step.step_id || '') +
@@ -2069,11 +2087,15 @@ CONTROL_PANEL_TEMPLATE = """
                     var docsAuth = document.getElementById('authorize-step-documents');
                     var assembleAuth = document.getElementById('authorize-step-assemble');
                     var draftAuth = document.getElementById('authorize-step-draft');
+                    var composeAggAuth = document.getElementById('authorize-step-compose-aggregate');
+                    var composeSynAuth = document.getElementById('authorize-step-compose-synthesize');
                     var recAuth = document.getElementById('authorize-step-record');
                     if (calcAuth) calcAuth.checked = false;
                     if (docsAuth) docsAuth.checked = false;
                     if (assembleAuth) assembleAuth.checked = false;
                     if (draftAuth) draftAuth.checked = false;
+                    if (composeAggAuth) composeAggAuth.checked = false;
+                    if (composeSynAuth) composeSynAuth.checked = false;
                     if (recAuth) recAuth.checked = false;
                     if (saveStatus) saveStatus.textContent = '';
                 })
@@ -2248,6 +2270,109 @@ CONTROL_PANEL_TEMPLATE = """
                 .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Bind failed: ' + err; });
         };
 
+        window.bindComposeAggregateStep = function(stepId) {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var saveStatus = document.getElementById('task-state-save-status');
+            var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
+            if (!id || !stepId) { if (saveStatus) saveStatus.textContent = 'No conversation or step.'; return; }
+            fetch('/api/conversations/' + encodeURIComponent(id) + '/task-state')
+                .then(function(r) { return r.json(); })
+                .then(function(state) {
+                    var steps = (state.task_steps || state.conversation && state.conversation.task_steps) || [];
+                    var sources = steps.filter(function(s) {
+                        return s.status === 'completed' && s.result_reference && s.result_reference.amount_usd;
+                    });
+                    if (sources.length < 1) {
+                        if (saveStatus) saveStatus.textContent = 'Need completed steps with verified amount_usd first.';
+                        return;
+                    }
+                    if (saveStatus) saveStatus.textContent = 'Binding compose.aggregate_usd...';
+                    return fetch('/api/conversations/' + encodeURIComponent(id) + '/task-steps/' + encodeURIComponent(stepId) + '/bind', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            expected_revision: expected,
+                            capability: 'compose.aggregate_usd',
+                            arguments: {
+                                source_step_ids: sources.map(function(s) { return s.step_id; }),
+                                component_labels: sources.map(function(s, i) { return 'item_' + (i + 1); })
+                            }
+                        })
+                    }).then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); });
+                })
+                .then(function(res) {
+                    if (!res) return;
+                    var data = res.data || {};
+                    if (!data.success || res.status >= 400) {
+                        if (saveStatus) saveStatus.textContent = 'Bind rejected: ' + (data.error || res.status);
+                        return;
+                    }
+                    if (saveStatus) saveStatus.textContent = 'Bound compose.aggregate_usd · r' + ((data.checkpoint || {}).revision || '?');
+                    window.loadTaskStatePanel(id);
+                })
+                .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Bind failed: ' + err; });
+        };
+
+        window.bindComposeSynthesizeStep = function(stepId) {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var saveStatus = document.getElementById('task-state-save-status');
+            var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
+            if (!id || !stepId) { if (saveStatus) saveStatus.textContent = 'No conversation or step.'; return; }
+            fetch('/api/conversations/' + encodeURIComponent(id) + '/task-state')
+                .then(function(r) { return r.json(); })
+                .then(function(state) {
+                    var steps = (state.task_steps || state.conversation && state.conversation.task_steps) || [];
+                    var evidence = steps.filter(function(s) {
+                        return s.status === 'completed' && (
+                            s.capability === 'local.documents.search' ||
+                            s.capability === 'compose.aggregate_usd' ||
+                            s.capability === 'estimate.assemble' ||
+                            s.capability === 'calculator.labor'
+                        );
+                    });
+                    if (!evidence.length) {
+                        if (saveStatus) saveStatus.textContent = 'Need completed evidence steps first.';
+                        return;
+                    }
+                    var agg = steps.find(function(s) {
+                        return s.status === 'completed' && (
+                            s.capability === 'compose.aggregate_usd' || s.capability === 'estimate.assemble'
+                        );
+                    });
+                    var args = {
+                        evidence_step_ids: evidence.filter(function(s) {
+                            return s.capability !== 'compose.aggregate_usd' && s.capability !== 'estimate.assemble';
+                        }).map(function(s) { return s.step_id; }),
+                        mode: 'summary'
+                    };
+                    if (!args.evidence_step_ids.length) {
+                        args.evidence_step_ids = evidence.map(function(s) { return s.step_id; });
+                    }
+                    if (agg) args.aggregate_step_id = agg.step_id;
+                    if (saveStatus) saveStatus.textContent = 'Binding compose.synthesize...';
+                    return fetch('/api/conversations/' + encodeURIComponent(id) + '/task-steps/' + encodeURIComponent(stepId) + '/bind', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            expected_revision: expected,
+                            capability: 'compose.synthesize',
+                            arguments: args
+                        })
+                    }).then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); });
+                })
+                .then(function(res) {
+                    if (!res) return;
+                    var data = res.data || {};
+                    if (!data.success || res.status >= 400) {
+                        if (saveStatus) saveStatus.textContent = 'Bind rejected: ' + (data.error || res.status);
+                        return;
+                    }
+                    if (saveStatus) saveStatus.textContent = 'Bound compose.synthesize · r' + ((data.checkpoint || {}).revision || '?');
+                    window.loadTaskStatePanel(id);
+                })
+                .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Bind failed: ' + err; });
+        };
+
         window.executeBoundStep = function(stepId) {
             var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
             var saveStatus = document.getElementById('task-state-save-status');
@@ -2256,10 +2381,12 @@ CONTROL_PANEL_TEMPLATE = """
             var authDocs = !!(document.getElementById('authorize-step-documents') || {}).checked;
             var authAssemble = !!(document.getElementById('authorize-step-assemble') || {}).checked;
             var authDraft = !!(document.getElementById('authorize-step-draft') || {}).checked;
+            var authComposeAgg = !!(document.getElementById('authorize-step-compose-aggregate') || {}).checked;
+            var authComposeSyn = !!(document.getElementById('authorize-step-compose-synthesize') || {}).checked;
             var authRec = !!(document.getElementById('authorize-step-record') || {}).checked;
             var docsFolder = ((document.getElementById('documents-search-folder') || {}).value || '').trim();
             if (!id || !stepId) { if (saveStatus) saveStatus.textContent = 'No conversation or step.'; return; }
-            if (!authRec || (!authCalc && !authDocs && !authAssemble && !authDraft)) {
+            if (!authRec || (!authCalc && !authDocs && !authAssemble && !authDraft && !authComposeAgg && !authComposeSyn)) {
                 if (saveStatus) saveStatus.textContent = 'Execution rejected: capability + completion authorizations are required.';
                 return;
             }
@@ -2277,6 +2404,8 @@ CONTROL_PANEL_TEMPLATE = """
                     authorize_documents_search: authDocs,
                     authorize_estimate_assemble: authAssemble,
                     authorize_estimate_draft: authDraft,
+                    authorize_compose_aggregate: authComposeAgg,
+                    authorize_compose_synthesize: authComposeSyn,
                     authorize_record_completion: true,
                     documents_folder: authDocs ? docsFolder : null
                 })
@@ -3940,6 +4069,81 @@ class UIControlPanel:
                 "folder_label": result.get("folder_label"),
             })
 
+        @self.app.route('/api/composition/propose', methods=['POST'])
+        def api_composition_propose():
+            """Model proposes a capability plan; trusted runtime validates against registry."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden"}), 403
+            if not self._contained_startup_active():
+                return jsonify({"success": False, "error": "contained startup required"}), 400
+            data = request.get_json(silent=True) or {}
+            goal = str(data.get("goal") or "").strip()
+            if not goal:
+                return jsonify({"success": False, "error": "goal required"}), 400
+            from project_guardian.capability_composition import (
+                CompositionError,
+                compose_plan_prompt,
+                list_composable_capabilities,
+                parse_model_plan_json,
+                validate_proposed_plan,
+            )
+            from project_guardian.local_memory_chat import (
+                LocalOllama,
+                configured_local_model_name,
+            )
+
+            capabilities = list_composable_capabilities()
+            model_name = configured_local_model_name()
+            if not model_name:
+                return jsonify({
+                    "success": False,
+                    "error": "local_model_not_configured",
+                }), 503
+            prompt = compose_plan_prompt(goal, capabilities)
+            try:
+                raw = LocalOllama(model_name).generate(
+                    [{"role": "user", "content": prompt}],
+                    json_mode=True,
+                )
+            except Exception as exc:
+                logger.error("Composition propose failed: %s", exc)
+                return jsonify({
+                    "success": False,
+                    "error": "model_generate_failed",
+                    "detail": str(exc)[:200],
+                }), 503
+            proposed = parse_model_plan_json(raw)
+            if proposed is None:
+                return jsonify({
+                    "success": False,
+                    "error": "unparseable_plan",
+                    "raw_excerpt": (raw or "")[:400],
+                    "note": "Model output is not trusted until validated.",
+                }), 422
+            try:
+                validated = validate_proposed_plan(proposed, capabilities)
+            except CompositionError as exc:
+                return jsonify({
+                    "success": False,
+                    "error": "plan_validation_failed",
+                    "detail": str(exc),
+                    "proposed": proposed,
+                    "note": "Model proposals are not trusted until validated.",
+                }), 422
+            return jsonify({
+                "success": True,
+                "goal": goal,
+                "proposed": proposed,
+                "validated": validated,
+                "capabilities_considered": [
+                    c.get("capability") for c in capabilities
+                ],
+                "authorization_note": (
+                    "Validated plan is not an execution grant. "
+                    "Each step still requires request-scoped authorization."
+                ),
+            })
+
         @self.app.route('/api/conversations', methods=['GET', 'POST'])
         def api_conversations():
             """List or create durable conversations (contained disposable store only)."""
@@ -4317,6 +4521,8 @@ class UIControlPanel:
             authorize_documents = data.get("authorize_documents_search") is True
             authorize_assemble = data.get("authorize_estimate_assemble") is True
             authorize_draft = data.get("authorize_estimate_draft") is True
+            authorize_compose_aggregate = data.get("authorize_compose_aggregate") is True
+            authorize_compose_synthesize = data.get("authorize_compose_synthesize") is True
             authorize_record = data.get("authorize_record_completion") is True
             documents_folder = data.get("documents_folder")
             if documents_folder is not None and not isinstance(documents_folder, str):
@@ -4347,7 +4553,7 @@ class UIControlPanel:
                     "error": "invalid execution_id",
                 }), 400
             draft_model = None
-            if authorize_draft:
+            if authorize_draft or authorize_compose_synthesize:
                 from project_guardian.local_memory_chat import (
                     LocalOllama,
                     configured_local_model_name,
@@ -4372,6 +4578,8 @@ class UIControlPanel:
                     authorize_documents_search=authorize_documents,
                     authorize_estimate_assemble=authorize_assemble,
                     authorize_estimate_draft=authorize_draft,
+                    authorize_compose_aggregate=authorize_compose_aggregate,
+                    authorize_compose_synthesize=authorize_compose_synthesize,
                     authorize_record_completion=authorize_record,
                     execution_id=execution_id,
                     documents_folder=documents_folder if authorize_documents else None,
@@ -4396,6 +4604,8 @@ class UIControlPanel:
                     "documents_search_authorized_this_request": authorize_documents,
                     "estimate_assemble_authorized_this_request": authorize_assemble,
                     "estimate_draft_authorized_this_request": authorize_draft,
+                    "compose_aggregate_authorized_this_request": authorize_compose_aggregate,
+                    "compose_synthesize_authorized_this_request": authorize_compose_synthesize,
                     "record_completion_authorized_this_request": authorize_record,
                 })
             except StaleTaskEditError as exc:

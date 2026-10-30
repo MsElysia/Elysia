@@ -60,6 +60,8 @@ SUPPORTED_STEP_CAPABILITIES = frozenset(
         "local.documents.search",
         "estimate.assemble",
         "estimate.draft",
+        "compose.aggregate_usd",
+        "compose.synthesize",
     }
 )
 
@@ -214,6 +216,117 @@ def _normalize_estimate_draft_arguments(raw: Any) -> Dict[str, Any]:
     return args
 
 
+def _normalize_step_id_list(raw: Any, *, field: str, min_n: int = 1, max_n: int = 12) -> List[str]:
+    if not isinstance(raw, list) or not min_n <= len(raw) <= max_n:
+        raise ContinuityError(f"{field} must be a list of {min_n}..{max_n} step ids")
+    out: List[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not re.fullmatch(r"step_[a-f0-9]{12}", item):
+            raise ContinuityError(f"invalid step id in {field}")
+        if item in out:
+            raise ContinuityError(f"duplicate step id in {field}")
+        out.append(item)
+    return out
+
+
+def _normalize_compose_aggregate_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("compose.aggregate_usd arguments must be an object")
+    for banned in ("authorization", "token", "credential", "folder", "amount_usd"):
+        if banned in raw:
+            raise ContinuityError(
+                f"{banned} cannot be stored in a durable compose.aggregate_usd binding"
+            )
+    source_step_ids = _normalize_step_id_list(raw.get("source_step_ids"), field="source_step_ids")
+    args: Dict[str, Any] = {"source_step_ids": source_step_ids}
+    labels = raw.get("component_labels")
+    if labels is not None:
+        if not isinstance(labels, list) or len(labels) != len(source_step_ids):
+            raise ContinuityError("component_labels must match source_step_ids length")
+        cleaned = []
+        for lab in labels:
+            if not isinstance(lab, str) or not lab.strip() or len(lab.strip()) > 40:
+                raise ContinuityError("invalid component label")
+            cleaned.append(lab.strip())
+        args["component_labels"] = cleaned
+    missing = raw.get("missing_categories")
+    if missing is not None:
+        if not isinstance(missing, list) or len(missing) > 12:
+            raise ContinuityError("missing_categories must be a short list")
+        args["missing_categories"] = [
+            str(m).strip()[:80] for m in missing if str(m).strip()
+        ][:12]
+    bundle_label = raw.get("bundle_label")
+    if bundle_label is not None:
+        if not isinstance(bundle_label, str) or not bundle_label.strip() or len(bundle_label) > 160:
+            raise ContinuityError("bundle_label invalid")
+        args["bundle_label"] = bundle_label.strip()
+    domain = raw.get("domain_template")
+    if domain is not None:
+        if not isinstance(domain, str) or domain not in {
+            "painting_estimate",
+            "event_budget",
+            "research_comparison",
+        }:
+            raise ContinuityError("unknown domain_template")
+        args["domain_template"] = domain
+    return args
+
+
+def _normalize_compose_synthesize_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("compose.synthesize arguments must be an object")
+    for banned in ("authorization", "token", "credential", "folder", "draft"):
+        if banned in raw:
+            raise ContinuityError(
+                f"{banned} cannot be stored in a durable compose.synthesize binding"
+            )
+    evidence_step_ids = _normalize_step_id_list(
+        raw.get("evidence_step_ids"), field="evidence_step_ids"
+    )
+    mode = raw.get("mode", "summary")
+    if mode not in {"summary", "comparison", "draft"}:
+        raise ContinuityError("mode must be summary, comparison, or draft")
+    args: Dict[str, Any] = {
+        "evidence_step_ids": evidence_step_ids,
+        "mode": mode,
+    }
+    aggregate_step_id = raw.get("aggregate_step_id")
+    if aggregate_step_id is not None:
+        if not isinstance(aggregate_step_id, str) or not re.fullmatch(
+            r"step_[a-f0-9]{12}", aggregate_step_id
+        ):
+            raise ContinuityError("invalid aggregate_step_id")
+        args["aggregate_step_id"] = aggregate_step_id
+    phrases = raw.get("required_phrases")
+    if phrases is not None:
+        if not isinstance(phrases, list) or len(phrases) > 12:
+            raise ContinuityError("required_phrases must be a short list")
+        args["required_phrases"] = [
+            str(p).strip()[:120] for p in phrases if str(p).strip()
+        ][:12]
+    banner = raw.get("banner")
+    if banner is not None:
+        if not isinstance(banner, str) or not banner.strip() or len(banner) > 120:
+            raise ContinuityError("banner invalid")
+        args["banner"] = banner.strip()
+    scope_notes = raw.get("scope_notes")
+    if scope_notes is not None:
+        if not isinstance(scope_notes, str) or len(scope_notes.strip()) > 400:
+            raise ContinuityError("scope_notes must be a short string")
+        args["scope_notes"] = scope_notes.strip()
+    domain = raw.get("domain_template")
+    if domain is not None:
+        if not isinstance(domain, str) or domain not in {
+            "painting_estimate",
+            "event_budget",
+            "research_comparison",
+        }:
+            raise ContinuityError("unknown domain_template")
+        args["domain_template"] = domain
+    return args
+
+
 def _normalize_step_capability_arguments(capability: str, raw: Any) -> Dict[str, Any]:
     if capability == "calculator.labor":
         return _normalize_labor_arguments(raw)
@@ -223,6 +336,10 @@ def _normalize_step_capability_arguments(capability: str, raw: Any) -> Dict[str,
         return _normalize_estimate_assemble_arguments(raw)
     if capability == "estimate.draft":
         return _normalize_estimate_draft_arguments(raw)
+    if capability == "compose.aggregate_usd":
+        return _normalize_compose_aggregate_arguments(raw)
+    if capability == "compose.synthesize":
+        return _normalize_compose_synthesize_arguments(raw)
     raise ContinuityError("unsupported step capability")
 
 
@@ -830,7 +947,7 @@ class ConversationStore:
         elif capability == "local.documents.search":
             expected_result_type = "document_evidence"
             verification_rule = "source_excerpt_reverify"
-        elif capability == "estimate.assemble":
+        elif capability in {"estimate.assemble", "compose.aggregate_usd"}:
             expected_result_type = "estimate_subtotal"
             verification_rule = "deterministic_decimal_sum"
         else:
@@ -911,12 +1028,14 @@ class ConversationStore:
         authorize_documents_search: bool = False,
         authorize_estimate_assemble: bool = False,
         authorize_estimate_draft: bool = False,
+        authorize_compose_aggregate: bool = False,
+        authorize_compose_synthesize: bool = False,
         authorize_record_completion: bool,
         execution_id: Optional[str] = None,
         documents_folder: Optional[str] = None,
         draft_model: Any = None,
     ) -> Dict[str, Any]:
-        """Execute a bound step (calculator/docs/assemble/draft), verify, and durably complete."""
+        """Execute a bound step (calculator/docs/compose/estimate), verify, and complete."""
         from project_guardian.local_memory_chat import calculate_local
         from project_guardian.local_documents_search import (
             DocumentSearchError,
@@ -925,18 +1044,29 @@ class ConversationStore:
             search_local_documents,
             verify_document_matches,
         )
-        from project_guardian.painting_estimate_workflow import (
+        from project_guardian.capability_composition import (
+            CAPABILITY_AGGREGATE,
             CAPABILITY_ASSEMBLE,
             CAPABILITY_DRAFT,
-            EstimateWorkflowError,
+            CAPABILITY_SYNTHESIZE,
+            DOMAIN_TEMPLATES,
+            CompositionError,
+            aggregate_usd_amounts,
             assemble_estimate_subtotal,
             build_draft_user_payload,
+            build_synthesize_payload,
             draft_system_prompt,
             extract_amount_usd_from_required,
+            host_grounded_summary_draft,
             parse_model_draft,
+            recordable_outcome,
             resolve_upstream_amount,
+            resolve_upstream_evidence,
+            synthesize_system_prompt,
             verify_draft_amounts,
+            verify_synthesize_output,
         )
+        EstimateWorkflowError = CompositionError
 
         if not authorize_record_completion:
             raise ContinuityError("recording completion not authorized for this request")
@@ -1394,31 +1524,64 @@ class ConversationStore:
                         {"role": "system", "content": draft_system_prompt()},
                         {"role": "user", "content": canonical(payload)},
                     ]
-                    raw_out = draft_model.generate(messages, json_mode=True)
-                    draft_text = parse_model_draft(raw_out)
+                    draft_check = None
                     try:
+                        raw_out = draft_model.generate(messages, json_mode=True)
+                        draft_text = parse_model_draft(raw_out)
                         draft_check = verify_draft_amounts(
                             draft_text,
                             materials_usd=str(material_usd),
                             labor_usd=str(labor_usd),
                             subtotal_usd=str(subtotal_usd),
                         )
-                    except EstimateWorkflowError:
-                        # One constrained retry; model must keep verified figures.
-                        retry_messages = messages + [
-                            {"role": "assistant", "content": raw_out},
-                            {
-                                "role": "user",
-                                "content": (
-                                    "Rejected: keep the banner and include these exact amounts "
-                                    f"with no other totals over 100: materials={material_usd}, "
-                                    f"labor={labor_usd}, subtotal={subtotal_usd}. "
-                                    'Return JSON {"draft":"..."} only.'
-                                ),
+                    except Exception:
+                        try:
+                            retry_messages = messages + [
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "Rejected: keep the banner and include these exact amounts "
+                                        f"with no other totals over 100: materials={material_usd}, "
+                                        f"labor={labor_usd}, subtotal={subtotal_usd}. "
+                                        'Return JSON {"draft":"..."} only.'
+                                    ),
+                                },
+                            ]
+                            raw_out = draft_model.generate(retry_messages, json_mode=True)
+                            draft_text = parse_model_draft(raw_out)
+                            draft_check = verify_draft_amounts(
+                                draft_text,
+                                materials_usd=str(material_usd),
+                                labor_usd=str(labor_usd),
+                                subtotal_usd=str(subtotal_usd),
+                            )
+                        except Exception:
+                            draft_check = None
+                    if draft_check is None:
+                        draft_text = host_grounded_summary_draft(
+                            banner="DRAFT / NOT APPROVED FOR CUSTOMER DELIVERY",
+                            evidence=[
+                                {
+                                    "top_relative_path": "materials",
+                                    "amount_usd": str(material_usd),
+                                },
+                                {
+                                    "top_relative_path": "labor",
+                                    "amount_usd": str(labor_usd),
+                                },
+                            ],
+                            aggregated={
+                                "components": {
+                                    "materials": str(material_usd),
+                                    "labor": str(labor_usd),
+                                },
+                                "subtotal_usd": str(subtotal_usd),
+                                "missing_cost_categories": assembled_view.get(
+                                    "missing_cost_categories"
+                                )
+                                or [],
                             },
-                        ]
-                        raw_out = draft_model.generate(retry_messages, json_mode=True)
-                        draft_text = parse_model_draft(raw_out)
+                        )
                         draft_check = verify_draft_amounts(
                             draft_text,
                             materials_usd=str(material_usd),
@@ -1493,6 +1656,323 @@ class ConversationStore:
                     "banner": "DRAFT / NOT APPROVED FOR CUSTOMER DELIVERY",
                     "approved": False,
                     "updated_utc": now,
+                }
+            elif capability == CAPABILITY_AGGREGATE:
+                if not authorize_compose_aggregate:
+                    raise ContinuityError(
+                        "compose.aggregate_usd not authorized for this request"
+                    )
+                try:
+                    args = _normalize_compose_aggregate_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                tmpl = DOMAIN_TEMPLATES.get(args.get("domain_template") or "", {})
+                labels = args.get("component_labels") or [
+                    f"item_{i + 1}" for i in range(len(args["source_step_ids"]))
+                ]
+                try:
+                    components = []
+                    for sid, label in zip(args["source_step_ids"], labels):
+                        amount, link = resolve_upstream_amount(steps, sid)
+                        components.append({**link, "amount_usd": amount, "label": label})
+                    assembled = aggregate_usd_amounts(
+                        components=components,
+                        bundle_label=str(
+                            args.get("bundle_label")
+                            or tmpl.get("bundle_label")
+                            or "verified amount subtotal"
+                        ),
+                        missing_categories=args.get("missing_categories")
+                        or list(tmpl.get("missing_categories") or []),
+                        capability=CAPABILITY_AGGREGATE,
+                    )
+                except CompositionError as exc:
+                    raise ContinuityError(f"compose.aggregate_usd failed: {exc}") from exc
+                from decimal import Decimal as _Decimal
+
+                expected_sum = sum(
+                    (_Decimal(c["amount_usd"]) for c in components), _Decimal("0.00")
+                ).quantize(_Decimal("0.01"))
+                if assembled["subtotal_usd"] != format(expected_sum, "f"):
+                    raise ContinuityError(
+                        "aggregate subtotal failed independent verification"
+                    )
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": CAPABILITY_AGGREGATE,
+                    "verified": True,
+                    "components": assembled["components"],
+                    "subtotal_usd": assembled["subtotal_usd"],
+                    "label": assembled["label"],
+                    "missing_cost_categories": assembled["missing_cost_categories"],
+                    "inputs": assembled["inputs"],
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "deterministic_decimal_sum",
+                    "outcome": recordable_outcome(
+                        capability=CAPABILITY_AGGREGATE,
+                        task_class=str(args.get("domain_template") or "compose"),
+                        success=True,
+                    ),
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": assembled["subtotal_usd"],
+                    "amount_usd": assembled["subtotal_usd"],
+                    "result_type": "aggregate_subtotal_usd",
+                    "currency": "USD",
+                    "components": assembled["components"],
+                    "missing_cost_categories": assembled["missing_cost_categories"],
+                    "inputs": assembled["inputs"],
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": assembled["subtotal_usd"],
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "compose.aggregate_usd verified but completion was not durably recorded"
+                )
+                record["estimate_bundle"] = {
+                    "schema": "elysia.compose-bundle.v1",
+                    "subtotal_usd": assembled["subtotal_usd"],
+                    "components": assembled["components"],
+                    "missing_cost_categories": assembled["missing_cost_categories"],
+                    "inputs": assembled["inputs"],
+                    "execution_id": execution_id,
+                    "updated_utc": now,
+                    "approved": False,
+                    "capability": CAPABILITY_AGGREGATE,
+                }
+            elif capability == CAPABILITY_SYNTHESIZE:
+                if not authorize_compose_synthesize:
+                    raise ContinuityError(
+                        "compose.synthesize not authorized for this request"
+                    )
+                if draft_model is None:
+                    raise ContinuityError(
+                        "local draft model is required for compose.synthesize"
+                    )
+                try:
+                    args = _normalize_compose_synthesize_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                tmpl = DOMAIN_TEMPLATES.get(args.get("domain_template") or "", {})
+                banner = str(
+                    args.get("banner") or tmpl.get("banner") or "DRAFT / NOT APPROVED FOR CUSTOMER DELIVERY"
+                )
+                mode = str(args.get("mode") or tmpl.get("draft_mode") or "summary")
+                try:
+                    evidence = [
+                        resolve_upstream_evidence(steps, sid)
+                        for sid in args["evidence_step_ids"]
+                    ]
+                except CompositionError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                aggregated = None
+                required_amounts: List[str] = []
+                if args.get("aggregate_step_id"):
+                    agg_step = next(
+                        (
+                            s
+                            for s in steps
+                            if s.get("step_id") == args["aggregate_step_id"]
+                        ),
+                        None,
+                    )
+                    if agg_step is None:
+                        raise ContinuityError("aggregate_step_id not found")
+                    if agg_step.get("status") != "completed":
+                        raise ContinuityError("aggregate step is not completed")
+                    if agg_step.get("verification_status") != "verified":
+                        raise ContinuityError("aggregate step is not verified")
+                    if agg_step.get("capability") not in {
+                        CAPABILITY_AGGREGATE,
+                        CAPABILITY_ASSEMBLE,
+                    }:
+                        raise ContinuityError(
+                            "aggregate_step_id must be compose.aggregate_usd or estimate.assemble"
+                        )
+                    agg_ref = (
+                        agg_step.get("result_reference")
+                        if isinstance(agg_step.get("result_reference"), dict)
+                        else {}
+                    )
+                    if agg_ref.get("stale"):
+                        raise ContinuityError("aggregate result is stale")
+                    aggregated = {
+                        "components": agg_ref.get("components"),
+                        "subtotal_usd": agg_ref.get("amount_usd") or agg_ref.get("result"),
+                        "label": "verified aggregate",
+                        "missing_cost_categories": agg_ref.get("missing_cost_categories")
+                        or [],
+                        "inputs": agg_ref.get("inputs") or {},
+                    }
+                    if aggregated.get("subtotal_usd"):
+                        required_amounts.append(str(aggregated["subtotal_usd"]))
+                    for val in (aggregated.get("components") or {}).values():
+                        required_amounts.append(str(val))
+                for ev in evidence:
+                    if ev.get("amount_usd"):
+                        required_amounts.append(str(ev["amount_usd"]))
+                payload = build_synthesize_payload(
+                    objective=str(record.get("objective") or ""),
+                    evidence=evidence,
+                    aggregated=aggregated,
+                    mode=mode,
+                    banner=banner,
+                    scope_notes=str(args.get("scope_notes") or ""),
+                )
+                try:
+                    from project_guardian.local_memory_chat import canonical
+
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": synthesize_system_prompt(
+                                mode=mode,
+                                banner=banner,
+                                required_amounts=required_amounts,
+                            ),
+                        },
+                        {"role": "user", "content": canonical(payload)},
+                    ]
+                    phrases = args.get("required_phrases") or []
+                    draft_text = None
+                    draft_check = None
+                    try:
+                        raw_out = draft_model.generate(messages, json_mode=True)
+                        draft_text = parse_model_draft(raw_out)
+                        draft_check = verify_synthesize_output(
+                            draft_text,
+                            banner=banner,
+                            required_amounts=required_amounts,
+                            required_phrases=phrases,
+                        )
+                    except Exception:
+                        try:
+                            retry_messages = messages + (
+                                [
+                                    {"role": "assistant", "content": raw_out},
+                                    {
+                                        "role": "user",
+                                        "content": (
+                                            "Rejected: keep the exact banner, include required "
+                                            f"source phrases {phrases}, and include these exact "
+                                            f"amounts with no other totals over 100: "
+                                            f"{required_amounts}. "
+                                            'Return JSON {"draft":"..."} only.'
+                                        ),
+                                    },
+                                ]
+                                if "raw_out" in locals()
+                                else [
+                                    {
+                                        "role": "user",
+                                        "content": (
+                                            "Retry once. Keep the banner and use only verified "
+                                            f"amounts {required_amounts} and phrases {phrases}. "
+                                            'Return JSON {"draft":"..."} only.'
+                                        ),
+                                    }
+                                ]
+                            )
+                            raw_out = draft_model.generate(retry_messages, json_mode=True)
+                            draft_text = parse_model_draft(raw_out)
+                            draft_check = verify_synthesize_output(
+                                draft_text,
+                                banner=banner,
+                                required_amounts=required_amounts,
+                                required_phrases=phrases,
+                            )
+                        except Exception:
+                            draft_text = None
+                            draft_check = None
+                    if draft_check is None:
+                        # Host-grounded fallback: verified evidence only, no invented totals.
+                        draft_text = host_grounded_summary_draft(
+                            banner=banner,
+                            evidence=evidence,
+                            aggregated=aggregated,
+                            required_phrases=phrases,
+                        )
+                        try:
+                            draft_check = verify_synthesize_output(
+                                draft_text,
+                                banner=banner,
+                                required_amounts=required_amounts,
+                                required_phrases=phrases,
+                            )
+                        except CompositionError as exc:
+                            raise ContinuityError(
+                                f"compose.synthesize rejected: {exc}"
+                            ) from exc
+                except ContinuityError:
+                    raise
+                except CompositionError as exc:
+                    raise ContinuityError(f"compose.synthesize rejected: {exc}") from exc
+                except Exception as exc:
+                    raise ContinuityError(
+                        f"compose.synthesize generation failed: {exc}"
+                    ) from exc
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": CAPABILITY_SYNTHESIZE,
+                    "verified": True,
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "char_count": draft_check["char_count"],
+                    "mode": mode,
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "synthesize_postcheck",
+                    "outcome": recordable_outcome(
+                        capability=CAPABILITY_SYNTHESIZE,
+                        task_class=str(args.get("domain_template") or mode or "compose"),
+                        success=True,
+                    ),
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": "synthesize_verified",
+                    "result_type": "composed_synthesis",
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "mode": mode,
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": "synthesize_verified",
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "compose.synthesize verified but completion was not durably recorded"
+                )
+                record["estimate_draft"] = {
+                    "schema": "elysia.compose-synthesis.v1",
+                    "text": draft_text,
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "execution_id": execution_id,
+                    "mode": mode,
+                    "banner": banner,
+                    "approved": False,
+                    "updated_utc": now,
+                    "capability": CAPABILITY_SYNTHESIZE,
                 }
             else:
                 raise ContinuityError("unsupported bound capability")
@@ -1682,7 +2162,7 @@ class ConversationStore:
                 if step["step_id"] == step_id:
                     steps[idx] = target
                     break
-            from project_guardian.painting_estimate_workflow import (
+            from project_guardian.capability_composition import (
                 mark_dependent_steps_stale,
             )
 

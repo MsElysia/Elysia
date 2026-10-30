@@ -39,6 +39,7 @@ TESTS = (
 CHAT_TESTS = (
     "tests/test_local_memory_chat.py",
     "tests/test_local_chat_integration.py",
+    "tests/test_local_context_bundle_contract.py",
     "tests/test_synthetic_memory_path_alias.py",
     "tests/test_windows_local_chat_runner.py",
 )

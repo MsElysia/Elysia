@@ -3577,3 +3577,39 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — chat answer status (2026-10-30)
+
+**Status:** COMPLETE on this branch. Not integrated to `main`.
+
+**Lane:** Product workflow. Unclaimed. `CONTROL.md` `CURRENT_TASK` remains `NONE`. Reconciliation queue `TASKS/TASK-0053.md` on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72cf397de2a5ef8d9a0bcaccd86462b0e577`) stays OPEN review-only. Do not merge `elysia-local-reconciliation-20260909-1657`. Codex Campaign 41 tip remains `3223ebbadd6e835870a87fdca2008eec65c969d8` on `origin/codex/limited-live-activation-wrapper`. This run did not implement live memory or vector writes.
+
+**Why this gap:** The `/api/events` limit fix is on `origin/cursor/elysia-product-workflow-process-85af` (`4b75d4a`, handoff `f4eae95`) and was not copied. The implement HTTP-status fix is on `origin/cursor/elysia-product-workflow-process-9429` (`695663e`, handoff `a73309a`) and was not copied. The WebScout research-status fix is on `origin/cursor/elysia-product-workflow-process-e025` (`f97f345`, handoff `19e4c58`) and was not copied. Before this change, a live `POST /api/chat` for fictional message `fictional-ping`, with an architect object attached, returned HTTP 200 `{"context":"general","response":"Echo: fictional-ping"}` and emitted a chat event. `route_command` and `chat` on that object were not called.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c` (`main`). No other branch dependency. Not based on the events-limit, implement-status, or research-status branches.
+
+**Ownership checked:** Did not edit files owned by today's sibling lanes. Memory workflow `bc-3121aeee-e82e-470c-bf78-4d4f0341fd73` is `9729ef360b9612b98b062e2eef2ceead0323ba5d` on `origin/cursor/bc-3121aeee-e82e-470c-bf78-4d4f0341fd73-0474` (`project_guardian/memory_snapshot.py`, `tests/test_memory_snapshot_restore.py`). Runtime integrity `bc-4ea8f4b4-7935-432b-af3c-14fbd7f9890c` is `9aab2388a2160f556579a6af1e5efddd218ac216` on `origin/cursor/elysia-runtime-integrity-1dce` (`elysia/core/proposal_system.py`, `tests/test_elysia_proposal_path_confinement.py`). Left dashboard drafts #147–#149 and #153–#160, chat-failure PR #161 (`elysia.py` only), Windows drafts #163–#164, and ChatGPT drafts #165–#167 alone. Open issues #150 and #152 remain non-implementation backlogs. #139 remains the Windows vertical slice.
+
+**Acceptance:**
+- A general `POST /api/chat` for fictional message `fictional-ping` returns HTTP 501 JSON `answered: false`, `status: not_answered`, `error: Chat is not connected to a runtime`
+- The body does not echo the message. No `api`/`chat` event is recorded. Methods on an attached architect object are not called
+- The same post with `context: general` has the same 501 result
+- `context: proposal:fictional-chat-proposal`, against a real `ProposalSystem` whose metadata is the fictional proposal `Fictional lattice note` / status `proposal`, returns HTTP 200 `answered: true`, `status: answered`, and `response: Proposal 'Fictional lattice note' status: proposal`, and records one chat event
+- A missing proposal id in that context returns HTTP 404. An empty `proposal:` context returns HTTP 400. With no proposal system, that context returns HTTP 503
+- A missing, blank, or non-string message returns HTTP 400 `message is required`. A non-string context returns HTTP 400. A JSON array body returns HTTP 400 `request body must be a JSON object`
+- `elysia.shell.send_chat` against the live server prints `[error] HTTP 501: Chat is not connected to a runtime` for a general message, and prints the proposal status line for the fictional proposal context
+- The contract holds through Flask's test client and through a live Werkzeug HTTP server on 127.0.0.1
+
+**Command:** `python3 -m pytest tests/test_runtime_api_chat.py -v --tb=short` — 5 passed.
+
+**Live HTTP after the change:** general `501 {"answered":false,"error":"Chat is not connected to a runtime","status":"not_answered"}`; proposal context `200 {"answered":true,"context":"proposal:fictional-chat-proposal","response":"Proposal 'Fictional lattice note' status: proposal","status":"answered"}`. Architect call count stayed 0. Only the proposal read emitted a chat event.
+
+**Files:** `elysia/api/server.py`, `elysia/shell.py`, `tests/test_runtime_api_chat.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`.
+
+**Remaining limitations:** General chat still has no runtime. `ArchitectCore` has `route_command` and no chat method; this route does not call it and does not invent a reply. The interactive shell command `chat <message>` sends no proposal context, so it now prints the 501 error. Proposal lookup still only reports title and status. `GET /api/events` limit handling, implement HTTP status, and WebScout queue status remain only on their earlier product branches, not on this one. Approval metadata persistence stays in `elysia/core/proposal_system.py`, which the runtime-integrity lane edited today. This does not change memory, governance, CI, or deployment settings. A branch commit is not integrated product readiness.
+
+**Next action:** Leave `TASK-0053` unmerged. Do not repeat the events-limit fix, the implement-status fix, the research-status fix, or this chat-status fix from `main`. A later product run can pick a different unclaimed API or dashboard error path. Do not wire chat to a paid model from this lane.
+
+**Commit:** `715e51c6a5aa339ca7eb407acb68db491d309c65` on `cursor/product-workflow-engineering-process-afb7`. Base `722d8e4fe85d7e42ac34066c2d651849d15e734c`.

@@ -26,17 +26,24 @@ class SyntheticLearningStore:
     MAX_REVISIONS = 7
 
     def __init__(self, path, samples):
-        self.path = path
-        self.index = path / "synthetic-learning.json"
+        # Transaction destinations are canonical. Keep their caller's index,
+        # source paths, and lock on that same spelling, including when Windows
+        # supplies an 8.3 TEMP alias (RUNNER~1 versus runneradmin).
+        supplied = Path(path).absolute()
+        if any(part.is_symlink() or (hasattr(part, "is_junction") and part.is_junction())
+               for part in (supplied, *supplied.parents)):
+            raise ValueError("Synthetic store path cannot contain symlinks or junctions.")
+        self.path = supplied.resolve()
+        self.index = self.path / "synthetic-learning.json"
         self.samples = dict(samples)
-        with destination_lock(path, write=True):
+        with destination_lock(self.path, write=True):
             if not self.index.exists():
-                if any(path.iterdir()):
+                if any(self.path.iterdir()):
                     raise ValueError("Refusing an unmarked synthetic store.")
-                tx = ApplyTransaction(path)
+                tx = ApplyTransaction(self.path)
                 try:
                     for identity, source in samples:
-                        persist_source_intelligence(dest_dir=path, raw_bytes=source,
+                        persist_source_intelligence(dest_dir=self.path, raw_bytes=source,
                                                     source_identity=identity, transaction=tx)
                     tx.write(self.index, self.encode({}))
                     tx.commit()

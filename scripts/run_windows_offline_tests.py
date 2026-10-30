@@ -39,9 +39,10 @@ TESTS = (
 CHAT_TESTS = (
     "tests/test_local_memory_chat.py",
     "tests/test_local_chat_integration.py",
+    "tests/test_synthetic_memory_path_alias.py",
     "tests/test_windows_local_chat_runner.py",
 )
-BROWSER_TESTS = ("tests/test_restricted_browser_bridge.py",)
+BROWSER_TESTS = ("tests/test_restricted_browser_bridge.py", "tests/test_browser_worker_path_alias.py")
 HTTP_TESTS = ("tests/test_local_chat_http.py",)
 
 # Windows asyncio needs a local stdlib socketpair for its event-loop self-pipe.
@@ -102,9 +103,9 @@ def main() -> int:
     # A short existing TEMP location avoids Windows MAX_PATH failures in deeply
     # nested transaction fixtures; the caller may set TEMP to local scratch.
     with tempfile.TemporaryDirectory(prefix="elysia-tests-") as directory:
-        # Normalize Windows short (8.3) TEMP aliases before fixtures create
-        # paths; transaction containment compares canonical destination paths.
-        scratch = Path(directory).resolve()
+        # Deliberately retain Windows' original TEMP spelling here. The
+        # synthetic memory store must normalize its own transaction identity.
+        scratch = Path(directory)
         guard = scratch / "guard"
         guard.mkdir()
         (guard / "sitecustomize.py").write_text(TEST_GUARD, encoding="utf-8")

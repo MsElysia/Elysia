@@ -13,7 +13,8 @@ def test_coverage_is_explicit_and_unique():
     stages = (TESTS, CHAT_TESTS, BROWSER_TESTS, HTTP_TESTS)
     assert len({name for group in stages for name in group}) == sum(map(len, stages))
     assert set(("tests/test_local_memory_chat.py", "tests/test_local_chat_integration.py")) <= set(CHAT_TESTS)
-    assert BROWSER_TESTS == ("tests/test_restricted_browser_bridge.py",)
+    assert BROWSER_TESTS == ("tests/test_restricted_browser_bridge.py",
+                             "tests/test_browser_worker_path_alias.py")
     assert HTTP_TESTS == ("tests/test_local_chat_http.py",)
 
 

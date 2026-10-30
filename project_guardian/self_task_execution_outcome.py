@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .self_task_output_contracts import normalize_payload
 
@@ -42,6 +42,75 @@ def is_execution_stage_archetype(archetype: str) -> bool:
     if "system_improvement" in a or "improvement_proposal" in a:
         return True
     return False
+
+
+def execution_verified(exec_result: Optional[Dict[str, Any]]) -> bool:
+    """True only when independent evidence marked the execution verified."""
+    result = exec_result or {}
+    return (
+        str(result.get("verification_status") or "") == "verified"
+        and str(result.get("execution_outcome") or "") == "succeeded"
+    )
+
+
+def caller_execution_success(
+    archetype: str,
+    ok_any: bool,
+    useful_any: bool,
+    exec_result: Optional[Dict[str, Any]],
+) -> Tuple[bool, bool]:
+    """Planning may finish on its own. Execution success requires verification."""
+    result = exec_result or {}
+    if not is_execution_stage_archetype(archetype):
+        return bool(ok_any), bool(useful_any)
+    if str(result.get("execution_outcome") or "") == "readiness_only":
+        return bool(ok_any), bool(useful_any)
+    verified = execution_verified(result)
+    return verified, bool(useful_any) if verified else False
+
+
+def host_effect_root(queue_path: Path) -> Optional[Path]:
+    """Directory the runner observes. Task payloads cannot choose this path."""
+    parent = Path(queue_path).parent
+    if _linked(parent):
+        return None
+    try:
+        parent.resolve()
+    except OSError:
+        return None
+    return parent / "self_task_host_effects"
+
+
+def capture_host_directory_state(root: Optional[Path]) -> Dict[str, Any]:
+    """Digest of regular files under root. Links are not followed."""
+    records: List[Dict[str, Any]] = []
+    if isinstance(root, Path) and not _linked(root):
+        try:
+            base = root.resolve()
+        except OSError:
+            base = None
+        if base is not None and base.is_dir() and not _linked(base):
+            for path in sorted(base.rglob("*")):
+                if len(records) >= 64:
+                    break
+                if _linked(path) or not path.is_file():
+                    continue
+                try:
+                    resolved = path.resolve()
+                    relative = resolved.relative_to(base).as_posix()
+                    data = resolved.read_bytes()
+                except (OSError, ValueError):
+                    continue
+                if len(data) > _MAX_ARTIFACT_BYTES:
+                    digest = ""
+                else:
+                    digest = hashlib.sha256(data).hexdigest()
+                records.append({"path": relative, "size": len(data), "sha256": digest})
+    encoded = _canonical(records).encode("ascii")
+    return {
+        "file_count": len(records),
+        "root_digest": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 _SELF_REPORT_KEYS = (

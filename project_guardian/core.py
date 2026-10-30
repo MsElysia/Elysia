@@ -4929,7 +4929,10 @@ class GuardianCore:
         from .self_task_artifacts import save_self_task_artifact
         from .self_task_advancement import evaluate_task_advancement, merge_best_artifact
         from .self_task_execution_outcome import (
+            caller_execution_success,
+            capture_host_directory_state,
             evaluate_execution_outcome,
+            host_effect_root,
             is_execution_stage_archetype,
         )
         from .self_task_value_verification import evaluate_execution_value
@@ -4956,6 +4959,8 @@ class GuardianCore:
             "summarize_recent_learning_operator",
             "learning_operator_digest",
         )
+        effect_root = host_effect_root(q.path)
+        observed_before = capture_host_directory_state(effect_root)
 
         try:
             if arch in learning_digest_archs and getattr(self, "memory", None):
@@ -5159,6 +5164,7 @@ class GuardianCore:
             detail = str(e)[:400]
             ok_any = False
             useful_any = False
+        observed_after = capture_host_directory_state(effect_root)
 
         base_strong = self._self_task_has_strong_signals(
             useful_payload=useful_any,
@@ -5236,7 +5242,19 @@ class GuardianCore:
             memory_written=memory_written,
             last_capability_ex=last_capability_ex,
             detail=detail,
+            observed_before=observed_before,
+            observed_after=observed_after,
         )
+        caller_ok, caller_useful = caller_execution_success(
+            arch, ok_any, useful_any, exec_result
+        )
+        recorded_advanced = objective_advanced
+        if (
+            is_execution_stage_archetype(arch)
+            and str(exec_result.get("execution_outcome") or "") != "readiness_only"
+            and not caller_ok
+        ):
+            recorded_advanced = False
 
         value_result = evaluate_execution_value(
             archetype=arch,
@@ -5265,7 +5283,7 @@ class GuardianCore:
         port_res = _port_tracker.record_and_score_event(
             archetype=arch,
             task=task if isinstance(task, dict) else {},
-            success=ok_any,
+            success=caller_ok,
             tier=tier,
             value_verified=bool(value_result.get("value_verified")),
             value_score=float(value_result.get("value_score") or 0.0),
@@ -5277,10 +5295,10 @@ class GuardianCore:
         q.complete(
             task_id,
             success=ok_any,
-            useful=useful_any,
+            useful=caller_useful,
             detail=detail,
             execution_tier=tier,
-            objective_advanced=objective_advanced,
+            objective_advanced=recorded_advanced,
             advancement_score=float(adv_result.get("advancement_score") or 0.0),
             advancement_reason=str(adv_result.get("advancement_reason") or ""),
             operator_ready=operator_ready,
@@ -5316,7 +5334,7 @@ class GuardianCore:
             delta = 0.06 if tier == "strong" else 0.035
             obj_store.bump_progress(str(oid), delta, real_outcome=True)
 
-        if art_path is not None and objective_advanced and oid:
+        if art_path is not None and recorded_advanced and oid:
             obj_store.record_strong_artifact(str(oid))
 
         cooldown = float(st_cfg.get("dedupe_cooldown_sec", 900))
@@ -5326,8 +5344,8 @@ class GuardianCore:
                 self,
                 finished,
                 execution_tier=tier,
-                useful=useful_any,
-                objective_advanced=objective_advanced,
+                useful=caller_useful,
+                objective_advanced=recorded_advanced,
                 operator_ready=operator_ready,
                 execution_ready=execution_ready,
                 queue=q,
@@ -5351,7 +5369,7 @@ class GuardianCore:
                 task=str(task.get("title", ""))[:500],
                 capability_id=f"self_task:{task_id}",
                 capability_type="self_task",
-                success=ok_any,
+                success=caller_ok,
                 quality=(
                     0.98
                     if (
@@ -5384,13 +5402,13 @@ class GuardianCore:
                             )
                             else (
                                 0.88
-                                if (tier == "strong" and useful_any and objective_advanced and operator_ready)
+                                if (tier == "strong" and caller_useful and recorded_advanced and operator_ready)
                                 else (
                                     0.82
-                                    if (tier == "strong" and useful_any and objective_advanced)
+                                    if (tier == "strong" and caller_useful and recorded_advanced)
                                     else (
                                         0.68
-                                        if (tier == "strong" and useful_any)
+                                        if (tier == "strong" and caller_useful)
                                         else (0.55 if tier != "failed" else 0.2)
                                     )
                                 )
@@ -5402,7 +5420,7 @@ class GuardianCore:
                 latency_ms=(time.time() - t0) * 1000,
                 extra={
                     "archetype": arch,
-                    "useful": useful_any,
+                    "useful": caller_useful,
                     "detail": detail,
                     "execution_tier": tier,
                     "objective_advanced": objective_advanced,
@@ -5437,13 +5455,13 @@ class GuardianCore:
 
                 note_degraded_execute_self_task_outcome(
                     tier=str(tier),
-                    useful=useful_any,
-                    objective_advanced=objective_advanced,
+                    useful=caller_useful,
+                    objective_advanced=recorded_advanced,
                     archetype=arch,
                 )
         except Exception:
             pass
-        return ok_any, useful_any, detail
+        return caller_ok, caller_useful, detail
 
     def _self_tasking_augment_decision(
         self,

@@ -72,10 +72,6 @@ def evaluate_execution_value(
     delta_material = obj_adv and not dup
     delta_readiness = op_ready and not dup
     delta_artifact = has_artifact and obj_adv
-    ambiguity_down = bool(
-        isinstance(p, dict)
-        and (p.get("ambiguity_reduced") or (isinstance(p.get("ranked"), list) and len(p.get("ranked", [])) >= 2))
-    )
 
     vt = _infer_value_type(arch)
     out["value_type"] = vt
@@ -92,11 +88,11 @@ def evaluate_execution_value(
         )
     elif arch == "execute_best_opportunity":
         verified = bool(
-            exo in ("succeeded", "partial")
+            exo == "succeeded"
             and (
                 delta_material
-                or (delta_readiness and (has_artifact or ambiguity_down))
-                or (exo == "succeeded" and has_artifact and not dup)
+                or (delta_readiness and has_artifact)
+                or (has_artifact and not dup)
             )
         )
         score = (
@@ -132,7 +128,7 @@ def evaluate_execution_value(
         )
     else:
         verified = bool(
-            exo in ("succeeded", "partial", "readiness_only")
+            exo == "succeeded"
             and (delta_material or (delta_readiness and tier == "strong") or delta_artifact)
         )
         score = (
@@ -152,6 +148,10 @@ def evaluate_execution_value(
         out["value_type"] = vt
         return out
 
+    status = str(exec_result.get("verification_status") or "").lower()
+    if status in {"partial", "attempted", "blocked", "failed"}:
+        verified = False
+        reason = "unverified_execution_not_scored_as_value"
     out["value_verified"] = bool(verified)
     out["value_score"] = round(max(0.0, min(1.0, score)), 4)
     out["value_reason"] = reason[:300]

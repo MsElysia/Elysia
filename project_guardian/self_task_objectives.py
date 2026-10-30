@@ -243,16 +243,23 @@ class ObjectiveStore:
             "updated_at": _iso(),
         }
         o["last_execution"] = le
-        o["value_verified"] = bool(vr.get("value_verified"))
+        status = str(exec_result.get("verification_status") or "").lower()
+        outcome = str(exec_result.get("execution_outcome") or "").lower()
+        verified_execution = status == "verified" and outcome == "succeeded"
+        unproven = status in {"partial", "attempted", "blocked", "failed"}
+        o["value_verified"] = False if unproven else bool(vr.get("value_verified"))
+        le["value_verified"] = o["value_verified"]
         o["last_value"] = {
             "value_score": vr.get("value_score"),
             "value_reason": (str(vr.get("value_reason") or ""))[:500],
             "value_type": str(vr.get("value_type") or "none"),
             "updated_at": _iso(),
         }
-        if vr.get("blocker_removed"):
+        if vr.get("blocker_removed") and verified_execution:
             o["blocker_removed"] = True
-        if str(exec_result.get("execution_outcome") or "").lower() == "succeeded":
+        if unproven:
+            o["execution_completed"] = False
+        if verified_execution:
             cur = float(o.get("progress", 0.0) or 0.0)
             o["progress"] = min(1.0, cur + 0.12)
             o["execution_completed"] = not bool(exec_result.get("execution_followup_needed"))

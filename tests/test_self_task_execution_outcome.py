@@ -8,6 +8,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if "project_guardian" not in sys.modules:
     package = types.ModuleType("project_guardian")
@@ -15,7 +17,13 @@ if "project_guardian" not in sys.modules:
     package.__package__ = "project_guardian"
     sys.modules["project_guardian"] = package
 
-from project_guardian.self_task_execution_outcome import evaluate_execution_outcome
+from project_guardian.self_task_execution_outcome import (
+    caller_execution_success,
+    capture_host_directory_state,
+    evaluate_execution_outcome,
+    host_effect_root,
+)
+from project_guardian.self_task_objectives import ObjectiveStore
 from project_guardian.self_task_queue import SelfTaskQueue
 from project_guardian.self_task_value_verification import evaluate_execution_value
 
@@ -296,3 +304,318 @@ def test_queue_records_rejected_and_verified_status(tmp_path):
     stored_verified = queue.get_by_id("st_verified")
     assert stored_verified["execution_outcome"] == "succeeded"
     assert stored_verified["verification_status"] == "verified"
+
+
+def _blob_sha1(data: bytes) -> str:
+    normalized = data.replace(b"\r\n", b"\n")
+    return hashlib.sha1(b"blob %d\0" % len(normalized) + normalized).hexdigest()
+
+
+def test_module_activity_is_the_historical_helper():
+    data = (ROOT / "project_guardian" / "module_activity.py").read_bytes()
+    assert _blob_sha1(data) == "7795b83ac5f4482deec10700980f482a11c9cb54"
+    text = data.decode("utf-8")
+    assert "def mark_module_activity(" in text
+    assert "def get_module_last_activity(" in text
+    assert "def activity_age_minutes(" in text
+
+
+def test_host_snapshot_verifies_a_real_change_and_rejects_a_false_report(tmp_path):
+    root = host_effect_root(tmp_path / "queue.json")
+    assert root == tmp_path / "self_task_host_effects"
+    before = capture_host_directory_state(root)
+    false_report = evaluate(
+        last_result={
+            "success": True,
+            "state_changed": True,
+            "applied": True,
+            "dry_run_result": {"status": "success"},
+        },
+        memory_written=True,
+        observed_before=before,
+        observed_after=capture_host_directory_state(root),
+        detail="model said the host changed",
+    )
+    assert false_report["verification_status"] == "partial"
+    assert false_report["execution_outcome"] != "succeeded"
+    assert caller_execution_success(
+        "execute_best_opportunity", True, True, false_report
+    ) == (False, False)
+
+    root.mkdir()
+    (root / "receipt.txt").write_text("host-observed", encoding="utf-8")
+    changed = evaluate(
+        last_result={"success": True, "state_changed": True},
+        observed_before=before,
+        observed_after=capture_host_directory_state(root),
+    )
+    assert changed["verification_status"] == "verified"
+    assert changed["execution_outcome"] == "succeeded"
+    assert changed["execution_reason"] == "independent_state_comparison"
+    assert caller_execution_success(
+        "execute_best_opportunity", True, True, changed
+    ) == (True, True)
+
+    dry = evaluate(
+        last_result={"dry_run_result": {"status": "success"}, "state_changed": True},
+        observed_before=before,
+        observed_after=capture_host_directory_state(root),
+    )
+    assert dry["verification_status"] == "partial"
+    assert dry["execution_outcome"] == "partial"
+
+
+def test_queue_and_objective_keep_the_same_verified_outcome(tmp_path):
+    queue_path = tmp_path / "queue.json"
+    objective_path = tmp_path / "objectives.json"
+    queue = SelfTaskQueue(storage_path=queue_path)
+    objectives = ObjectiveStore(storage_path=objective_path)
+    objective_id = objectives.create_lightweight(title="synthetic", goal="observe a receipt")
+    root = host_effect_root(queue_path)
+    before = capture_host_directory_state(root)
+
+    queue.enqueue(
+        {
+            "task_id": "st_false",
+            "archetype": "execute_best_opportunity",
+            "title": "false success",
+            "objective_id": objective_id,
+        },
+        dedupe_key="false",
+        cooldown_sec=0,
+    )
+    queue.claim("st_false")
+    false_result = evaluate(
+        last_result={"success": True, "state_changed": True, "applied": True},
+        memory_written=True,
+        observed_before=before,
+        observed_after=capture_host_directory_state(root),
+    )
+    false_value = evaluate_execution_value(
+        archetype="execute_best_opportunity",
+        adv_result={
+            "operator_ready": True,
+            "objective_advanced": True,
+            "execution_ready": True,
+            "advancement_reason": "model said the objective moved",
+        },
+        exec_result=false_result,
+        artifact_path=None,
+        execution_tier="strong",
+        payload={"state_changed": True},
+    )
+    assert false_value["value_verified"] is False
+    queue.complete(
+        "st_false",
+        success=True,
+        useful=True,
+        execution_tier="strong",
+        objective_advanced=True,
+        operator_ready=True,
+        execution_attempted=True,
+        execution_outcome="succeeded",
+        verification_status=false_result["verification_status"],
+        value_verified=True,
+    )
+    objectives.apply_post_execution_objective(
+        objective_id,
+        archetype="execute_best_opportunity",
+        exec_result=false_result,
+        value_result={"value_verified": True, "blocker_removed": True, "value_score": 0.9},
+    )
+
+    reloaded_queue = SelfTaskQueue(storage_path=queue_path)
+    reloaded_objective = ObjectiveStore(storage_path=objective_path)
+    stored = reloaded_queue.get_by_id("st_false")
+    objective = reloaded_objective.get(objective_id)
+    assert stored["verification_status"] == "partial"
+    assert stored["execution_outcome"] != "succeeded"
+    assert stored["value_verified"] is False
+    assert not str(stored["last_outcome"]).startswith("execution_succeeded")
+    assert objective["last_execution"]["verification_status"] == "partial"
+    assert objective["last_execution"]["execution_outcome"] != "succeeded"
+    assert objective["value_verified"] is False
+    assert objective.get("execution_completed") is False
+    assert float(objective["progress"]) == 0.0
+    assert objective.get("blocker_removed") is not True
+    assert objective["status"] == "active"
+
+    root.mkdir()
+    (root / "receipt.txt").write_text("paid", encoding="utf-8")
+    verified = evaluate(
+        observed_before=before,
+        observed_after=capture_host_directory_state(root),
+        last_result={"success": True},
+    )
+    queue.enqueue(
+        {
+            "task_id": "st_real",
+            "archetype": "execute_best_opportunity",
+            "title": "real change",
+            "objective_id": objective_id,
+        },
+        dedupe_key="real",
+        cooldown_sec=0,
+    )
+    queue.claim("st_real")
+    queue.complete(
+        "st_real",
+        success=True,
+        useful=True,
+        execution_tier="strong",
+        objective_advanced=True,
+        operator_ready=True,
+        execution_attempted=True,
+        execution_outcome=verified["execution_outcome"],
+        verification_status=verified["verification_status"],
+        value_verified=False,
+    )
+    objectives.apply_post_execution_objective(
+        objective_id,
+        archetype="execute_best_opportunity",
+        exec_result=verified,
+        value_result={"value_verified": False, "value_score": 0.2},
+    )
+    reloaded_queue = SelfTaskQueue(storage_path=queue_path)
+    reloaded_objective = ObjectiveStore(storage_path=objective_path)
+    stored = reloaded_queue.get_by_id("st_real")
+    objective = reloaded_objective.get(objective_id)
+    assert stored["verification_status"] == "verified"
+    assert stored["execution_outcome"] == "succeeded"
+    assert str(stored["last_outcome"]).startswith("execution_succeeded")
+    assert objective["last_execution"]["verification_status"] == "verified"
+    assert objective["last_execution"]["execution_outcome"] == "succeeded"
+    assert objective["execution_completed"] is True
+    assert float(objective["progress"]) == 0.12
+
+    plan = evaluate(
+        archetype="generate_execution_plan",
+        last_result={"state_changed": True, "success": True},
+        observed_before=before,
+        observed_after=capture_host_directory_state(root),
+    )
+    assert plan["execution_outcome"] == "readiness_only"
+    assert plan["verification_status"] == "proposed"
+    assert caller_execution_success("generate_execution_plan", True, True, plan) == (True, True)
+    plan_objective = objectives.create_lightweight(title="plan", goal="plan only")
+    objectives.apply_post_execution_objective(
+        plan_objective,
+        archetype="generate_execution_plan",
+        exec_result=plan,
+        value_result={"value_verified": True, "value_score": 0.4},
+    )
+    planned = ObjectiveStore(storage_path=objective_path).get(plan_objective)
+    assert planned.get("execution_completed") is not True
+    assert float(planned["progress"]) == 0.0
+    assert planned["last_execution"]["verification_status"] == "proposed"
+
+
+def test_self_generated_task_runner_uses_host_snapshots(tmp_path):
+    try:
+        from project_guardian.core import GuardianCore
+    except ImportError as exc:
+        pytest.skip("GuardianCore startup blocked: %s" % exc)
+
+    import project_guardian.capability_execution as capability_execution
+    import project_guardian.self_task_objectives as objective_mod
+    import project_guardian.self_task_queue as queue_mod
+
+    queue_path = tmp_path / "queue.json"
+    objective_path = tmp_path / "objectives.json"
+    effect_root = host_effect_root(queue_path)
+    original_queue = queue_mod.SelfTaskQueue
+    original_objectives = objective_mod.ObjectiveStore
+    original_execute = capability_execution.execute_capability_kind
+
+    def queue_factory(*args, **kwargs):
+        kwargs["storage_path"] = queue_path
+        return original_queue(*args, **kwargs)
+
+    def objective_factory(*args, **kwargs):
+        kwargs["storage_path"] = objective_path
+        return original_objectives(*args, **kwargs)
+
+    objectives = original_objectives(storage_path=objective_path)
+    objective_id = objectives.create_lightweight(title="runner", goal="host receipt")
+    queue = original_queue(storage_path=queue_path)
+    queue.enqueue(
+        {
+            "task_id": "st_runner_false",
+            "archetype": "execute_best_opportunity",
+            "title": "runner false success",
+            "objective_id": objective_id,
+            "recommended_capabilities": ["module:false_success"],
+        },
+        dedupe_key="runner-false",
+        cooldown_sec=0,
+    )
+    queue.enqueue(
+        {
+            "task_id": "st_runner_real",
+            "archetype": "execute_best_opportunity",
+            "title": "runner real change",
+            "objective_id": objective_id,
+            "recommended_capabilities": ["module:write_receipt"],
+        },
+        dedupe_key="runner-real",
+        cooldown_sec=0,
+    )
+
+    def execute(guardian, kind, name, payload):
+        if name == "write_receipt":
+            effect_root.mkdir(parents=True, exist_ok=True)
+            (effect_root / "receipt.txt").write_text("observed-by-host", encoding="utf-8")
+        return {
+            "success": True,
+            "result_for_governance": {
+                "success": True,
+                "state_changed": True,
+                "applied": True,
+                "dry_run_result": {"status": "success"} if name == "false_success" else None,
+            },
+        }
+
+    runner = GuardianCore.__new__(GuardianCore)
+    runner._load_self_tasking_config = lambda: {
+        "max_queue_size": 24,
+        "orchestration_bounded_capability_execution": False,
+        "dedupe_cooldown_sec": 0,
+    }
+    runner._self_task_payload_useful = lambda result: False
+    runner._self_task_has_strong_signals = lambda **kwargs: False
+    runner._module_last_invoked = {}
+    queue_mod.SelfTaskQueue = queue_factory
+    objective_mod.ObjectiveStore = objective_factory
+    capability_execution.execute_capability_kind = execute
+    try:
+        false_ok, false_useful, _false_detail = runner._run_self_generated_task(
+            "st_runner_false", 0.0, None
+        )
+        stored_false = original_queue(storage_path=queue_path).get_by_id("st_runner_false")
+        false_objective = original_objectives(storage_path=objective_path).get(objective_id)
+        real_ok, _real_useful, _real_detail = runner._run_self_generated_task(
+            "st_runner_real", 0.0, None
+        )
+    finally:
+        queue_mod.SelfTaskQueue = original_queue
+        objective_mod.ObjectiveStore = original_objectives
+        capability_execution.execute_capability_kind = original_execute
+
+    assert false_ok is False
+    assert false_useful is False
+    assert stored_false["verification_status"] == "partial"
+    assert stored_false["execution_outcome"] != "succeeded"
+    assert stored_false["last_outcome"] == "execution_partial_no_value"
+    assert float(false_objective["progress"]) == 0.0
+    assert false_objective.get("execution_completed") is not True
+
+    assert real_ok is True
+    stored_real = original_queue(storage_path=queue_path).get_by_id("st_runner_real")
+    reloaded = original_objectives(storage_path=objective_path).get(objective_id)
+    assert stored_real["verification_status"] == "verified"
+    assert stored_real["execution_outcome"] == "succeeded"
+    assert str(stored_real["last_outcome"]).startswith("execution_succeeded")
+    assert reloaded["last_execution"]["verification_status"] == "verified"
+    assert reloaded["last_execution"]["execution_outcome"] == "succeeded"
+    assert reloaded["execution_completed"] is True
+    assert float(reloaded["progress"]) == 0.12

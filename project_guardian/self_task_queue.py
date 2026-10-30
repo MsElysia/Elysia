@@ -207,6 +207,7 @@ class SelfTaskQueue:
         execution_reason: str = "",
         execution_artifact: Optional[str] = None,
         execution_followup_needed: Optional[bool] = None,
+        verification_status: Optional[str] = None,
         value_verified: Optional[bool] = None,
         value_score: Optional[float] = None,
         value_reason: str = "",
@@ -249,6 +250,8 @@ class SelfTaskQueue:
         if execution_artifact:
             t["execution_artifact"] = str(execution_artifact)[:500]
         t["execution_followup_needed"] = ex_follow
+        if verification_status:
+            t["verification_status"] = str(verification_status)[:32]
         if advancement_score is not None:
             t["advancement_score"] = float(advancement_score)
         if advancement_reason:

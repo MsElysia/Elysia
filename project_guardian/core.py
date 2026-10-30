@@ -5290,6 +5290,7 @@ class GuardianCore:
             execution_reason=str(exec_result.get("execution_reason") or ""),
             execution_artifact=exec_result.get("execution_artifact"),
             execution_followup_needed=bool(exec_result.get("execution_followup_needed")),
+            verification_status=str(exec_result.get("verification_status") or ""),
             value_verified=bool(value_result.get("value_verified")),
             value_score=float(value_result.get("value_score") or 0.0),
             value_reason=str(value_result.get("value_reason") or ""),

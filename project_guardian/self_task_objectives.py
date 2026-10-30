@@ -234,6 +234,7 @@ class ObjectiveStore:
             "execution_reason": (str(exec_result.get("execution_reason") or ""))[:500],
             "execution_artifact": exec_result.get("execution_artifact"),
             "execution_followup_needed": exec_result.get("execution_followup_needed"),
+            "verification_status": str(exec_result.get("verification_status") or "")[:32],
             "value_verified": bool(vr.get("value_verified")),
             "value_score": vr.get("value_score"),
             "value_reason": (str(vr.get("value_reason") or ""))[:500],

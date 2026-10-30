@@ -1,0 +1,44 @@
+# Deterministic self-task outcome checks. No credentials, providers, or deploy.
+name: Task outcome verification
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  outcome:
+    name: Windows task outcome evidence
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact source head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Assert exact event SHA
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = git rev-parse HEAD
+          if ($actual -ne $env:EXPECTED_SHA) { throw "Wrong source SHA: $actual" }
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install "pytest>=7.4,<9"
+
+      - name: Run task outcome evidence tests
+        env:
+          PYTHONUTF8: "1"
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -B -m pytest --noconftest -q -rs -p no:cacheprovider tests/test_self_task_execution_outcome.py

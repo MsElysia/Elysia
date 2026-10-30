@@ -969,9 +969,26 @@ CONTROL_PANEL_TEMPLATE = """
                                         Authorize local.documents.search for the selected bound step (this request only)
                                     </label>
                                     <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-assemble">
+                                        Authorize estimate.assemble for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-draft">
+                                        Authorize estimate.draft for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
                                         <input type="checkbox" id="authorize-step-record">
                                         Authorize recording the verified result as step completion (this request only)
                                     </label>
+                                </div>
+                                <div id="estimate-bundle-panel" style="display: none; margin-top: 10px; padding: 8px; background: var(--bg-dark); border-radius: 6px; font-size: 12px;">
+                                    <strong>Verified estimate values</strong>
+                                    <pre id="estimate-bundle-view" style="white-space: pre-wrap; margin: 6px 0 0 0; font-size: 11px;"></pre>
+                                </div>
+                                <div id="estimate-draft-panel" style="display: none; margin-top: 10px; padding: 8px; background: var(--bg-dark); border-radius: 6px; font-size: 12px;">
+                                    <strong>Estimate draft (local only — not approved for customer delivery)</strong>
+                                    <pre id="estimate-draft-view" style="white-space: pre-wrap; margin: 6px 0 0 0; font-size: 11px; max-height: 220px; overflow: auto;"></pre>
+                                    <button type="button" onclick="copyEstimateDraft()" style="margin-top: 6px;">Copy draft</button>
                                 </div>
                                 <p id="task-state-review-note" style="font-size: 12px; margin-top: 6px; color: var(--text-secondary);"></p>
                                 <p id="task-state-save-status" style="font-size: 12px; margin-top: 6px; color: var(--text-secondary);"></p>
@@ -1978,14 +1995,19 @@ CONTROL_PANEL_TEMPLATE = """
                                 var done = step.status === 'completed';
                                 var boundLabor = step.capability === 'calculator.labor';
                                 var boundDocs = step.capability === 'local.documents.search';
-                                var bound = boundLabor || boundDocs;
+                                var boundAssemble = step.capability === 'estimate.assemble';
+                                var boundDraft = step.capability === 'estimate.draft';
+                                var bound = boundLabor || boundDocs || boundAssemble || boundDraft;
+                                var capLabel = boundLabor ? '[calculator.labor]' :
+                                    boundDocs ? '[local.documents.search]' :
+                                    boundAssemble ? '[estimate.assemble]' :
+                                    boundDraft ? '[estimate.draft]' : '';
                                 html += '<div style="display: flex; gap: 8px; align-items: center; margin: 4px 0; flex-wrap: wrap;">';
                                 html += '<span style="flex: 1; min-width: 140px;">' +
                                     (done ? '✓ ' : '') +
                                     window._escapeHtml(step.description || '') +
                                     (done ? ' <span style="color: var(--text-secondary);">(completed)</span>' : '') +
-                                    (boundLabor ? ' <span style="color: var(--text-secondary);">[calculator.labor]</span>' : '') +
-                                    (boundDocs ? ' <span style="color: var(--text-secondary);">[local.documents.search]</span>' : '') +
+                                    (capLabel ? ' <span style="color: var(--text-secondary);">' + capLabel + '</span>' : '') +
                                     '</span>';
                                 if (!done) {
                                     html += '<button type="button" onclick="completeTaskStep(\\'' +
@@ -1998,6 +2020,12 @@ CONTROL_PANEL_TEMPLATE = """
                                         html += '<button type="button" onclick="bindDocumentsStep(\\'' +
                                             window._escapeHtml(step.step_id || '') +
                                             '\\')">Bind document search</button>';
+                                        html += '<button type="button" onclick="bindAssembleStep(\\'' +
+                                            window._escapeHtml(step.step_id || '') +
+                                            '\\')">Bind assemble</button>';
+                                        html += '<button type="button" onclick="bindDraftStep(\\'' +
+                                            window._escapeHtml(step.step_id || '') +
+                                            '\\')">Bind draft</button>';
                                     } else {
                                         html += '<button type="button" onclick="executeBoundStep(\\'' +
                                             window._escapeHtml(step.step_id || '') +
@@ -2013,17 +2041,60 @@ CONTROL_PANEL_TEMPLATE = """
                             listEl.innerHTML = html;
                         }
                     }
+                    var bundlePanel = document.getElementById('estimate-bundle-panel');
+                    var bundleView = document.getElementById('estimate-bundle-view');
+                    var draftPanel = document.getElementById('estimate-draft-panel');
+                    var draftView = document.getElementById('estimate-draft-view');
+                    if (bundlePanel && bundleView) {
+                        if (conv.estimate_bundle) {
+                            bundlePanel.style.display = 'block';
+                            bundleView.textContent = JSON.stringify(conv.estimate_bundle, null, 2);
+                        } else {
+                            bundlePanel.style.display = 'none';
+                            bundleView.textContent = '';
+                        }
+                    }
+                    if (draftPanel && draftView) {
+                        if (conv.estimate_draft && conv.estimate_draft.text) {
+                            draftPanel.style.display = 'block';
+                            draftView.textContent = conv.estimate_draft.text;
+                            window._estimateDraftText = conv.estimate_draft.text;
+                        } else {
+                            draftPanel.style.display = 'none';
+                            draftView.textContent = '';
+                            window._estimateDraftText = '';
+                        }
+                    }
                     var calcAuth = document.getElementById('authorize-step-calculator');
                     var docsAuth = document.getElementById('authorize-step-documents');
+                    var assembleAuth = document.getElementById('authorize-step-assemble');
+                    var draftAuth = document.getElementById('authorize-step-draft');
                     var recAuth = document.getElementById('authorize-step-record');
                     if (calcAuth) calcAuth.checked = false;
                     if (docsAuth) docsAuth.checked = false;
+                    if (assembleAuth) assembleAuth.checked = false;
+                    if (draftAuth) draftAuth.checked = false;
                     if (recAuth) recAuth.checked = false;
                     if (saveStatus) saveStatus.textContent = '';
                 })
                 .catch(function(err) {
                     if (saveStatus) saveStatus.textContent = 'Load error: ' + err;
                 });
+        };
+
+        window.copyEstimateDraft = function() {
+            var text = window._estimateDraftText || '';
+            var saveStatus = document.getElementById('task-state-save-status');
+            if (!text) { if (saveStatus) saveStatus.textContent = 'No draft to copy.'; return; }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function() {
+                    if (saveStatus) saveStatus.textContent = 'Draft copied locally (not sent externally).';
+                }).catch(function() {
+                    if (saveStatus) saveStatus.textContent = 'Could not copy draft.';
+                });
+            } else if (saveStatus) {
+                saveStatus.textContent = 'Clipboard unavailable; select draft text manually.';
+            }
         };
 
         window.bindLaborStep = function(stepId) {
@@ -2094,16 +2165,101 @@ CONTROL_PANEL_TEMPLATE = """
                 .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Bind failed: ' + err; });
         };
 
+        window.bindAssembleStep = function(stepId) {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var saveStatus = document.getElementById('task-state-save-status');
+            var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
+            if (!id || !stepId) { if (saveStatus) saveStatus.textContent = 'No conversation or step.'; return; }
+            fetch('/api/conversations/' + encodeURIComponent(id) + '/task-state')
+                .then(function(r) { return r.json(); })
+                .then(function(state) {
+                    var steps = (state.task_steps || state.conversation && state.conversation.task_steps) || [];
+                    var material = steps.find(function(s) { return s.capability === 'local.documents.search' && s.status === 'completed'; });
+                    var labor = steps.find(function(s) { return s.capability === 'calculator.labor' && s.status === 'completed'; });
+                    if (!material || !labor) {
+                        if (saveStatus) saveStatus.textContent = 'Need completed document-search and calculator steps first.';
+                        return;
+                    }
+                    if (saveStatus) saveStatus.textContent = 'Binding estimate.assemble...';
+                    return fetch('/api/conversations/' + encodeURIComponent(id) + '/task-steps/' + encodeURIComponent(stepId) + '/bind', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            expected_revision: expected,
+                            capability: 'estimate.assemble',
+                            arguments: {
+                                material_step_id: material.step_id,
+                                labor_step_id: labor.step_id
+                            }
+                        })
+                    }).then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); });
+                })
+                .then(function(res) {
+                    if (!res) return;
+                    var data = res.data || {};
+                    if (!data.success || res.status >= 400) {
+                        if (saveStatus) saveStatus.textContent = 'Bind rejected: ' + (data.error || res.status);
+                        return;
+                    }
+                    if (saveStatus) saveStatus.textContent = 'Bound estimate.assemble · r' + ((data.checkpoint || {}).revision || '?');
+                    window.loadTaskStatePanel(id);
+                })
+                .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Bind failed: ' + err; });
+        };
+
+        window.bindDraftStep = function(stepId) {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var saveStatus = document.getElementById('task-state-save-status');
+            var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
+            if (!id || !stepId) { if (saveStatus) saveStatus.textContent = 'No conversation or step.'; return; }
+            fetch('/api/conversations/' + encodeURIComponent(id) + '/task-state')
+                .then(function(r) { return r.json(); })
+                .then(function(state) {
+                    var steps = (state.task_steps || state.conversation && state.conversation.task_steps) || [];
+                    var assembled = steps.find(function(s) { return s.capability === 'estimate.assemble' && s.status === 'completed'; });
+                    if (!assembled) {
+                        if (saveStatus) saveStatus.textContent = 'Need a completed estimate.assemble step first.';
+                        return;
+                    }
+                    if (saveStatus) saveStatus.textContent = 'Binding estimate.draft...';
+                    return fetch('/api/conversations/' + encodeURIComponent(id) + '/task-steps/' + encodeURIComponent(stepId) + '/bind', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            expected_revision: expected,
+                            capability: 'estimate.draft',
+                            arguments: {
+                                assemble_step_id: assembled.step_id,
+                                scope_notes: 'Fictional Duration exterior paint estimate; materials + labor only.'
+                            }
+                        })
+                    }).then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); });
+                })
+                .then(function(res) {
+                    if (!res) return;
+                    var data = res.data || {};
+                    if (!data.success || res.status >= 400) {
+                        if (saveStatus) saveStatus.textContent = 'Bind rejected: ' + (data.error || res.status);
+                        return;
+                    }
+                    if (saveStatus) saveStatus.textContent = 'Bound estimate.draft · r' + ((data.checkpoint || {}).revision || '?');
+                    window.loadTaskStatePanel(id);
+                })
+                .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Bind failed: ' + err; });
+        };
+
         window.executeBoundStep = function(stepId) {
             var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
             var saveStatus = document.getElementById('task-state-save-status');
             var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
             var authCalc = !!(document.getElementById('authorize-step-calculator') || {}).checked;
             var authDocs = !!(document.getElementById('authorize-step-documents') || {}).checked;
+            var authAssemble = !!(document.getElementById('authorize-step-assemble') || {}).checked;
+            var authDraft = !!(document.getElementById('authorize-step-draft') || {}).checked;
             var authRec = !!(document.getElementById('authorize-step-record') || {}).checked;
             var docsFolder = ((document.getElementById('documents-search-folder') || {}).value || '').trim();
             if (!id || !stepId) { if (saveStatus) saveStatus.textContent = 'No conversation or step.'; return; }
-            if (!authRec || (!authCalc && !authDocs)) {
+            if (!authRec || (!authCalc && !authDocs && !authAssemble && !authDraft)) {
                 if (saveStatus) saveStatus.textContent = 'Execution rejected: capability + completion authorizations are required.';
                 return;
             }
@@ -2119,6 +2275,8 @@ CONTROL_PANEL_TEMPLATE = """
                     expected_revision: expected,
                     authorize_calculator: authCalc,
                     authorize_documents_search: authDocs,
+                    authorize_estimate_assemble: authAssemble,
+                    authorize_estimate_draft: authDraft,
                     authorize_record_completion: true,
                     documents_folder: authDocs ? docsFolder : null
                 })
@@ -3947,6 +4105,8 @@ class UIControlPanel:
                         "updated_utc": record.get("updated_utc"),
                         "checkpoint_created_utc": (checkpoint or {}).get("created_utc"),
                         "operator_task_state": record.get("operator_task_state"),
+                        "estimate_bundle": record.get("estimate_bundle"),
+                        "estimate_draft": record.get("estimate_draft"),
                         "authorization_inherited": False,
                         "editable_fields": ["outstanding_steps", "next_safe_action"],
                         "read_only_fields": ["objective", "constraints", "title"],
@@ -4155,6 +4315,8 @@ class UIControlPanel:
             data = request.get_json(silent=True) or {}
             authorize_calculator = data.get("authorize_calculator") is True
             authorize_documents = data.get("authorize_documents_search") is True
+            authorize_assemble = data.get("authorize_estimate_assemble") is True
+            authorize_draft = data.get("authorize_estimate_draft") is True
             authorize_record = data.get("authorize_record_completion") is True
             documents_folder = data.get("documents_folder")
             if documents_folder is not None and not isinstance(documents_folder, str):
@@ -4184,6 +4346,22 @@ class UIControlPanel:
                     "executed": False,
                     "error": "invalid execution_id",
                 }), 400
+            draft_model = None
+            if authorize_draft:
+                from project_guardian.local_memory_chat import (
+                    LocalOllama,
+                    configured_local_model_name,
+                )
+
+                model_name = configured_local_model_name()
+                if not model_name:
+                    return jsonify({
+                        "success": False,
+                        "saved": False,
+                        "executed": False,
+                        "error": "local_model_not_configured",
+                    }), 503
+                draft_model = LocalOllama(model_name)
             try:
                 store = self._conversation_store()
                 result = store.execute_verified_bound_step(
@@ -4192,9 +4370,12 @@ class UIControlPanel:
                     expected_revision=expected_revision,
                     authorize_calculator=authorize_calculator,
                     authorize_documents_search=authorize_documents,
+                    authorize_estimate_assemble=authorize_assemble,
+                    authorize_estimate_draft=authorize_draft,
                     authorize_record_completion=authorize_record,
                     execution_id=execution_id,
                     documents_folder=documents_folder if authorize_documents else None,
+                    draft_model=draft_model,
                 )
                 return jsonify({
                     "success": True,
@@ -4208,9 +4389,13 @@ class UIControlPanel:
                     "completed_step": result.get("completed_step"),
                     "conversation": result.get("conversation"),
                     "checkpoint": result.get("checkpoint"),
+                    "estimate_bundle": (result.get("conversation") or {}).get("estimate_bundle"),
+                    "estimate_draft": (result.get("conversation") or {}).get("estimate_draft"),
                     "authorization_inherited": False,
                     "calculator_authorized_this_request": authorize_calculator,
                     "documents_search_authorized_this_request": authorize_documents,
+                    "estimate_assemble_authorized_this_request": authorize_assemble,
+                    "estimate_draft_authorized_this_request": authorize_draft,
                     "record_completion_authorized_this_request": authorize_record,
                 })
             except StaleTaskEditError as exc:
@@ -5722,14 +5907,57 @@ class UIControlPanel:
                 )
                 rolled_over = bool(assembled.get("rolled_over"))
                 recent = assembled.get("recent_conversation") or ()
+                conv_record = store.get(active_conversation_id)
+                estimate_bundle = conv_record.get("estimate_bundle")
+                estimate_draft = conv_record.get("estimate_draft")
+                bundle_summary = None
+                if isinstance(estimate_bundle, dict):
+                    bundle_summary = {
+                        "subtotal_usd": estimate_bundle.get("subtotal_usd"),
+                        "components": estimate_bundle.get("components"),
+                        "missing_cost_categories": estimate_bundle.get(
+                            "missing_cost_categories"
+                        ),
+                        "stale": estimate_bundle.get("stale"),
+                        "approved": estimate_bundle.get("approved"),
+                    }
+                draft_summary = None
+                if isinstance(estimate_draft, dict):
+                    draft_summary = {
+                        "draft_sha256": estimate_draft.get("draft_sha256"),
+                        "subtotal_usd": estimate_draft.get("subtotal_usd"),
+                        "banner": estimate_draft.get("banner"),
+                        "approved": estimate_draft.get("approved"),
+                        "stale": estimate_draft.get("stale"),
+                        "preview": str(estimate_draft.get("text") or "")[:400],
+                    }
+                # Keep continuity compact: full checkpoints plus estimate drafts can exceed
+                # the local prompt byte cap when catalogs are also attached.
+                slim_ops = assembled.get("operator_task_state")
+                if isinstance(slim_ops, dict):
+                    slim_ops = {
+                        "authoritative": slim_ops.get("authoritative"),
+                        "next_safe_action": slim_ops.get("next_safe_action"),
+                        "outstanding_steps": slim_ops.get("outstanding_steps"),
+                        "completed_steps": [
+                            {
+                                "step_id": s.get("step_id"),
+                                "description": s.get("description"),
+                            }
+                            for s in (slim_ops.get("completed_steps") or [])[:8]
+                        ],
+                        "pending_steps": (slim_ops.get("pending_steps") or [])[:8],
+                        "checkpoint_revision": slim_ops.get("checkpoint_revision"),
+                    }
                 continuity_payload = {
                     "note": assembled.get("continuity_note"),
                     "objective": assembled.get("objective"),
                     "next_safe_action": assembled.get("next_safe_action"),
                     "outstanding_steps": assembled.get("outstanding_steps"),
-                    "operator_task_state": assembled.get("operator_task_state"),
+                    "operator_task_state": slim_ops,
                     "missing": assembled.get("missing") or [],
-                    "checkpoint": assembled.get("checkpoint"),
+                    "estimate_bundle": bundle_summary,
+                    "estimate_draft": draft_summary,
                     "authorization_state": "none",
                 }
             result = converse_bundle(

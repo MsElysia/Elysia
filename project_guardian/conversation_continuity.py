@@ -54,7 +54,14 @@ def _new_step_id() -> str:
     return "step_" + uuid.uuid4().hex[:12]
 
 
-SUPPORTED_STEP_CAPABILITIES = frozenset({"calculator.labor", "local.documents.search"})
+SUPPORTED_STEP_CAPABILITIES = frozenset(
+    {
+        "calculator.labor",
+        "local.documents.search",
+        "estimate.assemble",
+        "estimate.draft",
+    }
+)
 
 
 def _normalize_labor_arguments(raw: Any) -> Dict[str, Any]:
@@ -159,11 +166,63 @@ def _normalize_documents_search_arguments(raw: Any) -> Dict[str, Any]:
     return args
 
 
+def _normalize_estimate_assemble_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("estimate.assemble arguments must be an object")
+    for banned in ("authorization", "token", "credential", "folder", "amount_usd"):
+        if banned in raw:
+            raise ContinuityError(
+                f"{banned} cannot be stored in a durable estimate.assemble binding"
+            )
+    material_step_id = raw.get("material_step_id")
+    labor_step_id = raw.get("labor_step_id")
+    if not isinstance(material_step_id, str) or not re.fullmatch(
+        r"step_[a-f0-9]{12}", material_step_id
+    ):
+        raise ContinuityError("material_step_id is required")
+    if not isinstance(labor_step_id, str) or not re.fullmatch(
+        r"step_[a-f0-9]{12}", labor_step_id
+    ):
+        raise ContinuityError("labor_step_id is required")
+    if material_step_id == labor_step_id:
+        raise ContinuityError("material_step_id and labor_step_id must differ")
+    return {
+        "material_step_id": material_step_id,
+        "labor_step_id": labor_step_id,
+    }
+
+
+def _normalize_estimate_draft_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("estimate.draft arguments must be an object")
+    for banned in ("authorization", "token", "credential", "folder", "draft"):
+        if banned in raw:
+            raise ContinuityError(
+                f"{banned} cannot be stored in a durable estimate.draft binding"
+            )
+    assemble_step_id = raw.get("assemble_step_id")
+    if not isinstance(assemble_step_id, str) or not re.fullmatch(
+        r"step_[a-f0-9]{12}", assemble_step_id
+    ):
+        raise ContinuityError("assemble_step_id is required")
+    args: Dict[str, Any] = {"assemble_step_id": assemble_step_id}
+    scope_notes = raw.get("scope_notes")
+    if scope_notes is not None:
+        if not isinstance(scope_notes, str) or len(scope_notes.strip()) > 400:
+            raise ContinuityError("scope_notes must be a short string")
+        args["scope_notes"] = scope_notes.strip()
+    return args
+
+
 def _normalize_step_capability_arguments(capability: str, raw: Any) -> Dict[str, Any]:
     if capability == "calculator.labor":
         return _normalize_labor_arguments(raw)
     if capability == "local.documents.search":
         return _normalize_documents_search_arguments(raw)
+    if capability == "estimate.assemble":
+        return _normalize_estimate_assemble_arguments(raw)
+    if capability == "estimate.draft":
+        return _normalize_estimate_draft_arguments(raw)
     raise ContinuityError("unsupported step capability")
 
 
@@ -768,9 +827,15 @@ class ConversationStore:
         if capability == "calculator.labor":
             expected_result_type = "usd_total"
             verification_rule = "deterministic_recompute"
-        else:
+        elif capability == "local.documents.search":
             expected_result_type = "document_evidence"
             verification_rule = "source_excerpt_reverify"
+        elif capability == "estimate.assemble":
+            expected_result_type = "estimate_subtotal"
+            verification_rule = "deterministic_decimal_sum"
+        else:
+            expected_result_type = "estimate_draft"
+            verification_rule = "draft_amount_postcheck"
 
         with self._lock:
             record, existing, current_rev = self._revision_gate_unlocked(
@@ -844,11 +909,14 @@ class ConversationStore:
         expected_revision: int,
         authorize_calculator: bool = False,
         authorize_documents_search: bool = False,
+        authorize_estimate_assemble: bool = False,
+        authorize_estimate_draft: bool = False,
         authorize_record_completion: bool,
         execution_id: Optional[str] = None,
         documents_folder: Optional[str] = None,
+        draft_model: Any = None,
     ) -> Dict[str, Any]:
-        """Execute a bound calculator or document-search step, verify, and durably complete."""
+        """Execute a bound step (calculator/docs/assemble/draft), verify, and durably complete."""
         from project_guardian.local_memory_chat import calculate_local
         from project_guardian.local_documents_search import (
             DocumentSearchError,
@@ -856,6 +924,18 @@ class ConversationStore:
             meets_evidence_criteria,
             search_local_documents,
             verify_document_matches,
+        )
+        from project_guardian.painting_estimate_workflow import (
+            CAPABILITY_ASSEMBLE,
+            CAPABILITY_DRAFT,
+            EstimateWorkflowError,
+            assemble_estimate_subtotal,
+            build_draft_user_payload,
+            draft_system_prompt,
+            extract_amount_usd_from_required,
+            parse_model_draft,
+            resolve_upstream_amount,
+            verify_draft_amounts,
         )
 
         if not authorize_record_completion:
@@ -969,7 +1049,10 @@ class ConversationStore:
                 result_reference = {
                     "execution_id": execution_id,
                     "result": total,
+                    "amount_usd": total,
+                    "result_type": "labor_amount_usd",
                     "currency": "USD",
+                    "stale": False,
                 }
                 history_entry = {
                     "execution_id": execution_id,
@@ -1103,18 +1186,26 @@ class ConversationStore:
                 )
                 if safe_hits:
                     result_summary += f"; top={safe_hits[0].get('relative_path')}"
+                amount_usd = extract_amount_usd_from_required(args.get("required_substring"))
                 result_reference = {
                     "execution_id": execution_id,
                     "result": result_summary,
                     "match_count": receipt["match_count"],
                     "folder_label": receipt["folder_label"],
                     "folder_fingerprint": receipt["folder_fingerprint"],
-                    "top_relative_path": (safe_hits[0].get("relative_path") if safe_hits else None),
+                    "top_relative_path": (
+                        safe_hits[0].get("relative_path") if safe_hits else None
+                    ),
+                    "amount_usd": amount_usd,
+                    "result_type": "material_amount_usd" if amount_usd else "document_evidence",
+                    "currency": "USD" if amount_usd else None,
+                    "stale": False,
                 }
                 history_entry = {
                     "execution_id": execution_id,
                     "result": result_summary,
                     "match_count": receipt["match_count"],
+                    "amount_usd": amount_usd,
                     "verified": True,
                     "created_utc": now,
                     "checkpoint_revision": next_rev,
@@ -1122,8 +1213,287 @@ class ConversationStore:
                 persist_failure_prefix = (
                     "document search verified but completion was not durably recorded"
                 )
-                total = result_summary  # for shared history shape below
                 args = dict(args)  # durable bind args only; no absolute folder
+            elif capability == CAPABILITY_ASSEMBLE:
+                if not authorize_estimate_assemble:
+                    raise ContinuityError(
+                        "estimate assembly not authorized for this request"
+                    )
+                try:
+                    args = _normalize_estimate_assemble_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "invalid_arguments"
+                    raise ContinuityError(str(exc)) from exc
+                try:
+                    material_usd, material_link = resolve_upstream_amount(
+                        steps,
+                        args["material_step_id"],
+                        expected_capability="local.documents.search",
+                    )
+                    labor_usd, labor_link = resolve_upstream_amount(
+                        steps,
+                        args["labor_step_id"],
+                        expected_capability="calculator.labor",
+                    )
+                    assembled = assemble_estimate_subtotal(
+                        material_usd=material_usd,
+                        labor_usd=labor_usd,
+                        material_link=material_link,
+                        labor_link=labor_link,
+                    )
+                except EstimateWorkflowError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "incorrect_result"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(f"estimate assembly failed: {exc}") from exc
+
+                # Independent verification of the decimal sum.
+                from decimal import Decimal as _Decimal
+
+                expected_sum = (
+                    _Decimal(material_usd) + _Decimal(labor_usd)
+                ).quantize(_Decimal("0.01"))
+                if assembled["subtotal_usd"] != format(expected_sum, "f"):
+                    raise ContinuityError(
+                        "estimate subtotal failed independent verification"
+                    )
+
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": CAPABILITY_ASSEMBLE,
+                    "verified": True,
+                    "components": assembled["components"],
+                    "subtotal_usd": assembled["subtotal_usd"],
+                    "label": assembled["label"],
+                    "missing_cost_categories": assembled["missing_cost_categories"],
+                    "inputs": assembled["inputs"],
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "deterministic_decimal_sum",
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": assembled["subtotal_usd"],
+                    "amount_usd": assembled["subtotal_usd"],
+                    "result_type": "estimate_subtotal_usd",
+                    "currency": "USD",
+                    "components": assembled["components"],
+                    "missing_cost_categories": assembled["missing_cost_categories"],
+                    "inputs": assembled["inputs"],
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": assembled["subtotal_usd"],
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "estimate assembly verified but completion was not durably recorded"
+                )
+                record["estimate_bundle"] = {
+                    "schema": "elysia.estimate-bundle.v1",
+                    "subtotal_usd": assembled["subtotal_usd"],
+                    "components": assembled["components"],
+                    "missing_cost_categories": assembled["missing_cost_categories"],
+                    "inputs": assembled["inputs"],
+                    "execution_id": execution_id,
+                    "updated_utc": now,
+                    "approved": False,
+                }
+            elif capability == CAPABILITY_DRAFT:
+                if not authorize_estimate_draft:
+                    raise ContinuityError(
+                        "estimate draft generation not authorized for this request"
+                    )
+                if draft_model is None:
+                    raise ContinuityError(
+                        "local draft model is required for estimate.draft"
+                    )
+                try:
+                    args = _normalize_estimate_draft_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "invalid_arguments"
+                    raise ContinuityError(str(exc)) from exc
+
+                assemble_step = next(
+                    (s for s in steps if s.get("step_id") == args["assemble_step_id"]),
+                    None,
+                )
+                if assemble_step is None:
+                    raise ContinuityError("assemble_step_id not found")
+                if assemble_step.get("status") != "completed":
+                    raise ContinuityError("assemble step is not completed")
+                if assemble_step.get("verification_status") != "verified":
+                    raise ContinuityError("assemble step is not verified")
+                if assemble_step.get("capability") != CAPABILITY_ASSEMBLE:
+                    raise ContinuityError("assemble_step_id is not estimate.assemble")
+                assemble_ref = (
+                    assemble_step.get("result_reference")
+                    if isinstance(assemble_step.get("result_reference"), dict)
+                    else {}
+                )
+                if assemble_ref.get("stale"):
+                    raise ContinuityError(
+                        "assemble result is stale; reassemble before drafting"
+                    )
+                components = assemble_ref.get("components") or {}
+                material_usd = components.get("materials") or assemble_ref.get(
+                    "inputs", {}
+                ).get("material", {}).get("amount_usd")
+                labor_usd = components.get("labor") or assemble_ref.get(
+                    "inputs", {}
+                ).get("labor", {}).get("amount_usd")
+                subtotal_usd = assemble_ref.get("amount_usd") or assemble_ref.get(
+                    "result"
+                )
+                if not (material_usd and labor_usd and subtotal_usd):
+                    raise ContinuityError(
+                        "assemble result lacks verified component amounts"
+                    )
+                assembled_view = {
+                    "components": {
+                        "materials": str(material_usd),
+                        "labor": str(labor_usd),
+                        "materials_plus_labor_subtotal": str(subtotal_usd),
+                    },
+                    "subtotal_usd": str(subtotal_usd),
+                    "label": "materials + labor subtotal (not a final customer bid)",
+                    "missing_cost_categories": assemble_ref.get(
+                        "missing_cost_categories"
+                    )
+                    or [],
+                    "inputs": assemble_ref.get("inputs") or {},
+                }
+                payload = build_draft_user_payload(
+                    objective=str(record.get("objective") or ""),
+                    assembled=assembled_view,
+                    scope_notes=str(args.get("scope_notes") or ""),
+                )
+                try:
+                    from project_guardian.local_memory_chat import canonical
+
+                    messages = [
+                        {"role": "system", "content": draft_system_prompt()},
+                        {"role": "user", "content": canonical(payload)},
+                    ]
+                    raw_out = draft_model.generate(messages, json_mode=True)
+                    draft_text = parse_model_draft(raw_out)
+                    try:
+                        draft_check = verify_draft_amounts(
+                            draft_text,
+                            materials_usd=str(material_usd),
+                            labor_usd=str(labor_usd),
+                            subtotal_usd=str(subtotal_usd),
+                        )
+                    except EstimateWorkflowError:
+                        # One constrained retry; model must keep verified figures.
+                        retry_messages = messages + [
+                            {"role": "assistant", "content": raw_out},
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Rejected: keep the banner and include these exact amounts "
+                                    f"with no other totals over 100: materials={material_usd}, "
+                                    f"labor={labor_usd}, subtotal={subtotal_usd}. "
+                                    'Return JSON {"draft":"..."} only.'
+                                ),
+                            },
+                        ]
+                        raw_out = draft_model.generate(retry_messages, json_mode=True)
+                        draft_text = parse_model_draft(raw_out)
+                        draft_check = verify_draft_amounts(
+                            draft_text,
+                            materials_usd=str(material_usd),
+                            labor_usd=str(labor_usd),
+                            subtotal_usd=str(subtotal_usd),
+                        )
+                except EstimateWorkflowError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "incorrect_result"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(f"estimate draft rejected: {exc}") from exc
+                except Exception as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "tool_exception"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(f"estimate draft generation failed: {exc}") from exc
+
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": CAPABILITY_DRAFT,
+                    "verified": True,
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "char_count": draft_check["char_count"],
+                    "verified_amounts": draft_check["verified_amounts_present"],
+                    "assemble_execution_id": assemble_ref.get("execution_id"),
+                    "subtotal_usd": str(subtotal_usd),
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "draft_amount_postcheck",
+                    # Draft body stored on conversation; receipt keeps hash only.
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": "draft_verified",
+                    "result_type": "estimate_draft",
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "subtotal_usd": str(subtotal_usd),
+                    "assemble_step_id": args["assemble_step_id"],
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": "draft_verified",
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "estimate draft verified but completion was not durably recorded"
+                )
+                record["estimate_draft"] = {
+                    "schema": "elysia.estimate-draft.v1",
+                    "text": draft_text,
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "execution_id": execution_id,
+                    "assemble_step_id": args["assemble_step_id"],
+                    "subtotal_usd": str(subtotal_usd),
+                    "banner": "DRAFT / NOT APPROVED FOR CUSTOMER DELIVERY",
+                    "approved": False,
+                    "updated_utc": now,
+                }
             else:
                 raise ContinuityError("unsupported bound capability")
 
@@ -1293,6 +1663,11 @@ class ConversationStore:
             # Keep receipt id / history / result_reference as evidence; do not rerun.
             target["execution_status"] = target.get("execution_status") or "none"
             target["verification_status"] = target.get("verification_status") or "none"
+            if isinstance(target.get("result_reference"), dict):
+                ref = dict(target["result_reference"])
+                ref["stale"] = True
+                ref["stale_reason"] = "step_reopened"
+                target["result_reference"] = ref
             history = list(target.get("execution_history") or [])
             history.append(
                 {
@@ -1307,6 +1682,21 @@ class ConversationStore:
                 if step["step_id"] == step_id:
                     steps[idx] = target
                     break
+            from project_guardian.painting_estimate_workflow import (
+                mark_dependent_steps_stale,
+            )
+
+            stale_ids = mark_dependent_steps_stale(steps, changed_step_id=step_id)
+            if stale_ids and isinstance(record.get("estimate_draft"), dict):
+                draft = dict(record["estimate_draft"])
+                draft["stale"] = True
+                draft["stale_reason"] = f"upstream reopened: {step_id}"
+                record["estimate_draft"] = draft
+            if stale_ids and isinstance(record.get("estimate_bundle"), dict):
+                bundle = dict(record["estimate_bundle"])
+                bundle["stale"] = True
+                bundle["stale_reason"] = f"upstream reopened: {step_id}"
+                record["estimate_bundle"] = bundle
             record["task_steps"] = steps
             _sync_lists_from_task_steps(record)
 

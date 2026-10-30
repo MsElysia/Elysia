@@ -15,13 +15,17 @@ CODE = Path(__file__).absolute().parent
 def workspace(name: str) -> Path:
     if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,19}", name):
         raise ValueError("invalid synthetic browser store name")
-    path = CODE / ".synthetic-pilot-stores" / ("browser-" + name)
-    # Check every ancestor before mkdir, including Windows junctions/reparse points.
-    for item in reversed((path, *path.parents)):
-        if item.is_symlink() or (hasattr(item, "is_junction") and item.is_junction()):
-            raise ValueError("linked synthetic workspace refused")
-        if item.exists() and getattr(item.lstat(), "st_file_attributes", 0) & 0x400:
-            raise ValueError("reparse synthetic workspace refused")
+    # An 8.3 path spelling is not a link. First reject symlinks/junctions
+    # from the originally supplied code tree, then use the canonical directory
+    # identity for the worker store and offline transaction guard.
+    supplied = CODE.absolute() / ".synthetic-pilot-stores" / ("browser-" + name)
+    path = CODE.resolve() / ".synthetic-pilot-stores" / ("browser-" + name)
+    for candidate in (supplied, path):
+        for item in reversed((candidate, *candidate.parents)):
+            if item.is_symlink() or (hasattr(item, "is_junction") and item.is_junction()):
+                raise ValueError("linked synthetic workspace refused")
+            if item.exists() and getattr(item.lstat(), "st_file_attributes", 0) & 0x400:
+                raise ValueError("reparse synthetic workspace refused")
     if path.resolve() != path:
         raise ValueError("noncanonical synthetic workspace refused")
     if path.exists() and any(path.iterdir()):

@@ -280,8 +280,9 @@ def search_local_documents(
                 if idx < 0:
                     continue
                 phrase_hits += 1
-                lo = max(0, line_no - 2)
-                hi = min(len(lines), line_no + 2)
+                # Keep nearby labeled fields available for structured extraction.
+                lo = max(0, line_no - 5)
+                hi = min(len(lines), line_no + 5)
                 window = "\n".join(lines[lo:hi])
                 widx = window.casefold().find(query_l)
                 if widx < 0:
@@ -345,8 +346,8 @@ def search_local_documents(
                         if anchor in line.casefold():
                             line_no = i
                             break
-                    lo = max(0, line_no - 2)
-                    hi = min(len(lines), line_no + 3)
+                    lo = max(0, line_no - 5)
+                    hi = min(len(lines), line_no + 5)
                     window = "\n".join(lines[lo:hi])
                     widx = window.casefold().find(anchor)
                     if widx < 0:

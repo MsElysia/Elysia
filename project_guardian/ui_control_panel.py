@@ -985,6 +985,10 @@ CONTROL_PANEL_TEMPLATE = """
                                         Authorize compose.synthesize for the selected bound step (this request only)
                                     </label>
                                     <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-compose-extract">
+                                        Authorize compose.extract_fields for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
                                         <input type="checkbox" id="authorize-step-record">
                                         Authorize recording the verified result as step completion (this request only)
                                     </label>
@@ -2007,13 +2011,15 @@ CONTROL_PANEL_TEMPLATE = """
                                 var boundDraft = step.capability === 'estimate.draft';
                                 var boundComposeAgg = step.capability === 'compose.aggregate_usd';
                                 var boundComposeSyn = step.capability === 'compose.synthesize';
-                                var bound = boundLabor || boundDocs || boundAssemble || boundDraft || boundComposeAgg || boundComposeSyn;
+                                var boundComposeExt = step.capability === 'compose.extract_fields';
+                                var bound = boundLabor || boundDocs || boundAssemble || boundDraft || boundComposeAgg || boundComposeSyn || boundComposeExt;
                                 var capLabel = boundLabor ? '[calculator.labor]' :
                                     boundDocs ? '[local.documents.search]' :
                                     boundAssemble ? '[estimate.assemble]' :
                                     boundDraft ? '[estimate.draft]' :
                                     boundComposeAgg ? '[compose.aggregate_usd]' :
-                                    boundComposeSyn ? '[compose.synthesize]' : '';
+                                    boundComposeSyn ? '[compose.synthesize]' :
+                                    boundComposeExt ? '[compose.extract_fields]' : '';
                                 html += '<div style="display: flex; gap: 8px; align-items: center; margin: 4px 0; flex-wrap: wrap;">';
                                 html += '<span style="flex: 1; min-width: 140px;">' +
                                     (done ? '✓ ' : '') +
@@ -2089,6 +2095,7 @@ CONTROL_PANEL_TEMPLATE = """
                     var draftAuth = document.getElementById('authorize-step-draft');
                     var composeAggAuth = document.getElementById('authorize-step-compose-aggregate');
                     var composeSynAuth = document.getElementById('authorize-step-compose-synthesize');
+                    var composeExtAuth = document.getElementById('authorize-step-compose-extract');
                     var recAuth = document.getElementById('authorize-step-record');
                     if (calcAuth) calcAuth.checked = false;
                     if (docsAuth) docsAuth.checked = false;
@@ -2096,6 +2103,7 @@ CONTROL_PANEL_TEMPLATE = """
                     if (draftAuth) draftAuth.checked = false;
                     if (composeAggAuth) composeAggAuth.checked = false;
                     if (composeSynAuth) composeSynAuth.checked = false;
+                    if (composeExtAuth) composeExtAuth.checked = false;
                     if (recAuth) recAuth.checked = false;
                     if (saveStatus) saveStatus.textContent = '';
                 })
@@ -2383,10 +2391,11 @@ CONTROL_PANEL_TEMPLATE = """
             var authDraft = !!(document.getElementById('authorize-step-draft') || {}).checked;
             var authComposeAgg = !!(document.getElementById('authorize-step-compose-aggregate') || {}).checked;
             var authComposeSyn = !!(document.getElementById('authorize-step-compose-synthesize') || {}).checked;
+            var authComposeExt = !!(document.getElementById('authorize-step-compose-extract') || {}).checked;
             var authRec = !!(document.getElementById('authorize-step-record') || {}).checked;
             var docsFolder = ((document.getElementById('documents-search-folder') || {}).value || '').trim();
             if (!id || !stepId) { if (saveStatus) saveStatus.textContent = 'No conversation or step.'; return; }
-            if (!authRec || (!authCalc && !authDocs && !authAssemble && !authDraft && !authComposeAgg && !authComposeSyn)) {
+            if (!authRec || (!authCalc && !authDocs && !authAssemble && !authDraft && !authComposeAgg && !authComposeSyn && !authComposeExt)) {
                 if (saveStatus) saveStatus.textContent = 'Execution rejected: capability + completion authorizations are required.';
                 return;
             }
@@ -2406,6 +2415,7 @@ CONTROL_PANEL_TEMPLATE = """
                     authorize_estimate_draft: authDraft,
                     authorize_compose_aggregate: authComposeAgg,
                     authorize_compose_synthesize: authComposeSyn,
+                    authorize_compose_extract: authComposeExt,
                     authorize_record_completion: true,
                     documents_folder: authDocs ? docsFolder : null
                 })
@@ -4523,6 +4533,7 @@ class UIControlPanel:
             authorize_draft = data.get("authorize_estimate_draft") is True
             authorize_compose_aggregate = data.get("authorize_compose_aggregate") is True
             authorize_compose_synthesize = data.get("authorize_compose_synthesize") is True
+            authorize_compose_extract = data.get("authorize_compose_extract") is True
             authorize_record = data.get("authorize_record_completion") is True
             documents_folder = data.get("documents_folder")
             if documents_folder is not None and not isinstance(documents_folder, str):
@@ -4553,21 +4564,23 @@ class UIControlPanel:
                     "error": "invalid execution_id",
                 }), 400
             draft_model = None
-            if authorize_draft or authorize_compose_synthesize:
+            if authorize_draft or authorize_compose_synthesize or authorize_compose_extract:
                 from project_guardian.local_memory_chat import (
                     LocalOllama,
                     configured_local_model_name,
                 )
 
                 model_name = configured_local_model_name()
-                if not model_name:
+                # Extract can run deterministic-only; draft/synthesize require a model.
+                if not model_name and (authorize_draft or authorize_compose_synthesize):
                     return jsonify({
                         "success": False,
                         "saved": False,
                         "executed": False,
                         "error": "local_model_not_configured",
                     }), 503
-                draft_model = LocalOllama(model_name)
+                if model_name:
+                    draft_model = LocalOllama(model_name)
             try:
                 store = self._conversation_store()
                 result = store.execute_verified_bound_step(
@@ -4580,6 +4593,7 @@ class UIControlPanel:
                     authorize_estimate_draft=authorize_draft,
                     authorize_compose_aggregate=authorize_compose_aggregate,
                     authorize_compose_synthesize=authorize_compose_synthesize,
+                    authorize_compose_extract=authorize_compose_extract,
                     authorize_record_completion=authorize_record,
                     execution_id=execution_id,
                     documents_folder=documents_folder if authorize_documents else None,
@@ -4606,6 +4620,7 @@ class UIControlPanel:
                     "estimate_draft_authorized_this_request": authorize_draft,
                     "compose_aggregate_authorized_this_request": authorize_compose_aggregate,
                     "compose_synthesize_authorized_this_request": authorize_compose_synthesize,
+                    "compose_extract_authorized_this_request": authorize_compose_extract,
                     "record_completion_authorized_this_request": authorize_record,
                 })
             except StaleTaskEditError as exc:

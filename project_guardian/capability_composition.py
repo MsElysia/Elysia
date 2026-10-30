@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 CAPABILITY_AGGREGATE = "compose.aggregate_usd"
 CAPABILITY_SYNTHESIZE = "compose.synthesize"
+CAPABILITY_EXTRACT = "compose.extract_fields"
 # Compatibility aliases retained for the painting-estimate adapter.
 CAPABILITY_ASSEMBLE = "estimate.assemble"
 CAPABILITY_DRAFT = "estimate.draft"
@@ -23,6 +24,7 @@ COMPOSITION_CAPABILITIES = frozenset(
     {
         CAPABILITY_AGGREGATE,
         CAPABILITY_SYNTHESIZE,
+        CAPABILITY_EXTRACT,
         CAPABILITY_ASSEMBLE,
         CAPABILITY_DRAFT,
     }
@@ -162,6 +164,7 @@ def resolve_upstream_amount(
     step_id: str,
     *,
     expected_capability: Optional[str] = None,
+    field_id: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Resolve a verified USD amount from any completed upstream step."""
     target = next((s for s in steps if s.get("step_id") == step_id), None)
@@ -180,7 +183,19 @@ def resolve_upstream_amount(
         raise CompositionError(
             f"upstream step result is stale and must be reverified: {step_id}"
         )
-    amount = ref.get("amount_usd")
+    amount = None
+    label = ref.get("component_label") or ref.get("result_type")
+    source_ref = ref.get("top_relative_path") or ref.get("folder_label")
+    if field_id and target.get("capability") == CAPABILITY_EXTRACT:
+        fields = ref.get("fields") if isinstance(ref.get("fields"), dict) else {}
+        entry = fields.get(field_id)
+        if not isinstance(entry, dict) or entry.get("status") != "verified":
+            raise CompositionError(f"extracted field not verified: {field_id}")
+        amount = entry.get("normalized_value")
+        label = field_id
+        source_ref = entry.get("source_document") or source_ref
+    if amount is None:
+        amount = ref.get("amount_usd")
     if amount is None and target.get("capability") == "calculator.labor":
         amount = ref.get("result")
     if amount is None and target.get("capability") in {
@@ -188,6 +203,8 @@ def resolve_upstream_amount(
         CAPABILITY_ASSEMBLE,
     }:
         amount = ref.get("result") or ref.get("subtotal_usd")
+    if amount is None and target.get("capability") == CAPABILITY_EXTRACT and not field_id:
+        amount = ref.get("amount_usd")
     if amount is None:
         raise CompositionError(f"upstream step has no verified amount_usd: {step_id}")
     return money_str(_dec(amount)), {
@@ -195,10 +212,11 @@ def resolve_upstream_amount(
         "capability": target.get("capability"),
         "execution_receipt_id": target.get("execution_receipt_id") or ref.get("execution_id"),
         "amount_usd": money_str(_dec(amount)),
-        "source_reference": ref.get("top_relative_path") or ref.get("folder_label"),
+        "source_reference": source_ref,
         "source_fingerprint": ref.get("folder_fingerprint"),
         "verification_state": "verified",
-        "label": ref.get("component_label") or ref.get("result_type"),
+        "label": label,
+        "field_id": field_id,
     }
 
 
@@ -226,6 +244,8 @@ def resolve_upstream_evidence(
         "result": ref.get("result"),
         "amount_usd": ref.get("amount_usd"),
         "components": ref.get("components"),
+        "fields": ref.get("fields"),
+        "excerpts": ref.get("excerpts"),
         "top_relative_path": ref.get("top_relative_path"),
         "folder_label": ref.get("folder_label"),
         "source_fingerprint": ref.get("folder_fingerprint"),
@@ -526,6 +546,11 @@ def _dependency_ids(args: Mapping[str, Any]) -> set:
         raw = args.get(key)
         if isinstance(raw, list):
             deps.update(x for x in raw if isinstance(x, str))
+    comps = args.get("components")
+    if isinstance(comps, list):
+        for item in comps:
+            if isinstance(item, dict) and isinstance(item.get("step_id"), str):
+                deps.add(item["step_id"])
     return deps
 
 
@@ -565,6 +590,10 @@ def list_composable_capabilities() -> List[Dict[str, str]]:
         {
             "capability": "calculator.labor",
             "role": "deterministic labor USD calculation",
+        },
+        {
+            "capability": "compose.extract_fields",
+            "role": "extract typed fields from verified document excerpts",
         },
         {
             "capability": "compose.aggregate_usd",

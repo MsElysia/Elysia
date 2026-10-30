@@ -150,6 +150,58 @@ def build_context(system, question):
     return bundle
 
 
+def validate_context_bundle(bundle, question):
+    """Refuse corrupt worker payloads before model context or tool execution.
+
+    The digest detects inconsistent serialized results, not a hostile worker.
+    Raw source authenticity is established by the separate guarded memory reader.
+    """
+    expected = {"schema", "query", "evidence_trust", "selection",
+                "evidence", "no_memory_support", "bundle_sha256"}
+    if type(bundle) is not dict or set(bundle) != expected:
+        raise ChatBoundaryError("invalid memory context bundle")
+    if (bundle["schema"] != "elysia.local-context.v1"
+            or type(bundle["query"]) is not str or bundle["query"] != question
+            or bundle["evidence_trust"] != "untrusted_data"
+            or bundle["selection"] != "current_revision_only"
+            or type(bundle["evidence"]) is not list
+            or len(bundle["evidence"]) > 4
+            or type(bundle["no_memory_support"]) is not bool
+            or bundle["no_memory_support"] != (not bundle["evidence"])):
+        raise ChatBoundaryError("invalid memory context bundle")
+    seen = set()
+    for item in bundle["evidence"]:
+        if type(item) is not dict or set(item) != {
+                "source_id", "chunk_id", "revision", "source_sha256", "highlights"}:
+            raise ChatBoundaryError("invalid memory evidence item")
+        if (type(item["source_id"]) is not str or not 1 <= len(item["source_id"]) <= 160
+                or type(item["chunk_id"]) is not str or not 1 <= len(item["chunk_id"]) <= 160
+                or type(item["revision"]) is not int or not 1 <= item["revision"] <= 7
+                or type(item["source_sha256"]) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", item["source_sha256"]) is None
+                or type(item["highlights"]) is not list or len(item["highlights"]) > 20):
+            raise ChatBoundaryError("invalid memory evidence item")
+        identity = (item["source_id"], item["chunk_id"])
+        if identity in seen:
+            raise ChatBoundaryError("duplicate memory evidence item")
+        seen.add(identity)
+        for highlight in item["highlights"]:
+            if (type(highlight) is not dict or set(highlight) != {"highlight_id", "text"}
+                    or type(highlight["highlight_id"]) is not str
+                    or not 1 <= len(highlight["highlight_id"]) <= 160
+                    or type(highlight["text"]) is not str
+                    or not 1 <= len(highlight["text"]) <= 3000):
+                raise ChatBoundaryError("invalid memory highlight")
+    if type(bundle["bundle_sha256"]) is not str or re.fullmatch(
+            r"[0-9a-f]{64}", bundle["bundle_sha256"]) is None:
+        raise ChatBoundaryError("invalid memory context digest")
+    unsigned = {key: value for key, value in bundle.items() if key != "bundle_sha256"}
+    if (len(canonical(unsigned).encode()) > 12000
+            or hashlib.sha256(canonical(unsigned).encode()).hexdigest() != bundle["bundle_sha256"]):
+        raise ChatBoundaryError("memory context digest mismatch")
+    return bundle
+
+
 class LocalOllama:
     """Strict transport independent of the legacy adapter's activating probes.
 
@@ -328,6 +380,7 @@ def converse_bundle(bundle, question, authorization, model, recent=()):
         raise ChatBoundaryError("strict local model required")
     if not isinstance(question, str) or not 1 <= len(question.strip()) <= 800:
         raise ChatBoundaryError("invalid question")
+    validate_context_bundle(bundle, question)
     catalog = capability_catalog(authorization)
     instruction = SYSTEM.replace("Tools are metadata proposals only.", "Tools require host authorization.").replace("Never claim to execute a tool, send email, search the web, change memory, or enable a provider.", "Never claim unexecuted actions or change memory.") + (
         ' For this host return exactly one JSON object, no markdown. For conversation use '

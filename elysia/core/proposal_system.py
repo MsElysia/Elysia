@@ -15,6 +15,24 @@ from ..events import EventBus
 logger = logging.getLogger(__name__)
 
 
+def _confined_proposal_dir(proposals_root: Path, proposal_id: str) -> Optional[Path]:
+    """Return the proposal directory only when proposal_id stays inside proposals_root."""
+    if not isinstance(proposal_id, str) or not proposal_id or proposal_id in {".", ".."}:
+        return None
+    if any(sep in proposal_id for sep in ("/", "\\", "\x00")):
+        return None
+
+    root = Path(proposals_root).resolve()
+    candidate = (root / proposal_id).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    if candidate.parent != root:
+        return None
+    return candidate
+
+
 class ProposalValidator:
     """Validates proposal structure and metadata schema."""
 
@@ -86,7 +104,9 @@ class ProposalLifecycleManager:
 
     def _load_metadata(self, proposal_id: str) -> Optional[Dict[str, Any]]:
         """Load metadata for a proposal."""
-        proposal_path = self.proposals_root / proposal_id
+        proposal_path = _confined_proposal_dir(self.proposals_root, proposal_id)
+        if proposal_path is None:
+            return None
         metadata_file = proposal_path / "metadata.json"
         if not metadata_file.exists():
             return None
@@ -99,7 +119,10 @@ class ProposalLifecycleManager:
 
     def _save_metadata(self, proposal_id: str, metadata: Dict[str, Any]) -> bool:
         """Save metadata for a proposal."""
-        proposal_path = self.proposals_root / proposal_id
+        proposal_path = _confined_proposal_dir(self.proposals_root, proposal_id)
+        if proposal_path is None:
+            logger.error("Refusing to save metadata outside proposals root")
+            return False
         proposal_path.mkdir(parents=True, exist_ok=True)
         metadata_file = proposal_path / "metadata.json"
 
@@ -337,17 +360,7 @@ class ProposalSystem:
 
     def get_proposal(self, proposal_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific proposal by ID."""
-        proposal_path = self.proposals_root / proposal_id
-        metadata_file = proposal_path / "metadata.json"
-
-        if not metadata_file.exists():
-            return None
-
-        try:
-            with open(metadata_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
+        return self.lifecycle_manager._load_metadata(proposal_id)
 
     def approve_proposal(self, proposal_id: str, approver: str) -> tuple[bool, Optional[str]]:
         """Approve a proposal."""

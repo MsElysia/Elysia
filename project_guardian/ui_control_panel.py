@@ -950,6 +950,16 @@ CONTROL_PANEL_TEMPLATE = """
                                     <button type="button" onclick="cancelTaskStateEdit()">Cancel</button>
                                 </div>
                                 <div id="task-steps-list" style="margin-top: 10px; font-size: 12px;"></div>
+                                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px;">
+                                        <input type="checkbox" id="authorize-step-calculator">
+                                        Authorize calculator.labor for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-record">
+                                        Authorize recording the verified result as step completion (this request only)
+                                    </label>
+                                </div>
                                 <p id="task-state-review-note" style="font-size: 12px; margin-top: 6px; color: var(--text-secondary);"></p>
                                 <p id="task-state-save-status" style="font-size: 12px; margin-top: 6px; color: var(--text-secondary);"></p>
                                 <input type="hidden" id="task-state-expected-revision" value="0">
@@ -1953,27 +1963,138 @@ CONTROL_PANEL_TEMPLATE = """
                             var html = '<div style="margin-bottom: 4px;"><strong>Steps</strong></div>';
                             taskSteps.forEach(function(step) {
                                 var done = step.status === 'completed';
+                                var bound = step.capability === 'calculator.labor';
                                 html += '<div style="display: flex; gap: 8px; align-items: center; margin: 4px 0; flex-wrap: wrap;">';
                                 html += '<span style="flex: 1; min-width: 140px;">' +
                                     (done ? '✓ ' : '') +
                                     window._escapeHtml(step.description || '') +
                                     (done ? ' <span style="color: var(--text-secondary);">(completed)</span>' : '') +
+                                    (bound ? ' <span style="color: var(--text-secondary);">[calculator.labor]</span>' : '') +
                                     '</span>';
                                 if (!done) {
                                     html += '<button type="button" onclick="completeTaskStep(\\'' +
                                         window._escapeHtml(step.step_id || '') +
                                         '\\')">Mark complete</button>';
+                                    if (!bound) {
+                                        html += '<button type="button" onclick="bindLaborStep(\\'' +
+                                            window._escapeHtml(step.step_id || '') +
+                                            '\\')">Bind labor calculator</button>';
+                                    } else {
+                                        html += '<button type="button" onclick="executeBoundStep(\\'' +
+                                            window._escapeHtml(step.step_id || '') +
+                                            '\\')">Execute authorized calculation</button>';
+                                    }
+                                } else {
+                                    html += '<button type="button" onclick="reopenTaskStep(\\'' +
+                                        window._escapeHtml(step.step_id || '') +
+                                        '\\')">Reopen step</button>';
                                 }
                                 html += '</div>';
                             });
                             listEl.innerHTML = html;
                         }
                     }
+                    var calcAuth = document.getElementById('authorize-step-calculator');
+                    var recAuth = document.getElementById('authorize-step-record');
+                    if (calcAuth) calcAuth.checked = false;
+                    if (recAuth) recAuth.checked = false;
                     if (saveStatus) saveStatus.textContent = '';
                 })
                 .catch(function(err) {
                     if (saveStatus) saveStatus.textContent = 'Load error: ' + err;
                 });
+        };
+
+        window.bindLaborStep = function(stepId) {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var saveStatus = document.getElementById('task-state-save-status');
+            var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
+            if (!id || !stepId) { if (saveStatus) saveStatus.textContent = 'No conversation or step.'; return; }
+            if (saveStatus) saveStatus.textContent = 'Binding calculator.labor...';
+            fetch('/api/conversations/' + encodeURIComponent(id) + '/task-steps/' + encodeURIComponent(stepId) + '/bind', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    expected_revision: expected,
+                    capability: 'calculator.labor',
+                    arguments: { hourly_rate_usd: '35', painters: 2, days: 3, hours_per_day: 8 }
+                })
+            })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    if (!data.success || res.status >= 400) {
+                        if (saveStatus) saveStatus.textContent = 'Bind rejected: ' + (data.error || res.status);
+                        return;
+                    }
+                    if (saveStatus) saveStatus.textContent = 'Bound calculator.labor · r' + ((data.checkpoint || {}).revision || '?');
+                    window.loadTaskStatePanel(id);
+                })
+                .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Bind failed: ' + err; });
+        };
+
+        window.executeBoundStep = function(stepId) {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var saveStatus = document.getElementById('task-state-save-status');
+            var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
+            var authCalc = !!(document.getElementById('authorize-step-calculator') || {}).checked;
+            var authRec = !!(document.getElementById('authorize-step-record') || {}).checked;
+            if (!id || !stepId) { if (saveStatus) saveStatus.textContent = 'No conversation or step.'; return; }
+            if (!authCalc || !authRec) {
+                if (saveStatus) saveStatus.textContent = 'Execution rejected: both request-scoped authorizations are required.';
+                return;
+            }
+            if (saveStatus) saveStatus.textContent = 'Executing authorized calculation...';
+            fetch('/api/conversations/' + encodeURIComponent(id) + '/task-steps/' + encodeURIComponent(stepId) + '/execute', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    expected_revision: expected,
+                    authorize_calculator: true,
+                    authorize_record_completion: true
+                })
+            })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    if (!data.success || res.status >= 400) {
+                        if (saveStatus) saveStatus.textContent = 'Execute rejected: ' + (data.error || res.status);
+                        return;
+                    }
+                    var receipt = data.receipt || {};
+                    if (saveStatus) {
+                        saveStatus.textContent = 'Verified USD ' + (receipt.result || '?') +
+                            ' · checkpoint r' + ((data.checkpoint || {}).revision || '?') +
+                            (data.advanced ? (' · next: ' + ((data.conversation || {}).next_safe_action || '')) : '');
+                    }
+                    window.loadTaskStatePanel(id);
+                    window.refreshConversations();
+                })
+                .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Execute failed: ' + err; });
+        };
+
+        window.reopenTaskStep = function(stepId) {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var saveStatus = document.getElementById('task-state-save-status');
+            var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
+            if (!id || !stepId) { if (saveStatus) saveStatus.textContent = 'No conversation or step.'; return; }
+            if (saveStatus) saveStatus.textContent = 'Reopening step...';
+            fetch('/api/conversations/' + encodeURIComponent(id) + '/task-steps/' + encodeURIComponent(stepId) + '/reopen', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ expected_revision: expected })
+            })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    if (!data.success || res.status >= 400) {
+                        if (saveStatus) saveStatus.textContent = 'Reopen rejected: ' + (data.error || res.status);
+                        return;
+                    }
+                    if (saveStatus) saveStatus.textContent = 'Step reopened · r' + ((data.checkpoint || {}).revision || '?') + ' (prior receipt preserved).';
+                    window.loadTaskStatePanel(id);
+                })
+                .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Reopen failed: ' + err; });
         };
 
         window.completeTaskStep = function(stepId) {
@@ -3712,6 +3833,211 @@ class UIControlPanel:
                     "checkpoint": result.get("checkpoint"),
                     "authorization_inherited": False,
                     "task_state_source": "operator",
+                })
+            except StaleTaskEditError as exc:
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "error": str(exc),
+                    "stale": True,
+                }), 409
+            except ContinuityError as exc:
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "error": str(exc),
+                }), 400
+
+        @self.app.route(
+            '/api/conversations/<conversation_id>/task-steps/<step_id>/bind',
+            methods=['POST'],
+        )
+        def api_bind_task_step(conversation_id: str, step_id: str):
+            """Bind a pending step to calculator.labor with validated arguments."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden", "saved": False}), 403
+            if not self._contained_startup_active():
+                return jsonify({
+                    "success": False,
+                    "error": "contained startup required",
+                    "saved": False,
+                }), 400
+            from project_guardian.conversation_continuity import ContinuityError, StaleTaskEditError
+
+            data = request.get_json(silent=True) or {}
+            for banned in (
+                "authorization",
+                "token",
+                "credential",
+                "api_key",
+                "password",
+                "scopes",
+            ):
+                data.pop(banned, None)
+            try:
+                expected_revision = int(data.get("expected_revision"))
+            except (TypeError, ValueError):
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "error": "expected_revision is required",
+                }), 400
+            try:
+                store = self._conversation_store()
+                result = store.bind_operator_step(
+                    conversation_id,
+                    step_id=step_id,
+                    expected_revision=expected_revision,
+                    capability=str(data.get("capability") or ""),
+                    arguments=data.get("arguments") if isinstance(data.get("arguments"), dict) else {},
+                )
+                return jsonify({
+                    "success": True,
+                    "saved": True,
+                    "idempotent": bool(result.get("idempotent")),
+                    "conversation": result.get("conversation"),
+                    "checkpoint": result.get("checkpoint"),
+                    "authorization_inherited": False,
+                })
+            except StaleTaskEditError as exc:
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "error": str(exc),
+                    "stale": True,
+                }), 409
+            except ContinuityError as exc:
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "error": str(exc),
+                }), 400
+
+        @self.app.route(
+            '/api/conversations/<conversation_id>/task-steps/<step_id>/execute',
+            methods=['POST'],
+        )
+        def api_execute_task_step(conversation_id: str, step_id: str):
+            """Authorize, execute, verify, and durably complete a bound calculator step."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden", "saved": False}), 403
+            if not self._contained_startup_active():
+                return jsonify({
+                    "success": False,
+                    "error": "contained startup required",
+                    "saved": False,
+                }), 400
+            from project_guardian.conversation_continuity import ContinuityError, StaleTaskEditError
+
+            data = request.get_json(silent=True) or {}
+            authorize_calculator = data.get("authorize_calculator") is True
+            authorize_record = data.get("authorize_record_completion") is True
+            # Never accept auth from stored fields named like tokens.
+            for banned in ("token", "credential", "api_key", "password", "scopes"):
+                data.pop(banned, None)
+            try:
+                expected_revision = int(data.get("expected_revision"))
+            except (TypeError, ValueError):
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "executed": False,
+                    "error": "expected_revision is required",
+                }), 400
+            execution_id = data.get("execution_id")
+            if execution_id is not None and not isinstance(execution_id, str):
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "executed": False,
+                    "error": "invalid execution_id",
+                }), 400
+            try:
+                store = self._conversation_store()
+                result = store.execute_verified_bound_step(
+                    conversation_id,
+                    step_id=step_id,
+                    expected_revision=expected_revision,
+                    authorize_calculator=authorize_calculator,
+                    authorize_record_completion=authorize_record,
+                    execution_id=execution_id,
+                )
+                return jsonify({
+                    "success": True,
+                    "saved": True,
+                    "executed": bool(result.get("executed")),
+                    "verified": bool(result.get("verified")),
+                    "idempotent": bool(result.get("idempotent")),
+                    "advanced": bool(result.get("advanced")),
+                    "advancement_needs_review": bool(result.get("advancement_needs_review")),
+                    "receipt": result.get("receipt"),
+                    "completed_step": result.get("completed_step"),
+                    "conversation": result.get("conversation"),
+                    "checkpoint": result.get("checkpoint"),
+                    "authorization_inherited": False,
+                    "calculator_authorized_this_request": authorize_calculator,
+                    "record_completion_authorized_this_request": authorize_record,
+                })
+            except StaleTaskEditError as exc:
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "executed": False,
+                    "error": str(exc),
+                    "stale": True,
+                }), 409
+            except ContinuityError as exc:
+                detail = str(exc)
+                status = 403 if "not authorized" in detail.casefold() else 400
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "executed": False,
+                    "error": detail,
+                    "authorization_inherited": False,
+                }), status
+
+        @self.app.route(
+            '/api/conversations/<conversation_id>/task-steps/<step_id>/reopen',
+            methods=['POST'],
+        )
+        def api_reopen_task_step(conversation_id: str, step_id: str):
+            """Operator reopens a completed step; preserves prior execution evidence."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden", "saved": False}), 403
+            if not self._contained_startup_active():
+                return jsonify({
+                    "success": False,
+                    "error": "contained startup required",
+                    "saved": False,
+                }), 400
+            from project_guardian.conversation_continuity import ContinuityError, StaleTaskEditError
+
+            data = request.get_json(silent=True) or {}
+            try:
+                expected_revision = int(data.get("expected_revision"))
+            except (TypeError, ValueError):
+                return jsonify({
+                    "success": False,
+                    "saved": False,
+                    "error": "expected_revision is required",
+                }), 400
+            try:
+                store = self._conversation_store()
+                result = store.reopen_operator_step(
+                    conversation_id,
+                    step_id=step_id,
+                    expected_revision=expected_revision,
+                )
+                return jsonify({
+                    "success": True,
+                    "saved": True,
+                    "idempotent": bool(result.get("idempotent")),
+                    "reopened_step": result.get("reopened_step"),
+                    "advancement_needs_review": bool(result.get("advancement_needs_review")),
+                    "conversation": result.get("conversation"),
+                    "checkpoint": result.get("checkpoint"),
+                    "authorization_inherited": False,
                 })
             except StaleTaskEditError as exc:
                 return jsonify({

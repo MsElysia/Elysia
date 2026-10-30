@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 import hashlib
 import json
 import os
@@ -53,6 +54,38 @@ def _new_step_id() -> str:
     return "step_" + uuid.uuid4().hex[:12]
 
 
+SUPPORTED_STEP_CAPABILITIES = frozenset({"calculator.labor"})
+
+
+def _normalize_labor_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("calculator.labor arguments must be an object")
+    rate = raw.get("hourly_rate_usd")
+    if isinstance(rate, (int, float)) and not isinstance(rate, bool):
+        rate_s = format(Decimal(str(rate)).normalize(), "f")
+    elif isinstance(rate, str) and re.fullmatch(r"[0-9]{1,4}(?:\.[0-9]{1,2})?", rate.strip()):
+        rate_s = rate.strip()
+    else:
+        raise ContinuityError("hourly_rate_usd must be a USD amount")
+    args: Dict[str, Any] = {"hourly_rate_usd": rate_s}
+    for key, limit in (("painters", 100), ("days", 366), ("hours_per_day", 24)):
+        value = raw.get(key)
+        if type(value) is bool:
+            raise ContinuityError(f"invalid {key}")
+        if type(value) is int:
+            num = value
+        elif type(value) is float and value.is_integer():
+            num = int(value)
+        elif isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,3}", value.strip()):
+            num = int(value.strip())
+        else:
+            raise ContinuityError(f"invalid {key}")
+        if not 1 <= num <= limit:
+            raise ContinuityError(f"{key} out of range")
+        args[key] = num
+    return args
+
+
 def _normalize_task_steps(raw: Any) -> List[Dict[str, Any]]:
     steps: List[Dict[str, Any]] = []
     if not isinstance(raw, list):
@@ -67,6 +100,9 @@ def _normalize_task_steps(raw: Any) -> List[Dict[str, Any]]:
         if not isinstance(description, str) or not description.strip():
             continue
         status = item.get("status") if item.get("status") in {"pending", "completed"} else "pending"
+        capability = item.get("capability")
+        if capability is not None and capability not in SUPPORTED_STEP_CAPABILITIES:
+            capability = None
         step = {
             "step_id": step_id,
             "description": description.strip()[:400],
@@ -77,6 +113,24 @@ def _normalize_task_steps(raw: Any) -> List[Dict[str, Any]]:
             "completed_at_revision": item.get("completed_at_revision")
             if status == "completed"
             else None,
+            "capability": capability,
+            "arguments": item.get("arguments") if isinstance(item.get("arguments"), dict) else None,
+            "expected_result_type": item.get("expected_result_type"),
+            "verification_rule": item.get("verification_rule"),
+            "execution_status": item.get("execution_status")
+            if item.get("execution_status") in {"none", "succeeded", "failed"}
+            else "none",
+            "verification_status": item.get("verification_status")
+            if item.get("verification_status") in {"none", "verified", "failed"}
+            else "none",
+            "execution_receipt_id": item.get("execution_receipt_id"),
+            "last_failure_category": item.get("last_failure_category"),
+            "result_reference": item.get("result_reference")
+            if isinstance(item.get("result_reference"), dict)
+            else None,
+            "execution_history": [
+                h for h in (item.get("execution_history") or []) if isinstance(h, dict)
+            ][:12],
         }
         steps.append(step)
     return steps
@@ -131,6 +185,11 @@ def _rebuild_pending_steps(
                 "completed_utc": None,
                 "completion_source": None,
                 "completed_at_revision": None,
+                "capability": None,
+                "arguments": None,
+                "execution_status": "none",
+                "verification_status": "none",
+                "execution_history": [],
             }
         else:
             match["description"] = desc
@@ -138,6 +197,7 @@ def _rebuild_pending_steps(
             match["completed_utc"] = None
             match["completion_source"] = None
             match["completed_at_revision"] = None
+            # Preserve capability binding and prior execution evidence.
         used_ids.add(match["step_id"])
         new_pending.append(match)
     merged = completed + new_pending
@@ -606,6 +666,489 @@ class ConversationStore:
                 "completed_utc": now,
             }
             return result
+
+    def bind_operator_step(
+        self,
+        conversation_id: str,
+        *,
+        step_id: str,
+        expected_revision: int,
+        capability: str,
+        arguments: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Attach a supported capability binding to a pending step."""
+        if capability not in SUPPORTED_STEP_CAPABILITIES:
+            raise ContinuityError("unsupported step capability")
+        if not isinstance(step_id, str) or not re.fullmatch(r"step_[a-f0-9]{12}", step_id):
+            raise ContinuityError("invalid step_id")
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ContinuityError("expected_revision must be a non-negative integer")
+        cleaned_args = _normalize_labor_arguments(arguments)
+
+        with self._lock:
+            record, existing, current_rev = self._revision_gate_unlocked(
+                conversation_id,
+                expected_revision=expected_revision,
+                idempotent_reason="operator_step_bind",
+                idempotent_match=lambda ckpt: (
+                    isinstance(ckpt.get("last_bound_step"), dict)
+                    and ckpt["last_bound_step"].get("step_id") == step_id
+                    and ckpt["last_bound_step"].get("capability") == capability
+                    and ckpt["last_bound_step"].get("arguments") == cleaned_args
+                ),
+            )
+            if record.get("_idempotent_hit"):
+                return {
+                    "conversation": {k: v for k, v in record.items() if k != "_idempotent_hit"},
+                    "checkpoint": existing,
+                    "idempotent": True,
+                    "saved": True,
+                }
+
+            steps = _normalize_task_steps(record.get("task_steps"))
+            target = next((s for s in steps if s["step_id"] == step_id), None)
+            if target is None:
+                raise ContinuityError("step not found")
+            if target.get("status") != "pending":
+                raise ContinuityError("only pending steps can be bound")
+            target["capability"] = capability
+            target["arguments"] = cleaned_args
+            target["expected_result_type"] = "usd_total"
+            target["verification_rule"] = "deterministic_recompute"
+            target["execution_status"] = "none"
+            target["verification_status"] = "none"
+            target["last_failure_category"] = None
+            for idx, step in enumerate(steps):
+                if step["step_id"] == step_id:
+                    steps[idx] = target
+                    break
+            record["task_steps"] = steps
+            _sync_lists_from_task_steps(record)
+            now = _utc_now()
+            record["operator_task_state"] = {
+                "locked": True,
+                "outstanding_steps": True,
+                "next_safe_action": bool(
+                    (record.get("operator_task_state") or {}).get("next_safe_action")
+                ),
+                "updated_utc": now,
+                "source": "operator",
+            }
+            record["updated_utc"] = now
+            return self._persist_operator_mutation_unlocked(
+                record,
+                previous=existing if isinstance(existing, dict) else None,
+                reason="operator_step_bind",
+                require_outstanding=None,
+                extra_checkpoint_fields={
+                    "last_bound_step": {
+                        "step_id": step_id,
+                        "capability": capability,
+                        "arguments": cleaned_args,
+                    }
+                },
+            )
+
+    def execute_verified_bound_step(
+        self,
+        conversation_id: str,
+        *,
+        step_id: str,
+        expected_revision: int,
+        authorize_calculator: bool,
+        authorize_record_completion: bool,
+        execution_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Execute calculator.labor for a bound step, verify, and durably complete."""
+        from project_guardian.local_memory_chat import calculate_local
+
+        if not authorize_calculator:
+            raise ContinuityError("calculator execution not authorized for this request")
+        if not authorize_record_completion:
+            raise ContinuityError("recording completion not authorized for this request")
+        if not isinstance(step_id, str) or not re.fullmatch(r"step_[a-f0-9]{12}", step_id):
+            raise ContinuityError("invalid step_id")
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ContinuityError("expected_revision must be a non-negative integer")
+        if execution_id is None:
+            execution_id = "exec_" + uuid.uuid4().hex[:16]
+        elif not isinstance(execution_id, str) or not re.fullmatch(
+            r"exec_[a-f0-9]{16}", execution_id
+        ):
+            raise ContinuityError("invalid execution_id")
+
+        with self._lock:
+            record, existing, current_rev = self._revision_gate_unlocked(
+                conversation_id,
+                expected_revision=expected_revision,
+                idempotent_reason="operator_verified_execution",
+                idempotent_match=lambda ckpt: (
+                    isinstance(ckpt.get("last_execution_receipt"), dict)
+                    and ckpt["last_execution_receipt"].get("execution_id") == execution_id
+                ),
+            )
+            if record.get("_idempotent_hit"):
+                clean = {k: v for k, v in record.items() if k != "_idempotent_hit"}
+                return {
+                    "conversation": clean,
+                    "checkpoint": existing,
+                    "idempotent": True,
+                    "saved": True,
+                    "executed": True,
+                    "verified": True,
+                    "receipt": existing.get("last_execution_receipt") if existing else None,
+                    "advanced": bool((existing or {}).get("advanced_next_action")),
+                    "advancement_needs_review": bool(
+                        (existing or {}).get("advancement_needs_review")
+                    ),
+                }
+
+            steps = _normalize_task_steps(record.get("task_steps"))
+            target = next((s for s in steps if s["step_id"] == step_id), None)
+            if target is None:
+                raise ContinuityError("step not found")
+            if target.get("status") != "pending":
+                raise ContinuityError("step is not pending")
+            if target.get("capability") != "calculator.labor":
+                raise ContinuityError("step is not bound to calculator.labor")
+            try:
+                args = _normalize_labor_arguments(target.get("arguments") or {})
+            except ContinuityError as exc:
+                target["execution_status"] = "failed"
+                target["verification_status"] = "failed"
+                target["last_failure_category"] = "invalid_arguments"
+                raise ContinuityError(str(exc)) from exc
+
+            expression = (
+                f"{args['hourly_rate_usd']} * {args['painters']} * "
+                f"{args['days']} * {args['hours_per_day']}"
+            )
+            try:
+                total = calculate_local(expression)
+            except ValueError as exc:
+                target["execution_status"] = "failed"
+                target["verification_status"] = "failed"
+                target["last_failure_category"] = "tool_exception"
+                for idx, step in enumerate(steps):
+                    if step["step_id"] == step_id:
+                        steps[idx] = target
+                        break
+                record["task_steps"] = steps
+                # Do not advance revision on tool failure — leave pending, no success claim.
+                raise ContinuityError(f"calculator failed: {exc}") from exc
+
+            # Independent verification: recompute expected product.
+            expected = (
+                Decimal(args["hourly_rate_usd"])
+                * Decimal(args["painters"])
+                * Decimal(args["days"])
+                * Decimal(args["hours_per_day"])
+            )
+            expected_s = format(expected.normalize(), "f")
+            if total != expected_s:
+                target["execution_status"] = "failed"
+                target["verification_status"] = "failed"
+                target["last_failure_category"] = "incorrect_result"
+                raise ContinuityError("calculator result failed independent verification")
+
+            now = _utc_now()
+            next_rev = current_rev + 1
+            receipt = {
+                "execution_id": execution_id,
+                "step_id": step_id,
+                "capability": "calculator.labor",
+                "verified": True,
+                "result": total,
+                "currency": "USD",
+                "expression": expression,
+                "checkpoint_revision": next_rev,
+                "created_utc": now,
+                "verification_rule": "deterministic_recompute",
+            }
+            history = list(target.get("execution_history") or [])
+            history.append(
+                {
+                    "execution_id": execution_id,
+                    "result": total,
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+            )
+            target["execution_history"] = history[-12:]
+            target["execution_status"] = "succeeded"
+            target["verification_status"] = "verified"
+            target["execution_receipt_id"] = execution_id
+            target["result_reference"] = {
+                "execution_id": execution_id,
+                "result": total,
+                "currency": "USD",
+            }
+            target["last_failure_category"] = None
+            target["status"] = "completed"
+            target["completed_utc"] = now
+            target["completion_source"] = "operator_verified_execution"
+            target["completed_at_revision"] = next_rev
+            target["arguments"] = args
+
+            for idx, step in enumerate(steps):
+                if step["step_id"] == step_id:
+                    steps[idx] = target
+                    break
+            record["task_steps"] = steps
+            _sync_lists_from_task_steps(record)
+
+            current_next = (record.get("next_safe_action") or "").strip()
+            completed_desc = target["description"]
+            pending = [s for s in steps if s.get("status") == "pending"]
+            linked = (
+                not current_next
+                or current_next == completed_desc
+                or current_next == NO_OUTSTANDING_STEPS
+            )
+            advanced = False
+            needs_review = False
+            if linked:
+                record["next_safe_action"] = (
+                    pending[0]["description"] if pending else NO_OUTSTANDING_STEPS
+                )
+                advanced = True
+            else:
+                needs_review = True
+            record["advancement_needs_review"] = needs_review
+            record["operator_task_state"] = {
+                "locked": True,
+                "outstanding_steps": True,
+                "next_safe_action": True,
+                "updated_utc": now,
+                "source": "operator",
+            }
+            record["updated_utc"] = now
+
+            # Stash recoverable receipt before checkpoint so a failed write can be reconciled.
+            pending_path = self._conv_dir(conversation_id) / f"{execution_id}.pending.json"
+            try:
+                _atomic_write_json(
+                    pending_path,
+                    {
+                        "schema": "elysia.execution-pending.v1",
+                        "receipt": receipt,
+                        "step_id": step_id,
+                        "expected_revision": expected_revision,
+                    },
+                )
+            except Exception:
+                raise ContinuityError(
+                    "could not preserve recoverable execution state before checkpoint"
+                )
+
+            try:
+                result = self._persist_operator_mutation_unlocked(
+                    record,
+                    previous=existing if isinstance(existing, dict) else None,
+                    reason="operator_verified_execution",
+                    require_outstanding=None,
+                    extra_checkpoint_fields={
+                        "last_completed_step": {
+                            "step_id": step_id,
+                            "description": completed_desc,
+                            "completion_source": "operator_verified_execution",
+                            "completed_utc": now,
+                        },
+                        "last_execution_receipt": receipt,
+                        "advanced_next_action": advanced,
+                        "advancement_needs_review": needs_review,
+                    },
+                )
+            except ContinuityError as exc:
+                raise ContinuityError(
+                    f"calculation succeeded but completion was not durably recorded: {exc}; "
+                    f"recoverable execution_id={execution_id}"
+                ) from exc
+
+            try:
+                if pending_path.is_file():
+                    pending_path.unlink()
+            except OSError:
+                pass
+
+            result.update(
+                {
+                    "executed": True,
+                    "verified": True,
+                    "receipt": receipt,
+                    "advanced": advanced,
+                    "advancement_needs_review": needs_review,
+                    "completed_step": {
+                        "step_id": step_id,
+                        "description": completed_desc,
+                        "completion_source": "operator_verified_execution",
+                        "completed_utc": now,
+                    },
+                }
+            )
+            return result
+
+    def reopen_operator_step(
+        self,
+        conversation_id: str,
+        *,
+        step_id: str,
+        expected_revision: int,
+    ) -> Dict[str, Any]:
+        """Operator reopens a completed step without destroying prior execution evidence."""
+        if not isinstance(step_id, str) or not re.fullmatch(r"step_[a-f0-9]{12}", step_id):
+            raise ContinuityError("invalid step_id")
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ContinuityError("expected_revision must be a non-negative integer")
+
+        with self._lock:
+            record, existing, current_rev = self._revision_gate_unlocked(
+                conversation_id,
+                expected_revision=expected_revision,
+                idempotent_reason="operator_step_reopen",
+                idempotent_match=lambda ckpt: (
+                    isinstance(ckpt.get("last_reopened_step"), dict)
+                    and ckpt["last_reopened_step"].get("step_id") == step_id
+                ),
+            )
+            if record.get("_idempotent_hit"):
+                return {
+                    "conversation": {k: v for k, v in record.items() if k != "_idempotent_hit"},
+                    "checkpoint": existing,
+                    "idempotent": True,
+                    "saved": True,
+                }
+
+            steps = _normalize_task_steps(record.get("task_steps"))
+            target = next((s for s in steps if s["step_id"] == step_id), None)
+            if target is None:
+                raise ContinuityError("step not found")
+            if target.get("status") != "completed":
+                raise ContinuityError("only completed steps can be reopened")
+
+            prior_completion = {
+                "step_id": step_id,
+                "description": target["description"],
+                "completed_utc": target.get("completed_utc"),
+                "completion_source": target.get("completion_source"),
+                "completed_at_revision": target.get("completed_at_revision"),
+                "execution_receipt_id": target.get("execution_receipt_id"),
+                "result_reference": target.get("result_reference"),
+            }
+            # Preserve history; clear active completion flags.
+            target["status"] = "pending"
+            target["completed_utc"] = None
+            target["completion_source"] = None
+            target["completed_at_revision"] = None
+            # Keep receipt id / history / result_reference as evidence; do not rerun.
+            target["execution_status"] = target.get("execution_status") or "none"
+            target["verification_status"] = target.get("verification_status") or "none"
+            history = list(target.get("execution_history") or [])
+            history.append(
+                {
+                    "event": "reopened",
+                    "prior_completion": prior_completion,
+                    "created_utc": _utc_now(),
+                }
+            )
+            target["execution_history"] = history[-12:]
+
+            for idx, step in enumerate(steps):
+                if step["step_id"] == step_id:
+                    steps[idx] = target
+                    break
+            record["task_steps"] = steps
+            _sync_lists_from_task_steps(record)
+
+            current_next = (record.get("next_safe_action") or "").strip()
+            pending = [s for s in steps if s.get("status") == "pending"]
+            # Safe recalculation only when next was tracking the list head / no-outstanding.
+            linked = (
+                not current_next
+                or current_next == NO_OUTSTANDING_STEPS
+                or current_next
+                in {
+                    s["description"]
+                    for s in steps
+                    if s.get("status") == "completed"
+                }
+                or current_next == target["description"]
+            )
+            needs_review = False
+            if linked and pending:
+                # Prefer reopened step as next when it is first pending; else first pending.
+                record["next_safe_action"] = pending[0]["description"]
+                needs_review = False
+            elif linked and not pending:
+                record["next_safe_action"] = NO_OUTSTANDING_STEPS
+            else:
+                needs_review = True
+            record["advancement_needs_review"] = needs_review
+            now = _utc_now()
+            record["operator_task_state"] = {
+                "locked": True,
+                "outstanding_steps": True,
+                "next_safe_action": True,
+                "updated_utc": now,
+                "source": "operator",
+            }
+            record["updated_utc"] = now
+            result = self._persist_operator_mutation_unlocked(
+                record,
+                previous=existing if isinstance(existing, dict) else None,
+                reason="operator_step_reopen",
+                require_outstanding=None,
+                extra_checkpoint_fields={
+                    "last_reopened_step": {
+                        "step_id": step_id,
+                        "description": target["description"],
+                        "prior_completion": prior_completion,
+                    },
+                    "advancement_needs_review": needs_review,
+                },
+            )
+            result["reopened_step"] = {
+                "step_id": step_id,
+                "description": target["description"],
+                "prior_completion": prior_completion,
+            }
+            result["advancement_needs_review"] = needs_review
+            return result
+
+    def _revision_gate_unlocked(
+        self,
+        conversation_id: str,
+        *,
+        expected_revision: int,
+        idempotent_reason: str,
+        idempotent_match,
+    ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]], int]:
+        record = self._load_unlocked(conversation_id)
+        current_rev = int(record.get("checkpoint_revision") or 0)
+        existing = None
+        cpath = self._checkpoint_path(conversation_id)
+        if cpath.is_file():
+            try:
+                existing = json.loads(cpath.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                existing = None
+        if current_rev == expected_revision + 1 and isinstance(existing, dict):
+            if (
+                int(existing.get("revision") or 0) == expected_revision + 1
+                and existing.get("reason") == idempotent_reason
+                and idempotent_match(existing)
+            ):
+                record["_idempotent_hit"] = True
+                return record, existing, current_rev
+            raise StaleTaskEditError(
+                f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+            )
+        if current_rev != expected_revision:
+            raise StaleTaskEditError(
+                f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+            )
+        return record, existing, current_rev
 
     def _persist_operator_mutation_unlocked(
         self,

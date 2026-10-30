@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
-from .self_task_execution_outcome import is_execution_stage_archetype
+from .self_task_execution_outcome import is_execution_stage_archetype, permitted_artifact_file
 from .self_task_output_contracts import normalize_payload
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ def evaluate_execution_value(
     dup = "duplicate" in reason_adv.lower()
 
     tier = (execution_tier or "").lower()
-    has_artifact = artifact_path is not None
+    has_artifact = permitted_artifact_file(artifact_path) is not None
     p = normalize_payload(payload)
     if not isinstance(p, dict):
         p = {}

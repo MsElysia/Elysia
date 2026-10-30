@@ -79,41 +79,71 @@ class RuntimeAPIServer:
 
         @self._app.route("/api/chat", methods=["POST"])
         def api_chat():
-            data = request.get_json(force=True, silent=True) or {}
-            message = data.get("message", "").strip()
-            context = data.get("context", "general")
-            if not message:
-                return jsonify({"error": "message is required"}), 400
+            data = request.get_json(force=True, silent=True)
+            if data is None:
+                data = {}
+            if not isinstance(data, dict):
+                return jsonify(
+                    {"error": "request body must be a JSON object", "answered": False}
+                ), 400
 
-            # Route to appropriate handler based on context
+            message = data.get("message", "")
+            if not isinstance(message, str) or not message.strip():
+                return jsonify({"error": "message is required", "answered": False}), 400
+            message = message.strip()
+
+            raw_context = data.get("context", "general")
+            if raw_context is None or (isinstance(raw_context, str) and not raw_context.strip()):
+                context = "general"
+            elif not isinstance(raw_context, str):
+                return jsonify({"error": "context must be a string", "answered": False}), 400
+            else:
+                context = raw_context.strip()
+
+            # Proposal lookup is a local read. General chat has no runtime method:
+            # Architect-Core exposes commands, not a chat reply, so an echo is not an answer.
             if context.startswith("proposal:"):
-                proposal_id = context.split(":", 1)[1]
-                # Handle proposal-specific chat
-                if self._proposal_system:
-                    proposal = self._proposal_system.get_proposal(proposal_id)
-                    if proposal:
-                        response = f"Proposal '{proposal.get('title', proposal_id)}' status: {proposal.get('status', 'unknown')}"
-                        self._event_bus.emit("api", "chat", {"message": message, "context": context, "response": response})
-                        return jsonify({"response": response, "context": context})
-                    return jsonify({"error": "Proposal not found"}), 404
-                return jsonify({"error": "Proposal system not available"}), 503
+                proposal_id = context.split(":", 1)[1].strip()
+                if not proposal_id:
+                    return jsonify({"error": "proposal id is required", "answered": False}), 400
+                if not self._proposal_system:
+                    return jsonify(
+                        {"error": "Proposal system not available", "answered": False}
+                    ), 503
+                proposal = self._proposal_system.get_proposal(proposal_id)
+                if not proposal:
+                    return jsonify({"error": "Proposal not found", "answered": False}), 404
+                response = (
+                    f"Proposal '{proposal.get('title', proposal_id)}' status: "
+                    f"{proposal.get('status', 'unknown')}"
+                )
+                self._event_bus.emit(
+                    "api",
+                    "chat",
+                    {
+                        "message": message,
+                        "context": context,
+                        "response": response,
+                        "answered": True,
+                    },
+                )
+                return jsonify(
+                    {
+                        "response": response,
+                        "context": context,
+                        "answered": True,
+                        "status": "answered",
+                    }
+                )
 
-            # General chat - try Architect-Core if available
-            if self._architect:
-                try:
-                    # This would call Architect-Core's chat interface
-                    # For now, return a placeholder
-                    response = f"Echo: {message}"
-                    self._event_bus.emit("api", "chat", {"message": message, "context": context, "response": response})
-                    return jsonify({"response": response, "context": context})
-                except Exception as e:
-                    logger.exception("Chat error")
-                    return jsonify({"error": str(e)}), 500
-
-            # Fallback echo
-            logger.info("Chat message received: %s", message)
-            self._event_bus.emit("api", "chat", {"message": message, "context": context})
-            return jsonify({"response": f"Echo: {message}", "status": "accepted"})
+            logger.info("Chat message was not answered: no chat runtime is connected")
+            return jsonify(
+                {
+                    "error": "Chat is not connected to a runtime",
+                    "answered": False,
+                    "status": "not_answered",
+                }
+            ), 501
 
         @self._app.route("/api/ping", methods=["GET"])
         def api_ping():

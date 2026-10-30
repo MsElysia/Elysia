@@ -43,21 +43,7 @@ def interactive_shell(host: str = "127.0.0.1", port: int = 8123) -> None:
                 print(f"{prop.get('proposal_id', 'unknown')}: {prop.get('title', 'No title')} [{prop.get('status', 'unknown')}]")
             continue
         if line.startswith("chat "):
-            message = line[5:].strip()
-            payload = json.dumps({"message": message}).encode("utf-8")
-            url = f"http://{host}:{port}/api/chat"
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    reply = json.loads(resp.read().decode("utf-8"))
-                    print(reply.get("response", json.dumps(reply, indent=2)))
-            except Exception as exc:
-                print(f"[error] {exc}", file=sys.stderr)
+            send_chat(host, port, line[5:].strip())
             continue
         if line.startswith("approve "):
             proposal_id = line[8:].strip()
@@ -97,6 +83,45 @@ def interactive_shell(host: str = "127.0.0.1", port: int = 8123) -> None:
             continue
 
         print("Unknown command. Type 'help' for available commands.")
+
+
+def send_chat(host: str, port: int, message: str, context: Optional[str] = None) -> int:
+    """Post one chat message to the runtime API and print the answer or error."""
+    payload_body = {"message": message}
+    if context is not None:
+        payload_body["context"] = context
+    payload = json.dumps(payload_body).encode("utf-8")
+    url = f"http://{host}:{port}/api/chat"
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            raw = resp.read().decode("utf-8")
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        status = exc.code
+    except Exception as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return 0
+
+    try:
+        body = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        print(f"[error] HTTP {status}: {raw}", file=sys.stderr)
+        return status
+
+    if status == 200 and isinstance(body, dict) and body.get("answered") is True:
+        print(body.get("response", json.dumps(body, indent=2)))
+        return status
+
+    error = body.get("error") if isinstance(body, dict) else None
+    print(f"[error] HTTP {status}: {error or raw}", file=sys.stderr)
+    return status
 
 
 def _fetch_json(host: str, port: int, path: str) -> Optional[dict]:

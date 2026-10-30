@@ -497,3 +497,11 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product API — chat answer status
+
+- `POST /api/chat` returns HTTP 200 only when a proposal-context read answers from the proposal store (`answered: true`).
+- A general message, including one sent while an architect object is attached, returns HTTP 501 `status: not_answered`. The body does not echo the message, and no chat event is recorded.
+- A non-object JSON body returns HTTP 400. A missing, blank, or non-string message returns HTTP 400. A non-string context returns HTTP 400.
+- The shell prints that 501 error text. A proposal-context reply is still printed as the proposal status.
+- Contract: `tests/test_runtime_api_chat.py` (Flask client, live Werkzeug HTTP, and the shell client against that server; fictional proposal; no external services).

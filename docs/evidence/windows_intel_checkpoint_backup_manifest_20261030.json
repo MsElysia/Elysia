@@ -1,0 +1,114 @@
+﻿{
+    "created_utc":  "2026-10-30T22:01:47Z",
+    "source_worktree":  "C:\\Users\\Owner\\Project guardian\\.worktrees\\windows-local-intel-20261029",
+    "source_branch":  "cursor/windows-structured-field-extraction-20261030",
+    "source_sha":  "de47c45cc1e7cbedd1453d37d28aa2fce1738f85",
+    "bundle_path":  "D:\\ElysiaBackups\\windows-intel-checkpoint-20261030\\elysia-windows-structured-field-extraction-de47c45.bundle",
+    "bundle_sha256":  "afb736ebf8f9a68ca3d7ccda379252f4814ed8d3a805c789e3c01f80007d4cb7",
+    "bundle_bytes":  3843605,
+    "backup_volume":  {
+                          "label":  "ESD-USB",
+                          "drive":  "D:",
+                          "note":  "Separate USB volume from system C: drive; not same-volume-only backup"
+                      },
+    "independent_destination_available":  true,
+    "cloud_copy":  false,
+    "key_file_blobs":  [
+                           {
+                               "path":  "project_guardian/structured_field_extraction.py",
+                               "sha256":  "b75fd14635dcc05beca360ee73f28205a02d6f42e14b68b06e66c1a06500aa53",
+                               "blob":  "8d3a1eaa852ff696f19132cba88e3518f158ccd0"
+                           },
+                           {
+                               "path":  "project_guardian/capability_composition.py",
+                               "sha256":  "8985dc6461b55a20c9a8fd82b59dc9240333d74c45f7a1a8897cad1ddc765bc1",
+                               "blob":  "66a86aad9719462ee75b89ef1e2695470d8e56c6"
+                           },
+                           {
+                               "path":  "project_guardian/conversation_continuity.py",
+                               "sha256":  "49dbee566d8a713687c2e64129de710b7b4f4179a71efb1c9a8281251ab7eaee",
+                               "blob":  "47ac4569da2efd342666d0424ab6c2383007c9a9"
+                           },
+                           {
+                               "path":  "project_guardian/local_documents_search.py",
+                               "sha256":  "ee3a2d28214b5b2e82e43dd259308755b68cf177cc6518a33d6a594abbe07155",
+                               "blob":  "813537f2f5bba303b35031bd2be6995433345ffc"
+                           },
+                           {
+                               "path":  "project_guardian/local_memory_chat.py",
+                               "sha256":  "9d8546ca2354046fe209666c85fe7a711dc9a6adcd919ac701886f3cb8ba14d1",
+                               "blob":  "69eda8b17962895931df455d25874e1ba4fb9a04"
+                           },
+                           {
+                               "path":  "project_guardian/ui_control_panel.py",
+                               "sha256":  "7da5e13a15d75f71b50aaa8028d60996f0a1a3ae6dee666a3621fb559537863b",
+                               "blob":  "2dd96cf7aa97375f6b5618cff59225145459c70f"
+                           },
+                           {
+                               "path":  "project_guardian/painting_estimate_workflow.py",
+                               "sha256":  "8bd9385da28c9db99efab3b7f79f39c3b01b80021a914f856374895d5b5bb15d",
+                               "blob":  "61ef2b50d3f2a0cd6a3fb7f7d5fd510c55c04c14"
+                           }
+                       ],
+    "recent_commits":  [
+                           "de47c45cc1e7cbedd1453d37d28aa2fce1738f85 feat(windows): add compose.extract_fields for source-verifiable structured extraction",
+                           "be090f4d90f0fd2d14c97f83d46ea234130859d0 feat(windows): generalize estimate workflow into reusable capability composition",
+                           "12d3f7f3fabdff016e2f47d0785c37ef3267e889 feat(windows): multi-tool painting estimate with cross-step verified progress",
+                           "3e272d4f2bf495ae06483a410ac9e3cb3919f857 feat(windows): bind document search into verified task-step execution",
+                           "bdbfe90e3a132bdfbde6a832bb01bc5fc8157b98 feat(windows): authorized local document search with grounded Ollama answers",
+                           "716725c40337e6b4aa5fb91a3c00a06f141c8334 feat(windows): authorized calculator step execution with verified progress",
+                           "cb4aaf2707ec687f50e46406d3ec1ef907606631 feat(windows): operator step completion with safe next-action advance",
+                           "418163d117efa1a0d740dd6bdb36cb3ea2b068d4 feat(windows): operator task-state control for durable continuity",
+                           "b12d60cf8314212ea911b6700976b2ff7b299eb1 feat(windows): durable conversation and task continuity across restart",
+                           "e16c5f752ac023081153fd7c6711f67b52095875 feat(windows): verify durable teach/correct via authoritative readback",
+                           "e96d02010264431cf0971bebdb5c0e05ce264dc1 feat(windows): process-local verified execution evidence for capabilities",
+                           "4bf0bc88661796c5372765027c0ebec47ffd3a7f feat(windows): read-only capability awareness dashboard and API",
+                           "2d4f5ba2cf8e22f00eb14d531640a64814f56e7a feat(windows): local Ollama chat with durable memory and authorized calculator",
+                           "4f69bd12eaa30f8aa83e3c731359d9c7ea626e50 fix(windows): launch this checkout against its own durable memory"
+                       ],
+    "restore_test":  {
+                         "note":  "Restore used one-shot git -c safe.directory=* because ESD-USB does not record ownership; no persistent git config was modified.",
+                         "file_checks":  [
+                                             {
+                                                 "ok":  true,
+                                                 "path":  "project_guardian/structured_field_extraction.py",
+                                                 "blob":  "8d3a1eaa852ff696f19132cba88e3518f158ccd0"
+                                             },
+                                             {
+                                                 "ok":  true,
+                                                 "path":  "project_guardian/capability_composition.py",
+                                                 "blob":  "66a86aad9719462ee75b89ef1e2695470d8e56c6"
+                                             },
+                                             {
+                                                 "ok":  true,
+                                                 "path":  "project_guardian/conversation_continuity.py",
+                                                 "blob":  "47ac4569da2efd342666d0424ab6c2383007c9a9"
+                                             },
+                                             {
+                                                 "ok":  true,
+                                                 "path":  "project_guardian/local_documents_search.py",
+                                                 "blob":  "813537f2f5bba303b35031bd2be6995433345ffc"
+                                             },
+                                             {
+                                                 "ok":  true,
+                                                 "path":  "project_guardian/local_memory_chat.py",
+                                                 "blob":  "69eda8b17962895931df455d25874e1ba4fb9a04"
+                                             },
+                                             {
+                                                 "ok":  true,
+                                                 "path":  "project_guardian/ui_control_panel.py",
+                                                 "blob":  "2dd96cf7aa97375f6b5618cff59225145459c70f"
+                                             },
+                                             {
+                                                 "ok":  true,
+                                                 "path":  "project_guardian/painting_estimate_workflow.py",
+                                                 "blob":  "61ef2b50d3f2a0cd6a3fb7f7d5fd510c55c04c14"
+                                             }
+                                         ],
+                         "key_blobs_match_source":  true,
+                         "directory":  "D:\\ElysiaBackups\\windows-intel-checkpoint-20261030\\restore-verify",
+                         "key_files_intact":  true,
+                         "restored_sha":  "de47c45cc1e7cbedd1453d37d28aa2fce1738f85",
+                         "matches_source":  true
+                     }
+}

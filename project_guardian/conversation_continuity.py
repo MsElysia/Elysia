@@ -63,6 +63,7 @@ SUPPORTED_STEP_CAPABILITIES = frozenset(
         "compose.aggregate_usd",
         "compose.synthesize",
         "compose.extract_fields",
+        "compose.extract_records",
     }
 )
 
@@ -239,65 +240,91 @@ def _normalize_compose_aggregate_arguments(raw: Any) -> Dict[str, Any]:
                 f"{banned} cannot be stored in a durable compose.aggregate_usd binding"
             )
     args: Dict[str, Any] = {}
-    components_spec = raw.get("components")
-    if components_spec is not None:
-        if not isinstance(components_spec, list) or not 1 <= len(components_spec) <= 12:
-            raise ContinuityError("components must be a list of 1..12 items")
-        cleaned_components = []
-        source_step_ids: List[str] = []
-        for item in components_spec:
-            if not isinstance(item, dict):
-                raise ContinuityError("aggregate component invalid")
-            sid = item.get("step_id")
-            if not isinstance(sid, str) or not re.fullmatch(r"step_[a-f0-9]{12}", sid):
-                raise ContinuityError("invalid component step_id")
-            entry: Dict[str, Any] = {"step_id": sid}
-            fid = item.get("field_id")
-            if fid is not None:
-                if not isinstance(fid, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", fid):
-                    raise ContinuityError("invalid component field_id")
-                entry["field_id"] = fid
-            lab = item.get("label")
-            if lab is not None:
-                if not isinstance(lab, str) or not lab.strip() or len(lab.strip()) > 40:
-                    raise ContinuityError("invalid component label")
-                entry["label"] = lab.strip()
-            cleaned_components.append(entry)
-            source_step_ids.append(sid)
-        args["components"] = cleaned_components
-        args["source_step_ids"] = source_step_ids
+    line_items = raw.get("line_items")
+    if line_items is not None:
+        if not isinstance(line_items, dict):
+            raise ContinuityError("line_items must be an object")
+        rid = line_items.get("record_step_id")
+        if not isinstance(rid, str) or not re.fullmatch(r"step_[a-f0-9]{12}", rid):
+            raise ContinuityError("line_items.record_step_id invalid")
+        qf = line_items.get("quantity_field")
+        pf = line_items.get("unit_price_field")
+        if not isinstance(qf, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", qf):
+            raise ContinuityError("line_items.quantity_field invalid")
+        if not isinstance(pf, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", pf):
+            raise ContinuityError("line_items.unit_price_field invalid")
+        args["line_items"] = {
+            "record_step_id": rid,
+            "quantity_field": qf,
+            "unit_price_field": pf,
+        }
+        args["source_step_ids"] = [rid]
     else:
-        source_step_ids = _normalize_step_id_list(
-            raw.get("source_step_ids"), field="source_step_ids"
-        )
-        args["source_step_ids"] = source_step_ids
-        labels = raw.get("component_labels")
-        if labels is not None:
-            if not isinstance(labels, list) or len(labels) != len(source_step_ids):
-                raise ContinuityError("component_labels must match source_step_ids length")
-            cleaned = []
-            for lab in labels:
-                if not isinstance(lab, str) or not lab.strip() or len(lab.strip()) > 40:
-                    raise ContinuityError("invalid component label")
-                cleaned.append(lab.strip())
-            args["component_labels"] = cleaned
-        field_ids = raw.get("component_field_ids")
-        if field_ids is not None:
-            if not isinstance(field_ids, list) or len(field_ids) != len(source_step_ids):
-                raise ContinuityError(
-                    "component_field_ids must match source_step_ids length"
-                )
-            cleaned_f = []
-            for fid in field_ids:
-                if fid is None:
-                    cleaned_f.append(None)
-                    continue
-                if not isinstance(fid, str) or not re.fullmatch(
-                    r"[a-z][a-z0-9_]{0,39}", fid
+        components_spec = raw.get("components")
+        if components_spec is not None:
+            if not isinstance(components_spec, list) or not 1 <= len(components_spec) <= 12:
+                raise ContinuityError("components must be a list of 1..12 items")
+            cleaned_components = []
+            source_step_ids: List[str] = []
+            for item in components_spec:
+                if not isinstance(item, dict):
+                    raise ContinuityError("aggregate component invalid")
+                sid = item.get("step_id")
+                if not isinstance(sid, str) or not re.fullmatch(r"step_[a-f0-9]{12}", sid):
+                    raise ContinuityError("invalid component step_id")
+                entry: Dict[str, Any] = {"step_id": sid}
+                fid = item.get("field_id")
+                if fid is not None:
+                    if not isinstance(fid, str) or not re.fullmatch(
+                        r"[a-z][a-z0-9_]{0,39}", fid
+                    ):
+                        raise ContinuityError("invalid component field_id")
+                    entry["field_id"] = fid
+                lab = item.get("label")
+                if lab is not None:
+                    if not isinstance(lab, str) or not lab.strip() or len(lab.strip()) > 40:
+                        raise ContinuityError("invalid component label")
+                    entry["label"] = lab.strip()
+                cleaned_components.append(entry)
+                source_step_ids.append(sid)
+            args["components"] = cleaned_components
+            args["source_step_ids"] = source_step_ids
+        else:
+            source_step_ids = _normalize_step_id_list(
+                raw.get("source_step_ids"), field="source_step_ids"
+            )
+            args["source_step_ids"] = source_step_ids
+            labels = raw.get("component_labels")
+            if labels is not None:
+                if not isinstance(labels, list) or len(labels) != len(source_step_ids):
+                    raise ContinuityError(
+                        "component_labels must match source_step_ids length"
+                    )
+                cleaned = []
+                for lab in labels:
+                    if not isinstance(lab, str) or not lab.strip() or len(lab.strip()) > 40:
+                        raise ContinuityError("invalid component label")
+                    cleaned.append(lab.strip())
+                args["component_labels"] = cleaned
+            field_ids = raw.get("component_field_ids")
+            if field_ids is not None:
+                if not isinstance(field_ids, list) or len(field_ids) != len(
+                    source_step_ids
                 ):
-                    raise ContinuityError("invalid component_field_id")
-                cleaned_f.append(fid)
-            args["component_field_ids"] = cleaned_f
+                    raise ContinuityError(
+                        "component_field_ids must match source_step_ids length"
+                    )
+                cleaned_f = []
+                for fid in field_ids:
+                    if fid is None:
+                        cleaned_f.append(None)
+                        continue
+                    if not isinstance(fid, str) or not re.fullmatch(
+                        r"[a-z][a-z0-9_]{0,39}", fid
+                    ):
+                        raise ContinuityError("invalid component_field_id")
+                    cleaned_f.append(fid)
+                args["component_field_ids"] = cleaned_f
     missing = raw.get("missing_categories")
     if missing is not None:
         if not isinstance(missing, list) or len(missing) > 12:
@@ -349,6 +376,46 @@ def _normalize_compose_extract_arguments(raw: Any) -> Dict[str, Any]:
     }
     if "require_verified_required" in raw:
         args["require_verified_required"] = bool(raw.get("require_verified_required"))
+    return args
+
+
+def _normalize_compose_extract_records_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("compose.extract_records arguments must be an object")
+    for banned in ("authorization", "token", "credential", "folder", "code", "eval"):
+        if banned in raw:
+            raise ContinuityError(
+                f"{banned} cannot be stored in a durable compose.extract_records binding"
+            )
+    evidence_step_ids = _normalize_step_id_list(
+        raw.get("evidence_step_ids"), field="evidence_step_ids"
+    )
+    from project_guardian.structured_field_extraction import (
+        ExtractionError,
+        validate_record_schema,
+    )
+
+    try:
+        cleaned_schema = validate_record_schema(raw.get("schema"))
+    except ExtractionError as exc:
+        raise ContinuityError(f"invalid record schema: {exc}") from exc
+    args: Dict[str, Any] = {
+        "evidence_step_ids": evidence_step_ids,
+        "schema": cleaned_schema,
+    }
+    if "require_verified_required" in raw:
+        args["require_verified_required"] = bool(raw.get("require_verified_required"))
+    structures = raw.get("structures")
+    if structures is not None:
+        if not isinstance(structures, list) or not structures or len(structures) > 3:
+            raise ContinuityError("structures must be a short list")
+        allowed = {"markdown_table", "labeled_block", "bullet_list"}
+        cleaned = []
+        for s in structures:
+            if s not in allowed:
+                raise ContinuityError(f"unsupported structure: {s}")
+            cleaned.append(s)
+        args["structures"] = cleaned
     return args
 
 
@@ -421,6 +488,8 @@ def _normalize_step_capability_arguments(capability: str, raw: Any) -> Dict[str,
         return _normalize_compose_synthesize_arguments(raw)
     if capability == "compose.extract_fields":
         return _normalize_compose_extract_arguments(raw)
+    if capability == "compose.extract_records":
+        return _normalize_compose_extract_records_arguments(raw)
     raise ContinuityError("unsupported step capability")
 
 
@@ -1034,6 +1103,9 @@ class ConversationStore:
         elif capability == "compose.extract_fields":
             expected_result_type = "structured_fields"
             verification_rule = "source_span_and_type_check"
+        elif capability == "compose.extract_records":
+            expected_result_type = "structured_records"
+            verification_rule = "row_cell_span_and_type_check"
         else:
             expected_result_type = "estimate_draft"
             verification_rule = "draft_amount_postcheck"
@@ -1115,6 +1187,7 @@ class ConversationStore:
         authorize_compose_aggregate: bool = False,
         authorize_compose_synthesize: bool = False,
         authorize_compose_extract: bool = False,
+        authorize_compose_extract_records: bool = False,
         authorize_record_completion: bool,
         execution_id: Optional[str] = None,
         documents_folder: Optional[str] = None,
@@ -1134,6 +1207,7 @@ class ConversationStore:
             CAPABILITY_ASSEMBLE,
             CAPABILITY_DRAFT,
             CAPABILITY_EXTRACT,
+            CAPABILITY_EXTRACT_RECORDS,
             CAPABILITY_SYNTHESIZE,
             DOMAIN_TEMPLATES,
             CompositionError,
@@ -1154,7 +1228,9 @@ class ConversationStore:
         )
         from project_guardian.structured_field_extraction import (
             ExtractionError,
+            aggregate_record_line_items,
             extract_fields as run_extract_fields,
+            extract_records as run_extract_records,
         )
         EstimateWorkflowError = CompositionError
 
@@ -1891,6 +1967,145 @@ class ConversationStore:
                     "updated_utc": now,
                     "capability": CAPABILITY_EXTRACT,
                 }
+            elif capability == CAPABILITY_EXTRACT_RECORDS:
+                if not authorize_compose_extract_records:
+                    raise ContinuityError(
+                        "compose.extract_records not authorized for this request"
+                    )
+                try:
+                    args = _normalize_compose_extract_records_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                excerpts = []
+                try:
+                    for sid in args["evidence_step_ids"]:
+                        ev = resolve_upstream_evidence(steps, sid)
+                        if ev.get("capability") != "local.documents.search":
+                            raise ContinuityError(
+                                "extract_records evidence must be local.documents.search"
+                            )
+                        raw_ex = ev.get("excerpts") or []
+                        if not isinstance(raw_ex, list) or not raw_ex:
+                            raise ContinuityError(
+                                "upstream document step has no durable verified excerpts"
+                            )
+                        for item in raw_ex:
+                            if isinstance(item, dict):
+                                excerpts.append(item)
+                except CompositionError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                try:
+                    extracted = run_extract_records(
+                        schema=args["schema"],
+                        excerpts=excerpts,
+                        model=draft_model,
+                        require_verified_required=bool(
+                            args.get("require_verified_required", True)
+                        ),
+                        structures=args.get("structures"),
+                    )
+                except ExtractionError as exc:
+                    raise ContinuityError(
+                        f"compose.extract_records failed: {exc}"
+                    ) from exc
+                if not extracted.get("ok"):
+                    raise ContinuityError(
+                        "compose.extract_records incomplete: no verified records"
+                    )
+                # Compact records for durable storage (no full excerpt bodies).
+                compact_records = []
+                for rec in extracted.get("records") or []:
+                    if not isinstance(rec, dict):
+                        continue
+                    compact_fields = {}
+                    for fid, entry in (rec.get("fields") or {}).items():
+                        if not isinstance(entry, dict):
+                            continue
+                        compact_fields[fid] = {
+                            "field_id": fid,
+                            "status": entry.get("status"),
+                            "normalized_value": entry.get("normalized_value"),
+                            "original_source_value": entry.get("original_source_value"),
+                            "source_span": entry.get("source_span"),
+                            "source_document": entry.get("source_document"),
+                            "excerpt_sha256": entry.get("excerpt_sha256"),
+                            "validation": entry.get("validation"),
+                            "extraction_method": entry.get("extraction_method"),
+                            "uncertainty": entry.get("uncertainty"),
+                        }
+                    compact_records.append(
+                        {
+                            "record_id": rec.get("record_id"),
+                            "schema_id": rec.get("schema_id"),
+                            "source_document": rec.get("source_document"),
+                            "folder_fingerprint": rec.get("folder_fingerprint"),
+                            "excerpt_sha256": rec.get("excerpt_sha256"),
+                            "source_sha256": rec.get("source_sha256"),
+                            "location": rec.get("location"),
+                            "row_source_span": rec.get("row_source_span"),
+                            "status": rec.get("status"),
+                            "structure": rec.get("structure"),
+                            "fields": compact_fields,
+                        }
+                    )
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": CAPABILITY_EXTRACT_RECORDS,
+                    "verified": True,
+                    "verified_record_count": extracted.get("verified_record_count"),
+                    "record_count": extracted.get("record_count"),
+                    "schema_id": extracted.get("schema_id"),
+                    "model_attempted": extracted.get("model_attempted"),
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "row_cell_span_and_type_check",
+                    "outcome": recordable_outcome(
+                        capability=CAPABILITY_EXTRACT_RECORDS,
+                        task_class="structured_record_extraction",
+                        success=True,
+                    ),
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": (
+                        f"{extracted.get('verified_record_count')} verified records"
+                    ),
+                    "result_type": "structured_records",
+                    "records": compact_records,
+                    "schema_id": extracted.get("schema_id"),
+                    "folder_fingerprint": next(
+                        (
+                            e.get("folder_fingerprint")
+                            for e in excerpts
+                            if isinstance(e, dict) and e.get("folder_fingerprint")
+                        ),
+                        None,
+                    ),
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": result_reference["result"],
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "compose.extract_records verified but completion was not durably recorded"
+                )
+                record["extracted_records"] = {
+                    "schema": "elysia.extracted-records.v1",
+                    "schema_id": extracted.get("schema_id"),
+                    "records": compact_records,
+                    "execution_id": execution_id,
+                    "updated_utc": now,
+                    "capability": CAPABILITY_EXTRACT_RECORDS,
+                }
             elif capability == CAPABILITY_AGGREGATE:
                 if not authorize_compose_aggregate:
                     raise ContinuityError(
@@ -1904,55 +2119,114 @@ class ConversationStore:
                     raise ContinuityError(str(exc)) from exc
                 tmpl = DOMAIN_TEMPLATES.get(args.get("domain_template") or "", {})
                 labels = args.get("component_labels") or [
-                    f"item_{i + 1}" for i in range(len(args["source_step_ids"]))
+                    f"item_{i + 1}"
+                    for i in range(len(args.get("source_step_ids") or []))
                 ]
                 try:
-                    components = []
-                    if args.get("components"):
-                        for idx, spec in enumerate(args["components"]):
-                            amount, link = resolve_upstream_amount(
-                                steps,
-                                spec["step_id"],
-                                field_id=spec.get("field_id"),
-                            )
-                            label = (
-                                spec.get("label")
-                                or spec.get("field_id")
-                                or f"item_{idx + 1}"
-                            )
-                            components.append(
-                                {**link, "amount_usd": amount, "label": label}
-                            )
-                    else:
-                        field_ids = args.get("component_field_ids") or [None] * len(
-                            args["source_step_ids"]
+                    if args.get("line_items"):
+                        li = args["line_items"]
+                        rec_step = next(
+                            (
+                                s
+                                for s in steps
+                                if s.get("step_id") == li["record_step_id"]
+                            ),
+                            None,
                         )
-                        for sid, label, field_id in zip(
-                            args["source_step_ids"], labels, field_ids
-                        ):
-                            amount, link = resolve_upstream_amount(
-                                steps, sid, field_id=field_id
+                        if rec_step is None:
+                            raise CompositionError("record_step_id not found")
+                        if rec_step.get("status") != "completed":
+                            raise CompositionError("record step not completed")
+                        if rec_step.get("verification_status") != "verified":
+                            raise CompositionError("record step not verified")
+                        if rec_step.get("capability") != CAPABILITY_EXTRACT_RECORDS:
+                            raise CompositionError(
+                                "line_items require compose.extract_records upstream"
                             )
-                            components.append(
-                                {**link, "amount_usd": amount, "label": label}
+                        ref = (
+                            rec_step.get("result_reference")
+                            if isinstance(rec_step.get("result_reference"), dict)
+                            else {}
+                        )
+                        if ref.get("stale"):
+                            raise CompositionError("record extraction is stale")
+                        try:
+                            assembled = aggregate_record_line_items(
+                                ref.get("records") or [],
+                                quantity_field=li["quantity_field"],
+                                unit_price_field=li["unit_price_field"],
                             )
-                    assembled = aggregate_usd_amounts(
-                        components=components,
-                        bundle_label=str(
-                            args.get("bundle_label")
-                            or tmpl.get("bundle_label")
-                            or "verified amount subtotal"
-                        ),
-                        missing_categories=args.get("missing_categories")
-                        or list(tmpl.get("missing_categories") or []),
-                        capability=CAPABILITY_AGGREGATE,
-                    )
-                except CompositionError as exc:
+                        except ExtractionError as exc:
+                            raise CompositionError(str(exc)) from exc
+                        components = [
+                            {
+                                "label": item.get("record_id"),
+                                "amount_usd": item.get("extension_usd"),
+                                "record_id": item.get("record_id"),
+                                "source_reference": item.get("source_document"),
+                            }
+                            for item in assembled.get("line_items") or []
+                        ]
+                        assembled = {
+                            **assembled,
+                            "components": {
+                                c["label"]: c["amount_usd"] for c in components
+                            },
+                            "missing_cost_categories": args.get("missing_categories")
+                            or list(tmpl.get("missing_categories") or []),
+                            "inputs": {
+                                "line_items": assembled.get("line_items"),
+                                "record_step_id": li["record_step_id"],
+                            },
+                        }
+                    else:
+                        components = []
+                        if args.get("components"):
+                            for idx, spec in enumerate(args["components"]):
+                                amount, link = resolve_upstream_amount(
+                                    steps,
+                                    spec["step_id"],
+                                    field_id=spec.get("field_id"),
+                                )
+                                label = (
+                                    spec.get("label")
+                                    or spec.get("field_id")
+                                    or f"item_{idx + 1}"
+                                )
+                                components.append(
+                                    {**link, "amount_usd": amount, "label": label}
+                                )
+                        else:
+                            field_ids = args.get("component_field_ids") or [None] * len(
+                                args["source_step_ids"]
+                            )
+                            for sid, label, field_id in zip(
+                                args["source_step_ids"], labels, field_ids
+                            ):
+                                amount, link = resolve_upstream_amount(
+                                    steps, sid, field_id=field_id
+                                )
+                                components.append(
+                                    {**link, "amount_usd": amount, "label": label}
+                                )
+                        assembled = aggregate_usd_amounts(
+                            components=components,
+                            bundle_label=str(
+                                args.get("bundle_label")
+                                or tmpl.get("bundle_label")
+                                or "verified amount subtotal"
+                            ),
+                            missing_categories=args.get("missing_categories")
+                            or list(tmpl.get("missing_categories") or []),
+                            capability=CAPABILITY_AGGREGATE,
+                        )
+                except (CompositionError, ExtractionError) as exc:
                     raise ContinuityError(f"compose.aggregate_usd failed: {exc}") from exc
                 from decimal import Decimal as _Decimal
 
                 expected_sum = sum(
-                    (_Decimal(c["amount_usd"]) for c in components), _Decimal("0.00")
+                    (_Decimal(str(c["amount_usd"])) for c in components),
+                    _Decimal("0.00"),
                 ).quantize(_Decimal("0.01"))
                 if assembled["subtotal_usd"] != format(expected_sum, "f"):
                     raise ContinuityError(
@@ -1968,14 +2242,23 @@ class ConversationStore:
                     "components": assembled["components"],
                     "subtotal_usd": assembled["subtotal_usd"],
                     "label": assembled["label"],
-                    "missing_cost_categories": assembled["missing_cost_categories"],
-                    "inputs": assembled["inputs"],
+                    "missing_cost_categories": assembled.get("missing_cost_categories")
+                    or [],
+                    "inputs": assembled.get("inputs") or {},
                     "checkpoint_revision": next_rev,
                     "created_utc": now,
-                    "verification_rule": "deterministic_decimal_sum",
+                    "verification_rule": assembled.get("verification_rule")
+                    or "deterministic_decimal_sum",
                     "outcome": recordable_outcome(
                         capability=CAPABILITY_AGGREGATE,
-                        task_class=str(args.get("domain_template") or "compose"),
+                        task_class=str(
+                            args.get("domain_template")
+                            or (
+                                "line_items"
+                                if args.get("line_items")
+                                else "compose"
+                            )
+                        ),
                         success=True,
                     ),
                 }
@@ -2164,6 +2447,7 @@ class ConversationStore:
                             evidence=evidence,
                             aggregated=aggregated,
                             required_phrases=phrases,
+                            required_amounts=required_amounts,
                         )
                         try:
                             draft_check = verify_synthesize_output(
@@ -2441,6 +2725,11 @@ class ConversationStore:
                 extracted["stale"] = True
                 extracted["stale_reason"] = f"upstream reopened: {step_id}"
                 record["extracted_fields"] = extracted
+            if stale_ids and isinstance(record.get("extracted_records"), dict):
+                extracted_r = dict(record["extracted_records"])
+                extracted_r["stale"] = True
+                extracted_r["stale_reason"] = f"upstream reopened: {step_id}"
+                record["extracted_records"] = extracted_r
             record["task_steps"] = steps
             _sync_lists_from_task_steps(record)
 

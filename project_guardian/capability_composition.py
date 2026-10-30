@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 CAPABILITY_AGGREGATE = "compose.aggregate_usd"
 CAPABILITY_SYNTHESIZE = "compose.synthesize"
 CAPABILITY_EXTRACT = "compose.extract_fields"
+CAPABILITY_EXTRACT_RECORDS = "compose.extract_records"
 # Compatibility aliases retained for the painting-estimate adapter.
 CAPABILITY_ASSEMBLE = "estimate.assemble"
 CAPABILITY_DRAFT = "estimate.draft"
@@ -25,6 +26,7 @@ COMPOSITION_CAPABILITIES = frozenset(
         CAPABILITY_AGGREGATE,
         CAPABILITY_SYNTHESIZE,
         CAPABILITY_EXTRACT,
+        CAPABILITY_EXTRACT_RECORDS,
         CAPABILITY_ASSEMBLE,
         CAPABILITY_DRAFT,
     }
@@ -486,31 +488,44 @@ def host_grounded_summary_draft(
     evidence: Sequence[Mapping[str, Any]],
     aggregated: Optional[Mapping[str, Any]] = None,
     required_phrases: Optional[Sequence[str]] = None,
+    required_amounts: Optional[Sequence[str]] = None,
 ) -> str:
     """Deterministic fallback draft from verified host evidence only."""
     lines = [banner, "Host-assembled grounded summary (model draft rejected)."]
     for ev in evidence:
         path = ev.get("top_relative_path") or ev.get("folder_label") or "source"
         amount = ev.get("amount_usd")
-        result = ev.get("result")
+        # Only cite short verified summaries — never dump hashes or free-form blobs
+        # that could introduce digit sequences rejected by amount postchecks.
         if amount:
             lines.append(f"- {path}: verified amount USD {amount}")
-        elif isinstance(result, str) and result.strip():
-            lines.append(f"- {path}: {result.strip()[:240]}")
         else:
             lines.append(f"- {path}: verified evidence")
     if aggregated:
         comps = aggregated.get("components") or {}
         for label, amount in comps.items():
-            lines.append(f"- {label}: USD {amount}")
+            # Avoid embedding opaque record ids that may contain digit runs.
+            label_s = str(label)
+            if label_s.startswith("rec_"):
+                label_s = "line_item"
+            lines.append(f"- {label_s}: USD {amount}")
         if aggregated.get("subtotal_usd"):
             lines.append(f"Verified subtotal USD {aggregated['subtotal_usd']}")
         missing = aggregated.get("missing_cost_categories") or []
         if missing:
-            lines.append("Missing / not included: " + ", ".join(str(m) for m in missing[:8]))
+            lines.append(
+                "Missing / not included: "
+                + ", ".join(str(m) for m in missing[:8] if not re.search(r"\d{3,}", str(m)))
+            )
+    for amount in required_amounts or []:
+        token = str(amount)
+        if token and token not in "\n".join(lines):
+            lines.append(f"Verified amount USD {token}")
     for phrase in required_phrases or []:
         if phrase and phrase not in "\n".join(lines):
-            lines.append(f"Source reference: {phrase}")
+            # Phrases must be short source names/tokens, not numeric blobs.
+            if re.fullmatch(r"[A-Za-z0-9._\- /]{1,120}", str(phrase)):
+                lines.append(f"Source reference: {phrase}")
     return "\n".join(lines)
 
 
@@ -551,6 +566,9 @@ def _dependency_ids(args: Mapping[str, Any]) -> set:
         for item in comps:
             if isinstance(item, dict) and isinstance(item.get("step_id"), str):
                 deps.add(item["step_id"])
+    line_items = args.get("line_items")
+    if isinstance(line_items, dict) and isinstance(line_items.get("record_step_id"), str):
+        deps.add(line_items["record_step_id"])
     return deps
 
 
@@ -594,6 +612,10 @@ def list_composable_capabilities() -> List[Dict[str, str]]:
         {
             "capability": "compose.extract_fields",
             "role": "extract typed fields from verified document excerpts",
+        },
+        {
+            "capability": "compose.extract_records",
+            "role": "extract multiple typed table/list records from verified excerpts",
         },
         {
             "capability": "compose.aggregate_usd",

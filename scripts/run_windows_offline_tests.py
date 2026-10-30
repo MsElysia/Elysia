@@ -103,9 +103,9 @@ def main() -> int:
     # A short existing TEMP location avoids Windows MAX_PATH failures in deeply
     # nested transaction fixtures; the caller may set TEMP to local scratch.
     with tempfile.TemporaryDirectory(prefix="elysia-tests-") as directory:
-        # Normalize Windows short (8.3) TEMP aliases before fixtures create
-        # paths; transaction containment compares canonical destination paths.
-        scratch = Path(directory).resolve()
+        # Deliberately retain Windows' original TEMP spelling here. The
+        # synthetic memory store must normalize its own transaction identity.
+        scratch = Path(directory)
         guard = scratch / "guard"
         guard.mkdir()
         (guard / "sitecustomize.py").write_text(TEST_GUARD, encoding="utf-8")

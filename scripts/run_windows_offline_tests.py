@@ -71,7 +71,7 @@ def audit(event,args):
             address=args[1] if event!="socket.getaddrinfo" else None
             if event=="socket.getaddrinfo":
                 host,port=args[:2]
-                allowed=host=="127.0.0.1" and type(port) is int and 0<port<65536
+                allowed=host=="127.0.0.1" and type(port) is int and 0<=port<65536
             elif event=="socket.bind":
                 allowed=address==("127.0.0.1",0)
             elif event=="socket.connect":
@@ -102,7 +102,9 @@ def main() -> int:
     # A short existing TEMP location avoids Windows MAX_PATH failures in deeply
     # nested transaction fixtures; the caller may set TEMP to local scratch.
     with tempfile.TemporaryDirectory(prefix="elysia-tests-") as directory:
-        scratch = Path(directory)
+        # Normalize Windows short (8.3) TEMP aliases before fixtures create
+        # paths; transaction containment compares canonical destination paths.
+        scratch = Path(directory).resolve()
         guard = scratch / "guard"
         guard.mkdir()
         (guard / "sitecustomize.py").write_text(TEST_GUARD, encoding="utf-8")

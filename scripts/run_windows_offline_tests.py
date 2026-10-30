@@ -42,7 +42,7 @@ CHAT_TESTS = (
     "tests/test_synthetic_memory_path_alias.py",
     "tests/test_windows_local_chat_runner.py",
 )
-BROWSER_TESTS = ("tests/test_restricted_browser_bridge.py",)
+BROWSER_TESTS = ("tests/test_restricted_browser_bridge.py", "tests/test_browser_worker_path_alias.py")
 HTTP_TESTS = ("tests/test_local_chat_http.py",)
 
 # Windows asyncio needs a local stdlib socketpair for its event-loop self-pipe.

@@ -51,6 +51,8 @@ jobs:
           "psutil>=5.9"
           "Flask>=3,<4"
           "flask-cors>=4,<5"
+          "openai>=1.0,<2"
+          "beautifulsoup4>=4.12,<5"
 
       - name: Run RC-required Windows intelligence tests
         env:

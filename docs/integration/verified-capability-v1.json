@@ -1,0 +1,51 @@
+{
+  "schema": "elysia-bounded-integration-v1",
+  "base_sha": "f8bbdbc159800b978f9a0ea9dd0b366cf357b1c7",
+  "sources": [
+    {
+      "sha": "4eea564b0de97c124aea7475527e7ab542249ffc",
+      "path": "elysia_offline.py",
+      "semantic_scope": "calculate_local function only, extracted unchanged",
+      "function_utf8_sha256": "8e70a7e5ae67a48a80e6add71fe9970512cd459888c06280ffe983383d93187d"
+    },
+    {
+      "sha": "4051ebaabdf1e1f838470912ee6de82d32014ee2",
+      "paths": [
+        "project_guardian/memory.py",
+        "tests/test_memory_core_persistence.py"
+      ],
+      "semantic_scope": "MemoryCore persistence repair; additive enable_persist_mirror flag adapted for isolated manual lane"
+    }
+  ],
+  "excluded_prs": [
+    172
+  ],
+  "allowed_files": [
+    "project_guardian/local_calculator.py",
+    "project_guardian/verified_local_calculation.py",
+    "project_guardian/memory.py",
+    "project_guardian/self_task_queue.py",
+    "project_guardian/self_task_objectives.py",
+    "project_guardian/self_task_value_verification.py",
+    "scripts/run_verified_calculation.py",
+    "tests/test_verified_local_calculation.py",
+    "tests/test_memory_core_persistence.py",
+    ".github/workflows/task-outcome-verification.yml",
+    "docs/integration/verified-capability-v1.md",
+    "docs/integration/verified-capability-v1.json"
+  ],
+  "tests": [
+    "python -B -m pytest --noconftest -q -rs -p no:cacheprovider tests/test_self_task_execution_outcome.py tests/test_memory_core_persistence.py tests/test_verified_local_calculation.py project_guardian/tests/test_lazy_memory.py"
+  ],
+  "independent_exact_head_verification_required": true,
+  "terminal_state": "DRAFT_REVIEW_ONLY",
+  "protected_gates": {
+    "merge": false,
+    "deploy": false,
+    "autonomy": false,
+    "cloud_activation": false,
+    "credentials": false,
+    "personal_memory": false,
+    "working_windows_pilot_mutation": false
+  }
+}

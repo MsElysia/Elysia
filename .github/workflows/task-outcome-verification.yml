@@ -11,8 +11,11 @@ permissions:
 
 jobs:
   outcome:
-    name: Windows task outcome evidence
-    runs-on: windows-latest
+    name: Capability and task evidence (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - name: Checkout exact source head
@@ -29,6 +32,9 @@ jobs:
           $actual = git rev-parse HEAD
           if ($actual -ne $env:EXPECTED_SHA) { throw "Wrong source SHA: $actual" }
 
+      - name: Fetch exact divergent calculator source for provenance check
+        run: git fetch --no-tags --depth=1 origin 4eea564b0de97c124aea7475527e7ab542249ffc
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -41,4 +47,4 @@ jobs:
         env:
           PYTHONUTF8: "1"
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python -B -m pytest --noconftest -q -rs -p no:cacheprovider tests/test_self_task_execution_outcome.py
+        run: python -B -m pytest --noconftest -q -rs -p no:cacheprovider tests/test_self_task_execution_outcome.py tests/test_memory_core_persistence.py tests/test_verified_local_calculation.py project_guardian/tests/test_lazy_memory.py

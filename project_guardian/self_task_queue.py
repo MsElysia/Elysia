@@ -34,14 +34,16 @@ def _iso() -> str:
 class SelfTaskQueue:
     """File-backed queue: pending → in_progress → completed/failed. Dedupe + TTL + cap."""
 
-    def __init__(self, storage_path: Optional[Path] = None, max_size: int = 24) -> None:
+    def __init__(self, storage_path: Optional[Path] = None, max_size: int = 24, *, in_memory: bool = False) -> None:
+        self.in_memory = in_memory
         self.path = Path(storage_path) if storage_path else DEFAULT_PATH
         self.max_size = max(4, int(max_size))
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not in_memory:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self._data = self._load()
 
     def _load(self) -> Dict[str, Any]:
-        if not self.path.exists():
+        if self.in_memory or not self.path.exists():
             return {"tasks": [], "dedupe_last_ts": {}, "archetype_bias": {}, "updated_at": _iso()}
         try:
             with open(self.path, "r", encoding="utf-8") as f:
@@ -51,6 +53,8 @@ class SelfTaskQueue:
             return {"tasks": [], "dedupe_last_ts": {}, "archetype_bias": {}, "updated_at": _iso()}
 
     def _save(self) -> None:
+        if self.in_memory:
+            return
         self._data["updated_at"] = _iso()
         try:
             with open(self.path, "w", encoding="utf-8") as f:
@@ -452,6 +456,9 @@ class SelfTaskQueue:
                 t["last_outcome"] = "failed"
                 self.adjust_archetype(arch, -0.05)
                 adv_not_ready[arch] = 0
+        if arch == "execute_local_calculation" and ex_out == "partial":
+            t["status"] = "partial"
+            t["last_outcome"] = "execution_partial_no_value"
         pf_suf = 0.0
         if pbs is not None and tier != "failed" and success:
             if pbs >= 0.8 and vv and cbv:
@@ -475,6 +482,8 @@ class SelfTaskQueue:
             op_ready,
             arch,
         )
+        if self.in_memory:
+            return
         try:
             from .mission_autonomy import record_self_task_artifact_outcome
 

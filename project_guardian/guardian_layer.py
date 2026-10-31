@@ -11,7 +11,7 @@ import sys
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 
 try:
     import smtplib
@@ -41,7 +41,7 @@ class GuardianLayer:
         self.rebuild_log_path = Path(rebuild_log_path)
         
         # Thread-safe operations
-        self._lock = Lock()
+        self._lock = RLock()
         
         # Guardian state
         self.fingerprint: Optional[str] = None

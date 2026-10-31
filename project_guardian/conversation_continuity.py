@@ -1,0 +1,3669 @@
+"""Durable conversation + task continuity for the contained Windows pilot.
+
+Conversation records and continuity checkpoints are separate from durable
+restricted-fact memory. Checkpoints are untrusted reconstructed context, never
+authorization. Temporary tool grants are never persisted.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from decimal import Decimal
+import hashlib
+import json
+import os
+import re
+import threading
+import uuid
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Sequence
+
+
+SCHEMA_CONVERSATION = "elysia.conversation.v1"
+SCHEMA_CHECKPOINT = "elysia.continuity-checkpoint.v1"
+DEFAULT_CONTEXT_BUDGET_TOKENS = 1800  # conservative usable budget for small local models
+DEFAULT_RESPONSE_RESERVE = 512
+DEFAULT_SYSTEM_RESERVE = 400
+DEFAULT_ROLLOVER_RATIO = 0.72
+CHARS_PER_TOKEN = 4  # documented conservative estimate
+MAX_MESSAGES_RETAINED = 200
+MAX_CHECKPOINT_BYTES = 12000
+MAX_RECENT_RAW_MESSAGES = 8
+
+
+class ContinuityError(ValueError):
+    pass
+
+
+class StaleTaskEditError(ContinuityError):
+    """Competing edit: expected checkpoint revision no longer matches."""
+
+
+NO_OUTSTANDING_STEPS = "No outstanding steps"
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+
+
+def _new_step_id() -> str:
+    return "step_" + uuid.uuid4().hex[:12]
+
+
+SUPPORTED_STEP_CAPABILITIES = frozenset(
+    {
+        "calculator.labor",
+        "local.documents.search",
+        "estimate.assemble",
+        "estimate.draft",
+        "compose.aggregate_usd",
+        "compose.synthesize",
+        "compose.extract_fields",
+        "compose.extract_records",
+    }
+)
+
+
+def _normalize_labor_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("calculator.labor arguments must be an object")
+    rate = raw.get("hourly_rate_usd")
+    if isinstance(rate, (int, float)) and not isinstance(rate, bool):
+        rate_s = format(Decimal(str(rate)).normalize(), "f")
+    elif isinstance(rate, str) and re.fullmatch(r"[0-9]{1,4}(?:\.[0-9]{1,2})?", rate.strip()):
+        rate_s = rate.strip()
+    else:
+        raise ContinuityError("hourly_rate_usd must be a USD amount")
+    args: Dict[str, Any] = {"hourly_rate_usd": rate_s}
+    for key, limit in (("painters", 100), ("days", 366), ("hours_per_day", 24)):
+        value = raw.get(key)
+        if type(value) is bool:
+            raise ContinuityError(f"invalid {key}")
+        if type(value) is int:
+            num = value
+        elif type(value) is float and value.is_integer():
+            num = int(value)
+        elif isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,3}", value.strip()):
+            num = int(value.strip())
+        else:
+            raise ContinuityError(f"invalid {key}")
+        if not 1 <= num <= limit:
+            raise ContinuityError(f"{key} out of range")
+        args[key] = num
+    return args
+
+
+def _normalize_documents_search_arguments(raw: Any) -> Dict[str, Any]:
+    """Normalize durable bind args for local.documents.search.
+
+    Absolute folder paths are never stored as authorization. An optional
+    folder_label / folder_fingerprint may be recorded as non-authorizing identity.
+    """
+    if not isinstance(raw, dict):
+        raise ContinuityError("local.documents.search arguments must be an object")
+    banned = {
+        "authorization",
+        "authorize_search",
+        "token",
+        "credential",
+        "folder",
+        "folder_path",
+        "absolute_folder",
+    }
+    for key in banned:
+        if key in raw:
+            raise ContinuityError(
+                f"{key} cannot be stored in a durable document-search binding"
+            )
+    query = raw.get("query")
+    if not isinstance(query, str) or not query.strip() or len(query.strip()) > 200:
+        raise ContinuityError("query is required (1..200 chars)")
+    min_matches = raw.get("min_matches", 1)
+    if type(min_matches) is bool or type(min_matches) is not int or not 1 <= min_matches <= 12:
+        raise ContinuityError("min_matches must be an integer 1..12")
+    args: Dict[str, Any] = {
+        "query": query.strip(),
+        "min_matches": min_matches,
+    }
+    required_substring = raw.get("required_substring")
+    if required_substring is not None:
+        if (
+            not isinstance(required_substring, str)
+            or not required_substring.strip()
+            or len(required_substring.strip()) > 120
+        ):
+            raise ContinuityError("required_substring must be 1..120 chars")
+        args["required_substring"] = required_substring.strip()
+    expected_relative_path = raw.get("expected_relative_path")
+    if expected_relative_path is not None:
+        if (
+            not isinstance(expected_relative_path, str)
+            or not expected_relative_path.strip()
+            or ".." in Path(expected_relative_path).parts
+            or len(expected_relative_path.strip()) > 200
+        ):
+            raise ContinuityError("expected_relative_path is invalid")
+        args["expected_relative_path"] = expected_relative_path.strip().replace("\\", "/")
+    folder_label = raw.get("folder_label")
+    if folder_label is not None:
+        if (
+            not isinstance(folder_label, str)
+            or not folder_label.strip()
+            or len(folder_label.strip()) > 120
+            or "/" in folder_label
+            or "\\" in folder_label
+        ):
+            raise ContinuityError("folder_label must be a short directory name")
+        args["folder_label"] = folder_label.strip()
+    folder_fingerprint = raw.get("folder_fingerprint")
+    if folder_fingerprint is not None:
+        if (
+            not isinstance(folder_fingerprint, str)
+            or not re.fullmatch(r"[a-f0-9]{16}", folder_fingerprint)
+        ):
+            raise ContinuityError("folder_fingerprint must be a 16-hex identity")
+        args["folder_fingerprint"] = folder_fingerprint
+    return args
+
+
+def _normalize_estimate_assemble_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("estimate.assemble arguments must be an object")
+    for banned in ("authorization", "token", "credential", "folder", "amount_usd"):
+        if banned in raw:
+            raise ContinuityError(
+                f"{banned} cannot be stored in a durable estimate.assemble binding"
+            )
+    material_step_id = raw.get("material_step_id")
+    labor_step_id = raw.get("labor_step_id")
+    if not isinstance(material_step_id, str) or not re.fullmatch(
+        r"step_[a-f0-9]{12}", material_step_id
+    ):
+        raise ContinuityError("material_step_id is required")
+    if not isinstance(labor_step_id, str) or not re.fullmatch(
+        r"step_[a-f0-9]{12}", labor_step_id
+    ):
+        raise ContinuityError("labor_step_id is required")
+    if material_step_id == labor_step_id:
+        raise ContinuityError("material_step_id and labor_step_id must differ")
+    return {
+        "material_step_id": material_step_id,
+        "labor_step_id": labor_step_id,
+    }
+
+
+def _normalize_estimate_draft_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("estimate.draft arguments must be an object")
+    for banned in ("authorization", "token", "credential", "folder", "draft"):
+        if banned in raw:
+            raise ContinuityError(
+                f"{banned} cannot be stored in a durable estimate.draft binding"
+            )
+    assemble_step_id = raw.get("assemble_step_id")
+    if not isinstance(assemble_step_id, str) or not re.fullmatch(
+        r"step_[a-f0-9]{12}", assemble_step_id
+    ):
+        raise ContinuityError("assemble_step_id is required")
+    args: Dict[str, Any] = {"assemble_step_id": assemble_step_id}
+    scope_notes = raw.get("scope_notes")
+    if scope_notes is not None:
+        if not isinstance(scope_notes, str) or len(scope_notes.strip()) > 400:
+            raise ContinuityError("scope_notes must be a short string")
+        args["scope_notes"] = scope_notes.strip()
+    return args
+
+
+def _normalize_step_id_list(raw: Any, *, field: str, min_n: int = 1, max_n: int = 12) -> List[str]:
+    if not isinstance(raw, list) or not min_n <= len(raw) <= max_n:
+        raise ContinuityError(f"{field} must be a list of {min_n}..{max_n} step ids")
+    out: List[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not re.fullmatch(r"step_[a-f0-9]{12}", item):
+            raise ContinuityError(f"invalid step id in {field}")
+        if item in out:
+            raise ContinuityError(f"duplicate step id in {field}")
+        out.append(item)
+    return out
+
+
+def _normalize_compose_aggregate_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("compose.aggregate_usd arguments must be an object")
+    for banned in ("authorization", "token", "credential", "folder", "amount_usd"):
+        if banned in raw:
+            raise ContinuityError(
+                f"{banned} cannot be stored in a durable compose.aggregate_usd binding"
+            )
+    args: Dict[str, Any] = {}
+    line_items = raw.get("line_items")
+    if line_items is not None:
+        if not isinstance(line_items, dict):
+            raise ContinuityError("line_items must be an object")
+        rid = line_items.get("record_step_id")
+        if not isinstance(rid, str) or not re.fullmatch(r"step_[a-f0-9]{12}", rid):
+            raise ContinuityError("line_items.record_step_id invalid")
+        qf = line_items.get("quantity_field")
+        pf = line_items.get("unit_price_field")
+        if not isinstance(qf, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", qf):
+            raise ContinuityError("line_items.quantity_field invalid")
+        if not isinstance(pf, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", pf):
+            raise ContinuityError("line_items.unit_price_field invalid")
+        args["line_items"] = {
+            "record_step_id": rid,
+            "quantity_field": qf,
+            "unit_price_field": pf,
+        }
+        args["source_step_ids"] = [rid]
+    else:
+        components_spec = raw.get("components")
+        if components_spec is not None:
+            if not isinstance(components_spec, list) or not 1 <= len(components_spec) <= 12:
+                raise ContinuityError("components must be a list of 1..12 items")
+            cleaned_components = []
+            source_step_ids: List[str] = []
+            for item in components_spec:
+                if not isinstance(item, dict):
+                    raise ContinuityError("aggregate component invalid")
+                sid = item.get("step_id")
+                if not isinstance(sid, str) or not re.fullmatch(r"step_[a-f0-9]{12}", sid):
+                    raise ContinuityError("invalid component step_id")
+                entry: Dict[str, Any] = {"step_id": sid}
+                fid = item.get("field_id")
+                if fid is not None:
+                    if not isinstance(fid, str) or not re.fullmatch(
+                        r"[a-z][a-z0-9_]{0,39}", fid
+                    ):
+                        raise ContinuityError("invalid component field_id")
+                    entry["field_id"] = fid
+                lab = item.get("label")
+                if lab is not None:
+                    if not isinstance(lab, str) or not lab.strip() or len(lab.strip()) > 40:
+                        raise ContinuityError("invalid component label")
+                    entry["label"] = lab.strip()
+                cleaned_components.append(entry)
+                source_step_ids.append(sid)
+            args["components"] = cleaned_components
+            args["source_step_ids"] = source_step_ids
+        else:
+            source_step_ids = _normalize_step_id_list(
+                raw.get("source_step_ids"), field="source_step_ids"
+            )
+            args["source_step_ids"] = source_step_ids
+            labels = raw.get("component_labels")
+            if labels is not None:
+                if not isinstance(labels, list) or len(labels) != len(source_step_ids):
+                    raise ContinuityError(
+                        "component_labels must match source_step_ids length"
+                    )
+                cleaned = []
+                for lab in labels:
+                    if not isinstance(lab, str) or not lab.strip() or len(lab.strip()) > 40:
+                        raise ContinuityError("invalid component label")
+                    cleaned.append(lab.strip())
+                args["component_labels"] = cleaned
+            field_ids = raw.get("component_field_ids")
+            if field_ids is not None:
+                if not isinstance(field_ids, list) or len(field_ids) != len(
+                    source_step_ids
+                ):
+                    raise ContinuityError(
+                        "component_field_ids must match source_step_ids length"
+                    )
+                cleaned_f = []
+                for fid in field_ids:
+                    if fid is None:
+                        cleaned_f.append(None)
+                        continue
+                    if not isinstance(fid, str) or not re.fullmatch(
+                        r"[a-z][a-z0-9_]{0,39}", fid
+                    ):
+                        raise ContinuityError("invalid component_field_id")
+                    cleaned_f.append(fid)
+                args["component_field_ids"] = cleaned_f
+    missing = raw.get("missing_categories")
+    if missing is not None:
+        if not isinstance(missing, list) or len(missing) > 12:
+            raise ContinuityError("missing_categories must be a short list")
+        args["missing_categories"] = [
+            str(m).strip()[:80] for m in missing if str(m).strip()
+        ][:12]
+    bundle_label = raw.get("bundle_label")
+    if bundle_label is not None:
+        if not isinstance(bundle_label, str) or not bundle_label.strip() or len(bundle_label) > 160:
+            raise ContinuityError("bundle_label invalid")
+        args["bundle_label"] = bundle_label.strip()
+    domain = raw.get("domain_template")
+    if domain is not None:
+        if not isinstance(domain, str) or domain not in {
+            "painting_estimate",
+            "event_budget",
+            "research_comparison",
+        }:
+            raise ContinuityError("unknown domain_template")
+        args["domain_template"] = domain
+    return args
+
+
+def _normalize_compose_extract_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("compose.extract_fields arguments must be an object")
+    for banned in ("authorization", "token", "credential", "folder", "code", "eval"):
+        if banned in raw:
+            raise ContinuityError(
+                f"{banned} cannot be stored in a durable compose.extract_fields binding"
+            )
+    evidence_step_ids = _normalize_step_id_list(
+        raw.get("evidence_step_ids"), field="evidence_step_ids"
+    )
+    schema = raw.get("schema")
+    from project_guardian.structured_field_extraction import (
+        ExtractionError,
+        validate_extraction_schema,
+    )
+
+    try:
+        cleaned_schema = validate_extraction_schema(schema)
+    except ExtractionError as exc:
+        raise ContinuityError(f"invalid extraction schema: {exc}") from exc
+    args: Dict[str, Any] = {
+        "evidence_step_ids": evidence_step_ids,
+        "schema": cleaned_schema,
+    }
+    if "require_verified_required" in raw:
+        args["require_verified_required"] = bool(raw.get("require_verified_required"))
+    return args
+
+
+def _normalize_compose_extract_records_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("compose.extract_records arguments must be an object")
+    for banned in ("authorization", "token", "credential", "folder", "code", "eval"):
+        if banned in raw:
+            raise ContinuityError(
+                f"{banned} cannot be stored in a durable compose.extract_records binding"
+            )
+    evidence_step_ids = _normalize_step_id_list(
+        raw.get("evidence_step_ids"), field="evidence_step_ids"
+    )
+    from project_guardian.structured_field_extraction import (
+        ExtractionError,
+        validate_record_schema,
+    )
+
+    try:
+        cleaned_schema = validate_record_schema(raw.get("schema"))
+    except ExtractionError as exc:
+        raise ContinuityError(f"invalid record schema: {exc}") from exc
+    args: Dict[str, Any] = {
+        "evidence_step_ids": evidence_step_ids,
+        "schema": cleaned_schema,
+    }
+    if "require_verified_required" in raw:
+        args["require_verified_required"] = bool(raw.get("require_verified_required"))
+    structures = raw.get("structures")
+    if structures is not None:
+        if not isinstance(structures, list) or not structures or len(structures) > 3:
+            raise ContinuityError("structures must be a short list")
+        allowed = {"markdown_table", "labeled_block", "bullet_list"}
+        cleaned = []
+        for s in structures:
+            if s not in allowed:
+                raise ContinuityError(f"unsupported structure: {s}")
+            cleaned.append(s)
+        args["structures"] = cleaned
+    return args
+
+
+def _normalize_compose_synthesize_arguments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ContinuityError("compose.synthesize arguments must be an object")
+    for banned in ("authorization", "token", "credential", "folder", "draft"):
+        if banned in raw:
+            raise ContinuityError(
+                f"{banned} cannot be stored in a durable compose.synthesize binding"
+            )
+    evidence_step_ids = _normalize_step_id_list(
+        raw.get("evidence_step_ids"), field="evidence_step_ids"
+    )
+    mode = raw.get("mode", "summary")
+    if mode not in {"summary", "comparison", "draft"}:
+        raise ContinuityError("mode must be summary, comparison, or draft")
+    args: Dict[str, Any] = {
+        "evidence_step_ids": evidence_step_ids,
+        "mode": mode,
+    }
+    aggregate_step_id = raw.get("aggregate_step_id")
+    if aggregate_step_id is not None:
+        if not isinstance(aggregate_step_id, str) or not re.fullmatch(
+            r"step_[a-f0-9]{12}", aggregate_step_id
+        ):
+            raise ContinuityError("invalid aggregate_step_id")
+        args["aggregate_step_id"] = aggregate_step_id
+    phrases = raw.get("required_phrases")
+    if phrases is not None:
+        if not isinstance(phrases, list) or len(phrases) > 12:
+            raise ContinuityError("required_phrases must be a short list")
+        args["required_phrases"] = [
+            str(p).strip()[:120] for p in phrases if str(p).strip()
+        ][:12]
+    banner = raw.get("banner")
+    if banner is not None:
+        if not isinstance(banner, str) or not banner.strip() or len(banner) > 120:
+            raise ContinuityError("banner invalid")
+        args["banner"] = banner.strip()
+    scope_notes = raw.get("scope_notes")
+    if scope_notes is not None:
+        if not isinstance(scope_notes, str) or len(scope_notes.strip()) > 400:
+            raise ContinuityError("scope_notes must be a short string")
+        args["scope_notes"] = scope_notes.strip()
+    domain = raw.get("domain_template")
+    if domain is not None:
+        if not isinstance(domain, str) or domain not in {
+            "painting_estimate",
+            "event_budget",
+            "research_comparison",
+        }:
+            raise ContinuityError("unknown domain_template")
+        args["domain_template"] = domain
+    return args
+
+
+def _normalize_step_capability_arguments(capability: str, raw: Any) -> Dict[str, Any]:
+    if capability == "calculator.labor":
+        return _normalize_labor_arguments(raw)
+    if capability == "local.documents.search":
+        return _normalize_documents_search_arguments(raw)
+    if capability == "estimate.assemble":
+        return _normalize_estimate_assemble_arguments(raw)
+    if capability == "estimate.draft":
+        return _normalize_estimate_draft_arguments(raw)
+    if capability == "compose.aggregate_usd":
+        return _normalize_compose_aggregate_arguments(raw)
+    if capability == "compose.synthesize":
+        return _normalize_compose_synthesize_arguments(raw)
+    if capability == "compose.extract_fields":
+        return _normalize_compose_extract_arguments(raw)
+    if capability == "compose.extract_records":
+        return _normalize_compose_extract_records_arguments(raw)
+    raise ContinuityError("unsupported step capability")
+
+
+def _normalize_task_steps(raw: Any) -> List[Dict[str, Any]]:
+    steps: List[Dict[str, Any]] = []
+    if not isinstance(raw, list):
+        return steps
+    for idx, item in enumerate(raw[:40]):
+        if not isinstance(item, dict):
+            continue
+        step_id = item.get("step_id")
+        description = item.get("description")
+        if not isinstance(step_id, str) or not re.fullmatch(r"step_[a-f0-9]{12}", step_id):
+            continue
+        if not isinstance(description, str) or not description.strip():
+            continue
+        status = item.get("status") if item.get("status") in {"pending", "completed"} else "pending"
+        capability = item.get("capability")
+        if capability is not None and capability not in SUPPORTED_STEP_CAPABILITIES:
+            capability = None
+        step = {
+            "step_id": step_id,
+            "description": description.strip()[:400],
+            "status": status,
+            "order": idx,
+            "completed_utc": item.get("completed_utc") if status == "completed" else None,
+            "completion_source": item.get("completion_source") if status == "completed" else None,
+            "completed_at_revision": item.get("completed_at_revision")
+            if status == "completed"
+            else None,
+            "capability": capability,
+            "arguments": item.get("arguments") if isinstance(item.get("arguments"), dict) else None,
+            "expected_result_type": item.get("expected_result_type"),
+            "verification_rule": item.get("verification_rule"),
+            "execution_status": item.get("execution_status")
+            if item.get("execution_status") in {"none", "succeeded", "failed"}
+            else "none",
+            "verification_status": item.get("verification_status")
+            if item.get("verification_status") in {"none", "verified", "failed"}
+            else "none",
+            "execution_receipt_id": item.get("execution_receipt_id"),
+            "last_failure_category": item.get("last_failure_category"),
+            "result_reference": item.get("result_reference")
+            if isinstance(item.get("result_reference"), dict)
+            else None,
+            "execution_history": [
+                h for h in (item.get("execution_history") or []) if isinstance(h, dict)
+            ][:12],
+        }
+        steps.append(step)
+    return steps
+
+
+def _sync_lists_from_task_steps(record: Dict[str, Any]) -> None:
+    steps = _normalize_task_steps(record.get("task_steps"))
+    record["task_steps"] = steps
+    record["outstanding_steps"] = [
+        s["description"] for s in steps if s.get("status") == "pending"
+    ]
+    completed = [s["description"] for s in steps if s.get("status") == "completed"]
+    # Preserve any non-step completed_work notes while preferring structured completions.
+    prior = [
+        c
+        for c in (record.get("completed_work") or [])
+        if isinstance(c, str) and c.strip() and c.strip() not in completed
+    ]
+    record["completed_work"] = (completed + prior)[:20]
+
+
+def _rebuild_pending_steps(
+    existing: Sequence[Mapping[str, Any]],
+    pending_descriptions: Sequence[str],
+) -> List[Dict[str, Any]]:
+    """Keep completed steps; rebuild pending list reusing IDs when descriptions match."""
+    completed = [
+        dict(s)
+        for s in existing
+        if isinstance(s, dict) and s.get("status") == "completed"
+    ]
+    pending_pool = [
+        dict(s)
+        for s in existing
+        if isinstance(s, dict) and s.get("status") == "pending"
+    ]
+    used_ids: set[str] = set()
+    new_pending: List[Dict[str, Any]] = []
+    for desc in pending_descriptions:
+        match = None
+        for candidate in pending_pool:
+            if candidate["step_id"] in used_ids:
+                continue
+            if candidate.get("description") == desc:
+                match = candidate
+                break
+        if match is None:
+            match = {
+                "step_id": _new_step_id(),
+                "description": desc,
+                "status": "pending",
+                "completed_utc": None,
+                "completion_source": None,
+                "completed_at_revision": None,
+                "capability": None,
+                "arguments": None,
+                "execution_status": "none",
+                "verification_status": "none",
+                "execution_history": [],
+            }
+        else:
+            match["description"] = desc
+            match["status"] = "pending"
+            match["completed_utc"] = None
+            match["completion_source"] = None
+            match["completed_at_revision"] = None
+            # Preserve capability binding and prior execution evidence.
+        used_ids.add(match["step_id"])
+        new_pending.append(match)
+    merged = completed + new_pending
+    for idx, step in enumerate(merged):
+        step["order"] = idx
+    return merged
+
+
+def estimate_tokens(text: str) -> int:
+    """Conservative char/4 estimate when a tokenizer is unavailable."""
+    if not text:
+        return 0
+    return max(1, (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
+
+
+def configured_context_budget_tokens() -> int:
+    raw = os.environ.get("ELYSIA_CONTEXT_BUDGET_TOKENS", "").strip()
+    if not raw:
+        return DEFAULT_CONTEXT_BUDGET_TOKENS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_CONTEXT_BUDGET_TOKENS
+    return max(256, min(value, 8192))
+
+
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    data = json.dumps(payload, indent=2, ensure_ascii=True) + "\n"
+    tmp.write_text(data, encoding="utf-8")
+    # Windows-friendly replace
+    os.replace(str(tmp), str(path))
+    # Readback verification
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict) or loaded.get("schema") != payload.get("schema"):
+        raise ContinuityError("checkpoint/conversation readback failed")
+
+
+def _safe_title(text: str) -> str:
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return "Untitled conversation"
+    return cleaned[:80]
+
+
+@dataclass
+class ConversationStore:
+    root: Path
+    outcome_store: Any = None
+
+    def __post_init__(self) -> None:
+        self.root = Path(self.root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        index = self.root / "index.json"
+        if not index.exists():
+            _atomic_write_json(
+                index,
+                {"schema": "elysia.conversation-index.v1", "conversations": []},
+            )
+        # Optional durable composition outcome feedback (not personal memory).
+        if self.outcome_store is None:
+            try:
+                from project_guardian.composition_outcome_feedback import (
+                    OutcomeFeedbackStore,
+                    resolve_outcome_feedback_root,
+                )
+
+                # conversations root lives under disposable_root/conversations
+                disposable = self.root.parent if self.root.name == "conversations" else self.root
+                self.outcome_store = OutcomeFeedbackStore(
+                    resolve_outcome_feedback_root(disposable)
+                )
+            except Exception:
+                self.outcome_store = None
+
+    def _conv_dir(self, conversation_id: str) -> Path:
+        if not re.fullmatch(r"conv_[a-f0-9]{16}", conversation_id or ""):
+            raise ContinuityError("invalid conversation id")
+        return self.root / conversation_id
+
+    def _conv_path(self, conversation_id: str) -> Path:
+        return self._conv_dir(conversation_id) / "conversation.json"
+
+    def _checkpoint_path(self, conversation_id: str) -> Path:
+        return self._conv_dir(conversation_id) / "checkpoint.json"
+
+    def list_conversations(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            index = json.loads((self.root / "index.json").read_text(encoding="utf-8"))
+            rows = index.get("conversations") or []
+            return [r for r in rows if isinstance(r, dict)]
+
+    def create(
+        self,
+        *,
+        title: str = "",
+        objective: str = "",
+        completion_condition: str = "",
+        constraints: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        conversation_id = "conv_" + uuid.uuid4().hex[:16]
+        now = _utc_now()
+        record = {
+            "schema": SCHEMA_CONVERSATION,
+            "conversation_id": conversation_id,
+            "title": _safe_title(title or objective or "Conversation"),
+            "objective": (objective or "").strip()[:800],
+            "completion_condition": (completion_condition or "").strip()[:400],
+            "constraints": [str(c).strip()[:200] for c in (constraints or []) if str(c).strip()][:12],
+            "confirmed_facts": [],
+            "assumptions": [],
+            "memory_refs": [],
+            "completed_work": [],
+            "outstanding_steps": [],
+            "task_steps": [],
+            "status": "active",
+            "next_safe_action": "",
+            "advancement_needs_review": False,
+            "unresolved_questions": [],
+            "messages": [],
+            "checkpoint_revision": 0,
+            "created_utc": now,
+            "updated_utc": now,
+            "last_rollover_utc": None,
+            "operator_task_state": {
+                "locked": False,
+                "outstanding_steps": False,
+                "next_safe_action": False,
+                "updated_utc": None,
+                "source": None,
+            },
+            "authorization_note": "No tool authorization is stored with this conversation.",
+        }
+        with self._lock:
+            d = self._conv_dir(conversation_id)
+            d.mkdir(parents=True, exist_ok=True)
+            _atomic_write_json(self._conv_path(conversation_id), record)
+            self._upsert_index(record)
+        return record
+
+    def get(self, conversation_id: str) -> Dict[str, Any]:
+        with self._lock:
+            path = self._conv_path(conversation_id)
+            if not path.is_file():
+                raise ContinuityError("conversation not found")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or data.get("schema") != SCHEMA_CONVERSATION:
+                raise ContinuityError("malformed conversation record")
+            if data.get("conversation_id") != conversation_id:
+                raise ContinuityError("conversation identity mismatch")
+            return data
+
+    def get_checkpoint(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            path = self._checkpoint_path(conversation_id)
+            if not path.is_file():
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or data.get("schema") != SCHEMA_CHECKPOINT:
+                raise ContinuityError("malformed checkpoint")
+            if data.get("conversation_id") != conversation_id:
+                raise ContinuityError("checkpoint identity mismatch")
+            return data
+
+    def update_task_fields(self, conversation_id: str, updates: Mapping[str, Any]) -> Dict[str, Any]:
+        """Host-side field merge. Operator-locked next/outstanding cannot be overwritten here."""
+        with self._lock:
+            record = self._load_unlocked(conversation_id)
+            ops = record.get("operator_task_state") if isinstance(record.get("operator_task_state"), dict) else {}
+            for key in (
+                "objective",
+                "completion_condition",
+                "next_safe_action",
+                "status",
+                "title",
+            ):
+                if key in updates and isinstance(updates[key], str):
+                    if key == "next_safe_action" and ops.get("next_safe_action"):
+                        # Explicit operator correction wins over model/host summaries.
+                        continue
+                    record[key] = updates[key].strip()[:800]
+            for key in (
+                "constraints",
+                "confirmed_facts",
+                "assumptions",
+                "completed_work",
+                "outstanding_steps",
+                "unresolved_questions",
+                "memory_refs",
+            ):
+                if key in updates and isinstance(updates[key], list):
+                    if key == "outstanding_steps" and ops.get("outstanding_steps"):
+                        continue
+                    cleaned = []
+                    for item in updates[key][:20]:
+                        if isinstance(item, str) and item.strip():
+                            cleaned.append(item.strip()[:400])
+                        elif isinstance(item, dict):
+                            # memory_refs may be {fact_id, revision} without statement text required
+                            ref = {}
+                            if isinstance(item.get("fact_id"), str):
+                                ref["fact_id"] = item["fact_id"][:64]
+                            if "revision" in item:
+                                try:
+                                    ref["revision"] = int(item["revision"])
+                                except (TypeError, ValueError):
+                                    pass
+                            if ref:
+                                cleaned.append(ref)
+                    record[key] = cleaned
+            # Structured task_steps are operator-controlled; never accept model/host merges.
+            updates_dict = dict(updates)
+            updates_dict.pop("task_steps", None)
+            record["updated_utc"] = _utc_now()
+            _atomic_write_json(self._conv_path(conversation_id), record)
+            self._upsert_index(record)
+            return record
+
+    def commit_operator_task_state(
+        self,
+        conversation_id: str,
+        *,
+        expected_revision: int,
+        outstanding_steps: Optional[Sequence[str]] = None,
+        next_safe_action: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Authoritative operator edit of outstanding steps / next action.
+
+        Requires expected_revision to match the current checkpoint revision (0 if none).
+        Commits conversation fields then writes a new durable checkpoint with readback.
+        Idempotent when the same operator state is already committed at that revision+1.
+        """
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ContinuityError("expected_revision must be a non-negative integer")
+        if outstanding_steps is None and next_safe_action is None:
+            raise ContinuityError("nothing to save")
+
+        cleaned_steps: Optional[List[str]] = None
+        if outstanding_steps is not None:
+            if not isinstance(outstanding_steps, (list, tuple)):
+                raise ContinuityError("outstanding_steps must be a list")
+            cleaned_steps = []
+            for item in list(outstanding_steps)[:20]:
+                if not isinstance(item, str) or not item.strip():
+                    raise ContinuityError("outstanding_steps entries must be non-empty strings")
+                if len(item.strip()) > 400:
+                    raise ContinuityError("outstanding_steps entry too long")
+                cleaned_steps.append(item.strip())
+
+        cleaned_next: Optional[str] = None
+        if next_safe_action is not None:
+            if not isinstance(next_safe_action, str):
+                raise ContinuityError("next_safe_action must be a string")
+            cleaned_next = next_safe_action.strip()
+            if not cleaned_next:
+                raise ContinuityError("next_safe_action must be non-empty")
+            if len(cleaned_next) > 800:
+                raise ContinuityError("next_safe_action too long")
+
+        with self._lock:
+            record = self._load_unlocked(conversation_id)
+            current_rev = int(record.get("checkpoint_revision") or 0)
+            existing = None
+            cpath = self._checkpoint_path(conversation_id)
+            if cpath.is_file():
+                try:
+                    existing = json.loads(cpath.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    existing = None
+
+            # Idempotent retry after a successful commit whose response was lost:
+            # current is already expected_revision+1 with matching operator content.
+            if current_rev == expected_revision + 1 and isinstance(existing, dict):
+                if (
+                    int(existing.get("revision") or 0) == expected_revision + 1
+                    and existing.get("reason") == "operator_task_edit"
+                    and existing.get("task_state_source") == "operator"
+                ):
+                    same_steps = (
+                        cleaned_steps is None
+                        or list(existing.get("outstanding_steps") or []) == cleaned_steps
+                    )
+                    same_next = (
+                        cleaned_next is None
+                        or (existing.get("next_safe_action") or "") == cleaned_next
+                    )
+                    if same_steps and same_next:
+                        return {
+                            "conversation": record,
+                            "checkpoint": existing,
+                            "idempotent": True,
+                            "saved": True,
+                        }
+                raise StaleTaskEditError(
+                    f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+                )
+            if current_rev != expected_revision:
+                raise StaleTaskEditError(
+                    f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+                )
+
+            # Mutate in memory only until the checkpoint write succeeds.
+            if cleaned_steps is not None:
+                existing_steps = _normalize_task_steps(record.get("task_steps"))
+                record["task_steps"] = _rebuild_pending_steps(existing_steps, cleaned_steps)
+                _sync_lists_from_task_steps(record)
+            if cleaned_next is not None:
+                record["next_safe_action"] = cleaned_next
+                record["advancement_needs_review"] = False
+            now = _utc_now()
+            prior_ops = (
+                record.get("operator_task_state")
+                if isinstance(record.get("operator_task_state"), dict)
+                else {}
+            )
+            record["operator_task_state"] = {
+                "locked": True,
+                "outstanding_steps": True
+                if cleaned_steps is not None
+                else bool(prior_ops.get("outstanding_steps")),
+                "next_safe_action": True
+                if cleaned_next is not None
+                else bool(prior_ops.get("next_safe_action")),
+                "updated_utc": now,
+                "source": "operator",
+            }
+            record["updated_utc"] = now
+
+            return self._persist_operator_mutation_unlocked(
+                record,
+                previous=existing if isinstance(existing, dict) else None,
+                reason="operator_task_edit",
+                require_outstanding=cleaned_steps,
+            )
+
+    def evaluate_bound_step(
+        self,
+        conversation_id: str,
+        *,
+        step_id: str,
+        expected_outcome: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Read-only host evaluation of whether a step met its objective."""
+        from project_guardian.capability_composition import (
+            evaluate_step_outcome,
+            list_composable_capabilities,
+        )
+
+        if not isinstance(step_id, str) or not re.fullmatch(r"step_[a-f0-9]{12}", step_id):
+            raise ContinuityError("invalid step_id")
+        record = self.get(conversation_id)
+        steps = _normalize_task_steps(record.get("task_steps"))
+        target = next((s for s in steps if s.get("step_id") == step_id), None)
+        if target is None:
+            raise ContinuityError("step not found")
+        expected = expected_outcome
+        if not expected:
+            # Prefer description after "capability: " when present.
+            desc = str(target.get("description") or "")
+            if ": " in desc:
+                expected = desc.split(": ", 1)[1]
+            else:
+                expected = desc
+        evaluation = evaluate_step_outcome(
+            target,
+            expected_outcome=expected,
+            available_capabilities=list_composable_capabilities(),
+        )
+        return {
+            "conversation_id": conversation_id,
+            "step_id": step_id,
+            "objective": record.get("objective") or "",
+            "evaluation": evaluation,
+            "authorization_granted": False,
+            "authorization_inherited": False,
+        }
+
+    def apply_validated_replan(
+        self,
+        conversation_id: str,
+        *,
+        expected_revision: int,
+        validated_plan: Mapping[str, Any],
+        evaluation: Mapping[str, Any],
+        failed_step_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Apply a host-validated replan without granting execution authority.
+
+        Preserves completed verified steps and archives failed pending attempts.
+        """
+        from project_guardian.capability_composition import (
+            CompositionError,
+            MAX_REPLAN_ATTEMPTS,
+            collect_verified_links,
+            map_validated_plan_to_outstanding_steps,
+            sanitize_prompt_injection_claims,
+        )
+
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ContinuityError("expected_revision must be a non-negative integer")
+        if not isinstance(validated_plan, Mapping) or not validated_plan.get("ok"):
+            raise ContinuityError("validated_plan required")
+        if validated_plan.get("authorization_granted") or validated_plan.get("executable"):
+            raise ContinuityError("validated replan must not claim execution authority")
+        if validated_plan.get("authorization_inherited"):
+            raise ContinuityError("validated replan must not inherit authorization")
+        if not isinstance(evaluation, Mapping) or evaluation.get("met") is True:
+            raise ContinuityError("replan requires unmet step evaluation")
+
+        try:
+            outstanding = map_validated_plan_to_outstanding_steps(validated_plan)
+        except CompositionError as exc:
+            raise ContinuityError(str(exc)) from exc
+
+        with self._lock:
+            record = self._load_unlocked(conversation_id)
+            current_rev = int(record.get("checkpoint_revision") or 0)
+            existing = None
+            cpath = self._checkpoint_path(conversation_id)
+            if cpath.is_file():
+                try:
+                    existing = json.loads(cpath.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    existing = None
+
+            if current_rev == expected_revision + 1 and isinstance(existing, dict):
+                if (
+                    int(existing.get("revision") or 0) == expected_revision + 1
+                    and existing.get("reason") == "adaptive_replan"
+                ):
+                    same_steps = list(existing.get("outstanding_steps") or []) == outstanding
+                    if same_steps:
+                        return {
+                            "conversation": record,
+                            "checkpoint": existing,
+                            "idempotent": True,
+                            "saved": True,
+                            "authorization_granted": False,
+                        }
+                raise StaleTaskEditError(
+                    f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+                )
+            if current_rev != expected_revision:
+                raise StaleTaskEditError(
+                    f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+                )
+
+            original_objective = (record.get("objective") or "").strip()
+            plan_objective = str(validated_plan.get("objective") or "").strip()
+            if original_objective and plan_objective and plan_objective != original_objective:
+                raise ContinuityError("replan cannot change the original objective")
+            if not original_objective and plan_objective:
+                record["objective"] = plan_objective[:800]
+                original_objective = plan_objective
+
+            prior_adaptive = (
+                record.get("adaptive_replan")
+                if isinstance(record.get("adaptive_replan"), dict)
+                else {}
+            )
+            attempt_count = int(prior_adaptive.get("attempt_count") or 0)
+            if attempt_count >= MAX_REPLAN_ATTEMPTS:
+                raise ContinuityError(
+                    f"replan attempt limit reached ({MAX_REPLAN_ATTEMPTS}); "
+                    "operator blocker required"
+                )
+
+            steps = _normalize_task_steps(record.get("task_steps"))
+            failed_archive = list(prior_adaptive.get("failed_attempts") or [])
+            failed_step = None
+            if isinstance(failed_step_id, str):
+                failed_step = next(
+                    (s for s in steps if s.get("step_id") == failed_step_id), None
+                )
+            # Archive pending steps that will be replaced (preserve failure evidence).
+            pending_to_drop = [
+                s for s in steps if s.get("status") == "pending"
+            ]
+            for s in pending_to_drop:
+                failed_archive.append(
+                    {
+                        "step_id": s.get("step_id"),
+                        "description": s.get("description"),
+                        "capability": s.get("capability"),
+                        "execution_status": s.get("execution_status"),
+                        "verification_status": s.get("verification_status"),
+                        "last_failure_category": s.get("last_failure_category"),
+                        "result_reference": s.get("result_reference"),
+                        "archived_utc": _utc_now(),
+                    }
+                )
+            failed_archive = failed_archive[-12:]
+
+            verified_links = collect_verified_links(
+                conversation_id,
+                steps,
+                checkpoint_revision=current_rev,
+            )
+
+            record["task_steps"] = _rebuild_pending_steps(steps, outstanding)
+            _sync_lists_from_task_steps(record)
+            next_action = outstanding[0]
+            record["next_safe_action"] = next_action
+            record["advancement_needs_review"] = True
+
+            history = list(prior_adaptive.get("history") or [])
+            history.append(
+                {
+                    "attempt": attempt_count + 1,
+                    "revision_reason": sanitize_prompt_injection_claims(
+                        str(validated_plan.get("revision_reason") or evaluation.get("reason") or "")
+                    ),
+                    "failure_category": evaluation.get("category"),
+                    "failed_step_id": failed_step_id,
+                    "failed_capability": (failed_step or {}).get("capability")
+                    if isinstance(failed_step, dict)
+                    else None,
+                    "selected_next_capability": validated_plan.get("selected_next_capability"),
+                    "outstanding_steps": outstanding,
+                    "verified_progress_count": len(verified_links),
+                    "created_utc": _utc_now(),
+                }
+            )
+            record["adaptive_replan"] = {
+                "attempt_count": attempt_count + 1,
+                "max_attempts": MAX_REPLAN_ATTEMPTS,
+                "original_objective": original_objective,
+                "latest_failure_category": evaluation.get("category"),
+                "latest_revision_reason": sanitize_prompt_injection_claims(
+                    str(validated_plan.get("revision_reason") or "")
+                ),
+                "history": history[-MAX_REPLAN_ATTEMPTS:],
+                "failed_attempts": failed_archive,
+                "authorization_inherited": False,
+                "authorization_granted": False,
+                "updated_utc": _utc_now(),
+            }
+            now = _utc_now()
+            prior_ops = (
+                record.get("operator_task_state")
+                if isinstance(record.get("operator_task_state"), dict)
+                else {}
+            )
+            record["operator_task_state"] = {
+                "locked": True,
+                "outstanding_steps": True,
+                "next_safe_action": True,
+                "updated_utc": now,
+                "source": "operator",
+            }
+            record["updated_utc"] = now
+
+            result = self._persist_operator_mutation_unlocked(
+                record,
+                previous=existing if isinstance(existing, dict) else None,
+                reason="adaptive_replan",
+                require_outstanding=outstanding,
+                extra_checkpoint_fields={
+                    "adaptive_replan": record["adaptive_replan"],
+                    "authorization_state": "none",
+                    "authorization_inherited": False,
+                },
+            )
+            result["authorization_granted"] = False
+            result["authorization_inherited"] = False
+            result["evaluation"] = dict(evaluation)
+            result["validated_plan"] = {
+                "objective": validated_plan.get("objective"),
+                "steps": validated_plan.get("steps"),
+                "revision_reason": validated_plan.get("revision_reason"),
+                "executable": False,
+                "authorization_inherited": False,
+            }
+            return result
+
+    def complete_operator_step(
+        self,
+        conversation_id: str,
+        *,
+        step_id: str,
+        expected_revision: int,
+    ) -> Dict[str, Any]:
+        """Mark one pending step completed by stable ID and safely advance next action."""
+        if not isinstance(step_id, str) or not re.fullmatch(r"step_[a-f0-9]{12}", step_id):
+            raise ContinuityError("invalid step_id")
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ContinuityError("expected_revision must be a non-negative integer")
+
+        with self._lock:
+            record = self._load_unlocked(conversation_id)
+            current_rev = int(record.get("checkpoint_revision") or 0)
+            existing = None
+            cpath = self._checkpoint_path(conversation_id)
+            if cpath.is_file():
+                try:
+                    existing = json.loads(cpath.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    existing = None
+
+            # Idempotent retry: same step already completed at expected_revision+1.
+            if current_rev == expected_revision + 1 and isinstance(existing, dict):
+                if (
+                    int(existing.get("revision") or 0) == expected_revision + 1
+                    and existing.get("reason") == "operator_step_complete"
+                ):
+                    done = existing.get("last_completed_step") or {}
+                    if isinstance(done, dict) and done.get("step_id") == step_id:
+                        return {
+                            "conversation": record,
+                            "checkpoint": existing,
+                            "idempotent": True,
+                            "saved": True,
+                            "advanced": bool(existing.get("advanced_next_action")),
+                            "advancement_needs_review": bool(
+                                existing.get("advancement_needs_review")
+                            ),
+                        }
+                raise StaleTaskEditError(
+                    f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+                )
+            if current_rev != expected_revision:
+                raise StaleTaskEditError(
+                    f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+                )
+
+            steps = _normalize_task_steps(record.get("task_steps"))
+            # Bootstrap structured steps from legacy outstanding_steps when needed.
+            if not steps and record.get("outstanding_steps"):
+                legacy = [
+                    str(s).strip()
+                    for s in (record.get("outstanding_steps") or [])
+                    if isinstance(s, str) and str(s).strip()
+                ]
+                steps = _rebuild_pending_steps([], legacy)
+                record["task_steps"] = steps
+                _sync_lists_from_task_steps(record)
+                steps = _normalize_task_steps(record.get("task_steps"))
+
+            target = next((s for s in steps if s["step_id"] == step_id), None)
+            if target is None:
+                raise ContinuityError("step not found")
+            if target.get("status") == "completed":
+                # Already complete at this revision — no duplicate history.
+                raise ContinuityError("step already completed")
+
+            now = _utc_now()
+            next_rev = current_rev + 1
+            target["status"] = "completed"
+            target["completed_utc"] = now
+            target["completion_source"] = "operator"
+            target["completed_at_revision"] = next_rev
+            for idx, step in enumerate(steps):
+                if step["step_id"] == step_id:
+                    steps[idx] = target
+                    break
+            record["task_steps"] = steps
+            _sync_lists_from_task_steps(record)
+
+            current_next = (record.get("next_safe_action") or "").strip()
+            completed_desc = target["description"]
+            pending = [s for s in steps if s.get("status") == "pending"]
+            linked = (
+                not current_next
+                or current_next == completed_desc
+                or current_next == NO_OUTSTANDING_STEPS
+            )
+            advanced = False
+            needs_review = False
+            if linked:
+                if pending:
+                    record["next_safe_action"] = pending[0]["description"]
+                    advanced = True
+                    needs_review = False
+                else:
+                    record["next_safe_action"] = NO_OUTSTANDING_STEPS
+                    advanced = True
+                    needs_review = False
+            else:
+                # Preserve unrelated operator next action.
+                needs_review = True
+                advanced = False
+            record["advancement_needs_review"] = needs_review
+
+            prior_ops = (
+                record.get("operator_task_state")
+                if isinstance(record.get("operator_task_state"), dict)
+                else {}
+            )
+            record["operator_task_state"] = {
+                "locked": True,
+                "outstanding_steps": True,
+                "next_safe_action": True if advanced or prior_ops.get("next_safe_action") else True,
+                "updated_utc": now,
+                "source": "operator",
+            }
+            record["updated_utc"] = now
+
+            result = self._persist_operator_mutation_unlocked(
+                record,
+                previous=existing if isinstance(existing, dict) else None,
+                reason="operator_step_complete",
+                require_outstanding=None,
+                extra_checkpoint_fields={
+                    "last_completed_step": {
+                        "step_id": step_id,
+                        "description": completed_desc,
+                        "completion_source": "operator",
+                        "completed_utc": now,
+                    },
+                    "advanced_next_action": advanced,
+                    "advancement_needs_review": needs_review,
+                },
+            )
+            result["advanced"] = advanced
+            result["advancement_needs_review"] = needs_review
+            result["completed_step"] = {
+                "step_id": step_id,
+                "description": completed_desc,
+                "completion_source": "operator",
+                "completed_utc": now,
+            }
+            return result
+
+    def bind_operator_step(
+        self,
+        conversation_id: str,
+        *,
+        step_id: str,
+        expected_revision: int,
+        capability: str,
+        arguments: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Attach a supported capability binding to a pending step."""
+        if capability not in SUPPORTED_STEP_CAPABILITIES:
+            raise ContinuityError("unsupported step capability")
+        if not isinstance(step_id, str) or not re.fullmatch(r"step_[a-f0-9]{12}", step_id):
+            raise ContinuityError("invalid step_id")
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ContinuityError("expected_revision must be a non-negative integer")
+        cleaned_args = _normalize_step_capability_arguments(capability, arguments)
+        if capability == "calculator.labor":
+            expected_result_type = "usd_total"
+            verification_rule = "deterministic_recompute"
+        elif capability == "local.documents.search":
+            expected_result_type = "document_evidence"
+            verification_rule = "source_excerpt_reverify"
+        elif capability in {"estimate.assemble", "compose.aggregate_usd"}:
+            expected_result_type = "estimate_subtotal"
+            verification_rule = "deterministic_decimal_sum"
+        elif capability == "compose.extract_fields":
+            expected_result_type = "structured_fields"
+            verification_rule = "source_span_and_type_check"
+        elif capability == "compose.extract_records":
+            expected_result_type = "structured_records"
+            verification_rule = "row_cell_span_and_type_check"
+        else:
+            expected_result_type = "estimate_draft"
+            verification_rule = "draft_amount_postcheck"
+
+        with self._lock:
+            record, existing, current_rev = self._revision_gate_unlocked(
+                conversation_id,
+                expected_revision=expected_revision,
+                idempotent_reason="operator_step_bind",
+                idempotent_match=lambda ckpt: (
+                    isinstance(ckpt.get("last_bound_step"), dict)
+                    and ckpt["last_bound_step"].get("step_id") == step_id
+                    and ckpt["last_bound_step"].get("capability") == capability
+                    and ckpt["last_bound_step"].get("arguments") == cleaned_args
+                ),
+            )
+            if record.get("_idempotent_hit"):
+                return {
+                    "conversation": {k: v for k, v in record.items() if k != "_idempotent_hit"},
+                    "checkpoint": existing,
+                    "idempotent": True,
+                    "saved": True,
+                }
+
+            steps = _normalize_task_steps(record.get("task_steps"))
+            target = next((s for s in steps if s["step_id"] == step_id), None)
+            if target is None:
+                raise ContinuityError("step not found")
+            if target.get("status") != "pending":
+                raise ContinuityError("only pending steps can be bound")
+            target["capability"] = capability
+            target["arguments"] = cleaned_args
+            target["expected_result_type"] = expected_result_type
+            target["verification_rule"] = verification_rule
+            target["execution_status"] = "none"
+            target["verification_status"] = "none"
+            target["last_failure_category"] = None
+            for idx, step in enumerate(steps):
+                if step["step_id"] == step_id:
+                    steps[idx] = target
+                    break
+            record["task_steps"] = steps
+            _sync_lists_from_task_steps(record)
+            now = _utc_now()
+            record["operator_task_state"] = {
+                "locked": True,
+                "outstanding_steps": True,
+                "next_safe_action": bool(
+                    (record.get("operator_task_state") or {}).get("next_safe_action")
+                ),
+                "updated_utc": now,
+                "source": "operator",
+            }
+            record["updated_utc"] = now
+            return self._persist_operator_mutation_unlocked(
+                record,
+                previous=existing if isinstance(existing, dict) else None,
+                reason="operator_step_bind",
+                require_outstanding=None,
+                extra_checkpoint_fields={
+                    "last_bound_step": {
+                        "step_id": step_id,
+                        "capability": capability,
+                        "arguments": cleaned_args,
+                    }
+                },
+            )
+
+    def execute_verified_bound_step(
+        self,
+        conversation_id: str,
+        *,
+        step_id: str,
+        expected_revision: int,
+        authorize_calculator: bool = False,
+        authorize_documents_search: bool = False,
+        authorize_estimate_assemble: bool = False,
+        authorize_estimate_draft: bool = False,
+        authorize_compose_aggregate: bool = False,
+        authorize_compose_synthesize: bool = False,
+        authorize_compose_extract: bool = False,
+        authorize_compose_extract_records: bool = False,
+        authorize_record_completion: bool,
+        execution_id: Optional[str] = None,
+        documents_folder: Optional[str] = None,
+        draft_model: Any = None,
+    ) -> Dict[str, Any]:
+        """Execute a bound step (calculator/docs/compose/estimate), verify, and complete."""
+        from project_guardian.local_memory_chat import calculate_local
+        from project_guardian.local_documents_search import (
+            DocumentSearchError,
+            folder_fingerprint,
+            meets_evidence_criteria,
+            search_local_documents,
+            verify_document_matches,
+        )
+        from project_guardian.capability_composition import (
+            CAPABILITY_AGGREGATE,
+            CAPABILITY_ASSEMBLE,
+            CAPABILITY_DRAFT,
+            CAPABILITY_EXTRACT,
+            CAPABILITY_EXTRACT_RECORDS,
+            CAPABILITY_SYNTHESIZE,
+            DOMAIN_TEMPLATES,
+            CompositionError,
+            aggregate_usd_amounts,
+            assemble_estimate_subtotal,
+            build_draft_user_payload,
+            build_synthesize_payload,
+            draft_system_prompt,
+            extract_amount_usd_from_required,
+            host_grounded_summary_draft,
+            parse_model_draft,
+            recordable_outcome,
+            resolve_upstream_amount,
+            resolve_upstream_evidence,
+            synthesize_system_prompt,
+            verify_draft_amounts,
+            verify_synthesize_output,
+        )
+        from project_guardian.structured_field_extraction import (
+            ExtractionError,
+            aggregate_record_line_items,
+            extract_fields as run_extract_fields,
+            extract_records as run_extract_records,
+        )
+        EstimateWorkflowError = CompositionError
+
+        if not authorize_record_completion:
+            raise ContinuityError("recording completion not authorized for this request")
+        if not isinstance(step_id, str) or not re.fullmatch(r"step_[a-f0-9]{12}", step_id):
+            raise ContinuityError("invalid step_id")
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ContinuityError("expected_revision must be a non-negative integer")
+        if execution_id is None:
+            execution_id = "exec_" + uuid.uuid4().hex[:16]
+        elif not isinstance(execution_id, str) or not re.fullmatch(
+            r"exec_[a-f0-9]{16}", execution_id
+        ):
+            raise ContinuityError("invalid execution_id")
+
+        with self._lock:
+            record, existing, current_rev = self._revision_gate_unlocked(
+                conversation_id,
+                expected_revision=expected_revision,
+                idempotent_reason="operator_verified_execution",
+                idempotent_match=lambda ckpt: (
+                    isinstance(ckpt.get("last_execution_receipt"), dict)
+                    and ckpt["last_execution_receipt"].get("execution_id") == execution_id
+                ),
+            )
+            if record.get("_idempotent_hit"):
+                clean = {k: v for k, v in record.items() if k != "_idempotent_hit"}
+                return {
+                    "conversation": clean,
+                    "checkpoint": existing,
+                    "idempotent": True,
+                    "saved": True,
+                    "executed": True,
+                    "verified": True,
+                    "receipt": existing.get("last_execution_receipt") if existing else None,
+                    "advanced": bool((existing or {}).get("advanced_next_action")),
+                    "advancement_needs_review": bool(
+                        (existing or {}).get("advancement_needs_review")
+                    ),
+                }
+
+            steps = _normalize_task_steps(record.get("task_steps"))
+            target = next((s for s in steps if s["step_id"] == step_id), None)
+            if target is None:
+                raise ContinuityError("step not found")
+            if target.get("status") != "pending":
+                raise ContinuityError("step is not pending")
+            capability = target.get("capability")
+            if capability not in SUPPORTED_STEP_CAPABILITIES:
+                raise ContinuityError("step has no supported capability binding")
+
+            if capability == "calculator.labor":
+                if not authorize_calculator:
+                    raise ContinuityError(
+                        "calculator execution not authorized for this request"
+                    )
+                try:
+                    args = _normalize_labor_arguments(target.get("arguments") or {})
+                except ContinuityError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "invalid_arguments"
+                    raise ContinuityError(str(exc)) from exc
+
+                expression = (
+                    f"{args['hourly_rate_usd']} * {args['painters']} * "
+                    f"{args['days']} * {args['hours_per_day']}"
+                )
+                try:
+                    total = calculate_local(expression)
+                except ValueError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "tool_exception"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(f"calculator failed: {exc}") from exc
+
+                expected = (
+                    Decimal(args["hourly_rate_usd"])
+                    * Decimal(args["painters"])
+                    * Decimal(args["days"])
+                    * Decimal(args["hours_per_day"])
+                )
+                expected_s = format(expected.normalize(), "f")
+                if total != expected_s:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "incorrect_result"
+                    raise ContinuityError(
+                        "calculator result failed independent verification"
+                    )
+
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": "calculator.labor",
+                    "verified": True,
+                    "result": total,
+                    "currency": "USD",
+                    "expression": expression,
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "deterministic_recompute",
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": total,
+                    "amount_usd": total,
+                    "result_type": "labor_amount_usd",
+                    "currency": "USD",
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": total,
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = "calculation succeeded but completion was not durably recorded"
+            elif capability == "local.documents.search":
+                if not authorize_documents_search:
+                    raise ContinuityError(
+                        "document search not authorized for this request"
+                    )
+                if not isinstance(documents_folder, str) or not documents_folder.strip():
+                    raise ContinuityError(
+                        "documents_folder is required for this request (not inherited)"
+                    )
+                try:
+                    args = _normalize_documents_search_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "invalid_arguments"
+                    raise ContinuityError(str(exc)) from exc
+
+                try:
+                    fp = folder_fingerprint(documents_folder)
+                except DocumentSearchError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                expected_fp = args.get("folder_fingerprint")
+                if expected_fp and expected_fp != fp:
+                    raise ContinuityError(
+                        "documents_folder fingerprint does not match bound identity"
+                    )
+                expected_label = args.get("folder_label")
+                if expected_label and Path(documents_folder).name != expected_label:
+                    raise ContinuityError(
+                        "documents_folder label does not match bound folder_label"
+                    )
+
+                try:
+                    search = search_local_documents(
+                        documents_folder,
+                        args["query"],
+                        authorize_search=True,
+                    )
+                except DocumentSearchError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "tool_exception"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(f"document search failed: {exc}") from exc
+
+                matches = search.get("matches") or []
+                try:
+                    verified = verify_document_matches(
+                        documents_folder,
+                        matches,
+                        authorize_search=True,
+                    )
+                except DocumentSearchError as exc:
+                    target["execution_status"] = "succeeded"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "incorrect_result"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(f"document evidence verification failed: {exc}") from exc
+
+                ok, reason = meets_evidence_criteria(
+                    matches,
+                    min_matches=int(args["min_matches"]),
+                    required_substring=args.get("required_substring"),
+                    expected_relative_path=args.get("expected_relative_path"),
+                )
+                if not ok:
+                    # Tool ran; evidence-finding task remains incomplete.
+                    target["execution_status"] = "succeeded"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "evidence_criteria_unmet"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    self._persist_step_failure_unlocked(
+                        record, step=target, execution_id=execution_id
+                    )
+                    raise ContinuityError(
+                        f"document search completed but evidence criteria unmet: {reason}"
+                    )
+
+                now = _utc_now()
+                next_rev = current_rev + 1
+                safe_hits = [
+                    {
+                        "relative_path": m.get("relative_path"),
+                        "filename": m.get("filename"),
+                        "line": m.get("line"),
+                        "excerpt_sha256": m.get("excerpt_sha256"),
+                        "source_sha256": m.get("source_sha256"),
+                    }
+                    for m in verified.get("matches") or []
+                ][:8]
+                # Bounded verified excerpts for downstream structured extraction
+                # (no absolute paths; truncated bodies only).
+                bounded_excerpts = []
+                for m in matches[:6]:
+                    if not isinstance(m, dict):
+                        continue
+                    excerpt = m.get("excerpt")
+                    if not isinstance(excerpt, str) or not excerpt.strip():
+                        continue
+                    text = excerpt.strip()
+                    if len(text) > 800:
+                        text = text[:800]
+                    bounded_excerpts.append(
+                        {
+                            "relative_path": m.get("relative_path"),
+                            "filename": m.get("filename"),
+                            "line": m.get("line"),
+                            "excerpt": text,
+                            "excerpt_sha256": m.get("excerpt_sha256"),
+                            "source_sha256": m.get("source_sha256"),
+                            "folder_label": verified.get("folder_label"),
+                            "folder_fingerprint": verified.get("folder_fingerprint"),
+                        }
+                    )
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": "local.documents.search",
+                    "verified": True,
+                    "match_count": int(search.get("match_count") or 0),
+                    "folder_label": verified.get("folder_label"),
+                    "folder_fingerprint": verified.get("folder_fingerprint"),
+                    "query": args["query"],
+                    "hits": safe_hits,
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "source_excerpt_reverify",
+                    "operations": ["read"],
+                    "forbidden_operations": [],
+                }
+                # Summarize without storing full document bodies.
+                result_summary = (
+                    f"{receipt['match_count']} verified match(es) in "
+                    f"{receipt['folder_label']}"
+                )
+                if safe_hits:
+                    result_summary += f"; top={safe_hits[0].get('relative_path')}"
+                amount_usd = extract_amount_usd_from_required(args.get("required_substring"))
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": result_summary,
+                    "match_count": receipt["match_count"],
+                    "folder_label": receipt["folder_label"],
+                    "folder_fingerprint": receipt["folder_fingerprint"],
+                    "top_relative_path": (
+                        safe_hits[0].get("relative_path") if safe_hits else None
+                    ),
+                    "amount_usd": amount_usd,
+                    "result_type": "material_amount_usd" if amount_usd else "document_evidence",
+                    "currency": "USD" if amount_usd else None,
+                    "excerpts": bounded_excerpts,
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": result_summary,
+                    "match_count": receipt["match_count"],
+                    "amount_usd": amount_usd,
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "document search verified but completion was not durably recorded"
+                )
+                args = dict(args)  # durable bind args only; no absolute folder
+            elif capability == CAPABILITY_ASSEMBLE:
+                if not authorize_estimate_assemble:
+                    raise ContinuityError(
+                        "estimate assembly not authorized for this request"
+                    )
+                try:
+                    args = _normalize_estimate_assemble_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "invalid_arguments"
+                    raise ContinuityError(str(exc)) from exc
+                try:
+                    material_usd, material_link = resolve_upstream_amount(
+                        steps,
+                        args["material_step_id"],
+                        expected_capability="local.documents.search",
+                    )
+                    labor_usd, labor_link = resolve_upstream_amount(
+                        steps,
+                        args["labor_step_id"],
+                        expected_capability="calculator.labor",
+                    )
+                    assembled = assemble_estimate_subtotal(
+                        material_usd=material_usd,
+                        labor_usd=labor_usd,
+                        material_link=material_link,
+                        labor_link=labor_link,
+                    )
+                except EstimateWorkflowError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "incorrect_result"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(f"estimate assembly failed: {exc}") from exc
+
+                # Independent verification of the decimal sum.
+                from decimal import Decimal as _Decimal
+
+                expected_sum = (
+                    _Decimal(material_usd) + _Decimal(labor_usd)
+                ).quantize(_Decimal("0.01"))
+                if assembled["subtotal_usd"] != format(expected_sum, "f"):
+                    raise ContinuityError(
+                        "estimate subtotal failed independent verification"
+                    )
+
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": CAPABILITY_ASSEMBLE,
+                    "verified": True,
+                    "components": assembled["components"],
+                    "subtotal_usd": assembled["subtotal_usd"],
+                    "label": assembled["label"],
+                    "missing_cost_categories": assembled["missing_cost_categories"],
+                    "inputs": assembled["inputs"],
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "deterministic_decimal_sum",
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": assembled["subtotal_usd"],
+                    "amount_usd": assembled["subtotal_usd"],
+                    "result_type": "estimate_subtotal_usd",
+                    "currency": "USD",
+                    "components": assembled["components"],
+                    "missing_cost_categories": assembled["missing_cost_categories"],
+                    "inputs": assembled["inputs"],
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": assembled["subtotal_usd"],
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "estimate assembly verified but completion was not durably recorded"
+                )
+                record["estimate_bundle"] = {
+                    "schema": "elysia.estimate-bundle.v1",
+                    "subtotal_usd": assembled["subtotal_usd"],
+                    "components": assembled["components"],
+                    "missing_cost_categories": assembled["missing_cost_categories"],
+                    "inputs": assembled["inputs"],
+                    "execution_id": execution_id,
+                    "updated_utc": now,
+                    "approved": False,
+                }
+            elif capability == CAPABILITY_DRAFT:
+                if not authorize_estimate_draft:
+                    raise ContinuityError(
+                        "estimate draft generation not authorized for this request"
+                    )
+                if draft_model is None:
+                    raise ContinuityError(
+                        "local draft model is required for estimate.draft"
+                    )
+                try:
+                    args = _normalize_estimate_draft_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "invalid_arguments"
+                    raise ContinuityError(str(exc)) from exc
+
+                assemble_step = next(
+                    (s for s in steps if s.get("step_id") == args["assemble_step_id"]),
+                    None,
+                )
+                if assemble_step is None:
+                    raise ContinuityError("assemble_step_id not found")
+                if assemble_step.get("status") != "completed":
+                    raise ContinuityError("assemble step is not completed")
+                if assemble_step.get("verification_status") != "verified":
+                    raise ContinuityError("assemble step is not verified")
+                if assemble_step.get("capability") != CAPABILITY_ASSEMBLE:
+                    raise ContinuityError("assemble_step_id is not estimate.assemble")
+                assemble_ref = (
+                    assemble_step.get("result_reference")
+                    if isinstance(assemble_step.get("result_reference"), dict)
+                    else {}
+                )
+                if assemble_ref.get("stale"):
+                    raise ContinuityError(
+                        "assemble result is stale; reassemble before drafting"
+                    )
+                components = assemble_ref.get("components") or {}
+                material_usd = components.get("materials") or assemble_ref.get(
+                    "inputs", {}
+                ).get("material", {}).get("amount_usd")
+                labor_usd = components.get("labor") or assemble_ref.get(
+                    "inputs", {}
+                ).get("labor", {}).get("amount_usd")
+                subtotal_usd = assemble_ref.get("amount_usd") or assemble_ref.get(
+                    "result"
+                )
+                if not (material_usd and labor_usd and subtotal_usd):
+                    raise ContinuityError(
+                        "assemble result lacks verified component amounts"
+                    )
+                assembled_view = {
+                    "components": {
+                        "materials": str(material_usd),
+                        "labor": str(labor_usd),
+                        "materials_plus_labor_subtotal": str(subtotal_usd),
+                    },
+                    "subtotal_usd": str(subtotal_usd),
+                    "label": "materials + labor subtotal (not a final customer bid)",
+                    "missing_cost_categories": assemble_ref.get(
+                        "missing_cost_categories"
+                    )
+                    or [],
+                    "inputs": assemble_ref.get("inputs") or {},
+                }
+                payload = build_draft_user_payload(
+                    objective=str(record.get("objective") or ""),
+                    assembled=assembled_view,
+                    scope_notes=str(args.get("scope_notes") or ""),
+                )
+                try:
+                    from project_guardian.local_memory_chat import canonical
+
+                    messages = [
+                        {"role": "system", "content": draft_system_prompt()},
+                        {"role": "user", "content": canonical(payload)},
+                    ]
+                    draft_check = None
+                    try:
+                        raw_out = draft_model.generate(messages, json_mode=True)
+                        draft_text = parse_model_draft(raw_out)
+                        draft_check = verify_draft_amounts(
+                            draft_text,
+                            materials_usd=str(material_usd),
+                            labor_usd=str(labor_usd),
+                            subtotal_usd=str(subtotal_usd),
+                        )
+                    except Exception:
+                        try:
+                            retry_messages = messages + [
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "Rejected: keep the banner and include these exact amounts "
+                                        f"with no other totals over 100: materials={material_usd}, "
+                                        f"labor={labor_usd}, subtotal={subtotal_usd}. "
+                                        'Return JSON {"draft":"..."} only.'
+                                    ),
+                                },
+                            ]
+                            raw_out = draft_model.generate(retry_messages, json_mode=True)
+                            draft_text = parse_model_draft(raw_out)
+                            draft_check = verify_draft_amounts(
+                                draft_text,
+                                materials_usd=str(material_usd),
+                                labor_usd=str(labor_usd),
+                                subtotal_usd=str(subtotal_usd),
+                            )
+                        except Exception:
+                            draft_check = None
+                    if draft_check is None:
+                        draft_text = host_grounded_summary_draft(
+                            banner="DRAFT / NOT APPROVED FOR CUSTOMER DELIVERY",
+                            evidence=[
+                                {
+                                    "top_relative_path": "materials",
+                                    "amount_usd": str(material_usd),
+                                },
+                                {
+                                    "top_relative_path": "labor",
+                                    "amount_usd": str(labor_usd),
+                                },
+                            ],
+                            aggregated={
+                                "components": {
+                                    "materials": str(material_usd),
+                                    "labor": str(labor_usd),
+                                },
+                                "subtotal_usd": str(subtotal_usd),
+                                "missing_cost_categories": assembled_view.get(
+                                    "missing_cost_categories"
+                                )
+                                or [],
+                            },
+                        )
+                        draft_check = verify_draft_amounts(
+                            draft_text,
+                            materials_usd=str(material_usd),
+                            labor_usd=str(labor_usd),
+                            subtotal_usd=str(subtotal_usd),
+                        )
+                except EstimateWorkflowError as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "incorrect_result"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(f"estimate draft rejected: {exc}") from exc
+                except Exception as exc:
+                    target["execution_status"] = "failed"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "tool_exception"
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    raise ContinuityError(f"estimate draft generation failed: {exc}") from exc
+
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": CAPABILITY_DRAFT,
+                    "verified": True,
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "char_count": draft_check["char_count"],
+                    "verified_amounts": draft_check["verified_amounts_present"],
+                    "assemble_execution_id": assemble_ref.get("execution_id"),
+                    "subtotal_usd": str(subtotal_usd),
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "draft_amount_postcheck",
+                    # Draft body stored on conversation; receipt keeps hash only.
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": "draft_verified",
+                    "result_type": "estimate_draft",
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "subtotal_usd": str(subtotal_usd),
+                    "assemble_step_id": args["assemble_step_id"],
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": "draft_verified",
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "estimate draft verified but completion was not durably recorded"
+                )
+                record["estimate_draft"] = {
+                    "schema": "elysia.estimate-draft.v1",
+                    "text": draft_text,
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "execution_id": execution_id,
+                    "assemble_step_id": args["assemble_step_id"],
+                    "subtotal_usd": str(subtotal_usd),
+                    "banner": "DRAFT / NOT APPROVED FOR CUSTOMER DELIVERY",
+                    "approved": False,
+                    "updated_utc": now,
+                }
+            elif capability == CAPABILITY_EXTRACT:
+                if not authorize_compose_extract:
+                    raise ContinuityError(
+                        "compose.extract_fields not authorized for this request"
+                    )
+                try:
+                    args = _normalize_compose_extract_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                excerpts: List[Dict[str, Any]] = []
+                try:
+                    for sid in args["evidence_step_ids"]:
+                        ev = resolve_upstream_evidence(steps, sid)
+                        if ev.get("capability") != "local.documents.search":
+                            raise ContinuityError(
+                                "extract evidence_step_ids must be local.documents.search"
+                            )
+                        raw_ex = ev.get("excerpts") or []
+                        if not isinstance(raw_ex, list) or not raw_ex:
+                            raise ContinuityError(
+                                "upstream document step has no durable verified excerpts"
+                            )
+                        for item in raw_ex:
+                            if isinstance(item, dict):
+                                excerpts.append(item)
+                except CompositionError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                try:
+                    extracted = run_extract_fields(
+                        schema=args["schema"],
+                        excerpts=excerpts,
+                        model=draft_model,
+                        require_verified_required=bool(
+                            args.get("require_verified_required", True)
+                        ),
+                    )
+                except ExtractionError as exc:
+                    raise ContinuityError(f"compose.extract_fields failed: {exc}") from exc
+                # Model claims of verification are ignored; only host statuses count.
+                if not extracted.get("ok"):
+                    partial_fields = {}
+                    for fid, entry in (extracted.get("fields") or {}).items():
+                        if isinstance(entry, dict):
+                            partial_fields[fid] = {
+                                "field_id": fid,
+                                "status": entry.get("status"),
+                                "normalized_value": entry.get("normalized_value"),
+                                "candidates": (entry.get("candidates") or [])[:4],
+                            }
+                    target["execution_status"] = "succeeded"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "incorrect_result"
+                    target["result_reference"] = {
+                        "result": "extract incomplete",
+                        "result_type": "structured_fields",
+                        "fields": partial_fields,
+                        "required_unverified": extracted.get("required_unverified"),
+                    }
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    self._persist_step_failure_unlocked(
+                        record, step=target, execution_id=execution_id
+                    )
+                    raise ContinuityError(
+                        "compose.extract_fields incomplete: required fields unverified: "
+                        + ", ".join(extracted.get("required_unverified") or [])
+                    )
+                # Persist compact field map (no full excerpt bodies in receipt).
+                compact_fields = {}
+                for fid, entry in (extracted.get("fields") or {}).items():
+                    if not isinstance(entry, dict):
+                        continue
+                    compact_fields[fid] = {
+                        "field_id": fid,
+                        "status": entry.get("status"),
+                        "normalized_value": entry.get("normalized_value"),
+                        "original_source_value": entry.get("original_source_value"),
+                        "source_span": entry.get("source_span"),
+                        "source_document": entry.get("source_document"),
+                        "excerpt_sha256": entry.get("excerpt_sha256"),
+                        "source_sha256": entry.get("source_sha256"),
+                        "folder_fingerprint": entry.get("folder_fingerprint"),
+                        "validation": entry.get("validation"),
+                        "extraction_method": entry.get("extraction_method"),
+                        "uncertainty": entry.get("uncertainty"),
+                        "candidates": (entry.get("candidates") or [])[:4],
+                    }
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": CAPABILITY_EXTRACT,
+                    "verified": True,
+                    "verified_field_count": extracted.get("verified_field_count"),
+                    "field_ids": list(compact_fields.keys()),
+                    "model_attempted": extracted.get("model_attempted"),
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "source_span_and_type_check",
+                    "outcome": recordable_outcome(
+                        capability=CAPABILITY_EXTRACT,
+                        task_class="structured_extraction",
+                        success=True,
+                    ),
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": f"{extracted.get('verified_field_count')} verified fields",
+                    "result_type": "structured_fields",
+                    "fields": compact_fields,
+                    "amount_usd": extracted.get("amount_usd"),
+                    "currency": "USD" if extracted.get("amount_usd") else None,
+                    "folder_fingerprint": next(
+                        (
+                            e.get("folder_fingerprint")
+                            for e in excerpts
+                            if isinstance(e, dict) and e.get("folder_fingerprint")
+                        ),
+                        None,
+                    ),
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": result_reference["result"],
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "compose.extract_fields verified but completion was not durably recorded"
+                )
+                record["extracted_fields"] = {
+                    "schema": "elysia.extracted-fields.v1",
+                    "fields": compact_fields,
+                    "execution_id": execution_id,
+                    "updated_utc": now,
+                    "capability": CAPABILITY_EXTRACT,
+                }
+            elif capability == CAPABILITY_EXTRACT_RECORDS:
+                if not authorize_compose_extract_records:
+                    raise ContinuityError(
+                        "compose.extract_records not authorized for this request"
+                    )
+                try:
+                    args = _normalize_compose_extract_records_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                excerpts = []
+                try:
+                    for sid in args["evidence_step_ids"]:
+                        ev = resolve_upstream_evidence(steps, sid)
+                        if ev.get("capability") != "local.documents.search":
+                            raise ContinuityError(
+                                "extract_records evidence must be local.documents.search"
+                            )
+                        raw_ex = ev.get("excerpts") or []
+                        if not isinstance(raw_ex, list) or not raw_ex:
+                            raise ContinuityError(
+                                "upstream document step has no durable verified excerpts"
+                            )
+                        for item in raw_ex:
+                            if isinstance(item, dict):
+                                excerpts.append(item)
+                except CompositionError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                try:
+                    extracted = run_extract_records(
+                        schema=args["schema"],
+                        excerpts=excerpts,
+                        model=draft_model,
+                        require_verified_required=bool(
+                            args.get("require_verified_required", True)
+                        ),
+                        structures=args.get("structures"),
+                    )
+                except ExtractionError as exc:
+                    raise ContinuityError(
+                        f"compose.extract_records failed: {exc}"
+                    ) from exc
+                if not extracted.get("ok"):
+                    target["execution_status"] = "succeeded"
+                    target["verification_status"] = "failed"
+                    target["last_failure_category"] = "incorrect_result"
+                    target["result_reference"] = {
+                        "result": "extract_records incomplete",
+                        "result_type": "structured_records",
+                        "records": (extracted.get("records") or [])[:8],
+                    }
+                    for idx, step in enumerate(steps):
+                        if step["step_id"] == step_id:
+                            steps[idx] = target
+                            break
+                    record["task_steps"] = steps
+                    self._persist_step_failure_unlocked(
+                        record, step=target, execution_id=execution_id
+                    )
+                    raise ContinuityError(
+                        "compose.extract_records incomplete: no verified records"
+                    )
+                # Compact records for durable storage (no full excerpt bodies).
+                compact_records = []
+                for rec in extracted.get("records") or []:
+                    if not isinstance(rec, dict):
+                        continue
+                    compact_fields = {}
+                    for fid, entry in (rec.get("fields") or {}).items():
+                        if not isinstance(entry, dict):
+                            continue
+                        compact_fields[fid] = {
+                            "field_id": fid,
+                            "status": entry.get("status"),
+                            "normalized_value": entry.get("normalized_value"),
+                            "original_source_value": entry.get("original_source_value"),
+                            "source_span": entry.get("source_span"),
+                            "source_document": entry.get("source_document"),
+                            "excerpt_sha256": entry.get("excerpt_sha256"),
+                            "validation": entry.get("validation"),
+                            "extraction_method": entry.get("extraction_method"),
+                            "uncertainty": entry.get("uncertainty"),
+                        }
+                    compact_records.append(
+                        {
+                            "record_id": rec.get("record_id"),
+                            "schema_id": rec.get("schema_id"),
+                            "source_document": rec.get("source_document"),
+                            "folder_fingerprint": rec.get("folder_fingerprint"),
+                            "excerpt_sha256": rec.get("excerpt_sha256"),
+                            "source_sha256": rec.get("source_sha256"),
+                            "location": rec.get("location"),
+                            "row_source_span": rec.get("row_source_span"),
+                            "status": rec.get("status"),
+                            "structure": rec.get("structure"),
+                            "fields": compact_fields,
+                        }
+                    )
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": CAPABILITY_EXTRACT_RECORDS,
+                    "verified": True,
+                    "verified_record_count": extracted.get("verified_record_count"),
+                    "record_count": extracted.get("record_count"),
+                    "schema_id": extracted.get("schema_id"),
+                    "model_attempted": extracted.get("model_attempted"),
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "row_cell_span_and_type_check",
+                    "outcome": recordable_outcome(
+                        capability=CAPABILITY_EXTRACT_RECORDS,
+                        task_class="structured_record_extraction",
+                        success=True,
+                    ),
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": (
+                        f"{extracted.get('verified_record_count')} verified records"
+                    ),
+                    "result_type": "structured_records",
+                    "records": compact_records,
+                    "schema_id": extracted.get("schema_id"),
+                    "folder_fingerprint": next(
+                        (
+                            e.get("folder_fingerprint")
+                            for e in excerpts
+                            if isinstance(e, dict) and e.get("folder_fingerprint")
+                        ),
+                        None,
+                    ),
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": result_reference["result"],
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "compose.extract_records verified but completion was not durably recorded"
+                )
+                record["extracted_records"] = {
+                    "schema": "elysia.extracted-records.v1",
+                    "schema_id": extracted.get("schema_id"),
+                    "records": compact_records,
+                    "execution_id": execution_id,
+                    "updated_utc": now,
+                    "capability": CAPABILITY_EXTRACT_RECORDS,
+                }
+            elif capability == CAPABILITY_AGGREGATE:
+                if not authorize_compose_aggregate:
+                    raise ContinuityError(
+                        "compose.aggregate_usd not authorized for this request"
+                    )
+                try:
+                    args = _normalize_compose_aggregate_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                tmpl = DOMAIN_TEMPLATES.get(args.get("domain_template") or "", {})
+                labels = args.get("component_labels") or [
+                    f"item_{i + 1}"
+                    for i in range(len(args.get("source_step_ids") or []))
+                ]
+                try:
+                    if args.get("line_items"):
+                        li = args["line_items"]
+                        rec_step = next(
+                            (
+                                s
+                                for s in steps
+                                if s.get("step_id") == li["record_step_id"]
+                            ),
+                            None,
+                        )
+                        if rec_step is None:
+                            raise CompositionError("record_step_id not found")
+                        if rec_step.get("status") != "completed":
+                            raise CompositionError("record step not completed")
+                        if rec_step.get("verification_status") != "verified":
+                            raise CompositionError("record step not verified")
+                        if rec_step.get("capability") != CAPABILITY_EXTRACT_RECORDS:
+                            raise CompositionError(
+                                "line_items require compose.extract_records upstream"
+                            )
+                        ref = (
+                            rec_step.get("result_reference")
+                            if isinstance(rec_step.get("result_reference"), dict)
+                            else {}
+                        )
+                        if ref.get("stale"):
+                            raise CompositionError("record extraction is stale")
+                        try:
+                            assembled = aggregate_record_line_items(
+                                ref.get("records") or [],
+                                quantity_field=li["quantity_field"],
+                                unit_price_field=li["unit_price_field"],
+                            )
+                        except ExtractionError as exc:
+                            raise CompositionError(str(exc)) from exc
+                        components = [
+                            {
+                                "label": item.get("record_id"),
+                                "amount_usd": item.get("extension_usd"),
+                                "record_id": item.get("record_id"),
+                                "source_reference": item.get("source_document"),
+                            }
+                            for item in assembled.get("line_items") or []
+                        ]
+                        assembled = {
+                            **assembled,
+                            "components": {
+                                c["label"]: c["amount_usd"] for c in components
+                            },
+                            "missing_cost_categories": args.get("missing_categories")
+                            or list(tmpl.get("missing_categories") or []),
+                            "inputs": {
+                                "line_items": assembled.get("line_items"),
+                                "record_step_id": li["record_step_id"],
+                            },
+                        }
+                    else:
+                        components = []
+                        if args.get("components"):
+                            for idx, spec in enumerate(args["components"]):
+                                amount, link = resolve_upstream_amount(
+                                    steps,
+                                    spec["step_id"],
+                                    field_id=spec.get("field_id"),
+                                )
+                                label = (
+                                    spec.get("label")
+                                    or spec.get("field_id")
+                                    or f"item_{idx + 1}"
+                                )
+                                components.append(
+                                    {**link, "amount_usd": amount, "label": label}
+                                )
+                        else:
+                            field_ids = args.get("component_field_ids") or [None] * len(
+                                args["source_step_ids"]
+                            )
+                            for sid, label, field_id in zip(
+                                args["source_step_ids"], labels, field_ids
+                            ):
+                                amount, link = resolve_upstream_amount(
+                                    steps, sid, field_id=field_id
+                                )
+                                components.append(
+                                    {**link, "amount_usd": amount, "label": label}
+                                )
+                        assembled = aggregate_usd_amounts(
+                            components=components,
+                            bundle_label=str(
+                                args.get("bundle_label")
+                                or tmpl.get("bundle_label")
+                                or "verified amount subtotal"
+                            ),
+                            missing_categories=args.get("missing_categories")
+                            or list(tmpl.get("missing_categories") or []),
+                            capability=CAPABILITY_AGGREGATE,
+                        )
+                except (CompositionError, ExtractionError) as exc:
+                    raise ContinuityError(f"compose.aggregate_usd failed: {exc}") from exc
+                from decimal import Decimal as _Decimal
+
+                expected_sum = sum(
+                    (_Decimal(str(c["amount_usd"])) for c in components),
+                    _Decimal("0.00"),
+                ).quantize(_Decimal("0.01"))
+                if assembled["subtotal_usd"] != format(expected_sum, "f"):
+                    raise ContinuityError(
+                        "aggregate subtotal failed independent verification"
+                    )
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": CAPABILITY_AGGREGATE,
+                    "verified": True,
+                    "components": assembled["components"],
+                    "subtotal_usd": assembled["subtotal_usd"],
+                    "label": assembled["label"],
+                    "missing_cost_categories": assembled.get("missing_cost_categories")
+                    or [],
+                    "inputs": assembled.get("inputs") or {},
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": assembled.get("verification_rule")
+                    or "deterministic_decimal_sum",
+                    "outcome": recordable_outcome(
+                        capability=CAPABILITY_AGGREGATE,
+                        task_class=str(
+                            args.get("domain_template")
+                            or (
+                                "line_items"
+                                if args.get("line_items")
+                                else "compose"
+                            )
+                        ),
+                        success=True,
+                    ),
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": assembled["subtotal_usd"],
+                    "amount_usd": assembled["subtotal_usd"],
+                    "result_type": "aggregate_subtotal_usd",
+                    "currency": "USD",
+                    "components": assembled["components"],
+                    "missing_cost_categories": assembled["missing_cost_categories"],
+                    "inputs": assembled["inputs"],
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": assembled["subtotal_usd"],
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "compose.aggregate_usd verified but completion was not durably recorded"
+                )
+                record["estimate_bundle"] = {
+                    "schema": "elysia.compose-bundle.v1",
+                    "subtotal_usd": assembled["subtotal_usd"],
+                    "components": assembled["components"],
+                    "missing_cost_categories": assembled["missing_cost_categories"],
+                    "inputs": assembled["inputs"],
+                    "execution_id": execution_id,
+                    "updated_utc": now,
+                    "approved": False,
+                    "capability": CAPABILITY_AGGREGATE,
+                }
+            elif capability == CAPABILITY_SYNTHESIZE:
+                if not authorize_compose_synthesize:
+                    raise ContinuityError(
+                        "compose.synthesize not authorized for this request"
+                    )
+                if draft_model is None:
+                    raise ContinuityError(
+                        "local draft model is required for compose.synthesize"
+                    )
+                try:
+                    args = _normalize_compose_synthesize_arguments(
+                        target.get("arguments") or {}
+                    )
+                except ContinuityError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                tmpl = DOMAIN_TEMPLATES.get(args.get("domain_template") or "", {})
+                banner = str(
+                    args.get("banner") or tmpl.get("banner") or "DRAFT / NOT APPROVED FOR CUSTOMER DELIVERY"
+                )
+                mode = str(args.get("mode") or tmpl.get("draft_mode") or "summary")
+                try:
+                    evidence = [
+                        resolve_upstream_evidence(steps, sid)
+                        for sid in args["evidence_step_ids"]
+                    ]
+                except CompositionError as exc:
+                    raise ContinuityError(str(exc)) from exc
+                aggregated = None
+                required_amounts: List[str] = []
+                if args.get("aggregate_step_id"):
+                    agg_step = next(
+                        (
+                            s
+                            for s in steps
+                            if s.get("step_id") == args["aggregate_step_id"]
+                        ),
+                        None,
+                    )
+                    if agg_step is None:
+                        raise ContinuityError("aggregate_step_id not found")
+                    if agg_step.get("status") != "completed":
+                        raise ContinuityError("aggregate step is not completed")
+                    if agg_step.get("verification_status") != "verified":
+                        raise ContinuityError("aggregate step is not verified")
+                    if agg_step.get("capability") not in {
+                        CAPABILITY_AGGREGATE,
+                        CAPABILITY_ASSEMBLE,
+                    }:
+                        raise ContinuityError(
+                            "aggregate_step_id must be compose.aggregate_usd or estimate.assemble"
+                        )
+                    agg_ref = (
+                        agg_step.get("result_reference")
+                        if isinstance(agg_step.get("result_reference"), dict)
+                        else {}
+                    )
+                    if agg_ref.get("stale"):
+                        raise ContinuityError("aggregate result is stale")
+                    aggregated = {
+                        "components": agg_ref.get("components"),
+                        "subtotal_usd": agg_ref.get("amount_usd") or agg_ref.get("result"),
+                        "label": "verified aggregate",
+                        "missing_cost_categories": agg_ref.get("missing_cost_categories")
+                        or [],
+                        "inputs": agg_ref.get("inputs") or {},
+                    }
+                    if aggregated.get("subtotal_usd"):
+                        required_amounts.append(str(aggregated["subtotal_usd"]))
+                    for val in (aggregated.get("components") or {}).values():
+                        required_amounts.append(str(val))
+                for ev in evidence:
+                    if ev.get("amount_usd"):
+                        required_amounts.append(str(ev["amount_usd"]))
+                payload = build_synthesize_payload(
+                    objective=str(record.get("objective") or ""),
+                    evidence=evidence,
+                    aggregated=aggregated,
+                    mode=mode,
+                    banner=banner,
+                    scope_notes=str(args.get("scope_notes") or ""),
+                )
+                try:
+                    from project_guardian.local_memory_chat import canonical
+
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": synthesize_system_prompt(
+                                mode=mode,
+                                banner=banner,
+                                required_amounts=required_amounts,
+                            ),
+                        },
+                        {"role": "user", "content": canonical(payload)},
+                    ]
+                    phrases = args.get("required_phrases") or []
+                    draft_text = None
+                    draft_check = None
+                    try:
+                        raw_out = draft_model.generate(messages, json_mode=True)
+                        draft_text = parse_model_draft(raw_out)
+                        draft_check = verify_synthesize_output(
+                            draft_text,
+                            banner=banner,
+                            required_amounts=required_amounts,
+                            required_phrases=phrases,
+                        )
+                    except Exception:
+                        try:
+                            retry_messages = messages + (
+                                [
+                                    {"role": "assistant", "content": raw_out},
+                                    {
+                                        "role": "user",
+                                        "content": (
+                                            "Rejected: keep the exact banner, include required "
+                                            f"source phrases {phrases}, and include these exact "
+                                            f"amounts with no other totals over 100: "
+                                            f"{required_amounts}. "
+                                            'Return JSON {"draft":"..."} only.'
+                                        ),
+                                    },
+                                ]
+                                if "raw_out" in locals()
+                                else [
+                                    {
+                                        "role": "user",
+                                        "content": (
+                                            "Retry once. Keep the banner and use only verified "
+                                            f"amounts {required_amounts} and phrases {phrases}. "
+                                            'Return JSON {"draft":"..."} only.'
+                                        ),
+                                    }
+                                ]
+                            )
+                            raw_out = draft_model.generate(retry_messages, json_mode=True)
+                            draft_text = parse_model_draft(raw_out)
+                            draft_check = verify_synthesize_output(
+                                draft_text,
+                                banner=banner,
+                                required_amounts=required_amounts,
+                                required_phrases=phrases,
+                            )
+                        except Exception:
+                            draft_text = None
+                            draft_check = None
+                    if draft_check is None:
+                        # Host-grounded fallback: verified evidence only, no invented totals.
+                        draft_text = host_grounded_summary_draft(
+                            banner=banner,
+                            evidence=evidence,
+                            aggregated=aggregated,
+                            required_phrases=phrases,
+                            required_amounts=required_amounts,
+                        )
+                        try:
+                            draft_check = verify_synthesize_output(
+                                draft_text,
+                                banner=banner,
+                                required_amounts=required_amounts,
+                                required_phrases=phrases,
+                            )
+                        except CompositionError as exc:
+                            raise ContinuityError(
+                                f"compose.synthesize rejected: {exc}"
+                            ) from exc
+                except ContinuityError:
+                    raise
+                except CompositionError as exc:
+                    raise ContinuityError(f"compose.synthesize rejected: {exc}") from exc
+                except Exception as exc:
+                    raise ContinuityError(
+                        f"compose.synthesize generation failed: {exc}"
+                    ) from exc
+                now = _utc_now()
+                next_rev = current_rev + 1
+                receipt = {
+                    "execution_id": execution_id,
+                    "step_id": step_id,
+                    "capability": CAPABILITY_SYNTHESIZE,
+                    "verified": True,
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "char_count": draft_check["char_count"],
+                    "mode": mode,
+                    "checkpoint_revision": next_rev,
+                    "created_utc": now,
+                    "verification_rule": "synthesize_postcheck",
+                    "outcome": recordable_outcome(
+                        capability=CAPABILITY_SYNTHESIZE,
+                        task_class=str(args.get("domain_template") or mode or "compose"),
+                        success=True,
+                    ),
+                }
+                result_reference = {
+                    "execution_id": execution_id,
+                    "result": "synthesize_verified",
+                    "result_type": "composed_synthesis",
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "mode": mode,
+                    "stale": False,
+                }
+                history_entry = {
+                    "execution_id": execution_id,
+                    "result": "synthesize_verified",
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "verified": True,
+                    "created_utc": now,
+                    "checkpoint_revision": next_rev,
+                }
+                persist_failure_prefix = (
+                    "compose.synthesize verified but completion was not durably recorded"
+                )
+                record["estimate_draft"] = {
+                    "schema": "elysia.compose-synthesis.v1",
+                    "text": draft_text,
+                    "draft_sha256": draft_check["draft_sha256"],
+                    "execution_id": execution_id,
+                    "mode": mode,
+                    "banner": banner,
+                    "approved": False,
+                    "updated_utc": now,
+                    "capability": CAPABILITY_SYNTHESIZE,
+                }
+            else:
+                raise ContinuityError("unsupported bound capability")
+
+            history = list(target.get("execution_history") or [])
+            history.append(history_entry)
+            target["execution_history"] = history[-12:]
+            target["execution_status"] = "succeeded"
+            target["verification_status"] = "verified"
+            target["execution_receipt_id"] = execution_id
+            target["result_reference"] = result_reference
+            target["last_failure_category"] = None
+            target["status"] = "completed"
+            target["completed_utc"] = now
+            target["completion_source"] = "operator_verified_execution"
+            target["completed_at_revision"] = next_rev
+            target["arguments"] = args
+
+            for idx, step in enumerate(steps):
+                if step["step_id"] == step_id:
+                    steps[idx] = target
+                    break
+            record["task_steps"] = steps
+            _sync_lists_from_task_steps(record)
+
+            current_next = (record.get("next_safe_action") or "").strip()
+            completed_desc = target["description"]
+            pending = [s for s in steps if s.get("status") == "pending"]
+            linked = (
+                not current_next
+                or current_next == completed_desc
+                or current_next == NO_OUTSTANDING_STEPS
+            )
+            advanced = False
+            needs_review = False
+            if linked:
+                record["next_safe_action"] = (
+                    pending[0]["description"] if pending else NO_OUTSTANDING_STEPS
+                )
+                advanced = True
+            else:
+                needs_review = True
+            record["advancement_needs_review"] = needs_review
+            record["operator_task_state"] = {
+                "locked": True,
+                "outstanding_steps": True,
+                "next_safe_action": True,
+                "updated_utc": now,
+                "source": "operator",
+            }
+            record["updated_utc"] = now
+
+            pending_path = self._conv_dir(conversation_id) / f"{execution_id}.pending.json"
+            try:
+                _atomic_write_json(
+                    pending_path,
+                    {
+                        "schema": "elysia.execution-pending.v1",
+                        "receipt": receipt,
+                        "step_id": step_id,
+                        "expected_revision": expected_revision,
+                    },
+                )
+            except Exception:
+                raise ContinuityError(
+                    "could not preserve recoverable execution state before checkpoint"
+                )
+
+            try:
+                result = self._persist_operator_mutation_unlocked(
+                    record,
+                    previous=existing if isinstance(existing, dict) else None,
+                    reason="operator_verified_execution",
+                    require_outstanding=None,
+                    extra_checkpoint_fields={
+                        "last_completed_step": {
+                            "step_id": step_id,
+                            "description": completed_desc,
+                            "completion_source": "operator_verified_execution",
+                            "completed_utc": now,
+                        },
+                        "last_execution_receipt": receipt,
+                        "advanced_next_action": advanced,
+                        "advancement_needs_review": needs_review,
+                    },
+                )
+            except ContinuityError as exc:
+                raise ContinuityError(
+                    f"{persist_failure_prefix}: {exc}; "
+                    f"recoverable execution_id={execution_id}"
+                ) from exc
+
+            try:
+                if pending_path.is_file():
+                    pending_path.unlink()
+            except OSError:
+                pass
+
+            # Ensure every success receipt carries host outcome metadata for feedback.
+            if not isinstance(receipt.get("outcome"), dict):
+                receipt["outcome"] = recordable_outcome(
+                    capability=str(capability or ""),
+                    task_class="general_composition",
+                    success=True,
+                )
+            self._record_outcome_feedback(
+                receipt=receipt,
+                step=target,
+                conversation_id=conversation_id,
+                conversation=record,
+                evaluation={
+                    "met": True,
+                    "category": "verified_success",
+                    "reason": "host-verified execution with durable receipt",
+                },
+            )
+
+            result.update(
+                {
+                    "executed": True,
+                    "verified": True,
+                    "receipt": receipt,
+                    "advanced": advanced,
+                    "advancement_needs_review": needs_review,
+                    "completed_step": {
+                        "step_id": step_id,
+                        "description": completed_desc,
+                        "completion_source": "operator_verified_execution",
+                        "completed_utc": now,
+                    },
+                }
+            )
+            return result
+
+    def reopen_operator_step(
+        self,
+        conversation_id: str,
+        *,
+        step_id: str,
+        expected_revision: int,
+    ) -> Dict[str, Any]:
+        """Operator reopens a completed step without destroying prior execution evidence."""
+        if not isinstance(step_id, str) or not re.fullmatch(r"step_[a-f0-9]{12}", step_id):
+            raise ContinuityError("invalid step_id")
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ContinuityError("expected_revision must be a non-negative integer")
+
+        with self._lock:
+            record, existing, current_rev = self._revision_gate_unlocked(
+                conversation_id,
+                expected_revision=expected_revision,
+                idempotent_reason="operator_step_reopen",
+                idempotent_match=lambda ckpt: (
+                    isinstance(ckpt.get("last_reopened_step"), dict)
+                    and ckpt["last_reopened_step"].get("step_id") == step_id
+                ),
+            )
+            if record.get("_idempotent_hit"):
+                return {
+                    "conversation": {k: v for k, v in record.items() if k != "_idempotent_hit"},
+                    "checkpoint": existing,
+                    "idempotent": True,
+                    "saved": True,
+                }
+
+            steps = _normalize_task_steps(record.get("task_steps"))
+            target = next((s for s in steps if s["step_id"] == step_id), None)
+            if target is None:
+                raise ContinuityError("step not found")
+            if target.get("status") != "completed":
+                raise ContinuityError("only completed steps can be reopened")
+
+            prior_completion = {
+                "step_id": step_id,
+                "description": target["description"],
+                "completed_utc": target.get("completed_utc"),
+                "completion_source": target.get("completion_source"),
+                "completed_at_revision": target.get("completed_at_revision"),
+                "execution_receipt_id": target.get("execution_receipt_id"),
+                "result_reference": target.get("result_reference"),
+            }
+            # Preserve history; clear active completion flags.
+            target["status"] = "pending"
+            target["completed_utc"] = None
+            target["completion_source"] = None
+            target["completed_at_revision"] = None
+            # Keep receipt id / history / result_reference as evidence; do not rerun.
+            target["execution_status"] = target.get("execution_status") or "none"
+            target["verification_status"] = target.get("verification_status") or "none"
+            if isinstance(target.get("result_reference"), dict):
+                ref = dict(target["result_reference"])
+                ref["stale"] = True
+                ref["stale_reason"] = "step_reopened"
+                target["result_reference"] = ref
+            history = list(target.get("execution_history") or [])
+            history.append(
+                {
+                    "event": "reopened",
+                    "prior_completion": prior_completion,
+                    "created_utc": _utc_now(),
+                }
+            )
+            target["execution_history"] = history[-12:]
+
+            for idx, step in enumerate(steps):
+                if step["step_id"] == step_id:
+                    steps[idx] = target
+                    break
+            from project_guardian.capability_composition import (
+                mark_dependent_steps_stale,
+            )
+
+            stale_ids = mark_dependent_steps_stale(steps, changed_step_id=step_id)
+            if stale_ids and isinstance(record.get("estimate_draft"), dict):
+                draft = dict(record["estimate_draft"])
+                draft["stale"] = True
+                draft["stale_reason"] = f"upstream reopened: {step_id}"
+                record["estimate_draft"] = draft
+            if stale_ids and isinstance(record.get("estimate_bundle"), dict):
+                bundle = dict(record["estimate_bundle"])
+                bundle["stale"] = True
+                bundle["stale_reason"] = f"upstream reopened: {step_id}"
+                record["estimate_bundle"] = bundle
+            if stale_ids and isinstance(record.get("extracted_fields"), dict):
+                extracted = dict(record["extracted_fields"])
+                extracted["stale"] = True
+                extracted["stale_reason"] = f"upstream reopened: {step_id}"
+                record["extracted_fields"] = extracted
+            if stale_ids and isinstance(record.get("extracted_records"), dict):
+                extracted_r = dict(record["extracted_records"])
+                extracted_r["stale"] = True
+                extracted_r["stale_reason"] = f"upstream reopened: {step_id}"
+                record["extracted_records"] = extracted_r
+            record["task_steps"] = steps
+            _sync_lists_from_task_steps(record)
+
+            current_next = (record.get("next_safe_action") or "").strip()
+            pending = [s for s in steps if s.get("status") == "pending"]
+            # Safe recalculation only when next was tracking the list head / no-outstanding.
+            linked = (
+                not current_next
+                or current_next == NO_OUTSTANDING_STEPS
+                or current_next
+                in {
+                    s["description"]
+                    for s in steps
+                    if s.get("status") == "completed"
+                }
+                or current_next == target["description"]
+            )
+            needs_review = False
+            if linked and pending:
+                # Prefer reopened step as next when it is first pending; else first pending.
+                record["next_safe_action"] = pending[0]["description"]
+                needs_review = False
+            elif linked and not pending:
+                record["next_safe_action"] = NO_OUTSTANDING_STEPS
+            else:
+                needs_review = True
+            record["advancement_needs_review"] = needs_review
+            now = _utc_now()
+            record["operator_task_state"] = {
+                "locked": True,
+                "outstanding_steps": True,
+                "next_safe_action": True,
+                "updated_utc": now,
+                "source": "operator",
+            }
+            record["updated_utc"] = now
+            result = self._persist_operator_mutation_unlocked(
+                record,
+                previous=existing if isinstance(existing, dict) else None,
+                reason="operator_step_reopen",
+                require_outstanding=None,
+                extra_checkpoint_fields={
+                    "last_reopened_step": {
+                        "step_id": step_id,
+                        "description": target["description"],
+                        "prior_completion": prior_completion,
+                    },
+                    "advancement_needs_review": needs_review,
+                },
+            )
+            result["reopened_step"] = {
+                "step_id": step_id,
+                "description": target["description"],
+                "prior_completion": prior_completion,
+            }
+            result["stale_dependent_steps"] = stale_ids
+            result["advancement_needs_review"] = needs_review
+            return result
+
+    def _revision_gate_unlocked(
+        self,
+        conversation_id: str,
+        *,
+        expected_revision: int,
+        idempotent_reason: str,
+        idempotent_match,
+    ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]], int]:
+        record = self._load_unlocked(conversation_id)
+        current_rev = int(record.get("checkpoint_revision") or 0)
+        existing = None
+        cpath = self._checkpoint_path(conversation_id)
+        if cpath.is_file():
+            try:
+                existing = json.loads(cpath.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                existing = None
+        if current_rev == expected_revision + 1 and isinstance(existing, dict):
+            if (
+                int(existing.get("revision") or 0) == expected_revision + 1
+                and existing.get("reason") == idempotent_reason
+                and idempotent_match(existing)
+            ):
+                record["_idempotent_hit"] = True
+                return record, existing, current_rev
+            raise StaleTaskEditError(
+                f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+            )
+        if current_rev != expected_revision:
+            raise StaleTaskEditError(
+                f"stale task edit: expected revision {expected_revision}, current is {current_rev}"
+            )
+        return record, existing, current_rev
+
+    def _record_outcome_feedback(
+        self,
+        *,
+        receipt: Mapping[str, Any],
+        step: Optional[Mapping[str, Any]] = None,
+        conversation_id: Optional[str] = None,
+        duration_ms: Optional[int] = None,
+        evaluation: Optional[Mapping[str, Any]] = None,
+        conversation: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """Best-effort host outcome ingest after real authorized execution."""
+        store = self.outcome_store
+        if store is None:
+            return
+        try:
+            from project_guardian.capability_composition import evaluate_step_outcome
+            from project_guardian.composition_outcome_feedback import (
+                build_strategy_context,
+                ingest_host_step_outcome,
+            )
+
+            conv = conversation
+            if conv is None and conversation_id:
+                try:
+                    conv = self._load_unlocked(conversation_id)
+                except Exception:
+                    conv = None
+            step_obj = step if isinstance(step, Mapping) else {}
+            # Host evaluates completion against the step/objective when possible.
+            eval_payload = evaluation
+            if eval_payload is None and step_obj:
+                try:
+                    eval_payload = evaluate_step_outcome(
+                        step_obj,
+                        expected_outcome=str(step_obj.get("description") or "")[:400],
+                    )
+                except Exception:
+                    eval_payload = {
+                        "met": receipt.get("verified") is True,
+                        "category": (
+                            "verified_success"
+                            if receipt.get("verified") is True
+                            else step_obj.get("last_failure_category")
+                        ),
+                    }
+            ctx = build_strategy_context(
+                str(receipt.get("capability") or step_obj.get("capability") or ""),
+                step=step_obj,
+                conversation=conv if isinstance(conv, Mapping) else None,
+                completion_condition_met=(
+                    bool(eval_payload.get("met"))
+                    if isinstance(eval_payload, Mapping) and "met" in eval_payload
+                    else None
+                ),
+            )
+            # Enrich outcome task_class from comparable context.
+            enriched = dict(receipt)
+            outcome = (
+                dict(enriched["outcome"])
+                if isinstance(enriched.get("outcome"), dict)
+                else {}
+            )
+            outcome["task_class"] = ctx.get("task_class") or outcome.get("task_class")
+            enriched["outcome"] = outcome
+            enriched["host_execution_path"] = True
+            ingest_host_step_outcome(
+                store,
+                receipt=enriched,
+                step=step_obj,
+                conversation_id=conversation_id,
+                duration_ms=duration_ms,
+                evaluation=eval_payload if isinstance(eval_payload, Mapping) else None,
+                strategy_context=ctx,
+                conversation=conv if isinstance(conv, Mapping) else None,
+            )
+        except Exception:
+            # Outcome feedback must not break execution or continuity.
+            return
+
+    def _persist_step_failure_unlocked(
+        self,
+        record: Dict[str, Any],
+        *,
+        step: Optional[Mapping[str, Any]] = None,
+        execution_id: Optional[str] = None,
+        duration_ms: Optional[int] = None,
+    ) -> None:
+        """Durably record a failed/incomplete execution without advancing revision.
+
+        Adaptive evaluation requires inspecting last_failure_category after a tool
+        run that did not complete the step. Temporary auth is never stored.
+        """
+        conversation_id = record["conversation_id"]
+        record["updated_utc"] = _utc_now()
+        _atomic_write_json(self._conv_path(conversation_id), record)
+        self._upsert_index(record)
+        if step is not None and isinstance(execution_id, str):
+            self._record_outcome_feedback(
+                receipt={
+                    "execution_id": execution_id,
+                    "capability": step.get("capability"),
+                    "verified": False,
+                    "outcome": {
+                        "capability": step.get("capability"),
+                        "task_class": "general_composition",
+                        "success": False,
+                        "failure_category": step.get("last_failure_category"),
+                        "created_utc": _utc_now(),
+                    },
+                },
+                step=step,
+                conversation_id=conversation_id,
+                duration_ms=duration_ms,
+            )
+
+    def _persist_operator_mutation_unlocked(
+        self,
+        record: Dict[str, Any],
+        *,
+        previous: Optional[Dict[str, Any]],
+        reason: str,
+        require_outstanding: Optional[List[str]],
+        extra_checkpoint_fields: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        conversation_id = record["conversation_id"]
+        cpath = self._checkpoint_path(conversation_id)
+        checkpoint = self._build_checkpoint(record, reason=reason)
+        checkpoint["task_state_source"] = "operator"
+        checkpoint["operator_authored"] = {
+            "outstanding_steps": bool(
+                (record.get("operator_task_state") or {}).get("outstanding_steps")
+            ),
+            "next_safe_action": bool(
+                (record.get("operator_task_state") or {}).get("next_safe_action")
+            ),
+        }
+        if extra_checkpoint_fields:
+            for key, value in extra_checkpoint_fields.items():
+                checkpoint[key] = value
+        content_for_hash = {
+            k: v
+            for k, v in checkpoint.items()
+            if k not in {"created_utc", "revision", "reason", "content_sha256"}
+        }
+        checkpoint["content_sha256"] = hashlib.sha256(
+            _canonical(content_for_hash).encode("utf-8")
+        ).hexdigest()
+        encoded = _canonical(checkpoint).encode("utf-8")
+        if len(encoded) > MAX_CHECKPOINT_BYTES:
+            raise ContinuityError("checkpoint too large; continuity cannot be preserved reliably")
+        try:
+            _atomic_write_json(cpath, checkpoint)
+        except Exception:
+            if previous is not None and cpath.is_file():
+                raise ContinuityError(
+                    "checkpoint persistence failed; previous checkpoint retained"
+                )
+            raise ContinuityError("checkpoint persistence failed")
+        loaded = json.loads(cpath.read_text(encoding="utf-8"))
+        if loaded.get("content_sha256") != checkpoint.get("content_sha256"):
+            if previous is not None:
+                _atomic_write_json(cpath, previous)
+            raise ContinuityError("checkpoint readback mismatch")
+        if loaded.get("next_safe_action") != record.get("next_safe_action"):
+            if previous is not None:
+                _atomic_write_json(cpath, previous)
+            raise ContinuityError("operator next action readback failed")
+        if require_outstanding is not None and list(
+            loaded.get("outstanding_steps") or []
+        ) != require_outstanding:
+            if previous is not None:
+                _atomic_write_json(cpath, previous)
+            raise ContinuityError("operator outstanding steps readback failed")
+        if list(loaded.get("task_steps") or []) != list(record.get("task_steps") or []):
+            if previous is not None:
+                _atomic_write_json(cpath, previous)
+            raise ContinuityError("task steps readback failed")
+
+        record["checkpoint_revision"] = checkpoint["revision"]
+        record["updated_utc"] = _utc_now()
+        try:
+            _atomic_write_json(self._conv_path(conversation_id), record)
+            self._upsert_index(record)
+        except Exception:
+            raise ContinuityError(
+                "checkpoint saved but conversation record write failed; retry with same edit"
+            )
+        return {
+            "conversation": record,
+            "checkpoint": checkpoint,
+            "idempotent": False,
+            "saved": True,
+        }
+
+    def append_message(
+        self,
+        conversation_id: str,
+        *,
+        role: str,
+        content: str,
+        kind: str = "chat",
+    ) -> Dict[str, Any]:
+        if role not in {"user", "assistant", "system"}:
+            raise ContinuityError("invalid message role")
+        text = (content or "").strip()
+        if not text or len(text) > 8000:
+            raise ContinuityError("invalid message content")
+        with self._lock:
+            record = self._load_unlocked(conversation_id)
+            messages = list(record.get("messages") or [])
+            msg = {
+                "message_id": "msg_" + uuid.uuid4().hex[:12],
+                "role": role,
+                "content": text,
+                "kind": kind,
+                "ts": _utc_now(),
+            }
+            messages.append(msg)
+            if len(messages) > MAX_MESSAGES_RETAINED:
+                # Keep original earlier messages in a side archive file, do not destroy.
+                archive = self._conv_dir(conversation_id) / "messages_archive.jsonl"
+                overflow = messages[:-MAX_MESSAGES_RETAINED]
+                with archive.open("a", encoding="utf-8") as fh:
+                    for row in overflow:
+                        fh.write(json.dumps(row, ensure_ascii=True) + "\n")
+                messages = messages[-MAX_MESSAGES_RETAINED:]
+            record["messages"] = messages
+            if role == "user" and not record.get("objective"):
+                record["objective"] = text[:800]
+                if record.get("title") in ("", "Untitled conversation", "Conversation"):
+                    record["title"] = _safe_title(text)
+            record["updated_utc"] = _utc_now()
+            _atomic_write_json(self._conv_path(conversation_id), record)
+            self._upsert_index(record)
+            return record
+
+    def write_checkpoint(
+        self,
+        conversation_id: str,
+        *,
+        reason: str,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """Build and atomically persist a continuity checkpoint with readback."""
+        with self._lock:
+            record = self._load_unlocked(conversation_id)
+            previous = None
+            cpath = self._checkpoint_path(conversation_id)
+            if cpath.is_file():
+                try:
+                    previous = json.loads(cpath.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    previous = None
+            checkpoint = self._build_checkpoint(record, reason=reason)
+            encoded = _canonical(checkpoint).encode("utf-8")
+            if len(encoded) > MAX_CHECKPOINT_BYTES:
+                raise ContinuityError("checkpoint too large; continuity cannot be preserved reliably")
+            # Idempotent: identical content keeps prior revision without duplicating progress.
+            if (
+                not force
+                and isinstance(previous, dict)
+                and previous.get("content_sha256") == checkpoint.get("content_sha256")
+            ):
+                return previous
+            try:
+                _atomic_write_json(cpath, checkpoint)
+            except Exception:
+                # Failed write must not destroy previous valid checkpoint.
+                if previous is not None and cpath.is_file():
+                    raise ContinuityError(
+                        "checkpoint persistence failed; previous checkpoint retained"
+                    )
+                raise ContinuityError("checkpoint persistence failed")
+            # Verify readback identity
+            loaded = json.loads(cpath.read_text(encoding="utf-8"))
+            if loaded.get("content_sha256") != checkpoint.get("content_sha256"):
+                if previous is not None:
+                    _atomic_write_json(cpath, previous)
+                raise ContinuityError("checkpoint readback mismatch")
+            record["checkpoint_revision"] = checkpoint["revision"]
+            record["updated_utc"] = _utc_now()
+            if reason == "rollover":
+                record["last_rollover_utc"] = record["updated_utc"]
+            _atomic_write_json(self._conv_path(conversation_id), record)
+            self._upsert_index(record)
+            return checkpoint
+
+    def assemble_model_context(
+        self,
+        conversation_id: str,
+        user_message: str,
+        *,
+        memory_bundle: Optional[Mapping[str, Any]] = None,
+        system_text: str = "",
+        budget_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Bounded context for Ollama: checkpoint + recent messages within budget."""
+        budget = int(budget_tokens or configured_context_budget_tokens())
+        reserve = DEFAULT_RESPONSE_RESERVE + DEFAULT_SYSTEM_RESERVE
+        usable = max(64, budget - reserve)
+        record = self.get(conversation_id)
+        checkpoint = self.get_checkpoint(conversation_id)
+        messages = list(record.get("messages") or [])
+        # Threshold: create checkpoint before rollover if approaching budget.
+        projected = self._project_tokens(
+            system_text=system_text,
+            user_message=user_message,
+            memory_bundle=memory_bundle,
+            recent=messages[-MAX_RECENT_RAW_MESSAGES:],
+            checkpoint=checkpoint,
+        )
+        rolled = False
+        if projected > int(usable * DEFAULT_ROLLOVER_RATIO) or projected > usable:
+            checkpoint = self.write_checkpoint(conversation_id, reason="rollover")
+            rolled = True
+            record = self.get(conversation_id)
+            messages = list(record.get("messages") or [])
+
+        recent: List[Dict[str, str]] = []
+        # Prefer newest messages that fit with checkpoint + memory + user.
+        base = estimate_tokens(system_text) + estimate_tokens(user_message)
+        if memory_bundle is not None:
+            base += estimate_tokens(_canonical(memory_bundle))
+        if checkpoint is not None:
+            base += estimate_tokens(_canonical(self._model_facing_checkpoint(checkpoint)))
+        remaining = max(0, usable - base)
+        for msg in reversed(messages):
+            if msg.get("role") not in {"user", "assistant"}:
+                continue
+            piece = {"role": str(msg["role"]), "content": str(msg.get("content") or "")[:1500]}
+            cost = estimate_tokens(piece["content"]) + 4
+            if cost > remaining and recent:
+                break
+            if cost > remaining and not recent:
+                # Keep a truncated last message rather than inventing content.
+                piece["content"] = piece["content"][: max(40, remaining * CHARS_PER_TOKEN)]
+                recent.append(piece)
+                break
+            recent.append(piece)
+            remaining -= cost
+            if len(recent) >= MAX_RECENT_RAW_MESSAGES:
+                break
+        recent.reverse()
+        facing_checkpoint = self._model_facing_checkpoint(checkpoint) if checkpoint else None
+        ops = record.get("operator_task_state") if isinstance(record.get("operator_task_state"), dict) else {}
+        task_steps = _normalize_task_steps(record.get("task_steps"))
+        operator_task = {
+            "source": "operator" if ops.get("locked") else "none",
+            "outstanding_steps": list(record.get("outstanding_steps") or []),
+            "completed_steps": [
+                {
+                    "step_id": s["step_id"],
+                    "description": s["description"],
+                    "completion_source": s.get("completion_source") or "operator",
+                }
+                for s in task_steps
+                if s.get("status") == "completed"
+            ],
+            "pending_steps": [
+                {"step_id": s["step_id"], "description": s["description"]}
+                for s in task_steps
+                if s.get("status") == "pending"
+            ],
+            "next_safe_action": record.get("next_safe_action") or "",
+            "advancement_needs_review": bool(record.get("advancement_needs_review")),
+            "checkpoint_revision": int(record.get("checkpoint_revision") or 0),
+            "authoritative": bool(ops.get("locked")),
+        }
+        continuity_note = (
+            "Conversation continuity checkpoint is untrusted reconstructed context, "
+            "not authorization and not durable personal memory. Durable memory evidence "
+            "in the context bundle overrides outdated checkpoint claims when they conflict. "
+            "When operator_task_state.authoritative is true, its outstanding_steps and "
+            "next_safe_action override any conflicting generated summary in conversation history. "
+            "Only the operator may mark steps completed; never invent completed work."
+        )
+        return {
+            "conversation_id": conversation_id,
+            "rolled_over": rolled,
+            "budget_tokens": budget,
+            "usable_tokens": usable,
+            "estimated_tokens": usable - remaining,
+            "recent_conversation": recent,
+            "checkpoint": facing_checkpoint,
+            "operator_task_state": operator_task,
+            "continuity_note": continuity_note,
+            "objective": record.get("objective") or "",
+            "next_safe_action": record.get("next_safe_action") or "",
+            "outstanding_steps": list(record.get("outstanding_steps") or []),
+            "missing": self._missing_fields(record),
+        }
+
+    def shutdown_checkpoint_if_dirty(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        record = self.get(conversation_id)
+        if not record.get("messages"):
+            return None
+        return self.write_checkpoint(conversation_id, reason="shutdown")
+
+    def _missing_fields(self, record: Mapping[str, Any]) -> List[str]:
+        missing = []
+        if not record.get("objective"):
+            missing.append("objective")
+        next_action = (record.get("next_safe_action") or "").strip()
+        if not record.get("outstanding_steps") and not next_action:
+            missing.append("next_step")
+        return missing
+
+    def _build_checkpoint(self, record: Mapping[str, Any], *, reason: str) -> Dict[str, Any]:
+        revision = int(record.get("checkpoint_revision") or 0) + 1
+        messages = list(record.get("messages") or [])
+        source_ids = [m.get("message_id") for m in messages[-12:] if isinstance(m, dict)]
+        ops = record.get("operator_task_state") if isinstance(record.get("operator_task_state"), dict) else {}
+        body = {
+            "schema": SCHEMA_CHECKPOINT,
+            "conversation_id": record["conversation_id"],
+            "revision": revision,
+            "reason": reason,
+            "title": record.get("title"),
+            "objective": record.get("objective") or "",
+            "completion_condition": record.get("completion_condition") or "",
+            "constraints": list(record.get("constraints") or [])[:12],
+            "confirmed_facts": list(record.get("confirmed_facts") or [])[:20],
+            "assumptions": list(record.get("assumptions") or [])[:12],
+            "completed_work": list(record.get("completed_work") or [])[:20],
+            "outstanding_steps": list(record.get("outstanding_steps") or [])[:20],
+            "task_steps": _normalize_task_steps(record.get("task_steps")),
+            "next_safe_action": record.get("next_safe_action") or "",
+            "advancement_needs_review": bool(record.get("advancement_needs_review")),
+            "unresolved_questions": list(record.get("unresolved_questions") or [])[:12],
+            "memory_refs": list(record.get("memory_refs") or [])[:20],
+            "status": record.get("status") or "active",
+            "source_message_ids": [s for s in source_ids if isinstance(s, str)],
+            "created_utc": _utc_now(),
+            "trust": "untrusted_reconstructed_context",
+            "authorization_state": "none",
+            "task_state_source": "operator" if ops.get("locked") else "derived",
+            "operator_authored": {
+                "outstanding_steps": bool(ops.get("outstanding_steps")),
+                "next_safe_action": bool(ops.get("next_safe_action")),
+            },
+        }
+        # Hash without mutable timestamp for idempotency of content.
+        content_for_hash = {k: v for k, v in body.items() if k not in {"created_utc", "revision", "reason"}}
+        body["content_sha256"] = hashlib.sha256(_canonical(content_for_hash).encode("utf-8")).hexdigest()
+        return body
+
+    def _model_facing_checkpoint(self, checkpoint: Mapping[str, Any]) -> Dict[str, Any]:
+        # Strip hashes/internal ids that are unnecessary for the model; keep provenance refs.
+        return {
+            "schema": SCHEMA_CHECKPOINT,
+            "conversation_id": checkpoint.get("conversation_id"),
+            "revision": checkpoint.get("revision"),
+            "objective": checkpoint.get("objective"),
+            "constraints": checkpoint.get("constraints"),
+            "confirmed_facts": checkpoint.get("confirmed_facts"),
+            "assumptions": checkpoint.get("assumptions"),
+            "completed_work": checkpoint.get("completed_work"),
+            "outstanding_steps": checkpoint.get("outstanding_steps"),
+            "task_steps": checkpoint.get("task_steps") or [],
+            "next_safe_action": checkpoint.get("next_safe_action"),
+            "advancement_needs_review": bool(checkpoint.get("advancement_needs_review")),
+            "unresolved_questions": checkpoint.get("unresolved_questions"),
+            "memory_refs": checkpoint.get("memory_refs"),
+            "status": checkpoint.get("status"),
+            "task_state_source": checkpoint.get("task_state_source") or "derived",
+            "operator_authored": checkpoint.get("operator_authored") or {},
+            "trust": "untrusted_reconstructed_context",
+            "authorization_state": "none",
+        }
+
+    def _project_tokens(
+        self,
+        *,
+        system_text: str,
+        user_message: str,
+        memory_bundle: Optional[Mapping[str, Any]],
+        recent: Sequence[Mapping[str, Any]],
+        checkpoint: Optional[Mapping[str, Any]],
+    ) -> int:
+        total = estimate_tokens(system_text) + estimate_tokens(user_message)
+        if memory_bundle is not None:
+            total += estimate_tokens(_canonical(memory_bundle))
+        if checkpoint is not None:
+            total += estimate_tokens(_canonical(checkpoint))
+        for msg in recent:
+            total += estimate_tokens(str(msg.get("content") or "")) + 4
+        return total
+
+    def _load_unlocked(self, conversation_id: str) -> Dict[str, Any]:
+        path = self._conv_path(conversation_id)
+        if not path.is_file():
+            raise ContinuityError("conversation not found")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("schema") != SCHEMA_CONVERSATION:
+            raise ContinuityError("malformed conversation record")
+        return data
+
+    def _upsert_index(self, record: Mapping[str, Any]) -> None:
+        index_path = self.root / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        rows = [r for r in (index.get("conversations") or []) if isinstance(r, dict)]
+        rows = [r for r in rows if r.get("conversation_id") != record.get("conversation_id")]
+        rows.insert(
+            0,
+            {
+                "conversation_id": record.get("conversation_id"),
+                "title": record.get("title"),
+                "objective": (record.get("objective") or "")[:120],
+                "status": record.get("status"),
+                "updated_utc": record.get("updated_utc"),
+                "checkpoint_revision": record.get("checkpoint_revision") or 0,
+            },
+        )
+        index = {
+            "schema": "elysia.conversation-index.v1",
+            "conversations": rows[:100],
+        }
+        _atomic_write_json(index_path, index)
+
+
+def resolve_conversation_root(disposable_root: Path | str) -> Path:
+    root = Path(disposable_root) / "conversations"
+    root.mkdir(parents=True, exist_ok=True)
+    return root

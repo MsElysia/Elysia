@@ -1,0 +1,13 @@
+﻿{
+    "bundle_path":  "D:\\ElysiaBackups\\windows-intel-checkpoint-outcome-feedback-20261031\\elysia-windows-outcome-feedback-6520bd1.bundle",
+    "bundle_sha256":  "03c0bf78a6f83a8d527b7644fcb7b3e93a7a3b74a6a68f4b9fb5f9a820d0f561",
+    "independent_destination_available":  true,
+    "created_utc":  "2026-10-31T15:16:43Z",
+    "source_sha":  "6520bd15497e7da2d36663b205be1def7a2454c1",
+    "cloud_copy":  false,
+    "restore_test":  {
+                         "matches_source":  true,
+                         "restored_sha":  "6520bd15497e7da2d36663b205be1def7a2454c1"
+                     },
+    "source_branch":  "cursor/windows-outcome-feedback-20261031"
+}

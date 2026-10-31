@@ -1,0 +1,61 @@
+{
+  "disposable_root": "elysia-records-1hgge0e5",
+  "port": 5080,
+  "model": "llama3.2:3b",
+  "scenarios": {
+    "plan_propose": {
+      "status": 200,
+      "caps": [
+        "compose.extract_fields",
+        "compose.extract_records",
+        "calculator.labor",
+        "compose.aggregate_usd"
+      ],
+      "ollama": true
+    },
+    "A_inventory_F_connected": {
+      "status": 200,
+      "subtotal": "29.50",
+      "verified_records": 2,
+      "preview": "DRAFT / NOT APPROVED FOR CUSTOMER DELIVERY\nHost-assembled grounded summary (model draft rejected).\n- stock.md: verified evidence\n- source: verified evidence\n- line_item: USD 13.50\n- line_item: USD 16.00\nVerified subtotal USD 29.50",
+      "has_total": true,
+      "ollama": true
+    },
+    "B_events": {
+      "status": 200,
+      "count": 2,
+      "ambiguous_date": "ambiguous"
+    },
+    "C_research": {
+      "status": 200,
+      "verified": 2
+    },
+    "D_library": {
+      "status": 200,
+      "verified": 2
+    },
+    "E_garden": {
+      "status": 200,
+      "verified": 2,
+      "no_domain_module": true
+    },
+    "F_restart": {
+      "authorization_inherited": false
+    }
+  },
+  "security": {
+    "records_unauthorized": {
+      "status": 403
+    },
+    "records_duplicate": {
+      "status": 200,
+      "idempotent": true
+    },
+    "stale_revision": {
+      "status": 409,
+      "error": "stale task edit: expected revision 5, current is 9"
+    }
+  },
+  "backup_note": "Pre-change checkpoint bundle on D:\\ElysiaBackups\\windows-intel-checkpoint-20261030",
+  "ok": true
+}

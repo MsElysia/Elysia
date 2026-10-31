@@ -276,7 +276,7 @@ def _safe_list_py_files(root: Path, limit: int = 35) -> List[str]:
 class CapabilityRegistry:
     """Structured capability map; throttled refresh; JSON/jsonl persistence."""
 
-    def __init__(self) -> None:
+    def __init__(self, data_dir: Optional[Path | str] = None) -> None:
         self._snapshot: Dict[str, Any] = {}
         self._last_refresh_ts: float = 0.0
         self._cycle_api_used: int = 0
@@ -286,7 +286,15 @@ class CapabilityRegistry:
         self._api_cooldown_until: Dict[str, float] = {}
         self._usage_stats_cache: Dict[str, Dict[str, Any]] = {}
         self._usage_stats_mtime: float = 0.0
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        # Contained startups redirect persistence under a disposable data dir.
+        self._data_dir = Path(data_dir) if data_dir else DATA_DIR
+        self._snapshot_path = self._data_dir / "capability_snapshot.json"
+        self._understanding_path = self._data_dir / "system_understanding_report.json"
+        self._outcomes_path = self._data_dir / "capability_outcomes.jsonl"
+        self._scoreboard_path = self._data_dir / "capability_scoreboard.json"
+        self._usage_log_path = self._data_dir / "capability_usage_log.jsonl"
+        self._usage_stats_path = self._data_dir / "capability_usage_stats.json"
+        self._data_dir.mkdir(parents=True, exist_ok=True)
 
     def reset_chat_api_budget(self, max_calls: int = 8) -> None:
         self._chat_api_used = 0
@@ -317,17 +325,17 @@ class CapabilityRegistry:
     def _load_usage_stats(self) -> Dict[str, Dict[str, Any]]:
         """Merge scoreboard + tail of capability_usage_log for success_rate / last_used."""
         try:
-            lm = USAGE_LOG_PATH.stat().st_mtime if USAGE_LOG_PATH.exists() else 0.0
-            sm = USAGE_STATS_PATH.stat().st_mtime if USAGE_STATS_PATH.exists() else 0.0
+            lm = self._usage_log_path.stat().st_mtime if self._usage_log_path.exists() else 0.0
+            sm = self._usage_stats_path.stat().st_mtime if self._usage_stats_path.exists() else 0.0
             mtime = max(lm, sm)
-            if self._usage_stats_cache and mtime <= self._usage_stats_mtime and SCOREBOARD_PATH.exists():
+            if self._usage_stats_cache and mtime <= self._usage_stats_mtime and self._scoreboard_path.exists():
                 return self._usage_stats_cache
         except Exception:
             pass
         stats: Dict[str, Dict[str, Any]] = {}
         try:
-            if SCOREBOARD_PATH.exists():
-                with open(SCOREBOARD_PATH, "r", encoding="utf-8") as f:
+            if self._scoreboard_path.exists():
+                with open(self._scoreboard_path, "r", encoding="utf-8") as f:
                     sb = json.load(f)
                 for act, row in (sb.get("actions") or {}).items():
                     ok = int(row.get("ok", 0) or 0)
@@ -343,8 +351,8 @@ class CapabilityRegistry:
         except Exception as e:
             logger.debug("usage stats scoreboard: %s", e)
         try:
-            if USAGE_LOG_PATH.exists():
-                with open(USAGE_LOG_PATH, "r", encoding="utf-8") as f:
+            if self._usage_log_path.exists():
+                with open(self._usage_log_path, "r", encoding="utf-8") as f:
                     lines = f.readlines()[-400:]
                 for line in lines:
                     line = line.strip()
@@ -370,8 +378,8 @@ class CapabilityRegistry:
         except Exception as e:
             logger.debug("usage stats log: %s", e)
         try:
-            if USAGE_STATS_PATH.exists():
-                with open(USAGE_STATS_PATH, "r", encoding="utf-8") as f:
+            if self._usage_stats_path.exists():
+                with open(self._usage_stats_path, "r", encoding="utf-8") as f:
                     bundle = json.load(f)
                 for cid, row in (bundle.get("capabilities") or {}).items():
                     ok = int(row.get("success", 0) or 0)
@@ -389,8 +397,8 @@ class CapabilityRegistry:
             logger.debug("usage stats file: %s", e)
         self._usage_stats_cache = stats
         try:
-            lm = USAGE_LOG_PATH.stat().st_mtime if USAGE_LOG_PATH.exists() else 0.0
-            sm = USAGE_STATS_PATH.stat().st_mtime if USAGE_STATS_PATH.exists() else 0.0
+            lm = self._usage_log_path.stat().st_mtime if self._usage_log_path.exists() else 0.0
+            sm = self._usage_stats_path.stat().st_mtime if self._usage_stats_path.exists() else 0.0
             self._usage_stats_mtime = max(lm, sm)
         except Exception:
             self._usage_stats_mtime = 0.0
@@ -418,8 +426,8 @@ class CapabilityRegistry:
             **(extra or {}),
         }
         try:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            with open(USAGE_LOG_PATH, "a", encoding="utf-8") as f:
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            with open(self._usage_log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.debug("capability_usage_log: %s", e)
@@ -433,8 +441,8 @@ class CapabilityRegistry:
         cid = (capability_id or "unknown").strip() or "unknown"
         try:
             data: Dict[str, Any] = {}
-            if USAGE_STATS_PATH.exists():
-                with open(USAGE_STATS_PATH, "r", encoding="utf-8") as f:
+            if self._usage_stats_path.exists():
+                with open(self._usage_stats_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
         except Exception:
             data = {}
@@ -458,7 +466,7 @@ class CapabilityRegistry:
         caps[cid] = cur
         data["updated_at"] = datetime.now(timezone.utc).isoformat()
         try:
-            with open(USAGE_STATS_PATH, "w", encoding="utf-8") as f:
+            with open(self._usage_stats_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.debug("capability_usage_stats: %s", e)
@@ -1011,10 +1019,10 @@ class CapabilityRegistry:
             "project_guardian_py_sample": py_sample,
         }
         try:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            with open(SNAPSHOT_PATH, "w", encoding="utf-8") as f:
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            with open(self._snapshot_path, "w", encoding="utf-8") as f:
                 json.dump(self._snapshot, f, indent=2, ensure_ascii=False)
-            with open(UNDERSTANDING_PATH, "w", encoding="utf-8") as f:
+            with open(self._understanding_path, "w", encoding="utf-8") as f:
                 json.dump(report, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.debug("capability snapshot write: %s", e)
@@ -1152,8 +1160,8 @@ class CapabilityRegistry:
             **(extra or {}),
         }
         try:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            with open(OUTCOMES_PATH, "a", encoding="utf-8") as f:
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            with open(self._outcomes_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.debug("capability_outcomes log: %s", e)
@@ -1162,8 +1170,8 @@ class CapabilityRegistry:
     def _update_scoreboard(self, action: str, success: bool) -> None:
         try:
             data: Dict[str, Any] = {}
-            if SCOREBOARD_PATH.exists():
-                with open(SCOREBOARD_PATH, "r", encoding="utf-8") as f:
+            if self._scoreboard_path.exists():
+                with open(self._scoreboard_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
         except Exception:
             data = {}
@@ -1174,7 +1182,7 @@ class CapabilityRegistry:
         actions[action] = cur
         data["updated_at"] = datetime.now(timezone.utc).isoformat()
         try:
-            with open(SCOREBOARD_PATH, "w", encoding="utf-8") as f:
+            with open(self._scoreboard_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
             logger.debug("scoreboard: %s", e)

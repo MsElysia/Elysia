@@ -47,14 +47,16 @@ class ConfigValidator:
     Checks for required settings, API keys, dependencies, and permissions.
     """
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, data_dir: Optional[str] = None):
         """
         Initialize ConfigValidator.
         
         Args:
             config_path: Path to configuration file (optional)
+            data_dir: Directory used for write-permission probe (optional; default ./data)
         """
         self.config_path = Path(config_path) if config_path else None
+        self.data_dir = Path(data_dir) if data_dir else Path("data")
         self.config: Dict[str, Any] = {}
         
         if self.config_path and self.config_path.exists():
@@ -114,21 +116,22 @@ class ConfigValidator:
     def _check_directories(self) -> List[ConfigIssue]:
         """Check required directories exist."""
         issues = []
+        base = self.data_dir
         required_dirs = [
-            ("data", "Data storage directory"),
-            ("data/backups", "Backup directory"),
-            ("data/vault", "Recovery vault directory"),
+            (base, "Data storage directory"),
+            (base / "backups", "Backup directory"),
+            (base / "vault", "Recovery vault directory"),
         ]
         
-        for dir_name, description in required_dirs:
-            dir_path = Path(dir_name)
+        for dir_path, description in required_dirs:
+            dir_path = Path(dir_path)
             if not dir_path.exists():
                 try:
                     dir_path.mkdir(parents=True, exist_ok=True)
                     issues.append(ConfigIssue(
                         ConfigIssueSeverity.INFO,
                         "directories",
-                        f"Created {description}: {dir_name}"
+                        f"Created {description}: {dir_path}"
                     ))
                 except Exception as e:
                     issues.append(ConfigIssue(
@@ -229,8 +232,8 @@ class ConfigValidator:
         """Check file system permissions."""
         issues = []
         
-        # Check write permissions for data directory
-        data_dir = Path("data")
+        # Check write permissions for data directory (overridable for contained startups)
+        data_dir = self.data_dir
         if data_dir.exists():
             test_file = data_dir / ".permission_test"
             try:
@@ -263,7 +266,8 @@ class ConfigValidator:
         # Check SQLite availability
         try:
             import sqlite3
-            test_db = Path("data/test.db")
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            test_db = self.data_dir / "test.db"
             conn = sqlite3.connect(str(test_db))
             conn.close()
             test_db.unlink()
@@ -284,8 +288,8 @@ class ConfigValidator:
             "config_loaded": len(self.config) > 0,
             "openai_configured": bool(os.getenv("OPENAI_API_KEY") or self.config.get("openai_api_key")),
             "claude_configured": bool(os.getenv("ANTHROPIC_API_KEY") or self.config.get("claude_api_key")),
-            "data_directory_exists": Path("data").exists(),
-            "vault_directory_exists": Path("data/vault").exists()
+            "data_directory_exists": self.data_dir.exists(),
+            "vault_directory_exists": (self.data_dir / "vault").exists()
         }
 
 

@@ -1,0 +1,14 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Users\Owner\ely-privileged-control-gate-repair
+configfile: pytest.ini
+plugins: anyio-4.14.2, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 33 items
+
+tests\test_contained_startup.py ....                                     [ 12%]
+tests\test_control_panel_restricted_runtime.py .......                   [ 33%]
+tests\test_autonomy_execute_cycle_gate.py ........                       [ 57%]
+tests\test_privileged_control_gate.py ..............                     [100%]
+
+============================= 33 passed in 3.64s ==============================

@@ -1,0 +1,195 @@
+{
+  "platform": "win32",
+  "model": "llama3.2:3b",
+  "port": 5084,
+  "entry": "scripts/start_contained_browser_memory.py",
+  "launcher_equivalent": "pilot/START_ELYSIA_VERIFIED_PILOT.bat",
+  "disposable_store": "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-rc-e2e-yipf7lar",
+  "ports_avoided": [
+    5065,
+    5066
+  ],
+  "session": "single-application-with-one-restart",
+  "acceptance": {
+    "B": {
+      "result": "PASS",
+      "capabilities_tab": true
+    },
+    "C": {
+      "result": "PASS"
+    },
+    "E": {
+      "result": "PASS",
+      "count": 19,
+      "email_operational": false
+    },
+    "D": {
+      "result": "PASS",
+      "reply_excerpt": "Bramble the Brambleberry"
+    },
+    "F": {
+      "result": "PASS"
+    },
+    "G": {
+      "result": "PASS"
+    },
+    "H": {
+      "result": "PASS"
+    },
+    "I": {
+      "result": "PASS",
+      "category": "tool_ok_insufficient_evidence"
+    },
+    "J": {
+      "result": "PASS",
+      "recommended": "calculator.labor"
+    },
+    "K": {
+      "result": "PASS"
+    },
+    "L": {
+      "result": "PASS"
+    },
+    "N": {
+      "result": "PASS",
+      "degraded_model": true,
+      "memory_ok": true
+    },
+    "security_caps": {
+      "result": "PASS",
+      "leak": false
+    },
+    "A": {
+      "result": "PASS",
+      "backup": "D:\\ElysiaBackups\\windows-intel-rc-comparable-outcome-20261031",
+      "restored_sha": "f23280d9765759e1f97a96b9b9b786f0caa1760d"
+    },
+    "P": {
+      "result": "PASS",
+      "note": "operator/pilot stores untouched; disposable only"
+    },
+    "M": {
+      "result": "PASS",
+      "port_free_after_stop": true
+    },
+    "O": {
+      "result": "PASS",
+      "intel_slice": "130 passed, 2 skipped",
+      "legacy_task_execution_alone": "6 failed, 1 passed (GuardianCore singleton; pre-existing; not in intel path)",
+      "combined_with_legacy": "6 failed, 131 passed, 2 skipped",
+      "commands": [
+        "pytest <intel slice 16 files> -q  -> 130 passed, 2 skipped",
+        "pytest tests/test_task_execution.py -q -> 6 failed, 1 passed"
+      ]
+    }
+  },
+  "demo_steps": {
+    "1_launch": {
+      "ok": true
+    },
+    "2_dashboard": {
+      "ok": true,
+      "capabilities_tab": true
+    },
+    "3_ollama": {
+      "ok": true,
+      "model": "llama3.2:3b"
+    },
+    "4_chat": {
+      "ok": true,
+      "reply_excerpt": "Bramble the Brambleberry"
+    },
+    "5_teach_retrieve": {
+      "ok": true,
+      "fact_id": "fact_c55e915d65b143cc"
+    },
+    "6_correct_history": {
+      "ok": true,
+      "revisions": 2
+    },
+    "7_conversation": {
+      "ok": true,
+      "conversation_id": "conv_03d614b64011457b"
+    },
+    "8_checkpoint": {
+      "ok": true,
+      "revision": 1
+    },
+    "9_docs_search": {
+      "ok": true
+    },
+    "11_calculator": {
+      "ok": true,
+      "result": "1680"
+    },
+    "12_combine": {
+      "ok": true,
+      "subtotal_usd": "2162.50"
+    },
+    "13_summary": {
+      "ok": true,
+      "verified": true
+    },
+    "14_authorized_step": {
+      "ok": true
+    },
+    "10a_extract_fields": {
+      "ok": true
+    },
+    "10b_extract_records": {
+      "ok": true,
+      "count": 2
+    },
+    "15_replan": {
+      "ok": true,
+      "category": "tool_ok_insufficient_evidence"
+    },
+    "15b_replan_success": {
+      "ok": true
+    },
+    "16_outcome_feedback": {
+      "ok": true,
+      "recommended": "calculator.labor",
+      "basis": "current_suitability"
+    },
+    "17_restart": {
+      "ok": true
+    },
+    "18_resume": {
+      "ok": true,
+      "steps": 4,
+      "pre_rev": 11
+    },
+    "memory_after_restart": {
+      "ok": true,
+      "excerpt": "The fictional river Zyphora's bridges are made of crystal."
+    },
+    "19_no_auth_inherit": {
+      "ok": true
+    },
+    "20_shutdown_prep": {
+      "port_held": true
+    },
+    "20_shutdown": {
+      "ok": true
+    }
+  },
+  "failures": {
+    "unauthorized_docs": {
+      "status": 403
+    },
+    "unauthorized_calculator": {
+      "status": 403
+    },
+    "insufficient_evidence": {
+      "status": 400,
+      "error": "document search completed but evidence criteria unmet: match_count 0 below min_matches 1"
+    }
+  },
+  "security": {
+    "autonomy_enabled": false,
+    "cloud_contacted": false,
+    "credentials_changed": false,
+    "operator_store_untouched": true
+  }
+}

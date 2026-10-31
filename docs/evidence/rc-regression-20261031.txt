@@ -1,0 +1,47 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Users\Owner\Project guardian\.worktrees\windows-local-intel-20261029
+configfile: pytest.ini
+plugins: anyio-4.14.2, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 139 items
+
+tests\test_local_memory_chat_pilot.py ............                       [  8%]
+tests\test_capability_awareness.py .............                         [ 17%]
+tests\test_capability_composition.py .......                             [ 23%]
+tests\test_local_documents_search.py .....s.s...                         [ 30%]
+tests\test_structured_field_extraction.py ........                       [ 36%]
+tests\test_extract_records.py .......                                    [ 41%]
+tests\test_adaptive_replan.py ............                               [ 50%]
+tests\test_composition_outcome_feedback.py ...........                   [ 58%]
+tests\test_comparable_outcome_learning.py .......                        [ 63%]
+tests\test_conversation_continuity.py ........                           [ 69%]
+tests\test_operator_task_state.py .....                                  [ 72%]
+tests\test_task_execution.py .FFFFFF                                     [ 77%]
+tests\test_task_step_completion.py .......                               [ 82%]
+tests\test_document_task_execution.py .......                            [ 87%]
+tests\test_contained_startup.py ....                                     [ 90%]
+tests\test_restricted_runtime_adapter.py ......                          [ 94%]
+tests\test_control_panel_restricted_runtime.py .......                   [100%]
+
+================================== FAILURES ===================================
+E   RuntimeError: GuardianCore instance already exists. Use project_guardian.guardian_singleton.get_guardian_core() to get the existing instance, or set allow_multiple=True for testing.
+C:\Users\Owner\Project guardian\.worktrees\windows-local-intel-20261029\project_guardian\core.py:166: RuntimeError: GuardianCore instance already exists. Use project_guardian.guardian_singleton.get_guardian_core() to get the existing instance, or set allow_multiple=True for testing.
+E   RuntimeError: GuardianCore instance already exists. Use project_guardian.guardian_singleton.get_guardian_core() to get the existing instance, or set allow_multiple=True for testing.
+C:\Users\Owner\Project guardian\.worktrees\windows-local-intel-20261029\project_guardian\core.py:166: RuntimeError: GuardianCore instance already exists. Use project_guardian.guardian_singleton.get_guardian_core() to get the existing instance, or set allow_multiple=True for testing.
+E   RuntimeError: GuardianCore instance already exists. Use project_guardian.guardian_singleton.get_guardian_core() to get the existing instance, or set allow_multiple=True for testing.
+C:\Users\Owner\Project guardian\.worktrees\windows-local-intel-20261029\project_guardian\core.py:166: RuntimeError: GuardianCore instance already exists. Use project_guardian.guardian_singleton.get_guardian_core() to get the existing instance, or set allow_multiple=True for testing.
+E   RuntimeError: GuardianCore instance already exists. Use project_guardian.guardian_singleton.get_guardian_core() to get the existing instance, or set allow_multiple=True for testing.
+C:\Users\Owner\Project guardian\.worktrees\windows-local-intel-20261029\project_guardian\core.py:166: RuntimeError: GuardianCore instance already exists. Use project_guardian.guardian_singleton.get_guardian_core() to get the existing instance, or set allow_multiple=True for testing.
+E   RuntimeError: GuardianCore instance already exists. Use project_guardian.guardian_singleton.get_guardian_core() to get the existing instance, or set allow_multiple=True for testing.
+C:\Users\Owner\Project guardian\.worktrees\windows-local-intel-20261029\project_guardian\core.py:166: RuntimeError: GuardianCore instance already exists. Use project_guardian.guardian_singleton.get_guardian_core() to get the existing instance, or set allow_multiple=True for testing.
+E   RuntimeError: GuardianCore instance already exists. Use project_guardian.guardian_singleton.get_guardian_core() to get the existing instance, or set allow_multiple=True for testing.
+C:\Users\Owner\Project guardian\.worktrees\windows-local-intel-20261029\project_guardian\core.py:166: RuntimeError: GuardianCore instance already exists. Use project_guardian.guardian_singleton.get_guardian_core() to get the existing instance, or set allow_multiple=True for testing.
+=========================== short test summary info ===========================
+FAILED tests/test_task_execution.py::TestMissingTaskType::test_missing_task_type_returns_error
+FAILED tests/test_task_execution.py::TestMultipleTaskTypes::test_multiple_task_types_returns_error
+FAILED tests/test_task_execution.py::TestRunAcceptance::test_run_acceptance_calls_acceptance_runner
+FAILED tests/test_task_execution.py::TestRunAcceptance::test_run_acceptance_handles_missing_script
+FAILED tests/test_task_execution.py::TestClearCurrentTask::test_clear_current_task_updates_control
+FAILED tests/test_task_execution.py::TestClearCurrentTask::test_clear_current_task_creates_control_if_missing
+================== 6 failed, 131 passed, 2 skipped in 14.28s ==================

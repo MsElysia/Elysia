@@ -1,0 +1,12 @@
+{
+  "execute_cycle_status": 403,
+  "execute_cycle_body": {
+    "detail": "autonomy execute-cycle denied before cycle invocation",
+    "error": "autonomy_disabled",
+    "executed": false,
+    "success": false
+  },
+  "intercepted_call_count": 0,
+  "bypasses_contained_disable": false,
+  "ok": true
+}

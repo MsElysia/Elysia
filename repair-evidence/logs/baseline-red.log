@@ -1,0 +1,67 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Users\Owner\ely-privileged-control-gate-repair
+configfile: pytest.ini
+plugins: anyio-4.14.2, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 14 items
+
+tests\test_privileged_control_gate.py FFF.FF.FFF..F.                     [100%]
+
+================================== FAILURES ===================================
+_ TestBypassAEnableThenExecute.test_unauth_enable_writes_nothing_then_execute_denied _
+tests\test_privileged_control_gate.py:105: in test_unauth_enable_writes_nothing_then_execute_denied
+    assert enable.status_code == 401
+E   assert 200 == 401
+E    +  where 200 = <WrapperTestResponse streamed [200 OK]>.status_code
+_ TestBypassAEnableThenExecute.test_sequence_a_closed_unauth_enable_cannot_unlock_execute _
+tests\test_privileged_control_gate.py:121: in test_sequence_a_closed_unauth_enable_cannot_unlock_execute
+    assert enable.status_code == 401
+E   assert 200 == 401
+E    +  where 200 = <WrapperTestResponse streamed [200 OK]>.status_code
+_ TestBypassBNonLoopbackAuth.test_non_loopback_enabled_unauth_does_not_invoke_cycle _
+tests\test_privileged_control_gate.py:136: in test_non_loopback_enabled_unauth_does_not_invoke_cycle
+    assert response.status_code == 401
+E   assert 200 == 401
+E    +  where 200 = <WrapperTestResponse streamed [200 OK]>.status_code
+__ TestBypassCDreamCycle.test_dream_unauth_while_disabled_zero_side_effects ___
+tests\test_privileged_control_gate.py:156: in test_dream_unauth_while_disabled_zero_side_effects
+    assert response.status_code in (401, 403)
+E   assert 200 in (401, 403)
+E    +  where 200 = <WrapperTestResponse streamed [200 OK]>.status_code
+___ TestBypassCDreamCycle.test_dream_auth_while_disabled_zero_side_effects ____
+tests\test_privileged_control_gate.py:167: in test_dream_auth_while_disabled_zero_side_effects
+    assert response.status_code == 403
+E   assert 200 == 403
+E    +  where 200 = <WrapperTestResponse streamed [200 OK]>.status_code
+___ TestBypassDLearningStart.test_learning_unauth_while_disabled_zero_calls ___
+tests\test_privileged_control_gate.py:202: in test_learning_unauth_while_disabled_zero_calls
+    assert response.status_code in (401, 403)
+E   assert 200 in (401, 403)
+E    +  where 200 = <WrapperTestResponse streamed [200 OK]>.status_code
+____ TestBypassDLearningStart.test_learning_auth_while_disabled_zero_calls ____
+tests\test_privileged_control_gate.py:224: in test_learning_auth_while_disabled_zero_calls
+    assert response.status_code == 403
+E   assert 200 == 403
+E    +  where 200 = <WrapperTestResponse streamed [200 OK]>.status_code
+_ TestContainedImmutableConfigure.test_contained_enable_denied_with_auth_no_write _
+tests\test_privileged_control_gate.py:238: in test_contained_enable_denied_with_auth_no_write
+    assert response.status_code == 403
+E   assert 200 == 403
+E    +  where 200 = <WrapperTestResponse streamed [200 OK]>.status_code
+_____________ TestInvalidAuth.test_bad_token_denied_on_configure ______________
+tests\test_privileged_control_gate.py:286: in test_bad_token_denied_on_configure
+    assert response.status_code == 401
+E   assert 200 == 401
+E    +  where 200 = <WrapperTestResponse streamed [200 OK]>.status_code
+=========================== short test summary info ===========================
+FAILED tests/test_privileged_control_gate.py::TestBypassAEnableThenExecute::test_unauth_enable_writes_nothing_then_execute_denied
+FAILED tests/test_privileged_control_gate.py::TestBypassAEnableThenExecute::test_sequence_a_closed_unauth_enable_cannot_unlock_execute
+FAILED tests/test_privileged_control_gate.py::TestBypassBNonLoopbackAuth::test_non_loopback_enabled_unauth_does_not_invoke_cycle
+FAILED tests/test_privileged_control_gate.py::TestBypassCDreamCycle::test_dream_unauth_while_disabled_zero_side_effects
+FAILED tests/test_privileged_control_gate.py::TestBypassCDreamCycle::test_dream_auth_while_disabled_zero_side_effects
+FAILED tests/test_privileged_control_gate.py::TestBypassDLearningStart::test_learning_unauth_while_disabled_zero_calls
+FAILED tests/test_privileged_control_gate.py::TestBypassDLearningStart::test_learning_auth_while_disabled_zero_calls
+FAILED tests/test_privileged_control_gate.py::TestContainedImmutableConfigure::test_contained_enable_denied_with_auth_no_write
+FAILED tests/test_privileged_control_gate.py::TestInvalidAuth::test_bad_token_denied_on_configure
+========================= 9 failed, 5 passed in 0.85s =========================

@@ -50,7 +50,8 @@ class MemoryCore:
         self._lazy_load = lazy_load
         self.loaded: bool = False
         self._load_lock = threading.Lock()
-        self._save_file_lock = threading.Lock()
+        self._save_file_lock = threading.RLock()
+        self.persistence_blocked = False
         # Last persistence failure (None when the latest save/load succeeded); status surfaces can
         # read these instead of trusting the in-memory count.
         self.last_save_error: Optional[str] = None
@@ -132,6 +133,7 @@ class MemoryCore:
         persistence = {
             "last_save_error": self.last_save_error,
             "last_load_error": self.last_load_error,
+            "persistence_blocked": self.persistence_blocked,
             "quarantined_history_path": self.quarantined_history_path,
         }
         if self.loaded:
@@ -184,6 +186,18 @@ class MemoryCore:
         logger.info("MemoryCore: Embeddings enabled (startup complete)")
         
     def remember(
+        self,
+        thought: str,
+        category: str = "general",
+        priority: float = 0.5,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Commit primary storage before publishing the memory elsewhere."""
+        self.load_if_needed()
+        with self._save_file_lock:
+            return self._remember_committed(thought, category, priority, metadata)
+
+    def _remember_committed(
         self,
         thought: str,
         category: str = "general",
@@ -263,6 +277,7 @@ class MemoryCore:
             print(f"[Guardian Memory] Rejected non-serializable memory entry: {e}")
             return False
 
+        previous = list(self.memory_log)
         # Enforce max_memories limit if set
         if self.max_memories is not None and len(self.memory_log) >= self.max_memories:
             # Remove oldest memory to make room
@@ -270,6 +285,9 @@ class MemoryCore:
 
         self.memory_log.append(entry)
         persisted = self._save()
+        if not persisted:
+            self.memory_log[:] = previous
+            return False
         
         # Add to vector search index (only if embeddings are enabled)
         if self.vector_search and self._embeddings_enabled:
@@ -565,6 +583,9 @@ class MemoryCore:
         import time as _time
 
         with self._save_file_lock:
+            if self.persistence_blocked:
+                self.last_save_error = "persistence blocked: explicit successful reload/preservation required"
+                return False
             try:
                 payload = json.dumps(self.memory_log, indent=2)
             except (TypeError, ValueError) as e:
@@ -577,19 +598,22 @@ class MemoryCore:
                 try:
                     self._write_atomic(payload)
                     self.last_save_error = None
-                    try:
-                        from memory_storage_config import notify_usb_persist_mirror
-
-                        notify_usb_persist_mirror(self.filepath)
-                    except ImportError:
-                        pass
-                    return True
+                    break
                 except Exception as e:
                     last_err = e
                     _time.sleep(0.04 * (attempt + 1))
-            self.last_save_error = str(last_err)
-            print(f"[Guardian Memory] Save failed after retries (existing file untouched): {last_err}")
-            return False
+            else:
+                self.last_save_error = str(last_err)
+                print(f"[Guardian Memory] Save failed after retries (existing file untouched): {last_err}")
+                return False
+            try:
+                from memory_storage_config import notify_usb_persist_mirror
+                notify_usb_persist_mirror(self.filepath)
+            except ImportError:
+                pass
+            except Exception as mirror_error:
+                logger.warning("Primary memory committed; optional mirror failed: %s", mirror_error)
+            return True
 
     def _write_atomic(self, payload: str) -> None:
         parent = os.path.dirname(os.path.abspath(self.filepath)) or "."
@@ -610,6 +634,11 @@ class MemoryCore:
             raise
 
     def load(self) -> None:
+        """Explicit reload/recovery serialized against primary writers."""
+        with self._save_file_lock:
+            self._load_locked()
+
+    def _load_locked(self) -> None:
         """
         Load memories from JSON file.
 
@@ -626,15 +655,18 @@ class MemoryCore:
             if not isinstance(data, list):
                 raise ValueError(f"memory history must be a JSON list, got {type(data).__name__}")
             self.memory_log = data
+            self.persistence_blocked = False
             print(f"[Guardian Memory] Loaded {len(self.memory_log)} past memories.")
         except (ValueError, UnicodeDecodeError) as e:
             # json.JSONDecodeError is a ValueError. Content corruption: preserve the bytes.
             self.last_load_error = str(e)
             self.memory_log = []
+            self.persistence_blocked = True
             self._quarantine_unreadable_history(e)
         except Exception as e:
             # I/O failure (permissions, lock): the file may be fine, so leave it in place.
             self.last_load_error = str(e)
+            self.persistence_blocked = True
             print(f"[Guardian Memory] Load failed: {e}")
 
     def _quarantine_unreadable_history(self, error: Exception) -> None:
@@ -645,8 +677,14 @@ class MemoryCore:
             suffix += 1
             corrupt_copy = f"{self.filepath}.corrupt.{stamp}.{suffix}"
         try:
+            with open(self.filepath, "rb") as source:
+                original = source.read()
             os.replace(self.filepath, corrupt_copy)
+            with open(corrupt_copy, "rb") as preserved:
+                if preserved.read() != original:
+                    raise OSError("quarantine byte verification failed")
             self.quarantined_history_path = corrupt_copy
+            self.persistence_blocked = False
             logger.warning(
                 "MemoryCore: unreadable history %s (%s); preserved as %s and starting with an empty log",
                 self.filepath,

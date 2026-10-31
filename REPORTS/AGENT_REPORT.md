@@ -3577,3 +3577,44 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+
+---
+
+## Product workflow — proposal decision status (2026-10-31)
+
+**Status:** COMPLETE on this branch. Not integrated to `main`.
+
+**Lane:** Product workflow. Unclaimed. `CONTROL.md` `CURRENT_TASK` remains `NONE`. Reconciliation queue `TASKS/TASK-0053.md` on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72cf397de2a5ef8d9a0bcaccd86462b0e577`) stays OPEN review-only. Do not merge `elysia-local-reconciliation-20260909-1657`. Codex Campaign 41 tip remains `3223ebbadd6e835870a87fdca2008eec65c969d8` on `origin/codex/limited-live-activation-wrapper`. This run did not implement live memory or vector writes.
+
+**Why this gap:** The `/api/events` limit fix, the implement HTTP-status fix, the WebScout research-status fix, and the chat answer-status fix stay on their earlier product branches and were not copied. Before this change, a live `POST /api/proposals/missing-fictional/approve` returned HTTP 400 `Proposal not found`. A JSON array body returned an HTML 500. `GET /api/proposals?status=not-a-status` returned HTTP 200 `count: 0`. `GET /api/proposals?status=` returned every proposal. Approving fictional proposal `fictional-decision` returned HTTP 200 `status: approved` while the stored file had no `approval_status` or `approved_by`. Rejecting it returned HTTP 200 with `reason: fictional-reason` while the stored file had no `rejection_reason`. Repeating the current status returned HTTP 200 `status: updated`.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c` (`main`). No other branch dependency. Not based on the events-limit, implement-status, research-status, or chat-status branches.
+
+**Ownership checked:** Did not edit `elysia/core/proposal_system.py`. Application runtime safety `bc-7f2749c1-e91e-489d-896a-7cd550f5c7e6` is `0eb52e2e51e130a7cc48c27253ab3a3e1d664fe9` on `origin/cursor/application-runtime-safety-668d` (`elysia/core/proposal_system.py`, `tests/test_elysia_proposal_metadata_symlink.py`). Runtime integrity `bc-4ea8f4b4` remains `9aab2388a2160f556579a6af1e5efddd218ac216` on `origin/cursor/elysia-runtime-integrity-1dce` (same proposal system file). Left dashboard drafts #147–#149 and #153–#160, chat and Windows drafts #161–#179, and the PR #154 repairs to their owners. Open issues #150 and #152 remain non-implementation backlogs. #139 remains the Windows vertical slice.
+
+**Acceptance:**
+- `GET /api/proposals?status=not-a-status` and `?status=` return HTTP 400 JSON `status filter must be a proposal lifecycle status` and do not return a proposal list
+- `GET /api/proposals?status=proposal` returns HTTP 200 with `status: proposal` and only fictional proposals in that status
+- `POST /api/proposals/missing-fictional/approve`, `/reject`, and `/status` return HTTP 404 JSON `Proposal not found`
+- A JSON array body and a truncated JSON body return HTTP 400 `request body must be a JSON object` and leave the fictional proposal in `proposal` status
+- A non-string approver or reason returns HTTP 400 and does not change the stored status
+- Approving fictional proposal `fictional-research` (status `research`) returns HTTP 400 `Invalid transition from research to approved` and leaves that status unchanged
+- Approving fictional proposal `fictional-decision` (status `proposal`) returns HTTP 200, stores `status: approved`, and sets `approval_recorded` from the stored `approval_status`. On this checkout that flag is false and the body includes `warning: Approval metadata was not stored`
+- Approving that proposal again returns HTTP 200 `status: unchanged`
+- Rejecting fictional proposal `fictional-reject` returns HTTP 200, stores `status: rejected`, and sets `reason_recorded` from the stored `rejection_reason`. On this checkout the unsaved reason `fictional-reason` is not echoed
+- Posting the same status again returns HTTP 200 `status: unchanged`, not `updated`
+- A legal transition of `fictional-research` from `research` to `design` returns HTTP 200 `status: updated` and `stored_status: design`
+- With no proposal system, list and approve still return HTTP 503
+- The shell command `approve missing-fictional` prints `[error] HTTP 404: Proposal not found`. `approve fictional-decision` prints the stored JSON and the approval-metadata warning
+- The contract holds through Flask's test client and through a live Werkzeug HTTP server on 127.0.0.1
+
+**Command:** `python3 -m pytest tests/test_runtime_api_decisions.py -v --tb=short` — 4 passed.
+
+**Files:** `elysia/api/server.py`, `elysia/shell.py`, `tests/test_runtime_api_decisions.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`.
+
+**Remaining limitations:** `ProposalLifecycleManager.approve_proposal` and `reject_proposal` still edit approval and rejection fields in memory, then `transition_status` reloads and saves only the lifecycle status. That file is owned by the runtime-safety lane (`0eb52e2` on `origin/cursor/application-runtime-safety-668d`). This API reports the gap and does not write metadata itself. `GET /api/events` limit handling, implement HTTP status, WebScout queue status, and general chat status remain only on their earlier product branches. This does not change memory, governance, CI, or deployment settings. A branch commit is not integrated product readiness.
+
+**Next action:** Leave `TASK-0053` unmerged. Do not repeat the events-limit fix, the implement-status fix, the research-status fix, the chat-status fix, or this decision-status fix from `main`. The runtime-safety lane can persist `approval_status`, `approved_by`, `approved_at`, and `rejection_reason` inside `elysia/core/proposal_system.py`. A later product run should pick a different unclaimed API or dashboard error path.
+
+**Commit:** `ad909db31746a408154bf26fe10421acad8548e3` on `cursor/product-workflow-engineering-process-a46c`. Base `722d8e4fe85d7e42ac34066c2d651849d15e734c`.

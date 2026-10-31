@@ -1,6 +1,8 @@
 ﻿# Integration inventory (Windows RC)
 
-Authority: source tree at worktree `windows-local-intel-20261029`, tip `f23280d` (+ RC docs/acceptance commits).
+Authority: published draft PR [#178](https://github.com/MsElysia/Elysia/pull/178) head  
+`2759ba43cf14ef9fb3be579d143183788f341af3` on `cursor/windows-dashboard-plan-progress-20261031`  
+(local development worktree historically named `windows-local-intel-20261029`).
 
 | Feature | Owning module | Runtime entry | Persistence | Authorization | Verification | Readiness |
 |---------|---------------|---------------|-------------|---------------|--------------|-----------|
@@ -15,7 +17,7 @@ Authority: source tree at worktree `windows-local-intel-20261029`, tip `f23280d`
 | compose.extract_records | `capability_composition.py` | task execute | receipt on step | `authorize_compose_extract_records` | extract_records accept | **Connected** |
 | calculator.labor | `local_memory_chat.py` + task binding | chat + task execute | receipt | `allow_calculator` / `authorize_calculator` | local intel + RC E2E | **Connected** |
 | estimate.assemble / draft | composition / estimate paths | task execute | receipt | authorize_estimate_* | composition accept | **Connected** |
-| Adaptive replan | composition evaluate/propose-replan/apply | `/api/composition/*` | task revisions | never inherits auth | adaptive_replan accept + RC E2E | **UI connected** (Plan & Progress panel → existing `/api/composition/*`) |
+| Adaptive replan | composition evaluate/propose-replan/apply | `/api/composition/*` | task revisions | never inherits auth | adaptive_replan accept + RC E2E | **UI connected** (Plan & Progress panel → `/api/composition/*`) |
 | Outcome feedback | `composition_outcome_feedback.py` | rank + propose attachment; written on verified execute | outcome store under root | ranking never grants auth | outcome/comparable accepts + RC E2E | **UI connected** (recommendations + ranking via Plan & Progress; outcome still written on verified execute) |
 | Composition propose / evaluate-step / rank | `capability_composition.py` + outcome store | `/api/composition/propose`, `evaluate-step`, `rank-capabilities` | none for propose | plans never executable until authorize_* | composition accepts | **UI connected** (Plan & Progress) |
 | Capability registry (legacy) | `capability_registry.py` | orchestrator paths | n/a | separate legacy | not primary Windows intel UI | **Present / secondary** |
@@ -26,12 +28,11 @@ Authority: source tree at worktree `windows-local-intel-20261029`, tip `f23280d`
 ## Orphans / duplicates / disconnects
 
 - Legacy `capability_registry.py` / orchestrator capability paths coexist with Windows `capability_awareness.py` — dashboard intel path uses awareness, not the legacy registry.
-- Multiple historical accept_* scripts exercise slices; **RC E2E** (`scripts/accept_windows_release_candidate_e2e.py`) is the same-session consolidator on the canonical contained entry. It does **not** drive `START_ELYSIA_VERIFIED_PILOT.bat` (that BAT targets operator `Elysia-Windows-Integration-Data` / preferred 5065).
+- Multiple historical accept_* scripts exercise slices; **RC Python E2E** (`scripts/accept_windows_release_candidate_e2e.py`) consolidates same-session contained APIs on a disposable store. It starts `scripts/start_contained_browser_memory.py` directly and is **not** evidence for `START_ELYSIA_*` BAT ownership, duplicate-start refusal, or STOP behavior. Use `pilot/START_ELYSIA_RC_DISPOSABLE.bat` (+ matching STOP) for that path.
 - Compose tools (`extract_*`, `aggregate_usd`, `synthesize`) are on the **task-step execute** path with `authorize_compose_*`; local chat `ManualAuthorization` scopes remain calculator + documents only.
-- Adaptive replan, outcome feedback, propose, evaluate-step, and rank are reachable by HTTP and RC E2E, but have **no Capabilities/Conversations tab UI hooks** yet.
+- Adaptive replan, outcome feedback, propose, evaluate-step, and rank are reachable by HTTP **and** by the Plan & Progress dashboard controls (not via the Capabilities/Conversations tabs). Capabilities remains read-only discovery; Conversations remains continuity/checkpoint UI.
 - No competing second Windows app was added; disposable runs reuse the same entry as the pilot BAT.
 
 ## Deliberately not wired as executable
 
 Email, web search, finance, calendar, autonomy, cloud models, background missions, unrestricted shell/code execution.
-

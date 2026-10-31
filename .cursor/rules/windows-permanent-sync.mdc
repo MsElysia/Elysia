@@ -1,0 +1,13 @@
+---
+description: Permanent Windows ↔ GitHub synchronization workflow for Elysia
+globs:
+alwaysApply: true
+---
+
+Canonical branch is `integration/windows-canonical`. Development root is `C:\Users\Owner\Elysia-Dev`. Release install is `C:\Users\Owner\Elysia-Windows-Release`. Operational data at `C:\Users\Owner\Elysia-Windows-Integration-Data` must never be overwritten by sync.
+
+After finishing a local development task: run relevant tests, scan for secrets/private data, commit, push to `origin/integration/windows-canonical`, and record the exact SHA plus test evidence under `C:\Users\Owner\Elysia-Sync-State`.
+
+Use `tools/windows_sync/*` for fetch/status/integrate/promote. Never force-reset local branches, discard uncommitted work, auto-merge `main`, activate cloud providers/autonomy, or install unverified changes into the release install. Do not create competing master implementations or duplicate capability frameworks. Keep desktop shortcut `elysia1` on the verified release launcher (`pilot/START_ELYSIA1.bat`).
+
+Full policy: `docs/WINDOWS_PERMANENT_SYNC.md` and `AGENTS.md`.

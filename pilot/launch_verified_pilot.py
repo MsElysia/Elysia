@@ -95,6 +95,36 @@ def _already_running() -> bool:
     return bool(verdict.owned)
 
 
+def _optional_startup_sync_check() -> None:
+    """Fetch/status only. Never blocks launch permanently; never mutates git history."""
+    flag = (os.environ.get("ELYSIA_SYNC_ON_LAUNCH") or "1").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return
+    sync_script = PILOT_SOURCE_ROOT / "tools" / "windows_sync" / "sync_check.py"
+    if not sync_script.is_file():
+        return
+    try:
+        proc = subprocess.run(
+            [str(PILOT_PYTHON), str(sync_script)],
+            cwd=str(PILOT_SOURCE_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"NOTE: startup sync check skipped ({exc})", flush=True)
+        return
+    out = (proc.stdout or "").strip()
+    if out:
+        print("--- GitHub sync check ---", flush=True)
+        print(out, flush=True)
+        print("-------------------------", flush=True)
+    if proc.returncode not in (0, 2):
+        print(f"NOTE: sync check exit={proc.returncode}", flush=True)
+
+
 def main() -> int:
     if not PILOT_PYTHON.is_file():
         print(f"ERROR: interpreter missing: {PILOT_PYTHON}", file=sys.stderr)
@@ -102,6 +132,8 @@ def main() -> int:
     if not PILOT_SOURCE_ROOT.is_dir():
         print(f"ERROR: pilot source missing: {PILOT_SOURCE_ROOT}", file=sys.stderr)
         return 2
+
+    _optional_startup_sync_check()
 
     delivery = read_delivery_identity()
     print(format_identity_report(delivery), flush=True)

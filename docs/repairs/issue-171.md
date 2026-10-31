@@ -1,6 +1,6 @@
 # Issue 171 bounded repair
 
-Base: f7cd69d573bc28dc178e8e25e3c87fd8a6abdd83 (PR170), parent 71a9208c5a3bb8ce5df332e48f9435441e9660e6.
+Base: f7cd69d573bc28dc178e8e25e3c87fd8a6abdd83 (PR170), immediate parent dac6bd0ac2b52c65695cbc40139ccc357a867a8a; PR169 ancestor 71a9208c5a3bb8ce5df332e48f9435441e9660e6.
 
 A deterministic unrelated thread changes the shared host directory while a different task reports success. The new regression fails on unchanged base production: succeeded instead of partial.
 

@@ -7,6 +7,8 @@ import hashlib
 import json
 import logging
 import re
+import secrets
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -111,6 +113,188 @@ def capture_host_directory_state(root: Optional[Path]) -> Dict[str, Any]:
         "file_count": len(records),
         "root_digest": hashlib.sha256(encoded).hexdigest(),
     }
+
+
+_ATTEMPT_ID = re.compile(r"^[0-9a-f]{32}$")
+_TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$")
+_CAPABILITY_ID = re.compile(r"^(module|tool):[A-Za-z0-9_]{1,64}$")
+_RECEIPT_KEYS = frozenset({"task_id", "attempt_id", "capability_id", "effect_sha256"})
+SYNTHETIC_LOCAL_NOTE = "tool:synthetic_local_note"
+
+
+def authorize_task_capability(task: Dict[str, Any], kind: str, name: str) -> bool:
+    """True when this task's own capability list names the exact kind and name."""
+    ident = f"{(kind or '').strip().lower()}:{(name or '').strip()}"
+    if _CAPABILITY_ID.fullmatch(ident) is None:
+        return False
+    allowed = task.get("recommended_capabilities") if isinstance(task, dict) else None
+    if not isinstance(allowed, list):
+        return False
+    return ident in {str(item).strip() for item in allowed}
+
+
+def _sanitize_note(note: str) -> str:
+    text = " ".join(str(note or "").split())[:200]
+    return text or "local-note"
+
+
+def begin_task_attempt(task_id: str, capability_id: str, *, note: str) -> Dict[str, Any]:
+    """Host-issued attempt. The model does not choose these fields."""
+    if _TASK_ID.fullmatch(str(task_id or "")) is None:
+        raise ValueError("task_id")
+    if _CAPABILITY_ID.fullmatch(str(capability_id or "")) is None:
+        raise ValueError("capability_id")
+    return {
+        "task_id": str(task_id),
+        "attempt_id": uuid.uuid4().hex,
+        "capability_id": str(capability_id),
+        "effect_token": secrets.token_hex(16),
+        "expected_note": _sanitize_note(note),
+        "consumed": False,
+        "preexisting": {"effect.txt": False, "receipt.json": False},
+    }
+
+
+def expected_effect_bytes(attempt: Dict[str, Any]) -> bytes:
+    note = str(attempt.get("expected_note") or "")
+    token = str(attempt.get("effect_token") or "")
+    return f"{note}\n{token}\n".encode("utf-8")
+
+
+def attempt_effect_dir(root: Optional[Path], attempt: Dict[str, Any]) -> Optional[Path]:
+    if not isinstance(root, Path) or not isinstance(attempt, dict):
+        return None
+    task_id = str(attempt.get("task_id") or "")
+    attempt_id = str(attempt.get("attempt_id") or "")
+    if _TASK_ID.fullmatch(task_id) is None or _ATTEMPT_ID.fullmatch(attempt_id) is None:
+        return None
+    if _linked(root):
+        return None
+    try:
+        base = root.resolve()
+    except OSError:
+        return None
+    dest = base / task_id / attempt_id
+    try:
+        if dest.exists() or dest.parent.exists():
+            dest.resolve().relative_to(base)
+    except (OSError, ValueError):
+        return None
+    return dest
+
+
+def _regular_file(path: Path) -> bool:
+    if _linked(path):
+        return False
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return resolved.is_file() and not _linked(resolved)
+
+
+def prepare_task_attempt_dir(root: Optional[Path], attempt: Dict[str, Any]) -> Optional[Path]:
+    dest = attempt_effect_dir(root, attempt)
+    if dest is None:
+        return None
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        dest.resolve().relative_to(Path(root).resolve())
+    except (OSError, ValueError):
+        return None
+    attempt["preexisting"] = {
+        "effect.txt": _regular_file(dest / "effect.txt"),
+        "receipt.json": _regular_file(dest / "receipt.json"),
+    }
+    attempt["consumed"] = False
+    return dest
+
+
+def write_authorized_local_note(effect_dir: Path, attempt: Dict[str, Any]) -> None:
+    """Write the host note. The caller must already have authorized this attempt."""
+    body = expected_effect_bytes(attempt)
+    digest = hashlib.sha256(body).hexdigest()
+    receipt = {
+        "attempt_id": attempt["attempt_id"],
+        "capability_id": attempt["capability_id"],
+        "effect_sha256": digest,
+        "task_id": attempt["task_id"],
+    }
+    (effect_dir / "effect.txt").write_bytes(body)
+    (effect_dir / "receipt.json").write_text(
+        json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+def attribute_attempt_receipt(root: Optional[Path], attempt: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-read the attempt directory. Model fields are not consulted."""
+    if not isinstance(attempt, dict):
+        return {"attributed": False, "reason": "malformed_receipt"}
+    if attempt.get("consumed"):
+        return {"attributed": False, "reason": "replayed_receipt"}
+    preexisting = attempt.get("preexisting") if isinstance(attempt.get("preexisting"), dict) else {}
+    if preexisting.get("effect.txt") or preexisting.get("receipt.json"):
+        return {"attributed": False, "reason": "stale_receipt"}
+    dest = attempt_effect_dir(root, attempt)
+    if dest is None:
+        return {"attributed": False, "reason": "malformed_receipt"}
+    effect_path = dest / "effect.txt"
+    receipt_path = dest / "receipt.json"
+    if not _regular_file(effect_path) or not _regular_file(receipt_path):
+        return {"attributed": False, "reason": "missing_effect"}
+    try:
+        data = effect_path.read_bytes()
+        parsed = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {"attributed": False, "reason": "malformed_receipt"}
+    if len(data) > 10000 or not isinstance(parsed, dict) or set(parsed) != _RECEIPT_KEYS:
+        return {"attributed": False, "reason": "malformed_receipt"}
+    if parsed.get("task_id") != attempt.get("task_id"):
+        return {"attributed": False, "reason": "mismatched_task"}
+    if parsed.get("attempt_id") != attempt.get("attempt_id"):
+        return {"attributed": False, "reason": "replayed_receipt"}
+    if parsed.get("capability_id") != attempt.get("capability_id"):
+        return {"attributed": False, "reason": "mismatched_capability"}
+    if data != expected_effect_bytes(attempt):
+        return {"attributed": False, "reason": "forged_receipt"}
+    digest = hashlib.sha256(data).hexdigest()
+    if parsed.get("effect_sha256") != digest:
+        return {"attributed": False, "reason": "forged_receipt"}
+    attempt["consumed"] = True
+    attempt["effect_sha256"] = digest
+    return {"attributed": True, "reason": "task_attributed_host_receipt"}
+
+
+def audit_attempt_receipt(root: Optional[Path], attempt: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-check a receipt that was already accepted. A later edit is not success."""
+    if not isinstance(attempt, dict) or not attempt.get("effect_sha256"):
+        return {"attributed": False, "reason": "missing_effect"}
+    dest = attempt_effect_dir(root, attempt)
+    if dest is None:
+        return {"attributed": False, "reason": "malformed_receipt"}
+    effect_path = dest / "effect.txt"
+    if not _regular_file(effect_path):
+        return {"attributed": False, "reason": "modified_evidence"}
+    try:
+        data = effect_path.read_bytes()
+    except OSError:
+        return {"attributed": False, "reason": "modified_evidence"}
+    digest = hashlib.sha256(data).hexdigest()
+    if data != expected_effect_bytes(attempt) or digest != attempt.get("effect_sha256"):
+        return {"attributed": False, "reason": "modified_evidence"}
+    return {"attributed": True, "reason": "task_attributed_host_receipt"}
+
+
+def first_attributed_attempt(
+    root: Optional[Path], attempts: Optional[Sequence[Dict[str, Any]]]
+) -> Dict[str, Any]:
+    last = {"attributed": False, "reason": "missing_effect"}
+    for attempt in attempts or ():
+        last = attribute_attempt_receipt(root, attempt)
+        if last.get("attributed"):
+            return last
+    return last
 
 
 _SELF_REPORT_KEYS = (
@@ -298,14 +482,17 @@ def evaluate_execution_outcome(
     allowed_roots: Optional[Sequence[Path]] = None,
     observed_before: Any = None,
     observed_after: Any = None,
+    effect_root: Optional[Path] = None,
+    host_attempts: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Existing outcome fields plus verification_status:
     proposed, attempted, partial, verified, failed, blocked.
 
-    succeeded is only the verified status. Self-reported flags, dry runs,
-    memory-write booleans, and a path that was not independently checked
-    cannot produce it.
+    succeeded is only the verified status. A shared-directory change, a
+    self-reported flag, a dry run, or a receipt that does not match the
+    host attempt cannot produce it. observed_before and observed_after are
+    ignored as proof.
     """
     arch = (archetype or "").lower()
     tier = (execution_tier or "").lower()
@@ -352,8 +539,12 @@ def evaluate_execution_outcome(
     located = permitted_artifact_file(artifact_path, allowed_roots)
     dry_run = _is_dry_run(p) or _is_dry_run(last_capability_ex)
     file_proof = bool(located is not None and not dry_run and _artifact_digest_matches(located, p))
-    state_proof = bool(not dry_run and _host_state_changed(observed_before, observed_after))
-    proof = file_proof or state_proof
+    receipt = {"attributed": False, "reason": ""}
+    if not dry_run and host_attempts:
+        receipt = first_attributed_attempt(effect_root, host_attempts)
+    receipt_proof = bool(receipt.get("attributed") and receipt.get("reason") == "task_attributed_host_receipt")
+    _ = (observed_before, observed_after)
+    proof = file_proof or receipt_proof
     hint = _has_downstream_action_hint(archetype=arch, payload=p, capability_ex=last_capability_ex)
     reported = _self_reported(p, last_capability_ex, memory_written)
 
@@ -361,13 +552,18 @@ def evaluate_execution_outcome(
         out["execution_outcome"] = "succeeded"
         out["verification_status"] = "verified"
         out["execution_reason"] = (
-            "independent_file_integrity" if file_proof else "independent_state_comparison"
+            "independent_file_integrity" if file_proof else "task_attributed_host_receipt"
         )
         out["execution_followup_needed"] = False
     elif dry_run:
         out["execution_outcome"] = "partial"
         out["verification_status"] = "partial"
         out["execution_reason"] = "dry_run_not_production_action"
+        out["execution_followup_needed"] = True
+    elif host_attempts and receipt.get("reason"):
+        out["execution_outcome"] = "partial"
+        out["verification_status"] = "partial"
+        out["execution_reason"] = str(receipt.get("reason"))[:300]
         out["execution_followup_needed"] = True
     elif arch == "execute_best_opportunity":
         out["execution_outcome"] = "partial"

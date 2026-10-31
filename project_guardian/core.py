@@ -4929,11 +4929,13 @@ class GuardianCore:
         from .self_task_artifacts import save_self_task_artifact
         from .self_task_advancement import evaluate_task_advancement, merge_best_artifact
         from .self_task_execution_outcome import (
+            authorize_task_capability,
+            begin_task_attempt,
             caller_execution_success,
-            capture_host_directory_state,
             evaluate_execution_outcome,
             host_effect_root,
             is_execution_stage_archetype,
+            prepare_task_attempt_dir,
         )
         from .self_task_value_verification import evaluate_execution_value
         from .self_task_cycle_priority import evaluate_cycle_priority_choice
@@ -4960,7 +4962,7 @@ class GuardianCore:
             "learning_operator_digest",
         )
         effect_root = host_effect_root(q.path)
-        observed_before = capture_host_directory_state(effect_root)
+        host_attempts: List[Dict[str, Any]] = []
 
         try:
             if arch in learning_digest_archs and getattr(self, "memory", None):
@@ -5104,15 +5106,44 @@ class GuardianCore:
                         name = name.strip()
                         if kind not in ("module", "tool"):
                             continue
+                        if not authorize_task_capability(task, kind, name):
+                            detail_parts.append(f"{kind}:{name}=not_authorized")
+                            continue
                         capability_attempted = True
                         goal = str(task.get("goal") or "")[:500]
+                        try:
+                            host_attempt = begin_task_attempt(
+                                task_id, f"{kind}:{name}", note=goal
+                            )
+                        except ValueError:
+                            detail_parts.append(f"{kind}:{name}=attempt_rejected")
+                            continue
+                        effect_dir = prepare_task_attempt_dir(effect_root, host_attempt)
+                        if effect_dir is None:
+                            detail_parts.append(f"{kind}:{name}=attempt_rejected")
+                            continue
+                        host_attempts.append(host_attempt)
                         inp: Dict[str, Any] = {
                             "task": goal,
                             "query": goal[:400],
                             "objective": goal,
                             "self_task_archetype": arch,
                             "underused_modules": list(task.get("underused_modules") or []),
+                            "host_effect_root": str(effect_root),
+                            "host_attempt": {
+                                "task_id": host_attempt["task_id"],
+                                "attempt_id": host_attempt["attempt_id"],
+                                "capability_id": host_attempt["capability_id"],
+                                "effect_token": host_attempt["effect_token"],
+                                "expected_note": host_attempt["expected_note"],
+                            },
                         }
+                        if task.get("dry_run") is True:
+                            inp["dry_run"] = True
+                        if task.get("simulate_failure") is True:
+                            inp["simulate_failure"] = True
+                        if task.get("report_only") is True:
+                            inp["report_only"] = True
                         _mb_guidance = str((cycle_metadata or {}).get("moltbook_guidance") or "").strip()
                         if _mb_guidance:
                             inp["moltbook_guidance"] = _mb_guidance[:320]
@@ -5164,7 +5195,6 @@ class GuardianCore:
             detail = str(e)[:400]
             ok_any = False
             useful_any = False
-        observed_after = capture_host_directory_state(effect_root)
 
         base_strong = self._self_task_has_strong_signals(
             useful_payload=useful_any,
@@ -5242,8 +5272,8 @@ class GuardianCore:
             memory_written=memory_written,
             last_capability_ex=last_capability_ex,
             detail=detail,
-            observed_before=observed_before,
-            observed_after=observed_after,
+            effect_root=effect_root,
+            host_attempts=host_attempts,
         )
         caller_ok, caller_useful = caller_execution_success(
             arch, ok_any, useful_any, exec_result

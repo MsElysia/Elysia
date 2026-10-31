@@ -2,8 +2,11 @@
 # Memory Vector Search: Semantic Memory Retrieval
 # Adds vector search capabilities to MemoryCore for better context retrieval
 
+from __future__ import annotations
+
 import logging
 import json
+import math
 import threading
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -77,10 +80,10 @@ class SimpleEmbedder:
             for token in tokens:
                 doc_counts[token] = doc_counts.get(token, 0) + 1
         
-        # Calculate IDF
+        # Calculate IDF. math.log keeps this path usable when NumPy is absent.
         total_docs = len(texts)
         for token, count in doc_counts.items():
-            self.idf[token] = np.log(total_docs / (count + 1))
+            self.idf[token] = math.log(total_docs / (count + 1))
     
     def embed(self, text: str, dimension: int = 384) -> np.ndarray:
         """Simple embedding using word frequencies."""

@@ -161,7 +161,7 @@ class OperatorCalculationSession:
         self._requests[request.task_id] = request
         return request
 
-    def authorize(self, request):
+    def authorize(self, request, *, deadline=None):
         self._owned_request(request)
         challenge = "AUTHORIZE " + request.request_id
         description = (f"Task {request.task_id}; request {request.request_id}; {CAPABILITY}; "
@@ -171,8 +171,13 @@ class OperatorCalculationSession:
         if self.confirm(description) != challenge:
             return None
         # Object identity, not a payload flag/token string, grants one dispatch.
+        expires = self.clock() + 120
+        if deadline is not None:
+            expires = min(expires, deadline)
+        if self.clock() >= expires:
+            return None
         grant = object()
-        self._grants[grant] = (request, self.clock() + 120)
+        self._grants[grant] = (request, expires)
         return grant
 
     def _owned_request(self, request):
@@ -203,7 +208,7 @@ class OperatorCalculationSession:
             issued = self._grants.pop(grant, None)
         except TypeError:
             issued = None
-        authorized = bool(issued and issued[0] is request and self.clock() <= issued[1]
+        authorized = bool(issued and issued[0] is request and self.clock() < issued[1]
                           and selected_capability == CAPABILITY)
         inputs = request.inputs()
         expected = _expected(inputs)
@@ -238,6 +243,15 @@ class OperatorCalculationSession:
                          reason="independent_integer_cent_check" if matched else "calculator_result_mismatch")
         self._append(event)  # A return is verified only AFTER primary commit + reload.
         return self.outcomes[request.task_id]
+
+    def read_outcomes(self):
+        """Reload committed outcomes without restoring grants or invoking a tool."""
+        self._check_paths()
+        if self._disk_digest() != self._journal_digest:
+            raise CalculationPersistenceError("journal changed outside this session; evidence preserved")
+        self.memory = self._read_memory()
+        self._rebuild()
+        return json.loads(_canonical(list(self.outcomes.values())))
 
     def _rebuild(self):
         # These existing queue/objective algorithms are projections of the primary

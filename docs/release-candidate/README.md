@@ -101,6 +101,8 @@ Older USB checkpoints under `D:\ElysiaBackups\` are preserved.
 - Pilot BAT prefers port 5065 / shared integration data root — use disposable E2E for verification
 - Email, web search, finance, calendar, autonomy remain unavailable / not authorized
 - Outcome learning requires comparable strategy context (by design)
+- Composition propose / replan / outcome-rank APIs work in-session (RC E2E) but are not yet exposed as dashboard controls; compose tools bind via conversation task steps, not chat scopes
+- Legacy `tests/test_task_execution.py` has pre-existing GuardianCore singleton failures outside the Windows intel path
 
 ## Inventory
 

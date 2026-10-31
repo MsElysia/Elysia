@@ -18,6 +18,53 @@ from ..events import EventBus
 
 logger = logging.getLogger(__name__)
 
+# Lifecycle statuses accepted by ProposalValidator. Kept here so a bad list
+# filter is rejected at the HTTP boundary instead of looking like an empty page.
+_LIFECYCLE_STATUSES = frozenset(
+    {
+        "research",
+        "design",
+        "proposal",
+        "approved",
+        "rejected",
+        "in_implementation",
+        "implementation_failed",
+        "implemented",
+    }
+)
+
+
+def _read_json_object():
+    """Return a JSON object body.
+
+    An empty body is an empty object so existing callers can omit it.
+    Unparsed JSON and any JSON value that is not an object return None.
+    """
+    raw = request.get_data(cache=True)
+    if not raw:
+        return {}
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _required_text(data: Dict[str, Any], key: str, default: str):
+    """Return a stripped string, the default when the key is absent, or None."""
+    if key not in data or data[key] is None:
+        return default
+    value = data[key]
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
+def _decision_failure(error: Optional[str], fallback: str):
+    """Map a lifecycle error to JSON. A missing proposal is not a bad request."""
+    message = error or fallback
+    status_code = 404 if message == "Proposal not found" else 400
+    return jsonify({"error": message}), status_code
+
 
 class RuntimeAPIServer:
     """Wrap a Flask server that exposes runtime status and events."""
@@ -126,9 +173,26 @@ class RuntimeAPIServer:
             if not self._proposal_system:
                 return jsonify({"error": "Proposal system not available"}), 503
 
-            status_filter = request.args.get("status")
+            raw_status = request.args.get("status")
+            status_filter = None
+            if raw_status is not None:
+                status_filter = raw_status.strip()
+                if status_filter not in _LIFECYCLE_STATUSES:
+                    return (
+                        jsonify(
+                            {
+                                "error": "status filter must be a proposal lifecycle status",
+                                "status": status_filter,
+                            }
+                        ),
+                        400,
+                    )
+
             proposals = self._proposal_system.list_proposals(status_filter=status_filter)
-            return jsonify({"proposals": proposals, "count": len(proposals)})
+            body: Dict[str, Any] = {"proposals": proposals, "count": len(proposals)}
+            if status_filter is not None:
+                body["status"] = status_filter
+            return jsonify(body)
 
         @self._app.route("/api/proposals/<proposal_id>", methods=["GET"])
         def api_get_proposal(proposal_id: str):
@@ -148,13 +212,45 @@ class RuntimeAPIServer:
             if not self._proposal_system:
                 return jsonify({"error": "Proposal system not available"}), 503
 
-            data = request.get_json(force=True, silent=True) or {}
-            approver = data.get("approver", "api_user")
+            data = _read_json_object()
+            if data is None:
+                return jsonify({"error": "request body must be a JSON object"}), 400
 
+            approver = _required_text(data, "approver", "api_user")
+            if approver is None:
+                return jsonify({"error": "approver must be a non-empty string"}), 400
+
+            before = self._proposal_system.get_proposal(proposal_id) or {}
             success, error = self._proposal_system.approve_proposal(proposal_id, approver)
-            if success:
-                return jsonify({"status": "approved", "proposal_id": proposal_id})
-            return jsonify({"error": error or "Failed to approve"}), 400
+            if not success:
+                return _decision_failure(error, "Failed to approve")
+            # approve_proposal returns (True, None) and drops "Status unchanged".
+            unchanged = before.get("status") == "approved" or error == "Status unchanged"
+
+            stored = self._proposal_system.get_proposal(proposal_id) or {}
+            if stored.get("status") != "approved":
+                return (
+                    jsonify(
+                        {
+                            "error": "Proposal status was not stored as approved",
+                            "proposal_id": proposal_id,
+                            "stored_status": stored.get("status"),
+                        }
+                    ),
+                    500,
+                )
+
+            approval_recorded = stored.get("approval_status") == "approved"
+            body = {
+                "status": "unchanged" if unchanged else "approved",
+                "proposal_id": proposal_id,
+                "stored_status": stored.get("status"),
+                "approved_by": stored.get("approved_by"),
+                "approval_recorded": approval_recorded,
+            }
+            if not approval_recorded:
+                body["warning"] = "Approval metadata was not stored"
+            return jsonify(body)
 
         @self._app.route("/api/proposals/<proposal_id>/reject", methods=["POST"])
         def api_reject_proposal(proposal_id: str):
@@ -162,14 +258,52 @@ class RuntimeAPIServer:
             if not self._proposal_system:
                 return jsonify({"error": "Proposal system not available"}), 503
 
-            data = request.get_json(force=True, silent=True) or {}
-            reason = data.get("reason", "No reason provided")
-            rejector = data.get("rejector", "api_user")
+            data = _read_json_object()
+            if data is None:
+                return jsonify({"error": "request body must be a JSON object"}), 400
 
+            if "reason" not in data or data.get("reason") is None:
+                reason = "No reason provided"
+            elif not isinstance(data.get("reason"), str):
+                return jsonify({"error": "reason must be a string"}), 400
+            else:
+                reason = data["reason"]
+
+            rejector = _required_text(data, "rejector", "api_user")
+            if rejector is None:
+                return jsonify({"error": "rejector must be a non-empty string"}), 400
+
+            before = self._proposal_system.get_proposal(proposal_id) or {}
             success, error = self._proposal_system.reject_proposal(proposal_id, reason, rejector)
-            if success:
-                return jsonify({"status": "rejected", "proposal_id": proposal_id, "reason": reason})
-            return jsonify({"error": error or "Failed to reject"}), 400
+            if not success:
+                return _decision_failure(error, "Failed to reject")
+            # reject_proposal returns (True, None) and drops "Status unchanged".
+            unchanged = before.get("status") == "rejected" or error == "Status unchanged"
+
+            stored = self._proposal_system.get_proposal(proposal_id) or {}
+            if stored.get("status") != "rejected":
+                return (
+                    jsonify(
+                        {
+                            "error": "Proposal status was not stored as rejected",
+                            "proposal_id": proposal_id,
+                            "stored_status": stored.get("status"),
+                        }
+                    ),
+                    500,
+                )
+
+            reason_recorded = stored.get("rejection_reason") == reason
+            body = {
+                "status": "unchanged" if unchanged else "rejected",
+                "proposal_id": proposal_id,
+                "stored_status": stored.get("status"),
+                "rejection_reason": stored.get("rejection_reason"),
+                "reason_recorded": reason_recorded,
+            }
+            if not reason_recorded:
+                body["warning"] = "Rejection reason was not stored"
+            return jsonify(body)
 
         @self._app.route("/api/proposals/<proposal_id>/status", methods=["POST"])
         def api_transition_status(proposal_id: str):
@@ -177,17 +311,56 @@ class RuntimeAPIServer:
             if not self._proposal_system:
                 return jsonify({"error": "Proposal system not available"}), 503
 
-            data = request.get_json(force=True, silent=True) or {}
+            data = _read_json_object()
+            if data is None:
+                return jsonify({"error": "request body must be a JSON object"}), 400
+
             new_status = data.get("status")
-            actor = data.get("actor", "api_user")
-
-            if not new_status:
+            if not isinstance(new_status, str) or not new_status.strip():
                 return jsonify({"error": "status is required"}), 400
+            new_status = new_status.strip()
 
-            success, error = self._proposal_system.transition_status(proposal_id, new_status, actor)
-            if success:
-                return jsonify({"status": "updated", "proposal_id": proposal_id, "new_status": new_status})
-            return jsonify({"error": error or "Failed to transition status"}), 400
+            actor = _required_text(data, "actor", "api_user")
+            if actor is None:
+                return jsonify({"error": "actor must be a non-empty string"}), 400
+
+            success, error = self._proposal_system.transition_status(
+                proposal_id, new_status, actor
+            )
+            if not success:
+                return _decision_failure(error, "Failed to transition status")
+
+            stored = self._proposal_system.get_proposal(proposal_id) or {}
+            stored_status = stored.get("status")
+            if stored_status != new_status:
+                return (
+                    jsonify(
+                        {
+                            "error": "Proposal status was not stored",
+                            "proposal_id": proposal_id,
+                            "stored_status": stored_status,
+                        }
+                    ),
+                    500,
+                )
+
+            if error == "Status unchanged":
+                return jsonify(
+                    {
+                        "status": "unchanged",
+                        "proposal_id": proposal_id,
+                        "stored_status": stored_status,
+                    }
+                )
+
+            return jsonify(
+                {
+                    "status": "updated",
+                    "proposal_id": proposal_id,
+                    "new_status": stored_status,
+                    "stored_status": stored_status,
+                }
+            )
 
         # WebScout endpoints
         @self._app.route("/api/webscout/research", methods=["POST"])

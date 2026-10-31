@@ -497,3 +497,10 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — proposal decision status (2026-10-31)
+
+- `GET /api/proposals?status=` accepts only a lifecycle status. An unknown or blank filter returns HTTP 400 instead of an empty or unfiltered page.
+- `POST /api/proposals/<id>/approve`, `/reject`, and `/status` return HTTP 404 when the proposal is missing, and HTTP 400 JSON when the body is not a JSON object.
+- A successful decision reports the status stored on disk. Approval metadata and the rejection reason are marked recorded only when those fields were saved. A repeat of the current status is `unchanged` rather than a new update.
+- The shell prints that API error text and any warning that approval or rejection details were not stored.

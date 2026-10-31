@@ -47,4 +47,4 @@ jobs:
         env:
           PYTHONUTF8: "1"
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python -B -m pytest --noconftest -q -rs -p no:cacheprovider tests/test_self_task_execution_outcome.py tests/test_memory_core_persistence.py tests/test_verified_local_calculation.py project_guardian/tests/test_lazy_memory.py
+        run: python -B -m pytest --noconftest -q -rs -p no:cacheprovider tests/test_self_task_execution_outcome.py tests/test_memory_core_persistence.py tests/test_verified_local_calculation.py project_guardian/tests/test_lazy_memory.py tests/test_restricted_browser_bridge.py tests/test_browser_worker_path_alias.py tests/test_local_context_bundle_contract.py tests/test_local_memory_chat.py tests/test_browser_verified_calculation.py

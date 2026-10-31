@@ -1,0 +1,35 @@
+name: Memory persistence repair
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  persistence:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact event head
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = git rev-parse HEAD
+          if ($actual -ne $env:EXPECTED_SHA) { throw "Wrong source SHA: $actual" }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install "pytest>=7.4,<9"
+      - name: Synthetic persistence and recovery
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONUTF8: "1"
+        run: python -B -m pytest --noconftest -q -rs -p no:cacheprovider tests/test_memory_core_persistence.py

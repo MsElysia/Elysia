@@ -143,41 +143,6 @@ def test_missing_or_unpermitted_or_mismatched_artifact_is_rejected(tmp_path):
     assert mismatch["verification_status"] == "partial"
 
 
-def test_matching_file_and_host_state_change_are_verified(tmp_path):
-    root = tmp_path / "allowed"
-    root.mkdir()
-    body = b"synthetic verified receipt\n"
-    path = root / "receipt.bin"
-    path.write_bytes(body)
-    digest = hashlib.sha256(body).hexdigest()
-    file_result = evaluate(
-        artifact_path=path,
-        allowed_roots=(root,),
-        last_result={"artifact_sha256": digest, "state_changed": False},
-    )
-    assert file_result["execution_outcome"] == "succeeded"
-    assert file_result["verification_status"] == "verified"
-    assert file_result["execution_reason"] == "independent_file_integrity"
-    assert file_result["execution_artifact"] == str(path.resolve())
-    assert file_result["execution_followup_needed"] is False
-
-    state_result = evaluate(
-        last_result={"state_changed": False},
-        observed_before={"revision": 1, "bytes": 4},
-        observed_after={"revision": 2, "bytes": 9},
-    )
-    assert state_result["execution_outcome"] == "succeeded"
-    assert state_result["verification_status"] == "verified"
-    assert state_result["execution_reason"] == "independent_state_comparison"
-
-    flags_only = evaluate(
-        observed_before={"state_changed": False},
-        observed_after={"state_changed": True},
-        last_result={"state_changed": True},
-    )
-    assert flags_only["execution_outcome"] != "succeeded"
-
-
 def test_valid_file_cannot_promote_a_dry_run(tmp_path):
     root = tmp_path / "allowed"
     root.mkdir()
@@ -302,8 +267,8 @@ def test_queue_records_rejected_and_verified_status(tmp_path):
         verification_status=verified["verification_status"],
     )
     stored_verified = queue.get_by_id("st_verified")
-    assert stored_verified["execution_outcome"] == "succeeded"
-    assert stored_verified["verification_status"] == "verified"
+    assert stored_verified["execution_outcome"] == "partial"
+    assert stored_verified["verification_status"] == "attempted"
 
 
 def _blob_sha1(data: bytes) -> str:
@@ -320,7 +285,7 @@ def test_module_activity_is_the_historical_helper():
     assert "def activity_age_minutes(" in text
 
 
-def test_host_snapshot_verifies_a_real_change_and_rejects_a_false_report(tmp_path):
+def test_shared_host_snapshot_never_verifies_a_task(tmp_path):
     root = host_effect_root(tmp_path / "queue.json")
     assert root == tmp_path / "self_task_host_effects"
     before = capture_host_directory_state(root)
@@ -349,12 +314,12 @@ def test_host_snapshot_verifies_a_real_change_and_rejects_a_false_report(tmp_pat
         observed_before=before,
         observed_after=capture_host_directory_state(root),
     )
-    assert changed["verification_status"] == "verified"
-    assert changed["execution_outcome"] == "succeeded"
-    assert changed["execution_reason"] == "independent_state_comparison"
+    assert changed["verification_status"] == "partial"
+    assert changed["execution_outcome"] == "partial"
+    assert changed["execution_reason"] == "self_reported_state_without_corroboration"
     assert caller_execution_success(
         "execute_best_opportunity", True, True, changed
-    ) == (True, True)
+    ) == (False, False)
 
     dry = evaluate(
         last_result={"dry_run_result": {"status": "success"}, "state_changed": True},
@@ -480,13 +445,13 @@ def test_queue_and_objective_keep_the_same_verified_outcome(tmp_path):
     reloaded_objective = ObjectiveStore(storage_path=objective_path)
     stored = reloaded_queue.get_by_id("st_real")
     objective = reloaded_objective.get(objective_id)
-    assert stored["verification_status"] == "verified"
-    assert stored["execution_outcome"] == "succeeded"
-    assert str(stored["last_outcome"]).startswith("execution_succeeded")
-    assert objective["last_execution"]["verification_status"] == "verified"
-    assert objective["last_execution"]["execution_outcome"] == "succeeded"
-    assert objective["execution_completed"] is True
-    assert float(objective["progress"]) == 0.12
+    assert stored["verification_status"] == "attempted"
+    assert stored["execution_outcome"] == "partial"
+    assert not str(stored["last_outcome"]).startswith("execution_succeeded")
+    assert objective["last_execution"]["verification_status"] == "attempted"
+    assert objective["last_execution"]["execution_outcome"] == "partial"
+    assert objective["execution_completed"] is False
+    assert float(objective["progress"]) == 0.0
 
     plan = evaluate(
         archetype="generate_execution_plan",
@@ -511,12 +476,7 @@ def test_queue_and_objective_keep_the_same_verified_outcome(tmp_path):
 
 
 def test_self_generated_task_runner_uses_host_snapshots(tmp_path):
-    try:
-        from project_guardian.core import GuardianCore
-    except Exception as exc:
-        pytest.skip(
-            "GuardianCore startup blocked: %s: %s" % (type(exc).__name__, exc)
-        )
+    from project_guardian.core import GuardianCore
 
     import project_guardian.capability_execution as capability_execution
     import project_guardian.self_task_objectives as objective_mod
@@ -611,13 +571,55 @@ def test_self_generated_task_runner_uses_host_snapshots(tmp_path):
     assert float(false_objective["progress"]) == 0.0
     assert false_objective.get("execution_completed") is not True
 
-    assert real_ok is True
+    assert real_ok is False
     stored_real = original_queue(storage_path=queue_path).get_by_id("st_runner_real")
     reloaded = original_objectives(storage_path=objective_path).get(objective_id)
-    assert stored_real["verification_status"] == "verified"
-    assert stored_real["execution_outcome"] == "succeeded"
-    assert str(stored_real["last_outcome"]).startswith("execution_succeeded")
-    assert reloaded["last_execution"]["verification_status"] == "verified"
-    assert reloaded["last_execution"]["execution_outcome"] == "succeeded"
-    assert reloaded["execution_completed"] is True
-    assert float(reloaded["progress"]) == 0.12
+    assert stored_real["verification_status"] == "partial"
+    assert stored_real["execution_outcome"] == "partial"
+    assert stored_real["last_outcome"] == "execution_partial_no_value"
+    assert reloaded["last_execution"]["verification_status"] == "partial"
+    assert reloaded["last_execution"]["execution_outcome"] == "partial"
+    assert reloaded["execution_completed"] is False
+    assert float(reloaded["progress"]) == 0.0
+
+
+def test_concurrent_unrelated_writer_cannot_verify_task(tmp_path):
+    from threading import Thread
+    root = host_effect_root(tmp_path / "queue.json")
+    before = capture_host_directory_state(root)
+    def unrelated_writer():
+        root.mkdir()
+        (root / "unrelated-health-monitor.txt").write_text("healthy")
+    writer = Thread(target=unrelated_writer)
+    writer.start()
+    writer.join()
+    after = capture_host_directory_state(root)
+    assert before != after
+    result = evaluate(last_result={"success": True}, observed_before=before, observed_after=after)
+    assert result["execution_outcome"] == "partial"
+    assert caller_execution_success("execute_best_opportunity", True, True, result) == (False, False)
+
+
+def test_payload_receipt_cannot_authorize_existing_artifact(tmp_path):
+    path = tmp_path / "old.txt"
+    path.write_bytes(b"old receipt")
+    for receipt in ({"task_id": "t", "capability_id": "c"}, {"verified": True}):
+        result = evaluate(artifact_path=path, allowed_roots=(tmp_path,), last_result={
+            "artifact_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "receipt": receipt, "success": True})
+        assert result["execution_outcome"] == "partial"
+
+
+@pytest.mark.parametrize("case", ["mismatched", "replayed", "missing", "altered", "failed", "dry"])
+def test_untrusted_receipts_never_establish_task_execution(tmp_path, case):
+    path = tmp_path / "receipt.txt"
+    body = b"old synthetic receipt"
+    if case != "missing":
+        path.write_bytes(b"altered" if case == "altered" else body)
+    payload = {"success": True, "task_id": "wrong" if case == "mismatched" else "t",
+               "capability_id": "tool:c", "receipt_id": "old-attempt", "verified": True,
+               "artifact_sha256": hashlib.sha256(body).hexdigest(), "dry_run": case == "dry"}
+    for _ in range(2):
+        result = evaluate(last_result=payload, artifact_path=path, allowed_roots=(tmp_path,),
+                          capability_ok=case != "failed")
+        assert result["execution_outcome"] != "succeeded"

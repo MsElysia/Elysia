@@ -1,10 +1,21 @@
 # project_guardian/external.py
 # External Interaction Systems for Project Guardian
 
-import requests
+import logging
 import threading
-import pyttsx3
 import json
+
+logger = logging.getLogger(__name__)
+try:
+    import requests
+except ImportError:
+    requests = None
+    logger.warning("requests is not installed; web reads are unavailable")
+try:
+    import pyttsx3
+except ImportError:
+    pyttsx3 = None
+    logger.warning("pyttsx3 is not installed; voice output is unavailable")
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -56,6 +67,8 @@ class WebReader:
         self.trust_matrix = trust_matrix  # TrustMatrix instance for gating
         self.review_queue = review_queue  # ReviewQueue instance
         self.approval_store = approval_store  # ApprovalStore instance
+        if requests is None:
+            raise RuntimeError("requests is not installed; web reads are unavailable")
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": (
@@ -780,6 +793,8 @@ class VoiceThread:
         
         # Initialize text-to-speech engine
         try:
+            if pyttsx3 is None:
+                raise RuntimeError("pyttsx3 is not installed; voice output is unavailable")
             self.engine = pyttsx3.init()
             voices = self.engine.getProperty('voices')
             if 0 <= voice_index < len(voices):

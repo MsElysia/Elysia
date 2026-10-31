@@ -6,11 +6,15 @@ import re
 import json
 import datetime
 import logging
-import openai
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
+try:
+    import openai
+except ImportError:
+    openai = None
+    logger.warning("OpenAI SDK not installed; mutation provider calls are unavailable")
 from dataclasses import dataclass
 from .memory import MemoryCore
 from .trust import TrustMatrix, TrustDecision, GOVERNANCE_MUTATION
@@ -141,9 +145,9 @@ class MutationEngine:
             self.repo_root = Path(repo_root).resolve()
         
         # Initialize OpenAI if API key provided (deprecated - review_with_gpt is disabled)
-        if api_key:
+        if openai is not None and api_key:
             openai.api_key = api_key
-        elif os.getenv("OPENAI_API_KEY"):
+        elif openai is not None and os.getenv("OPENAI_API_KEY"):
             openai.api_key = os.getenv("OPENAI_API_KEY")
     
     def _validate_and_resolve_path(self, rel_path: str) -> tuple[Path, str]:
@@ -523,6 +527,9 @@ class MutationEngine:
         user_prompt = (
             f"Relative path: {normalized_rel_path}\n\n--- CURRENT FILE ---\n{current}\n\n--- TASK ---\n{instruction}"
         )
+        if openai is None:
+            logger.warning("[Mutation OpenAI] SDK not installed")
+            return None
         try:
             client = openai.OpenAI(api_key=api_key)
             resp = client.chat.completions.create(

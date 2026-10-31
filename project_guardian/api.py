@@ -1,9 +1,17 @@
 # project_guardian/api.py
 # REST API Interface for Project Guardian
 
-from flask import Flask, jsonify, request, send_from_directory
-from .core import GuardianCore
+import logging
 import os
+
+from .core import GuardianCore
+
+logger = logging.getLogger(__name__)
+try:
+    from flask import Flask, jsonify, request, send_from_directory
+except ImportError:
+    Flask = jsonify = request = send_from_directory = None
+    logger.warning("Flask is not installed; the REST API is unavailable")
 
 class GuardianAPI:
     """
@@ -12,6 +20,8 @@ class GuardianAPI:
     """
     
     def __init__(self, guardian: GuardianCore, port: int = 5000):
+        if Flask is None:
+            raise RuntimeError("Flask is not installed; the REST API is unavailable")
         self.guardian = guardian
         self.port = port
         self.app = Flask(__name__)

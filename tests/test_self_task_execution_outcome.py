@@ -741,10 +741,12 @@ def test_receipt_rejects_stale_replay_mismatch_and_later_edits(tmp_path):
 def test_guardian_core_imports_when_numpy_is_absent():
     script = """
 import sys
+BLOCKED = ("numpy", "openai", "requests", "flask", "pyttsx3", "sentence_transformers", "faiss")
 class Blocker:
     def find_spec(self, fullname, path, target=None):
-        if fullname == "numpy" or fullname.startswith("numpy."):
-            raise ModuleNotFoundError("numpy blocked")
+        root = fullname.split(".", 1)[0]
+        if root in BLOCKED:
+            raise ModuleNotFoundError(root + " blocked")
         return None
 sys.meta_path.insert(0, Blocker())
 import project_guardian.memory_vector_search as search

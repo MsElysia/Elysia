@@ -4,11 +4,12 @@ Synthetic files only. The former acceptance rule is copied here so the
 adversarial case shows what the previous outcome check treated as success.
 """
 import hashlib
+import json
+import subprocess
 import sys
+import threading
 import types
 from pathlib import Path
-
-import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if "project_guardian" not in sys.modules:
@@ -18,10 +19,16 @@ if "project_guardian" not in sys.modules:
     sys.modules["project_guardian"] = package
 
 from project_guardian.self_task_execution_outcome import (
+    attribute_attempt_receipt,
+    audit_attempt_receipt,
+    authorize_task_capability,
+    begin_task_attempt,
     caller_execution_success,
     capture_host_directory_state,
     evaluate_execution_outcome,
     host_effect_root,
+    prepare_task_attempt_dir,
+    write_authorized_local_note,
 )
 from project_guardian.self_task_objectives import ObjectiveStore
 from project_guardian.self_task_queue import SelfTaskQueue
@@ -162,13 +169,12 @@ def test_matching_file_and_host_state_change_are_verified(tmp_path):
     assert file_result["execution_followup_needed"] is False
 
     state_result = evaluate(
-        last_result={"state_changed": False},
-        observed_before={"revision": 1, "bytes": 4},
-        observed_after={"revision": 2, "bytes": 9},
+        last_result={"state_changed": True, "success": True},
+        observed_before={"revision": 1, "bytes": 4, "file_count": 0},
+        observed_after={"revision": 2, "bytes": 9, "file_count": 1, "root_digest": "abc"},
     )
-    assert state_result["execution_outcome"] == "succeeded"
-    assert state_result["verification_status"] == "verified"
-    assert state_result["execution_reason"] == "independent_state_comparison"
+    assert state_result["execution_outcome"] != "succeeded"
+    assert state_result["verification_status"] != "verified"
 
     flags_only = evaluate(
         observed_before={"state_changed": False},
@@ -288,9 +294,14 @@ def test_queue_records_rejected_and_verified_status(tmp_path):
     }
     assert queue.enqueue(verified_task, dedupe_key="verified", cooldown_sec=0)
     assert queue.claim("st_verified")
+    root = tmp_path / "effects"
+    root.mkdir()
+    verified_attempt = begin_task_attempt("st_verified", "tool:synthetic_local_note", note="real note")
+    prepare_task_attempt_dir(root, verified_attempt)
+    write_authorized_local_note(root / "st_verified" / verified_attempt["attempt_id"], verified_attempt)
     verified = evaluate(
-        observed_before={"revision": 1, "bytes": 4},
-        observed_after={"revision": 2, "bytes": 9},
+        effect_root=root,
+        host_attempts=[verified_attempt],
     )
     queue.complete(
         "st_verified",
@@ -343,17 +354,28 @@ def test_host_snapshot_verifies_a_real_change_and_rejects_a_false_report(tmp_pat
     ) == (False, False)
 
     root.mkdir()
-    (root / "receipt.txt").write_text("host-observed", encoding="utf-8")
+    (root / "unrelated-health-monitor.txt").write_text("unrelated", encoding="utf-8")
     changed = evaluate(
-        last_result={"success": True, "state_changed": True},
+        last_result={"success": True, "state_changed": True, "applied": True},
         observed_before=before,
         observed_after=capture_host_directory_state(root),
     )
-    assert changed["verification_status"] == "verified"
-    assert changed["execution_outcome"] == "succeeded"
-    assert changed["execution_reason"] == "independent_state_comparison"
+    assert changed["verification_status"] == "partial"
+    assert changed["execution_outcome"] != "succeeded"
+    assert changed["execution_reason"] != "independent_state_comparison"
+    real_attempt = begin_task_attempt("st_real_note", "tool:synthetic_local_note", note="host note")
+    prepare_task_attempt_dir(root, real_attempt)
+    write_authorized_local_note(root / "st_real_note" / real_attempt["attempt_id"], real_attempt)
+    attributed = evaluate(
+        last_result={"success": True},
+        effect_root=root,
+        host_attempts=[real_attempt],
+    )
+    assert attributed["verification_status"] == "verified"
+    assert attributed["execution_outcome"] == "succeeded"
+    assert attributed["execution_reason"] == "task_attributed_host_receipt"
     assert caller_execution_success(
-        "execute_best_opportunity", True, True, changed
+        "execute_best_opportunity", True, True, attributed
     ) == (True, True)
 
     dry = evaluate(
@@ -441,10 +463,13 @@ def test_queue_and_objective_keep_the_same_verified_outcome(tmp_path):
     assert objective["status"] == "active"
 
     root.mkdir()
-    (root / "receipt.txt").write_text("paid", encoding="utf-8")
+    (root / "unrelated-health-monitor.txt").write_text("unrelated", encoding="utf-8")
+    real_attempt = begin_task_attempt("st_real", "tool:synthetic_local_note", note="observe a receipt")
+    prepare_task_attempt_dir(root, real_attempt)
+    write_authorized_local_note(root / "st_real" / real_attempt["attempt_id"], real_attempt)
     verified = evaluate(
-        observed_before=before,
-        observed_after=capture_host_directory_state(root),
+        effect_root=root,
+        host_attempts=[real_attempt],
         last_result={"success": True},
     )
     queue.enqueue(
@@ -510,24 +535,32 @@ def test_queue_and_objective_keep_the_same_verified_outcome(tmp_path):
     assert planned["last_execution"]["verification_status"] == "proposed"
 
 
-def test_self_generated_task_runner_uses_host_snapshots(tmp_path):
-    try:
-        from project_guardian.core import GuardianCore
-    except Exception as exc:
-        pytest.skip(
-            "GuardianCore startup blocked: %s: %s" % (type(exc).__name__, exc)
-        )
+def _runner(guardian_core):
+    runner = guardian_core.__new__(guardian_core)
+    runner._load_self_tasking_config = lambda: {
+        "max_queue_size": 24,
+        "orchestration_bounded_capability_execution": False,
+        "dedupe_cooldown_sec": 0,
+    }
+    runner._self_task_payload_useful = lambda result: False
+    runner._self_task_has_strong_signals = lambda **kwargs: False
+    runner._module_last_invoked = {}
+    runner._modules = {}
+    return runner
 
-    import project_guardian.capability_execution as capability_execution
+
+def test_self_generated_task_runner_attributes_the_authorized_note(tmp_path):
+    from project_guardian.core import GuardianCore
     import project_guardian.self_task_objectives as objective_mod
     import project_guardian.self_task_queue as queue_mod
 
     queue_path = tmp_path / "queue.json"
     objective_path = tmp_path / "objectives.json"
     effect_root = host_effect_root(queue_path)
+    effect_root.mkdir(parents=True, exist_ok=True)
+    (effect_root / "unrelated-health-monitor.txt").write_text("unrelated", encoding="utf-8")
     original_queue = queue_mod.SelfTaskQueue
     original_objectives = objective_mod.ObjectiveStore
-    original_execute = capability_execution.execute_capability_kind
 
     def queue_factory(*args, **kwargs):
         kwargs["storage_path"] = queue_path
@@ -540,78 +573,82 @@ def test_self_generated_task_runner_uses_host_snapshots(tmp_path):
     objectives = original_objectives(storage_path=objective_path)
     objective_id = objectives.create_lightweight(title="runner", goal="host receipt")
     queue = original_queue(storage_path=queue_path)
-    queue.enqueue(
-        {
-            "task_id": "st_runner_false",
-            "archetype": "execute_best_opportunity",
-            "title": "runner false success",
-            "objective_id": objective_id,
-            "recommended_capabilities": ["module:false_success"],
-        },
-        dedupe_key="runner-false",
-        cooldown_sec=0,
-    )
-    queue.enqueue(
-        {
-            "task_id": "st_runner_real",
-            "archetype": "execute_best_opportunity",
-            "title": "runner real change",
-            "objective_id": objective_id,
-            "recommended_capabilities": ["module:write_receipt"],
-        },
-        dedupe_key="runner-real",
-        cooldown_sec=0,
-    )
 
-    def execute(guardian, kind, name, payload):
-        if name == "write_receipt":
-            effect_root.mkdir(parents=True, exist_ok=True)
-            (effect_root / "receipt.txt").write_text("observed-by-host", encoding="utf-8")
-        return {
-            "success": True,
-            "result_for_governance": {
-                "success": True,
-                "state_changed": True,
-                "applied": True,
-                "dry_run_result": {"status": "success"} if name == "false_success" else None,
-            },
+    def enqueue(task_id, **extra):
+        task = {
+            "task_id": task_id,
+            "archetype": "execute_best_opportunity",
+            "title": task_id,
+            "objective_id": objective_id,
+            "goal": "write the local note",
+            "recommended_capabilities": ["tool:synthetic_local_note"],
         }
+        task.update(extra)
+        assert queue.enqueue(task, dedupe_key=task_id, cooldown_sec=0)
 
-    runner = GuardianCore.__new__(GuardianCore)
-    runner._load_self_tasking_config = lambda: {
-        "max_queue_size": 24,
-        "orchestration_bounded_capability_execution": False,
-        "dedupe_cooldown_sec": 0,
-    }
-    runner._self_task_payload_useful = lambda result: False
-    runner._self_task_has_strong_signals = lambda **kwargs: False
-    runner._module_last_invoked = {}
+    enqueue("st_runner_false", report_only=True, goal="claim success without writing")
+    enqueue("st_runner_fail", simulate_failure=True)
+    enqueue("st_runner_dry", dry_run=True)
+    enqueue("st_runner_real", goal="write the local note")
+    assert authorize_task_capability(
+        {"recommended_capabilities": ["tool:synthetic_local_note"]},
+        "tool",
+        "synthetic_local_note",
+    )
+    assert authorize_task_capability(
+        {"recommended_capabilities": ["tool:synthetic_local_note"]},
+        "tool",
+        "other_tool",
+    ) is False
+
+    runner = _runner(GuardianCore)
+    stop = threading.Event()
+
+    def unrelated_writer():
+        while not stop.is_set():
+            (effect_root / "unrelated-during-task.txt").write_text("busy", encoding="utf-8")
+
+    writer = threading.Thread(target=unrelated_writer)
+    writer.start()
     queue_mod.SelfTaskQueue = queue_factory
     objective_mod.ObjectiveStore = objective_factory
-    capability_execution.execute_capability_kind = execute
     try:
-        false_ok, false_useful, _false_detail = runner._run_self_generated_task(
+        false_ok, false_useful, false_detail = runner._run_self_generated_task(
             "st_runner_false", 0.0, None
         )
         stored_false = original_queue(storage_path=queue_path).get_by_id("st_runner_false")
         false_objective = original_objectives(storage_path=objective_path).get(objective_id)
-        real_ok, _real_useful, _real_detail = runner._run_self_generated_task(
+        fail_ok, _fail_useful, _fail_detail = runner._run_self_generated_task(
+            "st_runner_fail", 0.0, None
+        )
+        stored_fail = original_queue(storage_path=queue_path).get_by_id("st_runner_fail")
+        dry_ok, _dry_useful, _dry_detail = runner._run_self_generated_task(
+            "st_runner_dry", 0.0, None
+        )
+        stored_dry = original_queue(storage_path=queue_path).get_by_id("st_runner_dry")
+        real_ok, _real_useful, real_detail = runner._run_self_generated_task(
             "st_runner_real", 0.0, None
         )
     finally:
+        stop.set()
+        writer.join(timeout=2)
         queue_mod.SelfTaskQueue = original_queue
         objective_mod.ObjectiveStore = original_objectives
-        capability_execution.execute_capability_kind = original_execute
 
-    assert false_ok is False
-    assert false_useful is False
+    assert false_ok is False and false_useful is False
+    assert "tool:synthetic_local_note=ok" in false_detail
     assert stored_false["verification_status"] == "partial"
     assert stored_false["execution_outcome"] != "succeeded"
     assert stored_false["last_outcome"] == "execution_partial_no_value"
     assert float(false_objective["progress"]) == 0.0
-    assert false_objective.get("execution_completed") is not True
-
+    assert fail_ok is False
+    assert stored_fail["verification_status"] != "verified"
+    assert stored_fail["execution_outcome"] == "failed"
+    assert dry_ok is False
+    assert stored_dry["verification_status"] == "partial"
+    assert stored_dry["execution_outcome"] == "partial"
     assert real_ok is True
+    assert "tool:synthetic_local_note=ok" in real_detail
     stored_real = original_queue(storage_path=queue_path).get_by_id("st_runner_real")
     reloaded = original_objectives(storage_path=objective_path).get(objective_id)
     assert stored_real["verification_status"] == "verified"
@@ -621,3 +658,112 @@ def test_self_generated_task_runner_uses_host_snapshots(tmp_path):
     assert reloaded["last_execution"]["execution_outcome"] == "succeeded"
     assert reloaded["execution_completed"] is True
     assert float(reloaded["progress"]) == 0.12
+    assert (effect_root / "unrelated-health-monitor.txt").is_file()
+
+
+def test_receipt_rejects_stale_replay_mismatch_and_later_edits(tmp_path):
+    root = tmp_path / "effects"
+    root.mkdir()
+    task = {"recommended_capabilities": ["tool:synthetic_local_note"]}
+    assert authorize_task_capability(task, "tool", "synthetic_local_note") is True
+    assert authorize_task_capability(task, "tool", "calculator") is False
+
+    stale = begin_task_attempt("st_stale", "tool:synthetic_local_note", note="stale")
+    planted = root / "st_stale" / stale["attempt_id"]
+    planted.mkdir(parents=True)
+    (planted / "effect.txt").write_text("already there\n", encoding="utf-8")
+    prepare_task_attempt_dir(root, stale)
+    assert attribute_attempt_receipt(root, stale)["reason"] == "stale_receipt"
+
+    wrong_task = begin_task_attempt("st_wrong", "tool:synthetic_local_note", note="note")
+    prepare_task_attempt_dir(root, wrong_task)
+    write_authorized_local_note(root / "st_wrong" / wrong_task["attempt_id"], wrong_task)
+    receipt_path = root / "st_wrong" / wrong_task["attempt_id"] / "receipt.json"
+    parsed = json.loads(receipt_path.read_text(encoding="utf-8"))
+    parsed["task_id"] = "st_other"
+    receipt_path.write_text(json.dumps(parsed), encoding="utf-8")
+    assert attribute_attempt_receipt(root, wrong_task)["reason"] == "mismatched_task"
+
+    wrong_cap = begin_task_attempt("st_cap", "tool:synthetic_local_note", note="note")
+    prepare_task_attempt_dir(root, wrong_cap)
+    write_authorized_local_note(root / "st_cap" / wrong_cap["attempt_id"], wrong_cap)
+    cap_path = root / "st_cap" / wrong_cap["attempt_id"] / "receipt.json"
+    cap_body = json.loads(cap_path.read_text(encoding="utf-8"))
+    cap_body["capability_id"] = "tool:calculator"
+    cap_path.write_text(json.dumps(cap_body), encoding="utf-8")
+    assert attribute_attempt_receipt(root, wrong_cap)["reason"] == "mismatched_capability"
+
+    forged = begin_task_attempt("st_forged", "tool:synthetic_local_note", note="note")
+    prepare_task_attempt_dir(root, forged)
+    write_authorized_local_note(root / "st_forged" / forged["attempt_id"], forged)
+    forged_path = root / "st_forged" / forged["attempt_id"] / "receipt.json"
+    forged_body = json.loads(forged_path.read_text(encoding="utf-8"))
+    forged_body["effect_sha256"] = "0" * 64
+    forged_path.write_text(json.dumps(forged_body), encoding="utf-8")
+    assert attribute_attempt_receipt(root, forged)["reason"] == "forged_receipt"
+
+    malformed = begin_task_attempt("st_bad", "tool:synthetic_local_note", note="note")
+    prepare_task_attempt_dir(root, malformed)
+    write_authorized_local_note(root / "st_bad" / malformed["attempt_id"], malformed)
+    bad_path = root / "st_bad" / malformed["attempt_id"] / "receipt.json"
+    bad_path.write_text("{not-json", encoding="utf-8")
+    assert attribute_attempt_receipt(root, malformed)["reason"] == "malformed_receipt"
+
+    good = begin_task_attempt("st_good", "tool:synthetic_local_note", note="note")
+    prepare_task_attempt_dir(root, good)
+    write_authorized_local_note(root / "st_good" / good["attempt_id"], good)
+    assert attribute_attempt_receipt(root, good)["reason"] == "task_attributed_host_receipt"
+    assert attribute_attempt_receipt(root, good)["reason"] == "replayed_receipt"
+    effect = root / "st_good" / good["attempt_id"] / "effect.txt"
+    effect.write_bytes(effect.read_bytes() + b"x")
+    assert audit_attempt_receipt(root, good)["reason"] == "modified_evidence"
+    missing = begin_task_attempt("st_missing", "tool:synthetic_local_note", note="x")
+    prepare_task_attempt_dir(root, missing)
+    missed = evaluate(
+        effect_root=root,
+        host_attempts=[missing],
+        last_result={"success": True, "state_changed": True},
+    )
+    assert missed["verification_status"] == "partial"
+    assert missed["execution_reason"] == "missing_effect"
+    dry_attempt = begin_task_attempt("st_dry_file", "tool:synthetic_local_note", note="dry")
+    prepare_task_attempt_dir(root, dry_attempt)
+    write_authorized_local_note(root / "st_dry_file" / dry_attempt["attempt_id"], dry_attempt)
+    dry_result = evaluate(
+        effect_root=root,
+        host_attempts=[dry_attempt],
+        last_result={"dry_run_result": {"status": "success"}, "state_changed": True},
+    )
+    assert dry_result["verification_status"] == "partial"
+    assert dry_result["execution_reason"] == "dry_run_not_production_action"
+
+
+def test_guardian_core_imports_when_numpy_is_absent():
+    script = """
+import sys
+BLOCKED = ("numpy", "openai", "requests", "flask", "pyttsx3", "sentence_transformers", "faiss")
+class Blocker:
+    def find_spec(self, fullname, path, target=None):
+        root = fullname.split(".", 1)[0]
+        if root in BLOCKED:
+            raise ModuleNotFoundError(root + " blocked")
+        return None
+sys.meta_path.insert(0, Blocker())
+import project_guardian.memory_vector_search as search
+assert search.HAS_NUMPY is False
+embedder = search.SimpleEmbedder()
+vector = embedder.embed("optional numpy is absent", dimension=8)
+assert isinstance(vector, list) and len(vector) == 8
+import project_guardian.core as core
+assert core.GuardianCore.__name__ == "GuardianCore"
+print("IMPORT_OK")
+"""
+    proc = subprocess.run(
+        [sys.executable, "-B", "-c", script],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "IMPORT_OK" in proc.stdout

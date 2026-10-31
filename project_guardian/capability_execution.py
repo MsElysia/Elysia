@@ -78,6 +78,43 @@ def reset_task_router_gate_metrics() -> None:
     m["by_task_type"] = defaultdict(int)
 
 
+def _synthetic_local_note(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Bounded local note. Success is the files the host re-reads, not this return value."""
+    from .self_task_execution_outcome import (
+        SYNTHETIC_LOCAL_NOTE,
+        attempt_effect_dir,
+        write_authorized_local_note,
+    )
+
+    if payload.get("simulate_failure") is True:
+        raise RuntimeError("interrupted before local note")
+    if payload.get("report_only") is True:
+        return {
+            "success": True,
+            "result": {"success": True, "state_changed": True, "applied": True},
+        }
+    if payload.get("dry_run") is True:
+        return {
+            "success": True,
+            "result": {"dry_run_result": {"status": "success"}, "state_changed": True},
+        }
+    attempt = payload.get("host_attempt")
+    root_text = payload.get("host_effect_root")
+    if not isinstance(attempt, dict) or attempt.get("capability_id") != SYNTHETIC_LOCAL_NOTE:
+        return {"success": False, "error": "not authorized"}
+    if not isinstance(root_text, str) or not root_text:
+        return {"success": False, "error": "not authorized"}
+    dest = attempt_effect_dir(Path(root_text), attempt)
+    if dest is None or not dest.is_dir() or _linked_dir(dest):
+        return {"success": False, "error": "not authorized"}
+    write_authorized_local_note(dest, attempt)
+    return {"success": True, "result": {"wrote_local_note": True}}
+
+
+def _linked_dir(path: Path) -> bool:
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
 def _builtin_operator_tool_result(guardian: Any, tool_name: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Minimum viable tools: always return structured data via existing modules / local artifacts.
@@ -87,6 +124,9 @@ def _builtin_operator_tool_result(guardian: Any, tool_name: str, payload: Dict[s
     root = Path(__file__).resolve().parent.parent
     tname = (tool_name or "").strip().lower()
     st = str(payload.get("self_task_archetype") or "")
+
+    if tname == "synthetic_local_note":
+        return _synthetic_local_note(payload)
 
     if tname == "artifact_synthesizer":
         out: Dict[str, Any] = {"summaries": [], "sources": []}

@@ -12,6 +12,7 @@ Separate contained installation for the Windows browser-memory acceptance candid
 | Preferred UI | `http://127.0.0.1:5065/` (scans 5066–5085 if busy; never kills unknown listeners) |
 | Entry | `scripts/start_contained_browser_memory.py` with `--enable-ui --auto-start-ui --keep-alive` |
 | Local model | Optional `ELYSIA_LOCAL_MODEL` (launcher defaults to `llama3.2:3b` if unset). Loopback Ollama only; Ask local model + optional labor-calculator checkbox. No cloud fallback. |
+| Release candidate notes | See `docs/release-candidate/README.md` (local candidate only; not approved for personal data). Same-session proof: `scripts/accept_windows_release_candidate_e2e.py` on disposable port 5084. |
 
 ## Launch / stop / inbox
 

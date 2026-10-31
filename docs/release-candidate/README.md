@@ -1,4 +1,4 @@
-# Elysia Windows Intelligence — Local Release Candidate
+﻿# Elysia Windows Intelligence — Local Release Candidate
 
 **Status:** Local integration candidate — not deployed, not approved for personal operator data.  
 **Source tip (pre-RC docs commit):** `f23280d9765759e1f97a96b9b9b786f0caa1760d`  
@@ -101,9 +101,10 @@ Older USB checkpoints under `D:\ElysiaBackups\` are preserved.
 - Pilot BAT prefers port 5065 / shared integration data root — use disposable E2E for verification
 - Email, web search, finance, calendar, autonomy remain unavailable / not authorized
 - Outcome learning requires comparable strategy context (by design)
-- Composition propose / replan / outcome-rank APIs work in-session (RC E2E) but are not yet exposed as dashboard controls; compose tools bind via conversation task steps, not chat scopes
+- Plan & Progress dashboard controls now call composition propose/rank/evaluate/replan/apply. Compose tools still bind via conversation task steps (not chat scopes). Use START_ELYSIA_RC_DISPOSABLE.bat for isolated BAT-path testing.
 - Legacy `tests/test_task_execution.py` has pre-existing GuardianCore singleton failures outside the Windows intel path
 
 ## Inventory
 
 See `INTEGRATION_INVENTORY.md` in this folder.
+

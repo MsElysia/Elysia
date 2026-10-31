@@ -1,4 +1,4 @@
-# Integration inventory (Windows RC)
+﻿# Integration inventory (Windows RC)
 
 Authority: source tree at worktree `windows-local-intel-20261029`, tip `f23280d` (+ RC docs/acceptance commits).
 
@@ -15,9 +15,9 @@ Authority: source tree at worktree `windows-local-intel-20261029`, tip `f23280d`
 | compose.extract_records | `capability_composition.py` | task execute | receipt on step | `authorize_compose_extract_records` | extract_records accept | **Connected** |
 | calculator.labor | `local_memory_chat.py` + task binding | chat + task execute | receipt | `allow_calculator` / `authorize_calculator` | local intel + RC E2E | **Connected** |
 | estimate.assemble / draft | composition / estimate paths | task execute | receipt | authorize_estimate_* | composition accept | **Connected** |
-| Adaptive replan | composition evaluate/propose-replan/apply | `/api/composition/*` | task revisions | never inherits auth | adaptive_replan accept + RC E2E | **API connected / UI disconnected** (no dashboard fetch) |
-| Outcome feedback | `composition_outcome_feedback.py` | rank + propose attachment; written on verified execute | outcome store under root | ranking never grants auth | outcome/comparable accepts + RC E2E | **API connected / UI disconnected** (no dashboard consumer) |
-| Composition propose / evaluate-step / rank | `capability_composition.py` + outcome store | `/api/composition/propose`, `evaluate-step`, `rank-capabilities` | none for propose | plans never executable until authorize_* | composition accepts | **API connected / UI disconnected** |
+| Adaptive replan | composition evaluate/propose-replan/apply | `/api/composition/*` | task revisions | never inherits auth | adaptive_replan accept + RC E2E | **UI connected** (Plan & Progress panel → existing `/api/composition/*`) |
+| Outcome feedback | `composition_outcome_feedback.py` | rank + propose attachment; written on verified execute | outcome store under root | ranking never grants auth | outcome/comparable accepts + RC E2E | **UI connected** (recommendations + ranking via Plan & Progress; outcome still written on verified execute) |
+| Composition propose / evaluate-step / rank | `capability_composition.py` + outcome store | `/api/composition/propose`, `evaluate-step`, `rank-capabilities` | none for propose | plans never executable until authorize_* | composition accepts | **UI connected** (Plan & Progress) |
 | Capability registry (legacy) | `capability_registry.py` | orchestrator paths | n/a | separate legacy | not primary Windows intel UI | **Present / secondary** |
 | Email / web / finance / calendar | descriptors only | Capabilities show unavailable | n/a | not authorized | capability awareness | **Unavailable** |
 | Autonomy / cloud providers | control panel routes | contained config off | n/a | not authorized | contained startup tests | **Disabled** |
@@ -34,3 +34,4 @@ Authority: source tree at worktree `windows-local-intel-20261029`, tip `f23280d`
 ## Deliberately not wired as executable
 
 Email, web search, finance, calendar, autonomy, cloud models, background missions, unrestricted shell/code execution.
+

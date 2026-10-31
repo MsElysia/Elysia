@@ -1,0 +1,225 @@
+{
+  "model": "llama3.2:3b",
+  "port": 5086,
+  "data_root": "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-rc-dashboard-kpmye6x7",
+  "launcher": "pilot/launch_verified_pilot.py (START_ELYSIA_RC_DISPOSABLE.bat path)",
+  "ports_avoided": [
+    5065,
+    5066
+  ],
+  "acceptance": {
+    "A": {
+      "result": "PASS",
+      "pid": 502432,
+      "launcher": "launch_verified_pilot.py"
+    },
+    "B": {
+      "result": "PASS",
+      "plan_progress_panel": true,
+      "bytes": 212351,
+      "browser_verified": true,
+      "browser_controls": [
+        "Propose plan",
+        "Show recommendations",
+        "Apply validated steps to task state",
+        "Evaluate selected step",
+        "Propose replan",
+        "Apply replan (no execute)"
+      ]
+    },
+    "C": {
+      "result": "PASS",
+      "status": {
+        "cloud_fallback": false,
+        "configured": true,
+        "contained": true,
+        "endpoint": "http://127.0.0.1:11434",
+        "model": "llama3.2:3b",
+        "ok": true
+      },
+      "chat_ok": true
+    },
+    "D": {
+      "result": "PASS",
+      "goal": "From authorized orchard notes, identify the apple variety name and confirm it against source text for a fictional planting ledger."
+    },
+    "E": {
+      "result": "PASS",
+      "recommended": "compose.extract_fields",
+      "basis": "current_suitability",
+      "auth_granted": false,
+      "steps": [
+        {
+          "capability": "compose.extract_fields",
+          "expected_outcome": "Extracted apple variety name"
+        },
+        {
+          "capability": "local.documents.search",
+          "expected_outcome": "Authorized orchard notes retrieved"
+        },
+        {
+          "capability": "compose.extract_fields",
+          "expected_outcome": "Extracted apple variety name"
+        },
+        {
+          "capability": "local.documents.search",
+          "expected_outcome": "Authorized orchard notes retrieved"
+        },
+        {
+          "capability": "compose.extract_fields",
+          "expected_outcome": "Extracted apple variety name"
+        },
+        {
+          "capability": "compose.extract_fields",
+          "expected_outcome": "Extracted apple variety name"
+        },
+        {
+          "capability": "compose.synthesize",
+          "expected_outcome": "Grounded summary/comparison/draft of apple variety name"
+        },
+        {
+          "capability": "compose.synthesize",
+          "expected_outcome": "Grounded summary/comparison/draft of apple variety name"
+        },
+        {
+          "capability": "local.documents.search",
+          "expected_outcome": "Authorized orchard notes retrieved"
+        },
+        {
+          "capability": "compose.extract_fields",
+          "expected_outcome": "Extracted apple variety name"
+        }
+      ]
+    },
+    "F": {
+      "result": "PASS",
+      "ranking_count": 8,
+      "rationale": "available and permitted; suitability_score=8; strategy context incomplete; reliability unknown",
+      "ui_panel_present": true
+    },
+    "G": {
+      "result": "PASS",
+      "note": "scoped authorize required"
+    },
+    "H": {
+      "result": "PASS",
+      "status": 400,
+      "error": "document search completed but evidence criteria unmet: match_count 0 below min_matches 1"
+    },
+    "I": {
+      "result": "PASS",
+      "status": 400
+    },
+    "J": {
+      "result": "PASS",
+      "category": "tool_ok_insufficient_evidence",
+      "reason": "tool succeeded but evidence criteria were unmet"
+    },
+    "K": {
+      "result": "PASS",
+      "revision_reason": "Replan due to insufficient evidence",
+      "steps": [
+        {
+          "capability": "compose.extract_fields",
+          "expected_outcome": "Extracted apple variety name"
+        },
+        {
+          "capability": "local.documents.search",
+          "expected_outcome": "Verified source text for apple variety name"
+        },
+        {
+          "capability": "compose.synthesize",
+          "expected_outcome": "Grounded summary/comparison/draft for apple variety name"
+        }
+      ]
+    },
+    "L": {
+      "result": "PASS",
+      "authorization_granted": false
+    },
+    "M": {
+      "result": "PASS",
+      "status": 200
+    },
+    "N": {
+      "result": "PASS",
+      "verified": true
+    },
+    "O": {
+      "result": "PASS",
+      "completion_authorized_separately": true
+    },
+    "P": {
+      "result": "PASS",
+      "revision": 6
+    },
+    "Q": {
+      "result": "PASS",
+      "recommended": "compose.synthesize",
+      "basis": "current_suitability"
+    },
+    "R": {
+      "result": "PASS",
+      "stop_code": 0,
+      "stop_out": "Verified pilot ownership for PID 657296 via process handle. Requesting cooperative shutdown...\nCooperative Ctrl+C: ok=True (ctrl_c_sent)\nPort 127.0.0.1:5086 released=True\nPilot stopped.\n",
+      "port_free": true
+    },
+    "S": {
+      "result": "PASS",
+      "pid": 355164
+    },
+    "T": {
+      "result": "PASS",
+      "steps": 3,
+      "completed": 1,
+      "resume_status": 200
+    },
+    "U": {
+      "result": "PASS",
+      "tools_executed": []
+    },
+    "V": {
+      "result": "PASS",
+      "reply_excerpt": "The apple variety evidence we already have verified for the current orchard task is not established in the provided memory evidence."
+    }
+  },
+  "evidence_class": {
+    "A": "normal-launcher",
+    "B": "browser+dashboard-html",
+    "C": "real-ollama",
+    "D": "synthetic",
+    "E": "real-ollama+api",
+    "F": "dashboard-html+api",
+    "G": "api-same-as-ui",
+    "H": "api-same-as-ui",
+    "I": "api-same-as-ui",
+    "J": "api-same-as-ui",
+    "K": "real-ollama+api",
+    "L": "api-same-as-ui",
+    "M": "api-same-as-ui",
+    "N": "api-same-as-ui",
+    "O": "api-same-as-ui",
+    "P": "api-same-as-ui",
+    "Q": "api-same-as-ui",
+    "R": "normal-stop",
+    "S": "normal-launcher",
+    "T": "api-same-as-ui",
+    "U": "api-same-as-ui",
+    "V": "real-ollama"
+  },
+  "authorization": {
+    "docs_denied_without_grant": {
+      "status": 403
+    }
+  },
+  "security": {
+    "operator_store_untouched": true,
+    "autonomy_enabled": false,
+    "cloud_contacted": false
+  },
+  "duplicate_launch": {
+    "returncode": 0,
+    "stdout_tail": "IA_RC_DISPOSABLE.bat\n  - pilot/STOP_ELYSIA_RC_DISPOSABLE.bat\n  - scripts/accept_dashboard_plan_progress_windows.py\n  - tests/test_dashboard_plan_progress.py\nNOTE: checkout is not an exact clean delivery SHA (status=modified). Do not treat this run as the frozen verified candidate.\nPilot already running (verified live ownership; pid file C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-rc-dashboard-kpmye6x7\\runtime\\pilot.pid). Open http://127.0.0.1:5086/  \u00e2\u20ac\u201d or run STOP_ELYSIA_VERIFIED_PILOT.bat first.\n"
+  },
+  "browser_note": "Control tab Plan & Progress interactive controls observed via cursor-ide-browser on http://127.0.0.1:5087/ after START path launch"
+}

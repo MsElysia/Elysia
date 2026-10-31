@@ -997,6 +997,31 @@ CONTROL_PANEL_TEMPLATE = """
                                         Authorize recording the verified result as step completion (this request only)
                                     </label>
                                 </div>
+                                <div id="plan-progress-panel" style="margin-top: 12px; padding: 10px; background: var(--bg-dark); border-radius: 8px; border: 1px solid var(--border);">
+                                    <strong style="font-size: 13px;">Plan &amp; Progress</strong>
+                                    <p style="font-size: 12px; color: var(--text-secondary); margin: 4px 0 8px 0;">
+                                        Uses existing composition APIs. A validated plan is <em>not</em> an execution grant.
+                                        Chat, step execution, and completion authorizations stay separate checkboxes above.
+                                    </p>
+                                    <label for="plan-goal-input" style="font-size: 12px;">Unfamiliar goal / objective</label>
+                                    <textarea id="plan-goal-input" rows="2" style="width: 100%; margin: 4px 0 8px 0;" placeholder="Describe the general task goal…"></textarea>
+                                    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+                                        <button type="button" onclick="proposeCapabilityPlan()">Propose plan</button>
+                                        <button type="button" onclick="rankCapabilitiesForGoal()">Show recommendations</button>
+                                        <button type="button" onclick="applyValidatedPlanToTaskState()">Apply validated steps to task state</button>
+                                    </div>
+                                    <div id="plan-ranking-view" style="font-size: 12px; margin-bottom: 8px; white-space: pre-wrap;"></div>
+                                    <div id="plan-validated-view" style="font-size: 12px; margin-bottom: 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; background: #0f172a; padding: 8px; border-radius: 6px;"></div>
+                                    <p style="font-size: 12px; margin: 6px 0;">Selected step for evaluate/replan: <code id="plan-selected-step">none</code></p>
+                                    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+                                        <button type="button" onclick="evaluateSelectedPlanStep()">Evaluate selected step</button>
+                                        <button type="button" onclick="proposeReplanForSelectedStep()">Propose replan</button>
+                                        <button type="button" onclick="applyProposedReplan()">Apply replan (no execute)</button>
+                                    </div>
+                                    <div id="plan-eval-view" style="font-size: 12px; margin-bottom: 8px; white-space: pre-wrap;"></div>
+                                    <div id="plan-replan-view" style="font-size: 12px; margin-bottom: 8px; max-height: 200px; overflow: auto; white-space: pre-wrap; background: #0f172a; padding: 8px; border-radius: 6px;"></div>
+                                    <p id="plan-progress-status" style="font-size: 12px; color: var(--text-secondary); margin: 0;"></p>
+                                </div>
                                 <div id="estimate-bundle-panel" style="display: none; margin-top: 10px; padding: 8px; background: var(--bg-dark); border-radius: 6px; font-size: 12px;">
                                     <strong>Verified estimate values</strong>
                                     <pre id="estimate-bundle-view" style="white-space: pre-wrap; margin: 6px 0 0 0; font-size: 11px;"></pre>
@@ -2033,6 +2058,9 @@ CONTROL_PANEL_TEMPLATE = """
                                     (done ? ' <span style="color: var(--text-secondary);">(completed)</span>' : '') +
                                     (capLabel ? ' <span style="color: var(--text-secondary);">' + capLabel + '</span>' : '') +
                                     '</span>';
+                                html += '<button type="button" onclick="selectPlanStep(\\'' +
+                                    window._escapeHtml(step.step_id || '') +
+                                    '\\')">Select</button>';
                                 if (!done) {
                                     html += '<button type="button" onclick="completeTaskStep(\\'' +
                                         window._escapeHtml(step.step_id || '') +
@@ -2576,6 +2604,335 @@ CONTROL_PANEL_TEMPLATE = """
                 })
                 .catch(function(err) {
                     if (saveStatus) saveStatus.textContent = 'Save failed: ' + err;
+                });
+        };
+
+        window._planValidated = null;
+        window._planReplan = null;
+        window._planEvaluation = null;
+        window._selectedPlanStepId = '';
+
+        window._planStatus = function(msg) {
+            var el = document.getElementById('plan-progress-status');
+            if (el) el.textContent = msg || '';
+        };
+
+        window.selectPlanStep = function(stepId) {
+            window._selectedPlanStepId = stepId || '';
+            var el = document.getElementById('plan-selected-step');
+            if (el) el.textContent = window._selectedPlanStepId || 'none';
+            window._planStatus('Selected step ' + (window._selectedPlanStepId || 'none') + ' for evaluate/replan.');
+        };
+
+        window.proposeCapabilityPlan = function() {
+            var goalEl = document.getElementById('plan-goal-input');
+            var objEl = document.getElementById('task-state-objective');
+            var goal = ((goalEl && goalEl.value) || (objEl && objEl.textContent) || '').trim();
+            var view = document.getElementById('plan-validated-view');
+            var rankView = document.getElementById('plan-ranking-view');
+            if (!goal || goal === '—') {
+                window._planStatus('Enter a goal before proposing a plan.');
+                return;
+            }
+            window._planStatus('Proposing plan via local model (not an execution grant)...');
+            if (view) view.textContent = 'Working...';
+            fetch('/api/composition/propose', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ goal: goal })
+            })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    if (!data.success) {
+                        window._planValidated = null;
+                        if (view) view.textContent = JSON.stringify(data, null, 2);
+                        window._planStatus('Plan failed: ' + (data.error || ('HTTP ' + res.status)));
+                        return;
+                    }
+                    window._planValidated = data.validated || null;
+                    var lines = [];
+                    lines.push('Authorization granted by plan: ' + String(data.authorization_granted === true));
+                    lines.push('Executable: ' + String((data.validated || {}).executable === true));
+                    lines.push('Recommended next: ' + (data.recommended_capability || '—'));
+                    lines.push('Basis: ' + (data.recommendation_basis || '—'));
+                    lines.push('Rationale: ' + (data.selection_rationale || '—'));
+                    lines.push('');
+                    lines.push('Validated steps:');
+                    ((data.validated || {}).steps || []).forEach(function(step, idx) {
+                        lines.push(
+                            (idx + 1) + '. [' + (step.status || 'proposed') + '] ' +
+                            (step.capability || '?') + ' — ' + (step.expected_outcome || step.purpose || '')
+                        );
+                        if (step.authorization_required) {
+                            lines.push('   Requires: ' + step.authorization_required);
+                        }
+                    });
+                    lines.push('');
+                    lines.push(data.authorization_note || 'Validated plan is not an execution grant.');
+                    if (view) view.textContent = lines.join('\\n');
+                    if (rankView && data.capability_ranking) {
+                        var rlines = ['Recommendations (not authorization):'];
+                        (data.capability_ranking || []).slice(0, 6).forEach(function(item) {
+                            rlines.push(
+                                '- ' + (item.capability || '?') +
+                                ' · basis=' + (item.recommendation_basis || '?') +
+                                ' · obs=' + String(item.comparable_observations != null ? item.comparable_observations : item.observations || 0) +
+                                ' · ' + String(item.rationale || '').slice(0, 140)
+                            );
+                        });
+                        rankView.textContent = rlines.join('\\n');
+                    }
+                    window._planStatus('Plan validated. Apply to task state, then authorize each step separately.');
+                })
+                .catch(function(err) {
+                    window._planStatus('Propose failed: ' + err);
+                });
+        };
+
+        window.rankCapabilitiesForGoal = function() {
+            var rankView = document.getElementById('plan-ranking-view');
+            var validated = window._planValidated || {};
+            var candidates = (validated.steps || []).map(function(s) {
+                return { capability: s.capability, expected_outcome: s.expected_outcome || '' };
+            }).filter(function(c) { return !!c.capability; });
+            if (!candidates.length) {
+                candidates = [
+                    { capability: 'local.documents.search', expected_outcome: 'source matches' },
+                    { capability: 'compose.extract_fields', expected_outcome: 'typed fields' },
+                    { capability: 'calculator.labor', expected_outcome: 'usd' }
+                ];
+            }
+            window._planStatus('Refreshing host capability ranking...');
+            fetch('/api/composition/rank-capabilities', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ candidates: candidates })
+            })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    if (res.status >= 400 || data.success === false) {
+                        if (rankView) rankView.textContent = JSON.stringify(data, null, 2);
+                        window._planStatus('Ranking failed: ' + (data.error || ('HTTP ' + res.status)));
+                        return;
+                    }
+                    var lines = [
+                        'Recommended: ' + (data.recommended_capability || '—'),
+                        'Basis: ' + (data.recommendation_basis || '—'),
+                        'Rationale: ' + (data.selection_rationale || '—'),
+                        'Authorization granted: ' + String(data.authorization_granted === true),
+                        '',
+                        'Alternatives:'
+                    ];
+                    (data.alternatives || []).slice(0, 8).forEach(function(item) {
+                        lines.push(
+                            '- ' + (item.capability || '?') +
+                            ' · basis=' + (item.recommendation_basis || '?') +
+                            ' · ' + String(item.rationale || '').slice(0, 160)
+                        );
+                    });
+                    if (rankView) rankView.textContent = lines.join('\\n');
+                    window._planStatus('Ranking refreshed (still not an execution grant).');
+                })
+                .catch(function(err) {
+                    window._planStatus('Ranking failed: ' + err);
+                });
+        };
+
+        window.applyValidatedPlanToTaskState = function() {
+            var validated = window._planValidated;
+            var saveStatus = document.getElementById('task-state-save-status');
+            var outEl = document.getElementById('task-state-outstanding');
+            var nextEl = document.getElementById('task-state-next-action');
+            var goalEl = document.getElementById('plan-goal-input');
+            if (!validated || !(validated.steps || []).length) {
+                window._planStatus('Propose and validate a plan first.');
+                return;
+            }
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var goal = ((goalEl && goalEl.value) || '').trim();
+            var createThen = function(conversationId) {
+                var steps = (validated.steps || []).map(function(s) {
+                    return (s.capability || 'step') + ': ' + (s.expected_outcome || s.purpose || 'complete');
+                });
+                if (outEl) outEl.value = steps.join('\\n');
+                if (nextEl) nextEl.value = steps[0] || 'Review validated plan';
+                window._planStatus('Validated steps copied into task state fields. Saving...');
+                if (!conversationId) {
+                    window._planStatus('Start or resume a conversation, then save task state.');
+                    return;
+                }
+                window._activeConversationId = conversationId;
+                if (typeof window.saveTaskState === 'function') window.saveTaskState();
+                else if (saveStatus) saveStatus.textContent = 'Task state helper unavailable.';
+            };
+            if (id) {
+                createThen(id);
+                return;
+            }
+            fetch('/api/conversations', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    title: 'Plan: ' + (goal || 'operator goal').slice(0, 80),
+                    objective: goal || 'Operator-supplied goal',
+                    completion_condition: 'Verified step receipts for the validated plan'
+                })
+            })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    var cid = data.conversation_id;
+                    if (!cid) {
+                        window._planStatus('Could not create conversation: ' + (data.error || ('HTTP ' + res.status)));
+                        return;
+                    }
+                    window._activeConversationId = cid;
+                    var sel = document.getElementById('conversation-select');
+                    if (sel) {
+                        var opt = document.createElement('option');
+                        opt.value = cid;
+                        opt.textContent = data.title || cid;
+                        sel.appendChild(opt);
+                        sel.value = cid;
+                    }
+                    createThen(cid);
+                    if (typeof window.refreshConversations === 'function') window.refreshConversations();
+                })
+                .catch(function(err) {
+                    window._planStatus('Conversation create failed: ' + err);
+                });
+        };
+
+        window.evaluateSelectedPlanStep = function() {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var stepId = window._selectedPlanStepId;
+            var view = document.getElementById('plan-eval-view');
+            if (!id || !stepId) {
+                window._planStatus('Select a conversation step first.');
+                return;
+            }
+            window._planStatus('Evaluating selected step (host verification)...');
+            fetch('/api/composition/evaluate-step', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ conversation_id: id, step_id: stepId })
+            })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    window._planEvaluation = data.evaluation || null;
+                    if (view) {
+                        var ev = data.evaluation || data;
+                        view.textContent = [
+                            'met: ' + String(ev.met),
+                            'category: ' + (ev.category || '—'),
+                            'reason: ' + (ev.reason || '—'),
+                            'replanning_recommended: ' + String(ev.replanning_recommended),
+                            'authorization_granted: false'
+                        ].join('\\n');
+                    }
+                    if (!data.success && res.status >= 400) {
+                        window._planStatus('Evaluate failed: ' + (data.error || ('HTTP ' + res.status)));
+                        return;
+                    }
+                    window._planStatus(evMetMessage(data.evaluation));
+                })
+                .catch(function(err) {
+                    window._planStatus('Evaluate failed: ' + err);
+                });
+        };
+
+        function evMetMessage(ev) {
+            ev = ev || {};
+            if (ev.met === true) return 'Step met expected outcome.';
+            if (ev.replanning_recommended) return 'Step insufficient — replan recommended (not auto-executed).';
+            return 'Step not met.';
+        }
+
+        window.proposeReplanForSelectedStep = function() {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var stepId = window._selectedPlanStepId;
+            var view = document.getElementById('plan-replan-view');
+            if (!id || !stepId) {
+                window._planStatus('Select a conversation step first.');
+                return;
+            }
+            window._planStatus('Proposing host-validated replan (will not execute)...');
+            fetch('/api/composition/propose-replan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ conversation_id: id, step_id: stepId })
+            })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = res.data || {};
+                    if (!data.success) {
+                        window._planReplan = null;
+                        if (view) view.textContent = JSON.stringify(data, null, 2);
+                        window._planStatus('Replan propose failed: ' + (data.error || ('HTTP ' + res.status)));
+                        return;
+                    }
+                    window._planReplan = data;
+                    window._planEvaluation = data.evaluation || window._planEvaluation;
+                    var lines = [];
+                    lines.push('authorization_granted: ' + String(data.authorization_granted === true));
+                    lines.push('executable: ' + String((data.validated || {}).executable === true));
+                    lines.push('failure: ' + ((data.evaluation || {}).category || '—') + ' — ' + ((data.evaluation || {}).reason || ''));
+                    lines.push('revision_reason: ' + ((data.validated || {}).revision_reason || '—'));
+                    lines.push('');
+                    lines.push('Proposed alternative steps:');
+                    ((data.validated || {}).steps || []).forEach(function(step, idx) {
+                        lines.push((idx + 1) + '. ' + (step.capability || '?') + ' — ' + (step.expected_outcome || ''));
+                    });
+                    lines.push('');
+                    lines.push('Fresh authorization is required before any alternative executes.');
+                    if (view) view.textContent = lines.join('\\n');
+                    window._planStatus('Replan validated. Apply without executing, then authorize the new step.');
+                })
+                .catch(function(err) {
+                    window._planStatus('Replan propose failed: ' + err);
+                });
+        };
+
+        window.applyProposedReplan = function() {
+            var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
+            var stepId = window._selectedPlanStepId;
+            var data = window._planReplan;
+            var expected = parseInt(((document.getElementById('task-state-expected-revision') || {}).value || '0'), 10);
+            if (!id || !stepId || !data || !data.validated) {
+                window._planStatus('Propose a replan first.');
+                return;
+            }
+            window._planStatus('Applying replan to task state (no execution)...');
+            fetch('/api/composition/apply-replan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    conversation_id: id,
+                    step_id: stepId,
+                    expected_revision: expected,
+                    validated: data.validated,
+                    evaluation: data.evaluation || window._planEvaluation || {}
+                })
+            })
+                .then(function(r) { return r.json().then(function(body) { return { status: r.status, data: body }; }); })
+                .then(function(res) {
+                    var body = res.data || {};
+                    if (!body.success) {
+                        window._planStatus('Apply replan failed: ' + (body.error || ('HTTP ' + res.status)));
+                        return;
+                    }
+                    window._planStatus(
+                        'Replan applied. authorization_inherited=' +
+                        String(body.authorization_inherited === true) +
+                        '. Authorize the new pending step explicitly.'
+                    );
+                    if (typeof window.loadTaskStatePanel === 'function') window.loadTaskStatePanel(id);
+                })
+                .catch(function(err) {
+                    window._planStatus('Apply replan failed: ' + err);
                 });
         };
 

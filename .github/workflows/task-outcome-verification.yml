@@ -34,8 +34,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install pytest
-        run: python -m pip install "pytest>=7.4,<9"
+      - name: Install runner test dependencies
+        run: python -m pip install "pytest>=7.4,<9" openai flask flask-socketio flask-cors cryptography pyyaml psutil httpx beautifulsoup4 requests pyttsx3
 
       - name: Run task outcome evidence tests
         env:

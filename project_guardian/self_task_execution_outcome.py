@@ -217,42 +217,8 @@ def permitted_artifact_file(
     return None
 
 
-def _artifact_digest_matches(path: Path, payload: Any) -> bool:
-    claimed = None
-    for item in _payload_dicts(payload):
-        value = item.get("artifact_sha256")
-        if isinstance(value, str):
-            claimed = value
-            break
-    if not isinstance(claimed, str) or re.fullmatch(r"[0-9a-f]{64}", claimed) is None:
-        return False
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return False
-    if not data or len(data) > _MAX_ARTIFACT_BYTES:
-        return False
-    return hashlib.sha256(data).hexdigest() == claimed
-
-
 def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-
-
-def _host_state_changed(before: Any, after: Any) -> bool:
-    """Host snapshots only. Boolean success flags are not a state change."""
-    if type(before) is not dict or type(after) is not dict or not before or not after:
-        return False
-    if set(before) <= _FLAG_ONLY_KEYS or set(after) <= _FLAG_ONLY_KEYS:
-        return False
-    if all(type(value) is bool for value in before.values()):
-        return False
-    if all(type(value) is bool for value in after.values()):
-        return False
-    try:
-        return _canonical(before) != _canonical(after)
-    except (TypeError, ValueError):
-        return False
 
 
 def _is_blocked(detail: str, capability_ex: Optional[Dict[str, Any]]) -> bool:
@@ -351,9 +317,10 @@ def evaluate_execution_outcome(
     p = normalize_payload(last_result)
     located = permitted_artifact_file(artifact_path, allowed_roots)
     dry_run = _is_dry_run(p) or _is_dry_run(last_capability_ex)
-    file_proof = bool(located is not None and not dry_run and _artifact_digest_matches(located, p))
-    state_proof = bool(not dry_run and _host_state_changed(observed_before, observed_after))
-    proof = file_proof or state_proof
+    # No current capability supplies independently task-attributable evidence.
+    # Fail closed until a trusted execution adapter can establish causality.
+    # Shared snapshots and payload-selected artifacts/digests are only hints.
+    proof = False
     hint = _has_downstream_action_hint(archetype=arch, payload=p, capability_ex=last_capability_ex)
     reported = _self_reported(p, last_capability_ex, memory_written)
 
@@ -361,7 +328,7 @@ def evaluate_execution_outcome(
         out["execution_outcome"] = "succeeded"
         out["verification_status"] = "verified"
         out["execution_reason"] = (
-            "independent_file_integrity" if file_proof else "independent_state_comparison"
+            "task_bound_expected_file_effect"
         )
         out["execution_followup_needed"] = False
     elif dry_run:

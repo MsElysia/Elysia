@@ -4930,9 +4930,7 @@ class GuardianCore:
         from .self_task_advancement import evaluate_task_advancement, merge_best_artifact
         from .self_task_execution_outcome import (
             caller_execution_success,
-            capture_host_directory_state,
             evaluate_execution_outcome,
-            host_effect_root,
             is_execution_stage_archetype,
         )
         from .self_task_value_verification import evaluate_execution_value
@@ -4959,8 +4957,6 @@ class GuardianCore:
             "summarize_recent_learning_operator",
             "learning_operator_digest",
         )
-        effect_root = host_effect_root(q.path)
-        observed_before = capture_host_directory_state(effect_root)
 
         try:
             if arch in learning_digest_archs and getattr(self, "memory", None):
@@ -5164,7 +5160,6 @@ class GuardianCore:
             detail = str(e)[:400]
             ok_any = False
             useful_any = False
-        observed_after = capture_host_directory_state(effect_root)
 
         base_strong = self._self_task_has_strong_signals(
             useful_payload=useful_any,
@@ -5242,8 +5237,8 @@ class GuardianCore:
             memory_written=memory_written,
             last_capability_ex=last_capability_ex,
             detail=detail,
-            observed_before=observed_before,
-            observed_after=observed_after,
+            # No trusted capability-specific effect adapter is registered here.
+            # Model receipts and shared directory writes cannot certify this task.
         )
         caller_ok, caller_useful = caller_execution_success(
             arch, ok_any, useful_any, exec_result

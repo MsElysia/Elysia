@@ -1,0 +1,26 @@
+﻿{
+    "prior_bundles_preserved":  [
+                                    "D:\\ElysiaBackups\\windows-intel-checkpoint-20261030\\elysia-windows-structured-field-extraction-de47c45.bundle",
+                                    "D:\\ElysiaBackups\\windows-intel-checkpoint-extract-records-20261030\\elysia-windows-extract-records-1a1af2e.bundle"
+                                ],
+    "backup_volume":  {
+                          "label":  "ESD-USB",
+                          "drive":  "D:",
+                          "note":  "Separate USB volume from system C:"
+                      },
+    "bundle_bytes":  3878845,
+    "independent_destination_available":  true,
+    "cloud_copy":  false,
+    "created_utc":  "2026-10-31T14:42:43Z",
+    "source_worktree":  "C:\\Users\\Owner\\Project guardian\\.worktrees\\windows-local-intel-20261029",
+    "source_branch":  "cursor/windows-adaptive-replan-20261030",
+    "bundle_path":  "D:\\ElysiaBackups\\windows-intel-checkpoint-adaptive-replan-20261031\\elysia-windows-adaptive-replan-4fe92b9.bundle",
+    "restore_test":  {
+                         "restored_sha":  "4fe92b9d559b5f1b5a46356c801d7538d4525f6e",
+                         "directory":  "D:\\ElysiaBackups\\windows-intel-checkpoint-adaptive-replan-20261031\\restore-verify",
+                         "note":  "clone -b cursor/windows-adaptive-replan-20261030 with one-shot git -c safe.directory=*",
+                         "matches_source":  true
+                     },
+    "bundle_sha256":  "6d4549c1bd7de53244a38544404a4ca40bd455afb62051dd7f4d6302eb31773f",
+    "source_sha":  "4fe92b9d559b5f1b5a46356c801d7538d4525f6e"
+}

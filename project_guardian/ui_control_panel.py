@@ -4119,7 +4119,37 @@ class UIControlPanel:
                     "success": False,
                     "error": "local_model_not_configured",
                 }), 503
+            outcome_store = None
+            task_class = (
+                str(data["task_class"]).strip()[:80]
+                if isinstance(data.get("task_class"), str) and data.get("task_class").strip()
+                else None
+            )
+            try:
+                outcome_store = self._conversation_store().outcome_store
+            except Exception:
+                outcome_store = None
+            # Host ranking for operator visibility (does not authorize).
+            ranking_preview = []
+            if outcome_store is not None:
+                ranking_preview = outcome_store.rank_capabilities(
+                    capabilities,
+                    available_capabilities=capabilities,
+                    task_class=task_class,
+                )[:8]
             prompt = compose_plan_prompt(goal, capabilities)
+            if ranking_preview:
+                lines = []
+                for item in ranking_preview[:6]:
+                    lines.append(
+                        f"- {item.get('capability')}: basis={item.get('recommendation_basis')}; "
+                        f"{str(item.get('rationale') or '')[:160]}"
+                    )
+                prompt += (
+                    "\nHost selection notes (not authorization; prefer when suitable):\n"
+                    + "\n".join(lines)
+                    + "\n"
+                )
             try:
                 raw = LocalOllama(model_name).generate(
                     [{"role": "user", "content": prompt}],
@@ -4141,7 +4171,12 @@ class UIControlPanel:
                     "note": "Model output is not trusted until validated.",
                 }), 422
             try:
-                validated = validate_proposed_plan(proposed, capabilities)
+                validated = validate_proposed_plan(
+                    proposed,
+                    capabilities,
+                    outcome_store=outcome_store,
+                    task_class=task_class,
+                )
             except CompositionError as exc:
                 return jsonify({
                     "success": False,
@@ -4155,12 +4190,18 @@ class UIControlPanel:
                 "goal": goal,
                 "proposed": proposed,
                 "validated": validated,
+                "capability_ranking": ranking_preview,
+                "recommended_capability": validated.get("selected_next_capability"),
+                "selection_rationale": validated.get("selection_rationale"),
+                "recommendation_basis": validated.get("recommendation_basis"),
                 "capabilities_considered": [
                     c.get("capability") for c in capabilities
                 ],
+                "authorization_granted": False,
                 "authorization_note": (
                     "Validated plan is not an execution grant. "
-                    "Each step still requires request-scoped authorization."
+                    "Each step still requires request-scoped authorization. "
+                    "Outcome history cannot authorize tools."
                 ),
             })
 
@@ -4195,6 +4236,109 @@ class UIControlPanel:
             except ContinuityError as exc:
                 return jsonify({"success": False, "error": str(exc)}), 400
             return jsonify({"success": True, **result})
+
+        @self.app.route('/api/composition/outcome-feedback', methods=['GET', 'POST'])
+        def api_composition_outcome_feedback():
+            """Export host outcome feedback, or reject fabricated ingest attempts."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden"}), 403
+            if not self._contained_startup_active():
+                return jsonify({"success": False, "error": "contained startup required"}), 400
+            from project_guardian.composition_outcome_feedback import OutcomeFeedbackError
+            from project_guardian.conversation_continuity import ContinuityError
+
+            try:
+                store = self._conversation_store()
+            except ContinuityError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 400
+            outcome_store = getattr(store, "outcome_store", None)
+            if outcome_store is None:
+                return jsonify({"success": False, "error": "outcome store unavailable"}), 503
+            if request.method == "GET":
+                exported = outcome_store.export_store()
+                return jsonify({
+                    "success": True,
+                    "store": exported,
+                    "authorization_granted": False,
+                })
+            # POST: only host-shaped receipts may be ingested; model claims rejected.
+            data = request.get_json(silent=True) or {}
+            if data.get("fabricated") is True or data.get("provenance") == "model_claim":
+                return jsonify({
+                    "success": False,
+                    "error": "fabricated_outcome_rejected",
+                    "authorization_granted": False,
+                }), 422
+            receipt = data.get("receipt") if isinstance(data.get("receipt"), dict) else data
+            try:
+                result = outcome_store.ingest_receipt(
+                    receipt,
+                    conversation_id=(
+                        str(data["conversation_id"]).strip()
+                        if isinstance(data.get("conversation_id"), str)
+                        else None
+                    ),
+                    task_class=(
+                        str(data["task_class"]).strip()[:80]
+                        if isinstance(data.get("task_class"), str)
+                        else None
+                    ),
+                )
+            except OutcomeFeedbackError as exc:
+                return jsonify({
+                    "success": False,
+                    "error": "outcome_ingest_rejected",
+                    "detail": str(exc),
+                    "authorization_granted": False,
+                }), 422
+            return jsonify({
+                "success": True,
+                "result": result,
+                "authorization_granted": False,
+            })
+
+        @self.app.route('/api/composition/rank-capabilities', methods=['POST'])
+        def api_composition_rank_capabilities():
+            """Host ranking preview for operator diagnostics (no execution grant)."""
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({"success": False, "error": "forbidden"}), 403
+            if not self._contained_startup_active():
+                return jsonify({"success": False, "error": "contained startup required"}), 400
+            data = request.get_json(silent=True) or {}
+            from project_guardian.capability_composition import list_composable_capabilities
+            from project_guardian.conversation_continuity import ContinuityError
+
+            try:
+                store = self._conversation_store()
+            except ContinuityError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 400
+            outcome_store = getattr(store, "outcome_store", None)
+            if outcome_store is None:
+                return jsonify({"success": False, "error": "outcome store unavailable"}), 503
+            caps = list_composable_capabilities()
+            if isinstance(data.get("candidates"), list) and data["candidates"]:
+                candidates = data["candidates"]
+            else:
+                candidates = caps
+            task_class = (
+                str(data["task_class"]).strip()[:80]
+                if isinstance(data.get("task_class"), str) and data.get("task_class").strip()
+                else None
+            )
+            ranked = outcome_store.rank_capabilities(
+                candidates,
+                available_capabilities=caps,
+                task_class=task_class,
+            )
+            top = ranked[0] if ranked else None
+            return jsonify({
+                "success": True,
+                "recommended_capability": (top or {}).get("capability"),
+                "selection_rationale": (top or {}).get("rationale"),
+                "recommendation_basis": (top or {}).get("recommendation_basis"),
+                "alternatives": ranked[:8],
+                "authorization_granted": False,
+            })
 
         @self.app.route('/api/composition/propose-replan', methods=['POST'])
         def api_composition_propose_replan():
@@ -4344,6 +4488,12 @@ class UIControlPanel:
                 proposed.pop("executable", None)
                 proposed.pop("authorization_inherited", None)
                 proposed.pop("authorization_granted", None)
+            task_class = (
+                str(data["task_class"]).strip()[:80]
+                if isinstance(data.get("task_class"), str) and data.get("task_class").strip()
+                else None
+            )
+            outcome_store = getattr(store, "outcome_store", None)
             try:
                 validated = validate_replan_proposal(
                     proposed,
@@ -4356,6 +4506,8 @@ class UIControlPanel:
                     failed_capability=(
                         failed.get("capability") if isinstance(failed, dict) else None
                     ),
+                    outcome_store=outcome_store,
+                    task_class=task_class,
                 )
             except CompositionError as exc:
                 return jsonify({
@@ -4371,6 +4523,9 @@ class UIControlPanel:
                 "conversation_id": conversation_id,
                 "step_id": step_id,
                 "evaluation": evaluation,
+                "recommended_capability": validated.get("selected_next_capability"),
+                "selection_rationale": validated.get("selection_rationale"),
+                "recommendation_basis": validated.get("recommendation_basis"),
                 "proposed": proposed,
                 "validated": validated,
                 "authorization_granted": False,

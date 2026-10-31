@@ -1,0 +1,119 @@
+{
+  "disposable_root": "elysia-outcome-1rlpkgm0",
+  "port": 5082,
+  "model": "llama3.2:3b",
+  "scenarios": {
+    "A_cold_start": {
+      "recommended": "calculator.labor",
+      "reliability": "unknown",
+      "basis": "current_suitability",
+      "authorization_granted": false
+    },
+    "B_verified_learning": {
+      "recommended": "compose.extract_records",
+      "basis": "measured_history",
+      "rationale": "available and permitted; suitability_score=8; measured history 12/12 across 3 task instances",
+      "extract_stats": {
+        "capability": "compose.extract_records",
+        "task_class": "structured_table_extraction",
+        "sample_size": 12,
+        "verified_success_count": 12,
+        "failure_count": 0,
+        "task_instance_count": 3,
+        "evidence_sufficient": true,
+        "reliability": "measured",
+        "observed_success_rate_numerator": 12,
+        "observed_success_rate_denominator": 12,
+        "mean_duration_ms": null,
+        "failure_class_counts": {},
+        "min_attempts_required": 10,
+        "min_task_instances_required": 3,
+        "authorization_granted": false
+      },
+      "synthesize_stats": {
+        "capability": "compose.synthesize",
+        "task_class": "structured_table_extraction",
+        "sample_size": 12,
+        "verified_success_count": 0,
+        "failure_count": 12,
+        "task_instance_count": 3,
+        "evidence_sufficient": true,
+        "reliability": "measured",
+        "observed_success_rate_numerator": 0,
+        "observed_success_rate_denominator": 12,
+        "mean_duration_ms": null,
+        "failure_class_counts": {
+          "unsuccessful_execution": 12
+        },
+        "min_attempts_required": 10,
+        "min_task_instances_required": 3,
+        "authorization_granted": false
+      }
+    },
+    "F_rank_after_learning": {
+      "status": 200,
+      "recommended": "compose.extract_records",
+      "basis": "measured_history",
+      "rationale": "available and permitted; suitability_score=8; measured history 12/12 across 3 task instances",
+      "authorization_granted": false
+    },
+    "F_ollama_propose_with_history": {
+      "status": 200,
+      "recommended": "compose.extract_records",
+      "basis": "measured_history",
+      "rationale": "available and permitted; suitability_score=8; measured history 12/12 across 3 task instances",
+      "selected_next": "compose.extract_records",
+      "executable": false,
+      "authorization_granted": false,
+      "ollama": true
+    },
+    "C_duplicate_protection": {
+      "ingest_status": 200,
+      "export_status": 200,
+      "idempotent": true,
+      "count_before": 24,
+      "count_after": 24
+    },
+    "F_selected_strategy_succeeds": {
+      "status": 200,
+      "verified": true,
+      "authorization_inherited": false
+    },
+    "G_restart": {
+      "status": 200,
+      "recommended": "compose.extract_records",
+      "basis": "measured_history",
+      "authorization_granted": false
+    },
+    "I_corrupt_store": {
+      "conversations_status": 200,
+      "conversations_ok": true,
+      "rank_status": 200,
+      "rank_success": true
+    },
+    "E_cross_domain": {
+      "status": 200,
+      "recommended": "calculator.labor",
+      "basis": "current_suitability",
+      "no_domain_module": true
+    }
+  },
+  "security": {
+    "hostile_fabricated": {
+      "status": 422,
+      "error": "fabricated_outcome_rejected",
+      "authorization_granted": false
+    },
+    "hostile_bad_receipt_id": {
+      "status": 422,
+      "error": "outcome_ingest_rejected",
+      "detail": "host receipt requires valid execution_id"
+    },
+    "history_no_execution_auth": {
+      "status": 403,
+      "error": "document search not authorized for this request"
+    }
+  },
+  "backup_note": "Updated checkpoint on D:\\ElysiaBackups\\windows-intel-checkpoint-adaptive-replan-20261031 (4fe92b9)",
+  "ok": true
+}

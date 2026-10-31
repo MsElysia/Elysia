@@ -686,6 +686,9 @@ def parse_model_plan_json(raw: str) -> Optional[Dict[str, Any]]:
 def validate_proposed_plan(
     proposal: Mapping[str, Any],
     available_capabilities: Sequence[Any],
+    *,
+    outcome_store: Any = None,
+    task_class: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Validate a model-proposed plan against the capability registry (no execution)."""
     if not isinstance(proposal, Mapping):
@@ -724,12 +727,24 @@ def validate_proposed_plan(
                 "notes": str(raw.get("notes") or "")[:200],
             }
         )
+    ranked = rank_replan_candidates(
+        validated,
+        available_capabilities=available_capabilities,
+        outcome_store=outcome_store,
+        task_class=task_class,
+    )
+    selected = ranked[0] if ranked else None
     return {
         "ok": True,
         "objective": objective.strip()[:800],
         "steps": validated,
+        "ranked_alternatives": ranked,
+        "selected_next_capability": (selected or {}).get("capability"),
+        "selection_rationale": (selected or {}).get("rationale"),
+        "recommendation_basis": (selected or {}).get("recommendation_basis"),
         "executable": False,
         "authorization_inherited": False,
+        "authorization_granted": False,
         "note": "Plan validation is not execution authorization.",
     }
 
@@ -996,9 +1011,24 @@ def rank_replan_candidates(
     candidates: Sequence[Mapping[str, Any]],
     *,
     available_capabilities: Optional[Sequence[Any]] = None,
+    outcome_store: Any = None,
+    task_class: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Order alternatives using known metadata only (no invented success rates)."""
+    """Order alternatives using suitability, then measured host outcomes when sufficient.
+
+    Reliability remains unknown until the outcome store reports evidence_sufficient.
+    Authorization is never granted by ranking.
+    """
     available = _capability_name_set(available_capabilities or list_composable_capabilities())
+    # Prefer evidence-based ranking when a durable store is supplied.
+    if outcome_store is not None and hasattr(outcome_store, "rank_capabilities"):
+        ranked = outcome_store.rank_capabilities(
+            list(candidates)[:MAX_REPLAN_ALTERNATIVES],
+            available_capabilities=available_capabilities or list_composable_capabilities(),
+            task_class=task_class,
+        )
+        return ranked[:MAX_REPLAN_ALTERNATIVES]
+
     ranked: List[Dict[str, Any]] = []
     for raw in list(candidates)[:MAX_REPLAN_ALTERNATIVES]:
         if not isinstance(raw, Mapping):
@@ -1016,7 +1046,6 @@ def rank_replan_candidates(
             score += 3
         elif meta["verification_potential"] == "medium":
             score += 1
-        # Penalize repeating the exact same capability+notes without change.
         ranked.append(
             {
                 "capability": cap,
@@ -1030,6 +1059,10 @@ def rank_replan_candidates(
                 "selection": meta,
                 "usefulness_score": score,
                 "reliability": "unknown",
+                "evidence_sufficient": False,
+                "recommendation_basis": "current_suitability",
+                "rationale": "cold start: suitability only; reliability unknown",
+                "authorization_granted": False,
             }
         )
     ranked.sort(key=lambda c: (-int(c["usefulness_score"]), c["capability"]))
@@ -1101,6 +1134,8 @@ def validate_replan_proposal(
     evaluation: Mapping[str, Any],
     prior_attempt_count: int = 0,
     failed_capability: Optional[str] = None,
+    outcome_store: Any = None,
+    task_class: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Validate a model replan; preserve objective; grant no authority."""
     if prior_attempt_count >= MAX_REPLAN_ATTEMPTS:
@@ -1118,7 +1153,12 @@ def validate_replan_proposal(
     if not forced["objective"]:
         raise CompositionError("original objective required for replan")
 
-    validated = validate_proposed_plan(forced, available_capabilities)
+    validated = validate_proposed_plan(
+        forced,
+        available_capabilities,
+        outcome_store=outcome_store,
+        task_class=task_class,
+    )
     steps = list(validated["steps"])
     if len(steps) > MAX_REPLAN_ALTERNATIVES + 2:
         raise CompositionError("replan has too many steps")
@@ -1140,7 +1180,15 @@ def validate_replan_proposal(
     if not revision_reason:
         revision_reason = str(evaluation.get("reason") or "prior approach insufficient")[:400]
 
-    ranked = rank_replan_candidates(steps, available_capabilities=available_capabilities)
+    ranked = list(validated.get("ranked_alternatives") or [])
+    if not ranked:
+        ranked = rank_replan_candidates(
+            steps,
+            available_capabilities=available_capabilities,
+            outcome_store=outcome_store,
+            task_class=task_class,
+        )
+    selected = ranked[0] if ranked else None
     return {
         "ok": True,
         "objective": validated["objective"],
@@ -1148,7 +1196,9 @@ def validate_replan_proposal(
         "revision_reason": revision_reason,
         "failure_category": evaluation.get("category"),
         "ranked_alternatives": ranked,
-        "selected_next_capability": (ranked[0]["capability"] if ranked else None),
+        "selected_next_capability": (selected or {}).get("capability"),
+        "selection_rationale": (selected or {}).get("rationale"),
+        "recommendation_basis": (selected or {}).get("recommendation_basis"),
         "executable": False,
         "authorization_inherited": False,
         "authorization_granted": False,

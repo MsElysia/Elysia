@@ -654,6 +654,7 @@ def _safe_title(text: str) -> str:
 @dataclass
 class ConversationStore:
     root: Path
+    outcome_store: Any = None
 
     def __post_init__(self) -> None:
         self.root = Path(self.root)
@@ -665,6 +666,21 @@ class ConversationStore:
                 index,
                 {"schema": "elysia.conversation-index.v1", "conversations": []},
             )
+        # Optional durable composition outcome feedback (not personal memory).
+        if self.outcome_store is None:
+            try:
+                from project_guardian.composition_outcome_feedback import (
+                    OutcomeFeedbackStore,
+                    resolve_outcome_feedback_root,
+                )
+
+                # conversations root lives under disposable_root/conversations
+                disposable = self.root.parent if self.root.name == "conversations" else self.root
+                self.outcome_store = OutcomeFeedbackStore(
+                    resolve_outcome_feedback_root(disposable)
+                )
+            except Exception:
+                self.outcome_store = None
 
     def _conv_dir(self, conversation_id: str) -> Path:
         if not re.fullmatch(r"conv_[a-f0-9]{16}", conversation_id or ""):
@@ -1683,7 +1699,9 @@ class ConversationStore:
                             steps[idx] = target
                             break
                     record["task_steps"] = steps
-                    self._persist_step_failure_unlocked(record)
+                    self._persist_step_failure_unlocked(
+                        record, step=target, execution_id=execution_id
+                    )
                     raise ContinuityError(
                         f"document search completed but evidence criteria unmet: {reason}"
                     )
@@ -2154,7 +2172,9 @@ class ConversationStore:
                             steps[idx] = target
                             break
                     record["task_steps"] = steps
-                    self._persist_step_failure_unlocked(record)
+                    self._persist_step_failure_unlocked(
+                        record, step=target, execution_id=execution_id
+                    )
                     raise ContinuityError(
                         "compose.extract_fields incomplete: required fields unverified: "
                         + ", ".join(extracted.get("required_unverified") or [])
@@ -2289,7 +2309,9 @@ class ConversationStore:
                             steps[idx] = target
                             break
                     record["task_steps"] = steps
-                    self._persist_step_failure_unlocked(record)
+                    self._persist_step_failure_unlocked(
+                        record, step=target, execution_id=execution_id
+                    )
                     raise ContinuityError(
                         "compose.extract_records incomplete: no verified records"
                     )
@@ -2893,6 +2915,19 @@ class ConversationStore:
             except OSError:
                 pass
 
+            # Ensure every success receipt carries host outcome metadata for feedback.
+            if not isinstance(receipt.get("outcome"), dict):
+                receipt["outcome"] = recordable_outcome(
+                    capability=str(capability or ""),
+                    task_class="general_composition",
+                    success=True,
+                )
+            self._record_outcome_feedback(
+                receipt=receipt,
+                step=target,
+                conversation_id=conversation_id,
+            )
+
             result.update(
                 {
                     "executed": True,
@@ -3102,7 +3137,44 @@ class ConversationStore:
             )
         return record, existing, current_rev
 
-    def _persist_step_failure_unlocked(self, record: Dict[str, Any]) -> None:
+    def _record_outcome_feedback(
+        self,
+        *,
+        receipt: Mapping[str, Any],
+        step: Optional[Mapping[str, Any]] = None,
+        conversation_id: Optional[str] = None,
+        duration_ms: Optional[int] = None,
+        evaluation: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """Best-effort host outcome ingest; never grants authorization."""
+        store = self.outcome_store
+        if store is None:
+            return
+        try:
+            from project_guardian.composition_outcome_feedback import (
+                ingest_host_step_outcome,
+            )
+
+            ingest_host_step_outcome(
+                store,
+                receipt=receipt,
+                step=step,
+                conversation_id=conversation_id,
+                duration_ms=duration_ms,
+                evaluation=evaluation,
+            )
+        except Exception:
+            # Outcome feedback must not break execution or continuity.
+            return
+
+    def _persist_step_failure_unlocked(
+        self,
+        record: Dict[str, Any],
+        *,
+        step: Optional[Mapping[str, Any]] = None,
+        execution_id: Optional[str] = None,
+        duration_ms: Optional[int] = None,
+    ) -> None:
         """Durably record a failed/incomplete execution without advancing revision.
 
         Adaptive evaluation requires inspecting last_failure_category after a tool
@@ -3112,6 +3184,24 @@ class ConversationStore:
         record["updated_utc"] = _utc_now()
         _atomic_write_json(self._conv_path(conversation_id), record)
         self._upsert_index(record)
+        if step is not None and isinstance(execution_id, str):
+            self._record_outcome_feedback(
+                receipt={
+                    "execution_id": execution_id,
+                    "capability": step.get("capability"),
+                    "verified": False,
+                    "outcome": {
+                        "capability": step.get("capability"),
+                        "task_class": "general_composition",
+                        "success": False,
+                        "failure_category": step.get("last_failure_category"),
+                        "created_utc": _utc_now(),
+                    },
+                },
+                step=step,
+                conversation_id=conversation_id,
+                duration_ms=duration_ms,
+            )
 
     def _persist_operator_mutation_unlocked(
         self,

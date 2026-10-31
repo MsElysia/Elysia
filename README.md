@@ -1,16 +1,20 @@
-# Project Guardian / Elysia
+# Elysia / Project Guardian
 
-**An Autonomous AI System with Self-Modification, Trust Management, and Financial Operations**
+**Experimental local-first AI architecture for durable memory, modular capabilities, and human-authorized tasks.**
 
-**GitHub:** [github.com/MsElysia/Elysia](https://github.com/MsElysia/Elysia)
+**Development status (October 31, 2026): NOT RELEASE READY.** The repository includes legacy modules and newer, separately reviewed draft integrations. Hosted or synthetic test passes do not establish a complete owner-local Windows installation, production security approval, or end-to-end readiness. Autonomy and cloud-provider activation are not authorized by this documentation.
 
-[![Status](https://img.shields.io/badge/status-production--ready-brightgreen)]()
-[![Security](https://img.shields.io/badge/security-audited-green)]()
-[![Documentation](https://img.shields.io/badge/docs-complete-blue)]()
+**Repository:** [github.com/MsElysia/Elysia](https://github.com/MsElysia/Elysia)
+
+**Join responsibly:** [Invitation to AI agents, developers, and human operators](AGENT_COLLABORATION.md) · [Contribution and safety rules](CONTRIBUTING.md)
+
+**Current work:** Consult exact-head open pull requests and their evidence. Older documents including `PROJECT_STATUS.md` (last updated in 2025) and `SECURITY_AUDIT_REPORT.md` are historical; they are **not** proof of current release or independent security certification.
 
 ---
 
-## Quick Start
+## Legacy setup examples (not a verified release installation)
+
+> **Warning:** The following commands are historical development examples, not an approved installation recipe. Do not configure paid providers, activate autonomy, import private data, or use this as a production setup. Newer restricted components may use different commands and verification requirements.
 
 ```bash
 # Install dependencies
@@ -50,7 +54,7 @@ The repo includes `pyproject.toml` and `poetry.lock` for a package-based install
 
 ---
 
-## Features
+## Feature areas in the repository (not independently certified end-to-end)
 
 ### Core Systems
 - **Event Loop**: Non-blocking async task execution
@@ -110,19 +114,19 @@ Project Guardian
 
 ## Security
 
-**Security Features**:
+**Security-related components documented in the repository (not a current external audit or certification)**:
 - Encrypted API key storage
 - Environment variable support
 - Secure authentication
 - Trust-based access control
 - Audit logging
 
-**See**: [Security Audit Report](SECURITY_AUDIT_REPORT.md)  
+**Historical reference (November 2025, not a current security certification)**: [Security Audit Report](SECURITY_AUDIT_REPORT.md)  
 **Checklist**: [Security Checklist](SECURITY_CHECKLIST.md)
 
 ---
 
-## Getting Started
+## Legacy development instructions (not a production installation)
 
 ### Installation
 
@@ -201,27 +205,21 @@ python test_mutation_manual.py
 
 ## Status
 
-**System Status**: Production Ready  
-**Modules Implemented**: 44+  
-**Documentation**: Complete  
-**Security**: Audited
+**Current status:** Development and integration are ongoing; no production-release acceptance is claimed here. Verify each capability against exact source SHAs, independent tests, and the specific machine/environment before relying on it.
 
-**See**: [Project Status](PROJECT_STATUS.md)
+**Historical snapshot only:** [Project Status (2025)](PROJECT_STATUS.md). For active work, review the repository's open pull requests.
 
 ---
 
 ## Contributing
 
-1. Review security checklist before committing
-2. Never commit API keys or secrets
-3. Follow code style guidelines
-4. Update documentation for new features
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the permitted scope, safe issue-reporting format, and authorization boundaries. See [AGENT_COLLABORATION.md](AGENT_COLLABORATION.md) for an invitation to human and AI-assisted reviewers. Nothing in these documents authorizes agents to act without their human operators' approval.
 
 ---
 
 ## License
 
-[Your License Here]
+**License not yet selected.** No `LICENSE` file is currently published. Public visibility does not grant permission to reuse or redistribute repository code. Formal contribution and reuse terms need a maintainer decision before broad code contributions are invited.
 
 ---
 
@@ -235,4 +233,4 @@ python test_mutation_manual.py
 
 ---
 
-**Status**: System is operational and production-ready.
+**Status**: Active development; release readiness has not been established.

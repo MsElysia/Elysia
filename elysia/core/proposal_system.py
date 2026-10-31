@@ -15,6 +15,21 @@ from ..events import EventBus
 logger = logging.getLogger(__name__)
 
 
+def _regular_metadata_file(proposal_dir: Path) -> Optional[Path]:
+    """Return metadata.json only when the leaf is not a symlink.
+
+    A planted metadata.json symlink would otherwise let load/save follow it
+    out of the proposal directory even when proposal_id is a single component.
+    """
+    metadata_file = Path(proposal_dir) / "metadata.json"
+    try:
+        if metadata_file.is_symlink():
+            return None
+    except OSError:
+        return None
+    return metadata_file
+
+
 class ProposalValidator:
     """Validates proposal structure and metadata schema."""
 
@@ -87,8 +102,8 @@ class ProposalLifecycleManager:
     def _load_metadata(self, proposal_id: str) -> Optional[Dict[str, Any]]:
         """Load metadata for a proposal."""
         proposal_path = self.proposals_root / proposal_id
-        metadata_file = proposal_path / "metadata.json"
-        if not metadata_file.exists():
+        metadata_file = _regular_metadata_file(proposal_path)
+        if metadata_file is None or not metadata_file.exists():
             return None
 
         try:
@@ -100,8 +115,14 @@ class ProposalLifecycleManager:
     def _save_metadata(self, proposal_id: str, metadata: Dict[str, Any]) -> bool:
         """Save metadata for a proposal."""
         proposal_path = self.proposals_root / proposal_id
+        metadata_file = _regular_metadata_file(proposal_path)
+        if metadata_file is None:
+            logger.error("Refusing to follow metadata symlink for %s", proposal_id)
+            return False
         proposal_path.mkdir(parents=True, exist_ok=True)
-        metadata_file = proposal_path / "metadata.json"
+        if metadata_file.is_symlink():
+            logger.error("Refusing to follow metadata symlink for %s", proposal_id)
+            return False
 
         try:
             metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -318,8 +339,8 @@ class ProposalSystem:
             if not proposal_dir.is_dir():
                 continue
 
-            metadata_file = proposal_dir / "metadata.json"
-            if not metadata_file.exists():
+            metadata_file = _regular_metadata_file(proposal_dir)
+            if metadata_file is None or not metadata_file.exists():
                 continue
 
             try:
@@ -337,17 +358,7 @@ class ProposalSystem:
 
     def get_proposal(self, proposal_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific proposal by ID."""
-        proposal_path = self.proposals_root / proposal_id
-        metadata_file = proposal_path / "metadata.json"
-
-        if not metadata_file.exists():
-            return None
-
-        try:
-            with open(metadata_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
+        return self.lifecycle_manager._load_metadata(proposal_id)
 
     def approve_proposal(self, proposal_id: str, approver: str) -> tuple[bool, Optional[str]]:
         """Approve a proposal."""

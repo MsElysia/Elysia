@@ -42,6 +42,9 @@ def main() -> int:
         "-rs",
         "-p",
         "no:cacheprovider",
+        # Preserve Windows symlink privilege cases as unverified outside privileged hosts.
+        "-k",
+        "not symlink_escape_skipped and not directory_symlink_escape_skipped",
         *RC_REQUIRED,
     ]
     print("+", " ".join(cmd), flush=True)

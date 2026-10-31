@@ -23,13 +23,15 @@ def _iso() -> str:
 class ObjectiveStore:
     """Persistent objectives: active chains for self-tasking."""
 
-    def __init__(self, storage_path: Optional[Path] = None) -> None:
+    def __init__(self, storage_path: Optional[Path] = None, *, in_memory: bool = False) -> None:
+        self.in_memory = in_memory
         self.path = Path(storage_path) if storage_path else DEFAULT_PATH
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not in_memory:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self._data = self._load()
 
     def _load(self) -> Dict[str, Any]:
-        if not self.path.exists():
+        if self.in_memory or not self.path.exists():
             return {"objectives": [], "updated_at": _iso()}
         try:
             with open(self.path, "r", encoding="utf-8") as f:
@@ -39,6 +41,8 @@ class ObjectiveStore:
             return {"objectives": [], "updated_at": _iso()}
 
     def _save(self) -> None:
+        if self.in_memory:
+            return
         self._data["updated_at"] = _iso()
         try:
             with open(self.path, "w", encoding="utf-8") as f:

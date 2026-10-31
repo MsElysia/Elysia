@@ -86,6 +86,12 @@ def evaluate_execution_value(
             if verified
             else "generate_execution_plan_is_support_only_without_material_delta"
         )
+    elif arch == "execute_local_calculation":
+        verified = bool(exo == "succeeded" and exec_result.get("verification_status") == "verified"
+                        and exec_result.get("effect_kind") == "computation")
+        score = 0.5 if verified else 0.0
+        reason = "authorized_computation_delivered" if verified else "no_verified_computation"
+        out["value_type"] = "operator_support"
     elif arch == "execute_best_opportunity":
         verified = bool(
             exo == "succeeded"

@@ -1,0 +1,210 @@
+{
+  "model": "llama3.2:3b",
+  "port": 5069,
+  "acceptance": {
+    "pre_unknown": {
+      "result": "PASS",
+      "ollama": {
+        "authorized": true,
+        "available": true,
+        "category": "intelligence",
+        "cost_category": "local_compute",
+        "dependencies": [
+          "ollama_loopback",
+          "ELYSIA_LOCAL_MODEL"
+        ],
+        "description": "Ask the installed local Ollama model with bounded durable-memory context.",
+        "executable_binding": false,
+        "execution": "local",
+        "id": "intelligence.ollama.chat",
+        "installed": true,
+        "last_failure_reason": null,
+        "last_verified_utc": null,
+        "model_selectable": false,
+        "name": "Local model conversation",
+        "operational": null,
+        "permission_mode": "allowed",
+        "required_scope": "local.chat",
+        "runtime_status": "not_yet_verified",
+        "safe_next_action": "Ask a question with Ask local model",
+        "unavailable_reason": null
+      },
+      "memory": {
+        "authorized": true,
+        "available": true,
+        "category": "memory",
+        "cost_category": "none",
+        "dependencies": [
+          "restricted_runtime_adapter",
+          "MemoryCore"
+        ],
+        "description": "Retrieve current restricted facts with different wording.",
+        "executable_binding": false,
+        "execution": "local",
+        "id": "memory.retrieve",
+        "installed": true,
+        "last_failure_reason": null,
+        "last_verified_utc": null,
+        "model_selectable": true,
+        "name": "Durable memory retrieval",
+        "operational": null,
+        "permission_mode": "allowed",
+        "required_scope": "memory.read",
+        "runtime_status": "not_yet_verified",
+        "safe_next_action": "Use Retrieve on the Memory tab or Ask local model",
+        "unavailable_reason": null
+      },
+      "calculator": {
+        "authorized": false,
+        "available": true,
+        "category": "tools",
+        "cost_category": "no paid calls permitted",
+        "dependencies": [
+          "local_ollama",
+          "tool_registry_projection",
+          "usd_hourly_rate_memory"
+        ],
+        "description": "Estimate labor using a current USD hourly-rate memory",
+        "executable_binding": true,
+        "execution": "local",
+        "id": "tools.calculator.labor",
+        "installed": true,
+        "last_failure_reason": null,
+        "last_verified_utc": null,
+        "model_selectable": true,
+        "name": "Labor calculator",
+        "operational": null,
+        "permission_mode": "per_request",
+        "required_scope": "calculator.execute",
+        "runtime_status": "authorization_required",
+        "safe_next_action": "Check Allow the labor calculator, then ask a labor estimate",
+        "unavailable_reason": "Operator authorization required for this request"
+      }
+    },
+    "memory_verified": {
+      "result": "PASS",
+      "memory": {
+        "authorized": true,
+        "available": true,
+        "category": "memory",
+        "cost_category": "none",
+        "dependencies": [
+          "restricted_runtime_adapter",
+          "MemoryCore"
+        ],
+        "description": "Retrieve current restricted facts with different wording.",
+        "executable_binding": false,
+        "execution": "local",
+        "id": "memory.retrieve",
+        "installed": true,
+        "last_failure_reason": null,
+        "last_verified_utc": "2026-10-29T22:25:03Z",
+        "model_selectable": true,
+        "name": "Durable memory retrieval",
+        "operational": true,
+        "permission_mode": "allowed",
+        "required_scope": "memory.read",
+        "runtime_status": "verified_operational",
+        "safe_next_action": "Use Retrieve on the Memory tab or Ask local model",
+        "unavailable_reason": null
+      },
+      "matches": 1
+    },
+    "unauthorized_not_verified": {
+      "result": "PASS",
+      "tools_executed": [],
+      "calculator": {
+        "authorized": false,
+        "available": true,
+        "category": "tools",
+        "cost_category": "no paid calls permitted",
+        "dependencies": [
+          "local_ollama",
+          "tool_registry_projection",
+          "usd_hourly_rate_memory"
+        ],
+        "description": "Estimate labor using a current USD hourly-rate memory",
+        "executable_binding": true,
+        "execution": "local",
+        "id": "tools.calculator.labor",
+        "installed": true,
+        "last_failure_reason": null,
+        "last_verified_utc": null,
+        "model_selectable": true,
+        "name": "Labor calculator",
+        "operational": null,
+        "permission_mode": "per_request",
+        "required_scope": "calculator.execute",
+        "runtime_status": "authorization_required",
+        "safe_next_action": "Check Allow the labor calculator, then ask a labor estimate",
+        "unavailable_reason": "Operator authorization required for this request"
+      },
+      "status": 200
+    },
+    "authorized_verified": {
+      "result": "PASS",
+      "reply": "Labor expense: USD 1680. Assumptions: 2 painters \u00d7 3 days \u00d7 8 hours/day \u00d7 USD 35/hour. Labor only; excludes materials, overtime and taxes. Memory source: fact_d92ef7fe533744a5, revision 1.",
+      "calculator": {
+        "authorized": false,
+        "available": true,
+        "category": "tools",
+        "cost_category": "no paid calls permitted",
+        "dependencies": [
+          "local_ollama",
+          "tool_registry_projection",
+          "usd_hourly_rate_memory"
+        ],
+        "description": "Estimate labor using a current USD hourly-rate memory",
+        "executable_binding": true,
+        "execution": "local",
+        "id": "tools.calculator.labor",
+        "installed": true,
+        "last_failure_reason": null,
+        "last_verified_utc": "2026-10-29T22:25:26Z",
+        "model_selectable": true,
+        "name": "Labor calculator",
+        "operational": true,
+        "permission_mode": "per_request",
+        "required_scope": "calculator.execute",
+        "runtime_status": "verified_operational",
+        "safe_next_action": "Check Allow the labor calculator, then ask a labor estimate",
+        "unavailable_reason": "Operator authorization required for this request"
+      },
+      "ollama": {
+        "authorized": true,
+        "available": true,
+        "category": "intelligence",
+        "cost_category": "local_compute",
+        "dependencies": [
+          "ollama_loopback",
+          "ELYSIA_LOCAL_MODEL"
+        ],
+        "description": "Ask the installed local Ollama model with bounded durable-memory context.",
+        "executable_binding": false,
+        "execution": "local",
+        "id": "intelligence.ollama.chat",
+        "installed": true,
+        "last_failure_reason": null,
+        "last_verified_utc": "2026-10-29T22:25:26Z",
+        "model_selectable": false,
+        "name": "Local model conversation",
+        "operational": true,
+        "permission_mode": "allowed",
+        "required_scope": "local.chat",
+        "runtime_status": "verified_operational",
+        "safe_next_action": "Ask a question with Ask local model",
+        "unavailable_reason": null
+      },
+      "status": 200
+    },
+    "no_secrets": {
+      "result": "PASS"
+    },
+    "inspection_no_execute": {
+      "result": "PASS",
+      "before": 3,
+      "after": 3
+    }
+  },
+  "disposable_store": "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-exec-evidence-c2qqnrlm"
+}

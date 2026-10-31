@@ -1,0 +1,85 @@
+{
+  "disposable_root": "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-continuity-ty9ihrjb",
+  "port": 5071,
+  "model": "llama3.2:3b",
+  "steps": {
+    "first_chat": {
+      "status": 200,
+      "reply": "The garden checklist objective is to prepare a fictional three-step garden checklist."
+    },
+    "checkpoint": {
+      "revision": 1,
+      "next_safe_action": "List watering schedule"
+    },
+    "resume": {
+      "authorization_inherited": false,
+      "authorization_note": "Resume never inherits calculator or tool authorization.",
+      "checkpoint": {
+        "assumptions": [],
+        "authorization_state": "none",
+        "completed_work": [
+          "Chose fictional plot"
+        ],
+        "completion_condition": "",
+        "confirmed_facts": [
+          "Plot name is Meadow-7"
+        ],
+        "constraints": [
+          "Stay fictional",
+          "No purchases"
+        ],
+        "content_sha256": "4caea63cccbf8e48a5e73f6283153c23206ba2543cab3012061b86ec79fe8434",
+        "conversation_id": "conv_203892067ccd4e1f",
+        "created_utc": "2026-10-29T22:56:10Z",
+        "memory_refs": [],
+        "next_safe_action": "List watering schedule",
+        "objective": "Prepare a fictional three-step garden checklist",
+        "outstanding_steps": [
+          "List watering schedule",
+          "Note soil type"
+        ],
+        "reason": "operator",
+        "revision": 1,
+        "schema": "elysia.continuity-checkpoint.v1",
+        "source_message_ids": [
+          "msg_36f69df783ba",
+          "msg_e8e4c06f70fd"
+        ],
+        "status": "active",
+        "title": "Fictional garden checklist",
+        "trust": "untrusted_reconstructed_context",
+        "unresolved_questions": []
+      },
+      "continuity_recovered": true,
+      "conversation_id": "conv_203892067ccd4e1f",
+      "message_count": 2,
+      "missing": [],
+      "next_safe_action": "List watering schedule",
+      "objective": "Prepare a fictional three-step garden checklist",
+      "outstanding_steps": [
+        "List watering schedule",
+        "Note soil type"
+      ],
+      "success": true
+    },
+    "resume_chat": {
+      "status": 200,
+      "reply": "List watering schedule"
+    },
+    "history_count": 4,
+    "calc_without_auth": {
+      "status": 200,
+      "tools": [],
+      "error": null,
+      "reply": "The labor cost for 2 painters working 1 day 8 hours is not available due to lack of USD hourly-rate memory."
+    },
+    "rollover_turn": 0,
+    "rollover": true,
+    "malicious_history": {
+      "status": 200,
+      "tools": []
+    }
+  },
+  "conversation_id": "conv_203892067ccd4e1f",
+  "ok": true
+}

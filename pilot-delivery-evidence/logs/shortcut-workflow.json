@@ -1,0 +1,17 @@
+{
+  "tested_via": "desktop_shortcut",
+  "source_sha": "6b03b7d645e092c336564fb65bf2d5339a047c8e",
+  "data_root": "C:\\Users\\Owner\\Elysia-Verified-Pilot-Data",
+  "memory_filepath": "C:\\Users\\Owner\\Elysia-Verified-Pilot-Data\\memory\\guardian_memory.json",
+  "fact_id": "fact_bd8d50e0d5484d2f",
+  "unique_fact_ids": 1,
+  "fact_ids": [
+    "fact_bd8d50e0d5484d2f"
+  ],
+  "recall_current": "Mistvale",
+  "history_revisions": 2,
+  "duplicates": false,
+  "preferred_port": 5065,
+  "shortcut": "C:\\Users\\Owner\\Desktop\\Elysia Verified Pilot.lnk",
+  "workflow": "PASS"
+}

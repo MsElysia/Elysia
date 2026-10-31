@@ -1,0 +1,96 @@
+{
+  "disposable_root": "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-stepdone-i7igddxi",
+  "port": 5073,
+  "model": "llama3.2:3b",
+  "steps": {
+    "seed": {
+      "revision": 1,
+      "step_ids": [
+        "step_ff81e1e9f05a",
+        "step_96af10f1ff2d",
+        "step_0da275e3123c"
+      ]
+    },
+    "complete_first": {
+      "status": 200,
+      "revision": 2,
+      "next": "Log weather",
+      "advanced": true,
+      "completed": {
+        "completed_utc": "2026-10-29T23:53:29Z",
+        "completion_source": "operator",
+        "description": "Check soil",
+        "step_id": "step_ff81e1e9f05a"
+      }
+    },
+    "idempotent": {
+      "status": 200,
+      "idempotent": true,
+      "revision": 2
+    },
+    "stale": {
+      "status": 409,
+      "stale": true
+    },
+    "preserve_unrelated": {
+      "status": 200,
+      "next": "Inspect fictional compost bin first",
+      "needs_review": true,
+      "advanced": false
+    },
+    "hostile": {
+      "status": 200,
+      "tools": []
+    },
+    "hostile_pending_count": 1,
+    "resume": {
+      "next": "Water plants",
+      "auth": false,
+      "objective": "Complete a fictional garden maintenance checklist"
+    },
+    "after_restart_counts": {
+      "completed": 2,
+      "pending": 1,
+      "next": "Water plants"
+    },
+    "restart_model": {
+      "status": 200,
+      "reply": "The completed steps are Check soil and Log weather. The next pending action is Water plants.",
+      "operator_task": {
+        "advancement_needs_review": false,
+        "authoritative": true,
+        "checkpoint_revision": 5,
+        "completed_steps": [
+          {
+            "completion_source": "operator",
+            "description": "Check soil",
+            "step_id": "step_ff81e1e9f05a"
+          },
+          {
+            "completion_source": "operator",
+            "description": "Log weather",
+            "step_id": "step_96af10f1ff2d"
+          }
+        ],
+        "next_safe_action": "Water plants",
+        "outstanding_steps": [
+          "Water plants"
+        ],
+        "pending_steps": [
+          {
+            "description": "Water plants",
+            "step_id": "step_0da275e3123c"
+          }
+        ],
+        "source": "operator"
+      }
+    },
+    "last_complete": {
+      "status": 200,
+      "next": "No outstanding steps",
+      "outstanding": []
+    }
+  },
+  "conversation_id": "conv_b68dffb394814137",
+  "ok": true
+}

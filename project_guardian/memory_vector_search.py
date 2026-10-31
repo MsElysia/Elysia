@@ -1,6 +1,7 @@
 # project_guardian/memory_vector_search.py
 # Memory Vector Search: Semantic Memory Retrieval
 # Adds vector search capabilities to MemoryCore for better context retrieval
+from __future__ import annotations
 
 import logging
 import json

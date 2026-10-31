@@ -1,0 +1,95 @@
+{
+  "disposable_root": "elysia-extract-5isx9jrm",
+  "port": 5079,
+  "model": "llama3.2:3b",
+  "scenarios": {
+    "plan_propose": {
+      "status": 200,
+      "caps": [
+        "compose.extract_fields",
+        "compose.aggregate_usd"
+      ],
+      "executable": false
+    },
+    "A_event": {
+      "status": 200,
+      "event_name": "Harbor Community Potluck",
+      "event_date_status": "ambiguous",
+      "venue": "East Pier Hall",
+      "span": "Venue: East Pier Hall"
+    },
+    "B_inventory": {
+      "status": 200,
+      "unit_price": "40.00",
+      "total": "55.00",
+      "not_confused": true
+    },
+    "F_connected": {
+      "status": 200,
+      "subtotal": "55.00",
+      "preview": "DRAFT / NOT APPROVED FOR CUSTOMER DELIVERY\n\nThe verified aggregate contains the following information:\n\n- Shipping cost: $15.00\n- Unit price: $40.00\n\nThe source evidence for the shipping cost is:\n\n- stock.md\n\nThe source evidence for the unit price is:\n\n- stock.md\n\nMissing information includes:\n\n- Cost categories\n\nThe subtotal USD is $55.00.",
+      "has_subtotal": true,
+      "ollama_attempted": true
+    },
+    "C_technical": {
+      "status": 200,
+      "diameter": {
+        "unit": "mm",
+        "value": "12.5"
+      },
+      "unit": "mm"
+    },
+    "D_research": {
+      "status": 200,
+      "status_field": "conflicting",
+      "candidates": [
+        {
+          "normalized": {
+            "unit": "mm",
+            "value": "82.4"
+          },
+          "original": "82.4 mm",
+          "source_document": "study-a.md",
+          "source_span": "Mean wing length: 82.4 mm"
+        },
+        {
+          "normalized": {
+            "unit": "mm",
+            "value": "79.1"
+          },
+          "original": "79.1 mm",
+          "source_document": "study-b.md",
+          "source_span": "Mean wing length: 79.1 mm"
+        }
+      ]
+    },
+    "E_library": {
+      "status": 200,
+      "fine": "3.50",
+      "due": "2026-11-02",
+      "status_val": "open",
+      "no_domain_module": true
+    },
+    "F_restart": {
+      "authorization_inherited": false
+    },
+    "stale_invalidation": {
+      "status": 200,
+      "stale_ids": null
+    }
+  },
+  "security": {
+    "extract_unauthorized": {
+      "status": 403
+    },
+    "extract_duplicate": {
+      "status": 200,
+      "idempotent": true
+    },
+    "stale_revision": {
+      "status": 409,
+      "error": "stale task edit: expected revision 4, current is 9"
+    }
+  },
+  "ok": true
+}

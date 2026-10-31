@@ -1,0 +1,118 @@
+{
+  "disposable_root": "elysia-multi-estimate-xnkfif_f",
+  "fixtures_folder": "construction-estimates",
+  "port": 5077,
+  "model": "llama3.2:3b",
+  "steps": {
+    "model_docs_capability": {
+      "status": 200,
+      "reply": "local.documents.search"
+    },
+    "unauthorized_docs": {
+      "status": 403,
+      "error": "document search not authorized for this request"
+    },
+    "materials": {
+      "status": 200,
+      "amount": "482.50",
+      "source": "paint-estimate-duration.md",
+      "next": "Calculate labor requirements"
+    },
+    "model_labor_capability": {
+      "status": 200,
+      "reply": "calculator.labor"
+    },
+    "unauthorized_calc": {
+      "status": 403
+    },
+    "labor": {
+      "status": 200,
+      "result": "1680",
+      "next": "Combine verified materials and labor"
+    },
+    "assemble": {
+      "status": 200,
+      "subtotal": "2162.50",
+      "components": {
+        "labor": "1680.00",
+        "materials": "482.50",
+        "materials_plus_labor_subtotal": "2162.50"
+      },
+      "bundle": {
+        "approved": false,
+        "components": {
+          "labor": "1680.00",
+          "materials": "482.50",
+          "materials_plus_labor_subtotal": "2162.50"
+        },
+        "execution_id": "exec_cccccccccccccccc",
+        "inputs": {
+          "labor": {
+            "amount_usd": "1680.00",
+            "capability": "calculator.labor",
+            "execution_receipt_id": "exec_bbbbbbbbbbbbbbbb",
+            "source_fingerprint": null,
+            "source_reference": null,
+            "step_id": "step_f4394d2ddf0f",
+            "verification_state": "verified"
+          },
+          "material": {
+            "amount_usd": "482.50",
+            "capability": "local.documents.search",
+            "execution_receipt_id": "exec_aaaaaaaaaaaaaaaa",
+            "source_fingerprint": "6e135e187a0b5e79",
+            "source_reference": "paint-estimate-duration.md",
+            "step_id": "step_55c81c93b3b9",
+            "verification_state": "verified"
+          }
+        },
+        "missing_cost_categories": [
+          "markup / profit",
+          "taxes",
+          "overhead",
+          "equipment rental",
+          "contingency",
+          "permits / fees"
+        ],
+        "schema": "elysia.estimate-bundle.v1",
+        "subtotal_usd": "2162.50",
+        "updated_utc": "2026-10-30T11:57:41Z"
+      }
+    },
+    "duplicate_assemble": {
+      "status": 200,
+      "idempotent": true
+    },
+    "draft": {
+      "status": 200,
+      "verified": true,
+      "sha": "e2b05632abc4175a47e5bb4bfbb928674eed7590301bc98878e054569ba3baf8",
+      "preview": "DRAFT / NOT APPROVED FOR CUSTOMER DELIVERY\n\nProject Description: Fictional painting estimate for exterior paint job.\n\nScope: Limited to materials and labor only.\n\nMaterials:\n  - Materials: $482.50 (source: paint-estimate-duration.md)\n\nLabor:\n  - Labor: $1680.00 (source: calculator.labor)\n\nSummary:\n  - Total: $2162.50 (materials + labor subtotal)\n  - Subtotal: $2162.50 (materials + labor subtotal, not a final customer bid)\n  - Missing Cost Categories: Markup / profit, taxes, overhead, equipment rental, contingency, permits / fees\n  - Assumptions Requiring Operator Review: None\n\nSources:\n  - paint-estimate-duration.md\n  - calculator.labor",
+      "approved": false
+    },
+    "injection": {
+      "status": 403,
+      "tools": []
+    },
+    "after_restart": {
+      "authorization_inherited": false,
+      "next": "No outstanding steps"
+    },
+    "restart_model": {
+      "status": 200,
+      "success": true,
+      "reply": "The subtotal USD is $2162.50, draft.approved is false, and one missing cost category is markup / profit."
+    },
+    "post_restart_no_auth": {
+      "status": 409,
+      "error": "stale task edit: expected revision 9, current is 10"
+    }
+  },
+  "windows_security": {
+    "symlink_file": "unverified (prior cycle privilege skip)",
+    "symlink_dir": "unverified (prior cycle privilege skip)",
+    "junction": "fail-closed reparse handling preserved"
+  },
+  "conversation_id": "conv_49da4e5791d64f45",
+  "ok": true
+}

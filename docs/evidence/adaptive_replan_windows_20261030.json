@@ -1,0 +1,107 @@
+{
+  "disposable_root": "elysia-replan-rup2dnmh",
+  "port": 5081,
+  "model": "llama3.2:3b",
+  "scenarios": {
+    "E_unfamiliar_initial_plan": {
+      "status": 200,
+      "objective": "Identify apple variety name from orchard notes and confirm against source text for a fictional planting ledger",
+      "steps": [
+        {
+          "capability": "compose.extract_fields",
+          "expected_outcome": "Extracted apple variety name"
+        },
+        {
+          "capability": "local.documents.search",
+          "expected_outcome": "Authorized orchard notes retrieved"
+        },
+        {
+          "capability": "compose.extract_fields",
+          "expected_outcome": "Extracted apple variety name"
+        },
+        {
+          "capability": "compose.synthesize",
+          "expected_outcome": "Confirmed apple variety name against source text"
+        }
+      ],
+      "executable": false,
+      "authorization_inherited": false,
+      "ollama": true
+    },
+    "A_missing_information": {
+      "status": 200,
+      "category": "tool_ok_insufficient_evidence",
+      "met": false,
+      "reason": "tool succeeded but evidence criteria were unmet",
+      "replanning_recommended": true
+    },
+    "F_revised_plan": {
+      "status": 200,
+      "failure_category": "tool_ok_insufficient_evidence",
+      "revision_reason": "Replan due to insufficient evidence",
+      "steps": [
+        {
+          "capability": "compose.extract_fields",
+          "expected_outcome": "Extracted apple variety name",
+          "notes": ""
+        },
+        {
+          "capability": "local.documents.search",
+          "expected_outcome": "Verified source text for apple variety name",
+          "notes": ""
+        },
+        {
+          "capability": "compose.synthesize",
+          "expected_outcome": "Grounded summary/comparison/draft for apple variety name",
+          "notes": ""
+        }
+      ],
+      "executable": false,
+      "authorization_granted": false,
+      "ollama": true
+    },
+    "F_alternative_execution": {
+      "status": 200,
+      "verified": true,
+      "authorization_inherited": false
+    },
+    "F_restart": {
+      "status": 200,
+      "authorization_inherited": false,
+      "attempt_count": 1,
+      "completed_verified": 1,
+      "failed_attempts_preserved": 1
+    },
+    "B_conflicting_evidence": {
+      "status": 200,
+      "category": "conflicting_evidence",
+      "met": false,
+      "reason": "conflicting observations retained: mean_salinity"
+    },
+    "C_unavailable_capability": {
+      "replan_api_status": 409,
+      "replan_error": "unavailable_capability",
+      "blocker": true,
+      "authorization_granted": false
+    },
+    "D_invalid_intermediate": {
+      "bind_status": 200,
+      "execute_status": 400,
+      "error": "compose.aggregate_usd failed: upstream step not found: step_deadbeef0001",
+      "verified": null
+    }
+  },
+  "security": {
+    "replan_no_execution_auth": {
+      "status": 403,
+      "error": "document search not authorized for this request"
+    },
+    "prompt_injection_in_source": {
+      "document_contains_auth_claim": true,
+      "replan_authorization_granted": false,
+      "execute_without_flag_status": 403
+    }
+  },
+  "backup_note": "Updated checkpoint bundle on D:\\ElysiaBackups\\windows-intel-checkpoint-extract-records-20261030 (source SHA 1a1af2e)",
+  "ok": true
+}

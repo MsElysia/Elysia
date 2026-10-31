@@ -1,0 +1,64 @@
+{
+  "disposable_root": "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-auth-exec-7p_m5yr1",
+  "port": 5074,
+  "model": "llama3.2:3b",
+  "steps": {
+    "bind": {
+      "status": 200,
+      "revision": 2
+    },
+    "model_proposal": {
+      "status": 200,
+      "reply": "calculator.labor"
+    },
+    "unauthorized": {
+      "status": 403,
+      "error": "calculator execution not authorized for this request"
+    },
+    "authorized_execute": {
+      "status": 200,
+      "result": "1680",
+      "revision": 3,
+      "next": "Draft materials note",
+      "advanced": true
+    },
+    "duplicate": {
+      "status": 200,
+      "idempotent": true,
+      "revision": 3
+    },
+    "stale": {
+      "status": 409,
+      "stale": true
+    },
+    "malicious": {
+      "status": 200,
+      "tools": []
+    },
+    "reopen": {
+      "status": 200,
+      "status_after": [
+        "pending"
+      ],
+      "receipt": [
+        "exec_ffffffffffffffff"
+      ]
+    },
+    "reexecute": {
+      "result": "1680",
+      "history_len": 3
+    },
+    "after_restart": {
+      "status": "completed",
+      "result": "1680",
+      "next": "Draft materials note",
+      "auth": false
+    },
+    "restart_model": {
+      "status": 200,
+      "reply": "The verified labor total recorded is $1680, and the next pending step is to Draft materials note."
+    }
+  },
+  "conversation_id": "conv_c70cb50e19ac4f1e",
+  "ok": true
+}

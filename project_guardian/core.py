@@ -193,13 +193,18 @@ class GuardianCore:
         self.mutations_dir = Path(mutations_dir) if mutations_dir else project_root / "MUTATIONS"
         
         # Load API keys from project "API keys" folder so validation and LLM work (backend or interface)
-        self._load_api_keys_from_folder(project_root)
+        # Contained / acceptance startups set _skip_api_key_load to avoid reading credentials.
+        if not self.config.get("_skip_api_key_load", False):
+            self._load_api_keys_from_folder(project_root)
+        else:
+            logger.info("[Startup] Skipping API key folder load (_skip_api_key_load=True)")
         
         # Validate configuration early
         self._validate_configuration()
 
         # Shared timeline before memory (MemoryCore / ElysiaLoop use same instance)
-        self.timeline = TimelineMemory()
+        timeline_db = self.config.get("timeline_db_path", "elysia_timeline.db")
+        self.timeline = TimelineMemory(db_path=str(timeline_db))
         self._defer_heavy_startup = self.config.get("defer_heavy_startup", True)
         self.deferred_init_started = False
         self.deferred_init_running = False
@@ -328,8 +333,16 @@ class GuardianCore:
         from .review_queue import ReviewQueue
         from .approval_store import ApprovalStore
         project_root = Path(__file__).parent.parent
-        review_queue = ReviewQueue(queue_file=project_root / "REPORTS" / "review_queue.jsonl", memory=self.memory)
-        approval_store = ApprovalStore(store_file=project_root / "REPORTS" / "approval_store.json")
+        # Contained startups may redirect these under a disposable root via config.
+        _rq = self.config.get("review_queue_file")
+        _as = self.config.get("approval_store_file")
+        review_queue = ReviewQueue(
+            queue_file=Path(_rq) if _rq else project_root / "REPORTS" / "review_queue.jsonl",
+            memory=self.memory,
+        )
+        approval_store = ApprovalStore(
+            store_file=Path(_as) if _as else project_root / "REPORTS" / "approval_store.json"
+        )
         self.review_queue = review_queue
         self.approval_store = approval_store
         
@@ -491,7 +504,12 @@ class GuardianCore:
         self._adversarial_priority_penalty = 0.0
         self._get_next_action_lock = threading.Lock()  # UI + heartbeat may call concurrently
         from .capability_registry import CapabilityRegistry
-        self._orchestration_registry = CapabilityRegistry()
+        _cap_data = self.config.get("capability_data_dir") or (
+            str(Path(self.config["storage_path"]) / "data")
+            if self.config.get("storage_path")
+            else None
+        )
+        self._orchestration_registry = CapabilityRegistry(data_dir=_cap_data)
         self._self_task_low_confidence_streak = 0
         self._nonadv_action_streak: Dict[str, int] = {}
         self._nonadv_penalty_until: Dict[str, float] = {}
@@ -515,10 +533,23 @@ class GuardianCore:
             module_registry=self.module_registry
         )
         
-        # Initialize TrustEval system
-        self.trust_policy = TrustPolicyManager()
-        self.trust_audit = TrustAuditLog()
-        self.trust_escalation = TrustEscalationHandler(self.trust_audit)
+        # Initialize TrustEval system (paths overridable for contained startups)
+        self.trust_policy = TrustPolicyManager(
+            storage_path=str(
+                self.config.get("trust_policy_path", "data/trust_policies.json")
+            )
+        )
+        self.trust_audit = TrustAuditLog(
+            storage_path=str(
+                self.config.get("trust_audit_path", "data/trust_audit_log.json")
+            )
+        )
+        self.trust_escalation = TrustEscalationHandler(
+            self.trust_audit,
+            storage_path=str(
+                self.config.get("trust_escalation_path", "data/escalation_queue.json")
+            ),
+        )
         self.trust_eval_action = TrustEvalAction(
             policy_manager=self.trust_policy,
             audit_logger=self.trust_audit,
@@ -687,6 +718,15 @@ class GuardianCore:
     def _want_mistral_planner_startup_probe(self) -> bool:
         """True when config enables Mistral decider / autonomy engine (Ollama planner may run)."""
         try:
+            override = self.config.get("autonomy_config")
+            if isinstance(override, dict):
+                if not override.get("enabled", True):
+                    return False
+                if not override.get("use_mistral_decision_engine", False):
+                    return False
+                return True
+            if self.config.get("_skip_api_key_load") or self.config.get("contained_startup"):
+                return False
             root = Path(__file__).parent.parent
             auto_path = root / "config" / "autonomy.json"
             dec_path = root / "config" / "mistral_decider.json"
@@ -729,9 +769,23 @@ class GuardianCore:
         self.trust.update_trust("safety_engine", 0.9, "Critical safety component")
         self.trust.update_trust("mutation_engine", 0.7, "Requires careful monitoring")
         
-        # Start monitoring (with singleton guard to prevent duplicate starts)
-        from .guardian_singleton import ensure_monitoring_started
-        ensure_monitoring_started(self)
+        # Start monitoring (with singleton guard to prevent duplicate starts).
+        # Contained startups set start_background_workers=False and disable
+        # resource/runtime monitoring so no privileged worker threads begin here.
+        start_background = self.config.get("start_background_workers")
+        if start_background is None:
+            start_background = bool(
+                self.config.get("enable_resource_monitoring", True)
+                or self.config.get("enable_runtime_health_monitoring", True)
+            )
+        if start_background:
+            from .guardian_singleton import ensure_monitoring_started
+            ensure_monitoring_started(self)
+        else:
+            logger.info(
+                "[Startup] Skipping ensure_monitoring_started "
+                "(start_background_workers disabled)"
+            )
 
         # Planner readiness: sync Ollama tags + canonical model + health (when Mistral decider may run)
         try:
@@ -3417,7 +3471,16 @@ class GuardianCore:
         }
 
     def _load_autonomy_config(self) -> Dict[str, Any]:
-        """Load config/autonomy.json."""
+        """Load config/autonomy.json, or an explicit in-memory autonomy_config override."""
+        override = self.config.get("autonomy_config")
+        if isinstance(override, dict):
+            cfg = dict(override)
+            mh = cfg.get("max_actions_per_hour")
+            if cfg.get("enabled", True) and (
+                mh is None or not isinstance(mh, int) or mh < 1 or mh > 60
+            ):
+                cfg["max_actions_per_hour"] = 6
+            return cfg
         cfg_path = Path(__file__).parent.parent / "config" / "autonomy.json"
         if cfg_path.exists():
             try:
@@ -7377,6 +7440,8 @@ class GuardianCore:
     
     def _load_api_keys_from_folder(self, project_root: Path) -> None:
         """Load API keys from project's 'API keys' folder into os.environ so validation and LLM see them."""
+        if self.config.get("_skip_api_key_load", False):
+            return
         api_keys_dir = project_root / "API keys"
         if not api_keys_dir.exists():
             return
@@ -7413,7 +7478,14 @@ class GuardianCore:
         """
         try:
             config_path = self.config.get("config_path")
-            validator = ConfigValidator(config_path=config_path)
+            # Contained startups must not probe/write the repo ./data directory.
+            data_dir = None
+            storage = self.config.get("storage_path")
+            if storage:
+                data_dir = str(Path(storage) / "data")
+            elif self.config.get("contained_startup"):
+                data_dir = str(Path(self.config.get("disposable_root", ".")) / "data")
+            validator = ConfigValidator(config_path=config_path, data_dir=data_dir)
             results = validator.validate_all()
             
             # Store validation results

@@ -1,0 +1,232 @@
+{
+  "platform": "win32",
+  "model": "llama3.2:3b",
+  "port": 5068,
+  "acceptance": {
+    "A": {
+      "result": "PASS",
+      "html_has_panel": true,
+      "capability_count": 18
+    },
+    "B": {
+      "result": "PASS",
+      "local_model": {
+        "configured": true,
+        "endpoint": "http://127.0.0.1:11434",
+        "error": null,
+        "installed": true,
+        "installed_models": [
+          "llama3.2:3b",
+          "qwen3:4b"
+        ],
+        "model": "llama3.2:3b",
+        "reachable": true
+      }
+    },
+    "C": {
+      "result": "PASS",
+      "memory.retrieve": {
+        "authorized": true,
+        "available": true,
+        "category": "memory",
+        "cost_category": "none",
+        "dependencies": [
+          "restricted_runtime_adapter",
+          "MemoryCore"
+        ],
+        "description": "Retrieve current restricted facts with different wording.",
+        "executable_binding": false,
+        "execution": "local",
+        "id": "memory.retrieve",
+        "installed": true,
+        "last_verified_utc": "2026-10-29T22:15:21Z",
+        "model_selectable": true,
+        "name": "Durable memory retrieval",
+        "operational": null,
+        "permission_mode": "allowed",
+        "required_scope": "memory.read",
+        "safe_next_action": "Use Retrieve on the Memory tab or Ask local model",
+        "unavailable_reason": null
+      }
+    },
+    "D": {
+      "result": "PASS",
+      "calculator": {
+        "authorized": false,
+        "available": true,
+        "category": "tools",
+        "cost_category": "no paid calls permitted",
+        "dependencies": [
+          "local_ollama",
+          "tool_registry_projection",
+          "usd_hourly_rate_memory"
+        ],
+        "description": "Estimate labor using a current USD hourly-rate memory",
+        "executable_binding": true,
+        "execution": "local",
+        "id": "tools.calculator.labor",
+        "installed": true,
+        "last_verified_utc": "2026-10-29T22:15:21Z",
+        "model_selectable": true,
+        "name": "Labor calculator",
+        "operational": null,
+        "permission_mode": "per_request",
+        "required_scope": "calculator.execute",
+        "safe_next_action": "Check Allow the labor calculator, then ask a labor estimate",
+        "unavailable_reason": "Operator authorization required for this request"
+      }
+    },
+    "E": {
+      "result": "PASS",
+      "rows": {
+        "tools.email": {
+          "authorized": false,
+          "available": false,
+          "category": "tools",
+          "cost_category": "no paid calls permitted",
+          "dependencies": [
+            "tool_registry_projection"
+          ],
+          "description": "Search authorized email without sending",
+          "executable_binding": false,
+          "execution": "none",
+          "id": "tools.email",
+          "installed": true,
+          "last_verified_utc": "2026-10-29T22:15:21Z",
+          "model_selectable": true,
+          "name": "Email search",
+          "operational": null,
+          "permission_mode": "unavailable",
+          "required_scope": "email.read",
+          "safe_next_action": "Do not expect this tool to run in the current pilot",
+          "unavailable_reason": "separate integration required"
+        },
+        "tools.web_search": {
+          "authorized": false,
+          "available": false,
+          "category": "tools",
+          "cost_category": "no paid calls permitted",
+          "dependencies": [
+            "tool_registry_projection"
+          ],
+          "description": "Search the web without external writes",
+          "executable_binding": false,
+          "execution": "none",
+          "id": "tools.web_search",
+          "installed": true,
+          "last_verified_utc": "2026-10-29T22:15:21Z",
+          "model_selectable": true,
+          "name": "Web search",
+          "operational": null,
+          "permission_mode": "unavailable",
+          "required_scope": "web.read",
+          "safe_next_action": "Do not expect this tool to run in the current pilot",
+          "unavailable_reason": "separate integration required"
+        },
+        "tools.finance": {
+          "authorized": false,
+          "available": false,
+          "category": "tools",
+          "cost_category": "no paid calls permitted",
+          "dependencies": [
+            "tool_registry_projection"
+          ],
+          "description": "Summarize an authorized finance snapshot",
+          "executable_binding": false,
+          "execution": "none",
+          "id": "tools.finance",
+          "installed": true,
+          "last_verified_utc": "2026-10-29T22:15:21Z",
+          "model_selectable": true,
+          "name": "Finance summary",
+          "operational": null,
+          "permission_mode": "unavailable",
+          "required_scope": "finance.read",
+          "safe_next_action": "Do not expect this tool to run in the current pilot",
+          "unavailable_reason": "separate integration required"
+        },
+        "tools.calendar": {
+          "authorized": false,
+          "available": false,
+          "category": "tools",
+          "cost_category": "no paid calls permitted",
+          "dependencies": [
+            "tool_registry_projection"
+          ],
+          "description": "Read an authorized calendar",
+          "executable_binding": false,
+          "execution": "none",
+          "id": "tools.calendar",
+          "installed": true,
+          "last_verified_utc": "2026-10-29T22:15:21Z",
+          "model_selectable": true,
+          "name": "Calendar",
+          "operational": null,
+          "permission_mode": "unavailable",
+          "required_scope": "calendar.read",
+          "safe_next_action": "Do not expect this tool to run in the current pilot",
+          "unavailable_reason": "separate integration required"
+        }
+      }
+    },
+    "F": {
+      "result": "PASS",
+      "dead_endpoint_failed": true,
+      "memory_provider": "restricted-memory",
+      "memory_status": 200
+    },
+    "G": {
+      "result": "PASS",
+      "local_model": {
+        "configured": true,
+        "endpoint": "http://127.0.0.1:11434",
+        "error": null,
+        "installed": true,
+        "installed_models": [
+          "llama3.2:3b",
+          "qwen3:4b"
+        ],
+        "model": "llama3.2:3b",
+        "reachable": true
+      }
+    },
+    "H": {
+      "result": "PASS",
+      "status": 200,
+      "tools_executed": [],
+      "success": true,
+      "error": null
+    },
+    "I": {
+      "result": "PASS",
+      "autonomy": {
+        "authorized": false,
+        "available": false,
+        "category": "system",
+        "cost_category": "none",
+        "dependencies": [
+          "autonomy_config",
+          "privileged_control_gate"
+        ],
+        "description": "Unattended autonomy / execute-cycle privileged control.",
+        "executable_binding": false,
+        "execution": "local",
+        "id": "system.autonomy",
+        "installed": true,
+        "last_verified_utc": "2026-10-29T22:15:21Z",
+        "model_selectable": false,
+        "name": "Autonomous execution",
+        "operational": false,
+        "permission_mode": "disabled",
+        "required_scope": null,
+        "safe_next_action": "Do not enable autonomy from this panel",
+        "unavailable_reason": "Autonomy remains disabled; dashboard cannot enable it."
+      },
+      "note": "Focused+pilot pytest run separately in completion evidence"
+    },
+    "J": {
+      "result": "PASS"
+    }
+  },
+  "disposable_store": "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-cap-aware-accept-jd7l8ryu"
+}

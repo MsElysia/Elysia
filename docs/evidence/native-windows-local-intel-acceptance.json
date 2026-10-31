@@ -1,0 +1,165 @@
+{
+  "platform": "win32",
+  "model": "llama3.2:3b",
+  "port": 5067,
+  "acceptance": {
+    "A": {
+      "result": "PASS",
+      "status": 200,
+      "model": "llama3.2:3b",
+      "provider": "local-ollama",
+      "reply_excerpt": "Clockwork Quor"
+    },
+    "B": {
+      "result": "PASS",
+      "fact_id": "fact_34128c0be7224934",
+      "status": 200,
+      "evidence_count": 1,
+      "reply_excerpt": "The fictional river Zyphora"
+    },
+    "C": {
+      "result": "PASS",
+      "history_revisions": 2,
+      "reply_excerpt": "The fictional river Zyphora's bridges are made of crystal.",
+      "evidence": [
+        {
+          "chunk_id": "fact_34128c0be7224934",
+          "highlights": [
+            {
+              "highlight_id": "fact_34128c0be7224934:r2",
+              "text": "The fictional river Zyphora flows under crystal bridges."
+            }
+          ],
+          "matched_tokens": [
+            "bridges",
+            "zyphora"
+          ],
+          "revision": 2,
+          "score": 0.7,
+          "source_id": "fact_34128c0be7224934",
+          "source_sha256": "ac740b0ec3d01bc625655c0b95394af3e18a33270521e2a8347c0da405c5eafa"
+        }
+      ]
+    },
+    "D": {
+      "result": "PASS",
+      "rate_fact_id": "fact_846e4e6fd03c4174",
+      "unauthorized": {
+        "status": 200,
+        "success": true,
+        "tools_executed": [],
+        "error": null,
+        "reply_excerpt": "The fictional labor rate of USD 35 per hour is not a valid source. The calculator.labor tool requires a current USD hourly-rate memory. The labor expense for two painters working three eight-hour days can be estimated using the calculator.labor tool with the current USD/hour memory."
+      },
+      "authorized": {
+        "status": 200,
+        "success": true,
+        "calculation_verified": true,
+        "tools_executed": [
+          {
+            "arguments": {
+              "days": 3,
+              "hours_per_day": 8,
+              "painters": 2,
+              "rate_source_id": "fact_846e4e6fd03c4174"
+            },
+            "currency": "USD",
+            "expression": "35 * 2 * 3 * 8",
+            "name": "calculator.labor",
+            "result": "1680",
+            "revision": 1,
+            "source_id": "fact_846e4e6fd03c4174"
+          }
+        ],
+        "error": null,
+        "reply_excerpt": "Labor expense: USD 1680. Assumptions: 2 painters \u00d7 3 days \u00d7 8 hours/day \u00d7 USD 35/hour. Labor only; excludes materials, overtime and taxes. Memory source: fact_846e4e6fd03c4174, revision 1."
+      },
+      "denied_without_execution": true
+    },
+    "E": {
+      "result": "PASS",
+      "nonexistent": {
+        "error": "tool refused: teleport.moon: unknown_tool",
+        "executable": false,
+        "memory_written": false,
+        "name": "teleport.moon",
+        "ok": false,
+        "provider": "none",
+        "refused": true,
+        "reply": null,
+        "status": "unknown_tool",
+        "success": false,
+        "tools_executed": []
+      },
+      "email_web": {
+        "status": 403,
+        "body": {
+          "error": "tool refused: email.search: unavailable",
+          "executable": false,
+          "memory_written": false,
+          "name": "email.search",
+          "ok": false,
+          "provider": "none",
+          "refused": true,
+          "reply": null,
+          "status": "unavailable",
+          "success": false,
+          "tools_executed": []
+        }
+      }
+    },
+    "F": {
+      "result": "PASS",
+      "dead_endpoint_failed": true,
+      "memory_lookup_ok": true,
+      "recovery_reply": "RECOVERED",
+      "note": "Did not stop the shared Ollama service; used closed loopback port for fail-closed proof."
+    },
+    "G": {
+      "result": "PASS",
+      "status": 403,
+      "refused": true,
+      "tools_executed": [],
+      "memory_written": false,
+      "reply_excerpt": "tool refused: shell.execute: unknown_tool"
+    },
+    "H": {
+      "result": "PASS",
+      "provider": "restricted-memory",
+      "reply_excerpt": "Durable facts:\nfact_846e4e6fd03c4174 revision 1: Fictional labor rate is USD 35 per hour.",
+      "note": "Launcher/single-instance checks covered by existing pilot tests; this checks chat/memory path."
+    },
+    "I": {
+      "result": "PASS",
+      "cloud_fallback": false,
+      "disposable_store": "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-local-intel-accept-9l39n3hk",
+      "preserved_pilot_untouched": true,
+      "ports_avoided": [
+        5065,
+        5066
+      ],
+      "credentials_changed": false,
+      "autonomy_enabled": false
+    }
+  },
+  "commands": [
+    [
+      "C:\\Users\\Owner\\Project guardian\\.venv\\Scripts\\python.exe",
+      "C:\\Users\\Owner\\Project guardian\\.worktrees\\windows-local-intel-20261029\\scripts\\start_contained_browser_memory.py",
+      "--disposable-root",
+      "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-local-intel-accept-9l39n3hk",
+      "--enable-ui",
+      "--auto-start-ui",
+      "--ui-host",
+      "127.0.0.1",
+      "--ui-port",
+      "5067",
+      "--keep-alive"
+    ]
+  ],
+  "ollama_installed_models": [
+    "llama3.2:3b",
+    "qwen3:4b"
+  ],
+  "disposable_store": "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-local-intel-accept-9l39n3hk"
+}

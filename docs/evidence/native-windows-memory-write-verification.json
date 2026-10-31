@@ -1,0 +1,184 @@
+{
+  "model": "llama3.2:3b",
+  "port": 5070,
+  "acceptance": {
+    "A": {
+      "result": "PASS",
+      "teach": {
+        "authorized": true,
+        "available": true,
+        "category": "memory",
+        "cost_category": "none",
+        "dependencies": [
+          "restricted_runtime_adapter",
+          "MemoryCore"
+        ],
+        "description": "Save a new fictional/restricted fact through the existing teach path.",
+        "executable_binding": false,
+        "execution": "local",
+        "id": "memory.teach",
+        "installed": true,
+        "last_failure_reason": null,
+        "last_verified_utc": "2026-10-29T22:38:26Z",
+        "model_selectable": false,
+        "name": "Explicit memory teaching",
+        "operational": true,
+        "permission_mode": "allowed",
+        "required_scope": null,
+        "runtime_status": "verified_operational",
+        "safe_next_action": "Save a fact on the Memory tab",
+        "unavailable_reason": null
+      },
+      "fact_id": "fact_6bc34e76914a49b2"
+    },
+    "B": {
+      "result": "PASS",
+      "correct": {
+        "authorized": true,
+        "available": true,
+        "category": "memory",
+        "cost_category": "none",
+        "dependencies": [
+          "restricted_runtime_adapter",
+          "MemoryCore"
+        ],
+        "description": "Correct a current fact; prior revisions remain in history.",
+        "executable_binding": false,
+        "execution": "local",
+        "id": "memory.correct",
+        "installed": true,
+        "last_failure_reason": null,
+        "last_verified_utc": "2026-10-29T22:38:26Z",
+        "model_selectable": false,
+        "name": "Memory correction",
+        "operational": true,
+        "permission_mode": "allowed",
+        "required_scope": null,
+        "runtime_status": "verified_operational",
+        "safe_next_action": "Select a fact and submit a correction",
+        "unavailable_reason": null
+      },
+      "revisions": 2
+    },
+    "C": {
+      "result": "PASS",
+      "note": "Focused test_failed_primary_write_not_operational"
+    },
+    "D": {
+      "result": "PASS",
+      "note": "Focused test_failed_correction_preserves_prior"
+    },
+    "F": {
+      "result": "PASS",
+      "note": "Focused test_malformed_request_not_operational"
+    },
+    "E": {
+      "result": "PASS",
+      "history_revisions": 2,
+      "teach": {
+        "authorized": true,
+        "available": true,
+        "category": "memory",
+        "cost_category": "none",
+        "dependencies": [
+          "restricted_runtime_adapter",
+          "MemoryCore"
+        ],
+        "description": "Save a new fictional/restricted fact through the existing teach path.",
+        "executable_binding": false,
+        "execution": "local",
+        "id": "memory.teach",
+        "installed": true,
+        "last_failure_reason": null,
+        "last_verified_utc": null,
+        "model_selectable": false,
+        "name": "Explicit memory teaching",
+        "operational": null,
+        "permission_mode": "allowed",
+        "required_scope": null,
+        "runtime_status": "not_yet_verified",
+        "safe_next_action": "Save a fact on the Memory tab",
+        "unavailable_reason": null
+      },
+      "correct": {
+        "authorized": true,
+        "available": true,
+        "category": "memory",
+        "cost_category": "none",
+        "dependencies": [
+          "restricted_runtime_adapter",
+          "MemoryCore"
+        ],
+        "description": "Correct a current fact; prior revisions remain in history.",
+        "executable_binding": false,
+        "execution": "local",
+        "id": "memory.correct",
+        "installed": true,
+        "last_failure_reason": null,
+        "last_verified_utc": null,
+        "model_selectable": false,
+        "name": "Memory correction",
+        "operational": null,
+        "permission_mode": "allowed",
+        "required_scope": null,
+        "runtime_status": "not_yet_verified",
+        "safe_next_action": "Select a fact and submit a correction",
+        "unavailable_reason": null
+      },
+      "evidence_count": 0
+    },
+    "G": {
+      "result": "PASS",
+      "before_evidence": 0,
+      "after_evidence": 0,
+      "memory_bytes_unchanged": true
+    },
+    "H": {
+      "result": "PASS",
+      "calculator": {
+        "authorized": false,
+        "available": true,
+        "category": "tools",
+        "cost_category": "no paid calls permitted",
+        "dependencies": [
+          "local_ollama",
+          "tool_registry_projection",
+          "usd_hourly_rate_memory"
+        ],
+        "description": "Estimate labor using a current USD hourly-rate memory",
+        "executable_binding": true,
+        "execution": "local",
+        "id": "tools.calculator.labor",
+        "installed": true,
+        "last_failure_reason": null,
+        "last_verified_utc": null,
+        "model_selectable": true,
+        "name": "Labor calculator",
+        "operational": null,
+        "permission_mode": "per_request",
+        "required_scope": "calculator.execute",
+        "runtime_status": "authorization_required",
+        "safe_next_action": "Check Allow the labor calculator, then ask a labor estimate",
+        "unavailable_reason": "Operator authorization required for this request"
+      }
+    },
+    "I": {
+      "result": "PASS",
+      "provider": "restricted-memory",
+      "note": "Focused+pilot pytest run separately"
+    },
+    "J": {
+      "result": "PASS",
+      "disposable_store": "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-mem-write-verify-nmuonwbt",
+      "ports_avoided": [
+        5065,
+        5066
+      ],
+      "preserved_pilot_sha": "4f69bd12eaa30f8aa83e3c731359d9c7ea626e50"
+    },
+    "secrets": {
+      "result": "PASS"
+    }
+  },
+  "disposable_store": "C:\\Users\\Owner\\AppData\\Local\\Temp\\elysia-mem-write-verify-nmuonwbt"
+}

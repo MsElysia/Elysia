@@ -239,7 +239,14 @@ class MemoryCore:
             "metadata": metadata or {}
         }
         self.memory_log.append(entry)
-        self._save()
+        try:
+            self._save()
+        except Exception:
+            # Roll back the in-memory append so failed persistence cannot poison
+            # subsequent dedupe / "already in memory" acknowledgements.
+            if self.memory_log and self.memory_log[-1] is entry:
+                self.memory_log.pop()
+            raise
         
         # Add to vector search index (only if embeddings are enabled)
         if self.vector_search and self._embeddings_enabled:
@@ -523,30 +530,52 @@ class MemoryCore:
             os.remove(self.filepath)
         print("[Guardian Memory] All memories cleared.")
         
-    def _save(self) -> None:
+    def _save(self) -> bool:
         """
-        Save memories to JSON file.
+        Atomically save memories to JSON file.
+
+        Writes to a temp file, fsyncs, then os.replace. Returns True only when
+        the durable replace succeeds. Raises RuntimeError after retries so
+        callers (e.g. pilot inbox) cannot treat a failed write as success.
         """
         import time as _time
+        import tempfile
 
         with self._save_file_lock:
             last_err: Optional[Exception] = None
+            directory = os.path.dirname(os.path.abspath(self.filepath)) or "."
+            os.makedirs(directory, exist_ok=True)
             for attempt in range(3):
+                tmp_path = None
                 try:
-                    with open(self.filepath, "w", encoding="utf-8") as f:
+                    fd, tmp_path = tempfile.mkstemp(
+                        prefix=".guardian_memory_",
+                        suffix=".tmp",
+                        dir=directory,
+                    )
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
                         json.dump(self.memory_log, f, indent=2)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp_path, self.filepath)
+                    tmp_path = None
                     try:
                         from memory_storage_config import notify_usb_persist_mirror
 
                         notify_usb_persist_mirror(self.filepath)
                     except ImportError:
                         pass
-                    return
+                    return True
                 except Exception as e:
                     last_err = e
+                    if tmp_path:
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
                     _time.sleep(0.04 * (attempt + 1))
-            if last_err:
-                print(f"[Guardian Memory] Save failed after retries: {last_err}")
+            print(f"[Guardian Memory] Save failed after retries: {last_err}")
+            raise RuntimeError(f"MemoryCore durable save failed: {last_err}")
             
     def load(self) -> None:
         """

@@ -45,10 +45,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install "openai>=1.0,<2" "requests>=2.31,<3" "pyttsx3>=2.90,<3" "flask-socketio>=5,<6"
+          python -m pip install "openai>=1.0,<2" "requests>=2.31,<3" "flask-socketio>=5,<6"
 
       - name: Run RC-required Windows intelligence tests
         env:
           PYTHONUTF8: "1"
           PYTHONDONTWRITEBYTECODE: "1"
+          # Prefer CI stub over real pyttsx3 so Windows contained-write audit
+          # is not polluted by comtypes SpeechLib codegen into site-packages.
+          PYTHONPATH: ${{ github.workspace }}/ci_stubs
         run: python -B scripts/run_windows_intel_rc_tests.py

@@ -2926,6 +2926,12 @@ class ConversationStore:
                 receipt=receipt,
                 step=target,
                 conversation_id=conversation_id,
+                conversation=record,
+                evaluation={
+                    "met": True,
+                    "category": "verified_success",
+                    "reason": "host-verified execution with durable receipt",
+                },
             )
 
             result.update(
@@ -3145,23 +3151,72 @@ class ConversationStore:
         conversation_id: Optional[str] = None,
         duration_ms: Optional[int] = None,
         evaluation: Optional[Mapping[str, Any]] = None,
+        conversation: Optional[Mapping[str, Any]] = None,
     ) -> None:
-        """Best-effort host outcome ingest; never grants authorization."""
+        """Best-effort host outcome ingest after real authorized execution."""
         store = self.outcome_store
         if store is None:
             return
         try:
+            from project_guardian.capability_composition import evaluate_step_outcome
             from project_guardian.composition_outcome_feedback import (
+                build_strategy_context,
                 ingest_host_step_outcome,
             )
 
+            conv = conversation
+            if conv is None and conversation_id:
+                try:
+                    conv = self._load_unlocked(conversation_id)
+                except Exception:
+                    conv = None
+            step_obj = step if isinstance(step, Mapping) else {}
+            # Host evaluates completion against the step/objective when possible.
+            eval_payload = evaluation
+            if eval_payload is None and step_obj:
+                try:
+                    eval_payload = evaluate_step_outcome(
+                        step_obj,
+                        expected_outcome=str(step_obj.get("description") or "")[:400],
+                    )
+                except Exception:
+                    eval_payload = {
+                        "met": receipt.get("verified") is True,
+                        "category": (
+                            "verified_success"
+                            if receipt.get("verified") is True
+                            else step_obj.get("last_failure_category")
+                        ),
+                    }
+            ctx = build_strategy_context(
+                str(receipt.get("capability") or step_obj.get("capability") or ""),
+                step=step_obj,
+                conversation=conv if isinstance(conv, Mapping) else None,
+                completion_condition_met=(
+                    bool(eval_payload.get("met"))
+                    if isinstance(eval_payload, Mapping) and "met" in eval_payload
+                    else None
+                ),
+            )
+            # Enrich outcome task_class from comparable context.
+            enriched = dict(receipt)
+            outcome = (
+                dict(enriched["outcome"])
+                if isinstance(enriched.get("outcome"), dict)
+                else {}
+            )
+            outcome["task_class"] = ctx.get("task_class") or outcome.get("task_class")
+            enriched["outcome"] = outcome
+            enriched["host_execution_path"] = True
             ingest_host_step_outcome(
                 store,
-                receipt=receipt,
-                step=step,
+                receipt=enriched,
+                step=step_obj,
                 conversation_id=conversation_id,
                 duration_ms=duration_ms,
-                evaluation=evaluation,
+                evaluation=eval_payload if isinstance(eval_payload, Mapping) else None,
+                strategy_context=ctx,
+                conversation=conv if isinstance(conv, Mapping) else None,
             )
         except Exception:
             # Outcome feedback must not break execution or continuity.

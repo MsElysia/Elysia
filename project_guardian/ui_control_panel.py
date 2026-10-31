@@ -4129,6 +4129,13 @@ class UIControlPanel:
                 outcome_store = self._conversation_store().outcome_store
             except Exception:
                 outcome_store = None
+            strategy_context = (
+                data.get("strategy_context")
+                if isinstance(data.get("strategy_context"), dict)
+                else None
+            )
+            if strategy_context is None and task_class:
+                strategy_context = {"task_class": task_class}
             # Host ranking for operator visibility (does not authorize).
             ranking_preview = []
             if outcome_store is not None:
@@ -4136,6 +4143,7 @@ class UIControlPanel:
                     capabilities,
                     available_capabilities=capabilities,
                     task_class=task_class,
+                    strategy_context=strategy_context,
                 )[:8]
             prompt = compose_plan_prompt(goal, capabilities)
             if ranking_preview:
@@ -4176,6 +4184,7 @@ class UIControlPanel:
                     capabilities,
                     outcome_store=outcome_store,
                     task_class=task_class,
+                    strategy_context=strategy_context,
                 )
             except CompositionError as exc:
                 return jsonify({
@@ -4261,41 +4270,19 @@ class UIControlPanel:
                     "store": exported,
                     "authorization_granted": False,
                 })
-            # POST: only host-shaped receipts may be ingested; model claims rejected.
+            # POST ingest is closed. Outcome learning is written only by the trusted
+            # ConversationStore after authorized execute + host verification.
             data = request.get_json(silent=True) or {}
-            if data.get("fabricated") is True or data.get("provenance") == "model_claim":
-                return jsonify({
-                    "success": False,
-                    "error": "fabricated_outcome_rejected",
-                    "authorization_granted": False,
-                }), 422
-            receipt = data.get("receipt") if isinstance(data.get("receipt"), dict) else data
-            try:
-                result = outcome_store.ingest_receipt(
-                    receipt,
-                    conversation_id=(
-                        str(data["conversation_id"]).strip()
-                        if isinstance(data.get("conversation_id"), str)
-                        else None
-                    ),
-                    task_class=(
-                        str(data["task_class"]).strip()[:80]
-                        if isinstance(data.get("task_class"), str)
-                        else None
-                    ),
-                )
-            except OutcomeFeedbackError as exc:
-                return jsonify({
-                    "success": False,
-                    "error": "outcome_ingest_rejected",
-                    "detail": str(exc),
-                    "authorization_granted": False,
-                }), 422
             return jsonify({
-                "success": True,
-                "result": result,
+                "success": False,
+                "error": "external_outcome_ingest_forbidden",
+                "detail": (
+                    "Outcome feedback cannot be written through this API. "
+                    "Only host-verified execution receipts are recorded."
+                ),
+                "fabricated": bool(data.get("fabricated")),
                 "authorization_granted": False,
-            })
+            }), 422
 
         @self.app.route('/api/composition/rank-capabilities', methods=['POST'])
         def api_composition_rank_capabilities():
@@ -4325,10 +4312,18 @@ class UIControlPanel:
                 if isinstance(data.get("task_class"), str) and data.get("task_class").strip()
                 else None
             )
+            strategy_context = (
+                data.get("strategy_context")
+                if isinstance(data.get("strategy_context"), dict)
+                else None
+            )
+            if strategy_context is None and task_class:
+                strategy_context = {"task_class": task_class}
             ranked = outcome_store.rank_capabilities(
                 candidates,
                 available_capabilities=caps,
                 task_class=task_class,
+                strategy_context=strategy_context,
             )
             top = ranked[0] if ranked else None
             return jsonify({
@@ -4336,6 +4331,7 @@ class UIControlPanel:
                 "recommended_capability": (top or {}).get("capability"),
                 "selection_rationale": (top or {}).get("rationale"),
                 "recommendation_basis": (top or {}).get("recommendation_basis"),
+                "strategy_context": (top or {}).get("strategy_context"),
                 "alternatives": ranked[:8],
                 "authorization_granted": False,
             })

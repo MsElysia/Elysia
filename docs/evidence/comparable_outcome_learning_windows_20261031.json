@@ -1,0 +1,104 @@
+{
+  "disposable_root": "elysia-comparable-di20dwyu",
+  "port": 5083,
+  "model": "llama3.2:3b",
+  "scenarios": {
+    "before_cold": {
+      "status": 200,
+      "recommended": "compose.extract_records",
+      "basis": "current_suitability",
+      "rationale": "available and permitted; suitability_score=8; reliability unknown (need 3 independent attempts across 3 task instances; have 0/0); prefer deterministic until measured",
+      "alts": [
+        {
+          "capability": "compose.extract_records",
+          "basis": "current_suitability",
+          "reliability": "unknown"
+        }
+      ]
+    },
+    "generalization_unrelated": {
+      "event_recommended": "compose.extract_fields",
+      "event_basis": "current_suitability",
+      "budget_recommended": "compose.aggregate_usd",
+      "budget_basis": "current_suitability"
+    },
+    "real_executions": [
+      {
+        "conversation_id": "conv_8d2650a9ee0c467a",
+        "verified": true,
+        "execution_id": "exec_b1a575b242cc46f1",
+        "capability": "compose.extract_records"
+      },
+      {
+        "conversation_id": "conv_7794503ffaaa4da3",
+        "verified": true,
+        "execution_id": "exec_d15c72a50bc44917",
+        "capability": "compose.extract_records"
+      },
+      {
+        "conversation_id": "conv_466ce825e0f14321",
+        "verified": true,
+        "execution_id": "exec_7eb55d693548440f",
+        "capability": "compose.extract_records"
+      }
+    ],
+    "host_ingested_records": {
+      "count": 3,
+      "comparison_keys": [
+        "ck_871009d82e3ce6aa"
+      ],
+      "task_instances": [
+        "conv_466ce825e0f14321",
+        "conv_7794503ffaaa4da3",
+        "conv_8d2650a9ee0c467a"
+      ]
+    },
+    "after_learning": {
+      "status": 200,
+      "recommended": "compose.extract_records",
+      "basis": "measured_history",
+      "rationale": "available and permitted; suitability_score=8; measured comparable history 3/3 across 3 task instances (key=ck_871009d82e3ce6aa)",
+      "authorization_granted": false
+    },
+    "ollama_propose_after": {
+      "status": 200,
+      "recommended": "compose.extract_records",
+      "basis": "measured_history",
+      "executable": false,
+      "authorization_granted": false,
+      "ollama": true
+    },
+    "later_authorized_success": {
+      "conversation_id": "conv_5a7b7ada9a584b28",
+      "verified": true,
+      "execution_id": "exec_f7f6f2de685f4c76",
+      "capability": "compose.extract_records"
+    },
+    "restart": {
+      "status": 200,
+      "recommended": "compose.extract_records",
+      "basis": "measured_history",
+      "authorization_granted": false
+    },
+    "corrupt_store": {
+      "conversations_status": 200,
+      "rank_status": 200,
+      "rank_ok": true
+    }
+  },
+  "security": {
+    "history_no_auth": {
+      "status": 403,
+      "error": "document search not authorized for this request"
+    },
+    "forge_rejected": {
+      "status": 422,
+      "error": "external_outcome_ingest_forbidden",
+      "detail": "Outcome feedback cannot be written through this API. Only host-verified execution receipts are recorded.",
+      "count_before": 8,
+      "count_after": 8
+    }
+  },
+  "backup_note": "Updated checkpoint on D:\\ElysiaBackups\\windows-intel-checkpoint-outcome-feedback-20261031 (6520bd1)",
+  "ok": true
+}

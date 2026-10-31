@@ -689,6 +689,7 @@ def validate_proposed_plan(
     *,
     outcome_store: Any = None,
     task_class: Optional[str] = None,
+    strategy_context: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Validate a model-proposed plan against the capability registry (no execution)."""
     if not isinstance(proposal, Mapping):
@@ -732,6 +733,7 @@ def validate_proposed_plan(
         available_capabilities=available_capabilities,
         outcome_store=outcome_store,
         task_class=task_class,
+        strategy_context=strategy_context,
     )
     selected = ranked[0] if ranked else None
     return {
@@ -742,6 +744,7 @@ def validate_proposed_plan(
         "selected_next_capability": (selected or {}).get("capability"),
         "selection_rationale": (selected or {}).get("rationale"),
         "recommendation_basis": (selected or {}).get("recommendation_basis"),
+        "strategy_context": (selected or {}).get("strategy_context"),
         "executable": False,
         "authorization_inherited": False,
         "authorization_granted": False,
@@ -1013,11 +1016,12 @@ def rank_replan_candidates(
     available_capabilities: Optional[Sequence[Any]] = None,
     outcome_store: Any = None,
     task_class: Optional[str] = None,
+    strategy_context: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Order alternatives using suitability, then measured host outcomes when sufficient.
 
     Reliability remains unknown until the outcome store reports evidence_sufficient.
-    Authorization is never granted by ranking.
+    Authorization is never granted by ranking. History applies only to comparable contexts.
     """
     available = _capability_name_set(available_capabilities or list_composable_capabilities())
     # Prefer evidence-based ranking when a durable store is supplied.
@@ -1026,6 +1030,7 @@ def rank_replan_candidates(
             list(candidates)[:MAX_REPLAN_ALTERNATIVES],
             available_capabilities=available_capabilities or list_composable_capabilities(),
             task_class=task_class,
+            strategy_context=strategy_context,
         )
         return ranked[:MAX_REPLAN_ALTERNATIVES]
 
@@ -1136,6 +1141,7 @@ def validate_replan_proposal(
     failed_capability: Optional[str] = None,
     outcome_store: Any = None,
     task_class: Optional[str] = None,
+    strategy_context: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Validate a model replan; preserve objective; grant no authority."""
     if prior_attempt_count >= MAX_REPLAN_ATTEMPTS:
@@ -1158,6 +1164,7 @@ def validate_replan_proposal(
         available_capabilities,
         outcome_store=outcome_store,
         task_class=task_class,
+        strategy_context=strategy_context,
     )
     steps = list(validated["steps"])
     if len(steps) > MAX_REPLAN_ALTERNATIVES + 2:
@@ -1187,6 +1194,7 @@ def validate_replan_proposal(
             available_capabilities=available_capabilities,
             outcome_store=outcome_store,
             task_class=task_class,
+            strategy_context=strategy_context,
         )
     selected = ranked[0] if ranked else None
     return {

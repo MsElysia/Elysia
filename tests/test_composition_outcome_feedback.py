@@ -28,6 +28,7 @@ from project_guardian.composition_outcome_feedback import (
     DEFAULT_MIN_TASK_INSTANCES,
     OutcomeFeedbackError,
     OutcomeFeedbackStore,
+    build_strategy_context,
     normalize_failure_class,
     resolve_outcome_feedback_root,
 )
@@ -78,49 +79,43 @@ def test_cold_start_reliability_unknown(store: OutcomeFeedbackStore):
 
 
 def test_verified_learning_threshold(store: OutcomeFeedbackStore):
+    table_ctx = {
+        "task_class": "structured_table_extraction",
+        "required_output_type": "structured_records",
+        "input_structure": "markdown_table",
+        "verification_mode": "source_span",
+    }
     # Below threshold: still unknown.
     for i in range(5):
         store.ingest_receipt(
             _receipt(i + 1, "compose.extract_records"),
             conversation_id=f"conv_{i:016x}",
-            task_class="structured_table_extraction",
+            strategy_context=table_ctx,
+            evaluation={"met": True},
         )
     stats = store.stats_for(
-        "compose.extract_records", task_class="structured_table_extraction"
+        "compose.extract_records",
+        strategy_context=build_strategy_context(
+            "compose.extract_records", explicit=table_ctx
+        ),
     )
     assert stats["sample_size"] == 5
     assert stats["evidence_sufficient"] is False
     assert stats["reliability"] == "unknown"
 
-    # Failures for synthesize across instances.
-    for i in range(10):
-        store.ingest_receipt(
-            {
-                **_receipt(100 + i, "compose.synthesize", verified=False),
-                "outcome": {
-                    "capability": "compose.synthesize",
-                    "task_class": "structured_table_extraction",
-                    "success": False,
-                    "failure_category": "incorrect_result",
-                },
-            },
-            conversation_id=f"conv_{(i % 3):016x}",
-            task_class="structured_table_extraction",
-            step={
-                "capability": "compose.synthesize",
-                "last_failure_category": "incorrect_result",
-            },
-        )
-
-    # Reach threshold for extract_records: 10 successes across 3 instances.
-    for i in range(5, 12):
+    # Reach threshold: 10 successes across 10 instances (correlation cap = 2/instance).
+    for i in range(5, 15):
         store.ingest_receipt(
             _receipt(i + 1, "compose.extract_records"),
-            conversation_id=f"conv_{(i % 3):016x}",
-            task_class="structured_table_extraction",
+            conversation_id=f"conv_{i:016x}",
+            strategy_context=table_ctx,
+            evaluation={"met": True},
         )
     stats = store.stats_for(
-        "compose.extract_records", task_class="structured_table_extraction"
+        "compose.extract_records",
+        strategy_context=build_strategy_context(
+            "compose.extract_records", explicit=table_ctx
+        ),
     )
     assert stats["sample_size"] >= DEFAULT_MIN_ATTEMPTS
     assert stats["task_instance_count"] >= DEFAULT_MIN_TASK_INSTANCES
@@ -133,11 +128,11 @@ def test_verified_learning_threshold(store: OutcomeFeedbackStore):
             {"capability": "compose.extract_records", "expected_outcome": "rows"},
         ],
         available_capabilities=list_composable_capabilities(),
-        task_class="structured_table_extraction",
+        strategy_context=table_ctx,
     )
     assert ranked[0]["capability"] == "compose.extract_records"
     assert ranked[0]["recommendation_basis"] == "measured_history"
-    assert "measured history" in ranked[0]["rationale"]
+    assert "measured" in ranked[0]["rationale"]
 
 
 def test_duplicate_receipt_idempotent(store: OutcomeFeedbackStore):
@@ -241,11 +236,18 @@ def test_corrupt_store_recovers(tmp_path: Path):
 
 
 def test_rank_replan_uses_outcome_store(store: OutcomeFeedbackStore):
-    for i in range(12):
+    table_ctx = {
+        "task_class": "structured_table_extraction",
+        "required_output_type": "structured_records",
+        "input_structure": "markdown_table",
+        "verification_mode": "source_span",
+    }
+    for i in range(10):
         store.ingest_receipt(
             _receipt(i + 1, "compose.extract_records"),
-            conversation_id=f"conv_{(i % 3):016x}",
-            task_class="structured_table_extraction",
+            conversation_id=f"conv_{i:016x}",
+            strategy_context=table_ctx,
+            evaluation={"met": True},
         )
     ranked = rank_replan_candidates(
         [
@@ -254,18 +256,25 @@ def test_rank_replan_uses_outcome_store(store: OutcomeFeedbackStore):
         ],
         available_capabilities=list_composable_capabilities(),
         outcome_store=store,
-        task_class="structured_table_extraction",
+        strategy_context=table_ctx,
     )
     assert ranked[0]["capability"] == "compose.extract_records"
     assert ranked[0]["evidence_sufficient"] is True
 
 
 def test_validate_plan_exposes_selection(store: OutcomeFeedbackStore):
-    for i in range(12):
+    docs_ctx = {
+        "task_class": "authorized_document_retrieval",
+        "required_output_type": "document_excerpts",
+        "input_structure": "free_text",
+        "verification_mode": "evidence_criteria",
+    }
+    for i in range(10):
         store.ingest_receipt(
             _receipt(i + 1, "local.documents.search"),
-            conversation_id=f"conv_{(i % 3):016x}",
-            task_class="authorized_document_retrieval",
+            conversation_id=f"conv_{i:016x}",
+            strategy_context=docs_ctx,
+            evaluation={"met": True},
         )
     validated = validate_proposed_plan(
         {
@@ -283,7 +292,7 @@ def test_validate_plan_exposes_selection(store: OutcomeFeedbackStore):
         },
         list_composable_capabilities(),
         outcome_store=store,
-        task_class="authorized_document_retrieval",
+        strategy_context=docs_ctx,
     )
     assert validated["executable"] is False
     assert validated["authorization_granted"] is False

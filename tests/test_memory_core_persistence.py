@@ -103,14 +103,12 @@ def test_failed_write_leaves_previous_history_intact(mem_mod, store, monkeypatch
     assert ok is False
     assert Path(store).read_bytes() == before
     assert "No space left" in m.get_memory_state()["last_save_error"]
-    # Entry stays in memory and is persisted by the next successful save.
-    assert len(m.memory_log) == 4
+    # Failed logical memory must not be published by a later unrelated save.
+    assert len(m.memory_log) == 3
     monkeypatch.undo()
     assert m.remember("Lanternfish Bakery takes card payments", category="fact", priority=0.7) is True
-    assert [e["thought"] for e in _disk(store)][-2:] == [
-        "Lanternfish Bakery closes Mondays",
-        "Lanternfish Bakery takes card payments",
-    ]
+    assert _disk(store)[-1]["thought"] == "Lanternfish Bakery takes card payments"
+    assert all(e["thought"] != "Lanternfish Bakery closes Mondays" for e in _disk(store))
 
 
 def test_no_temp_files_left_after_save_or_failed_save(mem_mod, store, tmp_path, monkeypatch):
@@ -210,3 +208,121 @@ def test_lazy_load_state_reports_persistence_fields(mem_mod, store):
     st = m.get_memory_state(load_if_needed=False)
     assert st["memory_count_authoritative"] is False
     assert set(st) >= {"last_save_error", "last_load_error", "quarantined_history_path"}
+
+
+
+def test_quarantine_move_failure_blocks_later_save_and_recovers(mem_mod, store, monkeypatch):
+    original = b'{"broken synthetic evidence"'
+    Path(store).write_bytes(original)
+    replace = mem_mod.os.replace
+    with monkeypatch.context() as fault:
+        fault.setattr(mem_mod.os, "replace", lambda *a: (_ for _ in ()).throw(OSError("move denied")))
+        m = mem_mod.MemoryCore(filepath=store)
+    assert m.remember("Synthetic recovery must preserve corrupt original bytes", priority=0.9) is False
+    assert Path(store).read_bytes() == original
+    assert m.memory_log == []
+    assert m.get_memory_state()["persistence_blocked"] is True
+    # Explicit reload retries preservation; normal remember must not clear the fence.
+    m.load()
+    preserved = Path(m.quarantined_history_path)
+    assert preserved.read_bytes() == original
+    assert m.remember("Synthetic recovery after verified preservation", priority=0.9) is True
+    assert preserved.read_bytes() == original
+    restarted = mem_mod.MemoryCore(filepath=store)
+    assert len(restarted.memory_log) == 1
+
+
+def test_failed_primary_rolls_back_eviction_and_publishes_no_side_effects(mem_mod, store, monkeypatch):
+    from unittest.mock import Mock
+    import sys, types
+    package = types.ModuleType("project_guardian")
+    package.__path__ = [str(_MODULE_PATH.parent)]
+    noise = types.ModuleType("project_guardian.memory_noise")
+    noise.is_embedding_entirely_skipped = lambda *a, **k: False
+    noise.is_low_value_memory_text = lambda *a, **k: False
+    noise.routine_autonomy_remember_suppressed = lambda *a, **k: False
+    monkeypatch.setitem(sys.modules, "project_guardian", package)
+    monkeypatch.setitem(sys.modules, "project_guardian.memory_noise", noise)
+    mem_mod.__spec__ = importlib.util.spec_from_file_location("project_guardian.memory_under_test", _MODULE_PATH)
+    mem_mod.__package__ = "project_guardian"
+    m = _seed_lanternfish(mem_mod.MemoryCore, store)
+    m.max_memories = 3
+    before = list(m.memory_log)
+    before_bytes = Path(store).read_bytes()
+    timeline = Mock()
+    vector = Mock()
+    m.timeline = timeline
+    m.enable_timeline_logging = True
+    m.vector_search = vector
+    m._embeddings_enabled = True
+    m._vector_index_built = True
+    write = m._write_atomic
+    with monkeypatch.context() as fault:
+        fault.setattr(m, "_write_atomic", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
+        fault.setattr("time.sleep", lambda *a: None)
+        assert m.remember("Synthetic failed memory must never reach secondary storage", priority=0.9) is False
+    assert m.memory_log == before
+    assert Path(store).read_bytes() == before_bytes
+    assert timeline.mock_calls == []
+    assert vector.mock_calls == []
+    assert m._vector_embed_batch_counter == 0
+    restarted = mem_mod.MemoryCore(filepath=store)
+    assert restarted.memory_log == before
+    assert m.remember("Synthetic successful retry after transient primary failure", priority=0.9) is True
+    assert len(m.memory_log) == 3
+    assert timeline.log_event.call_count == 1
+    assert vector.add_memory.call_count == 1
+    assert vector.add_memory.call_args.args[1] == m.memory_log[-1]["thought"]
+    assert json.loads(timeline.log_event.call_args.kwargs["payload"])["thought"] == m.memory_log[-1]["thought"]
+    assert mem_mod.MemoryCore(filepath=store).memory_log == m.memory_log
+
+
+def test_primary_retry_commits_once_before_secondary_publication(mem_mod, store, monkeypatch):
+    from unittest.mock import Mock
+    m = mem_mod.MemoryCore(filepath=store)
+    real_write = m._write_atomic
+    calls = []
+    def flaky(payload):
+        calls.append(payload)
+        if len(calls) < 3:
+            raise OSError("transient write failure")
+        real_write(payload)
+    timeline = Mock()
+    def check_committed(**kwargs):
+        assert _disk(store) == m.memory_log
+    timeline.log_event.side_effect = check_committed
+    m.timeline = timeline
+    m.enable_timeline_logging = True
+    monkeypatch.setattr(m, "_write_atomic", flaky)
+    monkeypatch.setattr("time.sleep", lambda *a: None)
+    assert m.remember("Synthetic retry writes primary before timeline publication", priority=0.9) is True
+    assert len(calls) == 3
+    assert timeline.log_event.call_count == 1
+    assert len(_disk(store)) == 1
+
+
+def test_unverified_quarantine_move_stays_fenced(mem_mod, store, monkeypatch):
+    original = b"synthetic corrupt original"
+    Path(store).write_bytes(original)
+    # A reported move without a preserved artifact is not preservation evidence.
+    monkeypatch.setattr(mem_mod.os, "replace", lambda *args: None)
+    m = mem_mod.MemoryCore(filepath=store)
+    assert m.remember("Synthetic blocked save after unverified quarantine", priority=0.9) is False
+    assert m._save() is False
+    assert Path(store).read_bytes() == original
+    assert m.quarantined_history_path is None
+    assert m.persistence_blocked is True
+
+
+def test_mirror_failure_does_not_undo_committed_primary(mem_mod, store, monkeypatch):
+    import sys, types
+    mirror = types.ModuleType("memory_storage_config")
+    def unavailable(*a):
+        raise OSError("synthetic mirror unavailable")
+    mirror.notify_usb_persist_mirror = unavailable
+    monkeypatch.setitem(sys.modules, "memory_storage_config", mirror)
+    m = mem_mod.MemoryCore(filepath=store)
+    assert m.remember("Synthetic primary success despite optional mirror failure", priority=0.9) is True
+    assert m.last_save_error is None
+    assert mem_mod.MemoryCore(filepath=store).memory_log == m.memory_log
+    assert len(_disk(store)) == 1

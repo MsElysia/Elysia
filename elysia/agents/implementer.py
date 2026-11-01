@@ -129,7 +129,9 @@ class ImplementerAgent:
             logger.warning(f"Failed to transition status: {error}")
 
         # Update implementation_status
-        self._update_implementation_status(proposal_id, "in_progress")
+        self._update_implementation_status(
+            proposal_id, "in_progress", last_result="Implementation started"
+        )
 
         if self.event_bus:
             self.event_bus.emit(
@@ -195,7 +197,12 @@ class ImplementerAgent:
         # 6. Finalize result
         if steps_failed == 0 and steps_completed == len(steps):
             # All steps succeeded
-            self._update_implementation_status(proposal_id, "completed")
+            result_summary = (
+                f"Implementation completed: {steps_completed}/{len(steps)} steps"
+            )
+            self._update_implementation_status(
+                proposal_id, "completed", last_result=result_summary
+            )
             success_transition, _ = self.proposal_system.transition_status(
                 proposal_id, "implemented", actor="Elysia-Implementer"
             )
@@ -233,14 +240,21 @@ class ImplementerAgent:
             }
         else:
             # Some steps failed
-            self._update_implementation_status(proposal_id, "failed")
+            if step_results:
+                error_msg = (
+                    f"Step {steps_completed + 1} failed: "
+                    f"{step_results[-1].get('error', 'Unknown error')}"
+                )
+            else:
+                error_msg = "Implementation failed"
+            self._update_implementation_status(
+                proposal_id, "failed", last_result=error_msg
+            )
             success_transition, _ = self.proposal_system.transition_status(
                 proposal_id, "implementation_failed", actor="Elysia-Implementer"
             )
             if not success_transition:
                 logger.warning("Failed to transition to 'implementation_failed' status")
-
-            error_msg = f"Step {steps_completed + 1} failed: {step_results[-1].get('error', 'Unknown error')}"
             self._add_history_entry(
                 proposal_id,
                 "Elysia-Implementer",

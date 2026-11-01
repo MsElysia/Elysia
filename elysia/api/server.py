@@ -18,6 +18,55 @@ from ..events import EventBus
 
 logger = logging.getLogger(__name__)
 
+_IMPLEMENTATION_STATUSES = frozenset(
+    {"pending", "in_progress", "completed", "failed", "not_started"}
+)
+
+
+def _implementation_status_body(proposal_id: str, proposal: Dict[str, Any]) -> Dict[str, Any]:
+    """Report implementation fields only when they are stored."""
+    stored_status = proposal.get("implementation_status")
+    status_recorded = (
+        "implementation_status" in proposal
+        and isinstance(stored_status, str)
+        and stored_status in _IMPLEMENTATION_STATUSES
+    )
+    stored_result = proposal.get("last_implementation_result")
+    result_recorded = isinstance(stored_result, str) and bool(stored_result.strip())
+    stored_at = proposal.get("last_implemented_at")
+    implemented_at_recorded = isinstance(stored_at, str) and bool(stored_at.strip())
+
+    history_readable = True
+    history = proposal.get("history", [])
+    if history is None:
+        history = []
+    if not isinstance(history, list):
+        history_readable = False
+        history = []
+
+    entries = []
+    for item in history:
+        if not isinstance(item, dict):
+            history_readable = False
+            continue
+        if item.get("actor") == "Elysia-Implementer":
+            entries.append(item)
+    recent = sorted(
+        entries, key=lambda item: str(item.get("timestamp") or ""), reverse=True
+    )[:10]
+
+    return {
+        "proposal_id": proposal_id,
+        "implementation_status": stored_status if status_recorded else None,
+        "implementation_status_recorded": status_recorded,
+        "last_implemented_at": stored_at if implemented_at_recorded else None,
+        "last_implemented_at_recorded": implemented_at_recorded,
+        "last_implementation_result": stored_result if result_recorded else None,
+        "result_recorded": result_recorded,
+        "recent_history": recent,
+        "history_readable": history_readable,
+    }
+
 
 class RuntimeAPIServer:
     """Wrap a Flask server that exposes runtime status and events."""
@@ -242,26 +291,12 @@ class RuntimeAPIServer:
                 return jsonify({"error": "Proposal system not available"}), 503
 
             proposal = self._proposal_system.get_proposal(proposal_id)
-            if not proposal:
-                return jsonify({"error": "Proposal not found"}), 404
+            if not isinstance(proposal, dict):
+                if proposal is None:
+                    return jsonify({"error": "Proposal not found"}), 404
+                return jsonify({"error": "Proposal metadata is unreadable"}), 500
 
-            # Extract implementation-related fields
-            impl_info = {
-                "implementation_status": proposal.get("implementation_status", "not_started"),
-                "last_implemented_at": proposal.get("last_implemented_at"),
-                "last_implementation_result": proposal.get("last_implementation_result"),
-            }
-
-            # Get recent implementer history entries
-            history = proposal.get("history", [])
-            implementer_entries = [
-                h for h in history if h.get("actor") == "Elysia-Implementer"
-            ]
-            impl_info["recent_history"] = sorted(
-                implementer_entries, key=lambda x: x.get("timestamp", ""), reverse=True
-            )[:10]
-
-            return jsonify(impl_info)
+            return jsonify(_implementation_status_body(proposal_id, proposal))
 
     def start(self) -> None:
         if self._running:

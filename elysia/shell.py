@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Optional
 
@@ -24,7 +25,10 @@ def interactive_shell(host: str = "127.0.0.1", port: int = 8123) -> None:
         if line in {"exit", "quit"}:
             break
         if line == "help":
-            print("commands: status, events, proposals, chat <message>, approve <id>, reject <id> <reason>, exit")
+            print(
+                "commands: status, events, proposals, chat <message>, "
+                "approve <id>, reject <id> <reason>, implementation <id>, exit"
+            )
             continue
         if line == "status":
             data = _fetch_json(host, port, "/api/status")
@@ -76,6 +80,13 @@ def interactive_shell(host: str = "127.0.0.1", port: int = 8123) -> None:
             except Exception as exc:
                 print(f"[error] {exc}", file=sys.stderr)
             continue
+        if line == "implementation" or line.startswith("implementation "):
+            proposal_id = line[len("implementation") :].strip()
+            if not proposal_id:
+                print("[error] proposal id is required", file=sys.stderr)
+                continue
+            _print_implementation(host, port, proposal_id)
+            continue
         if line.startswith("reject "):
             parts = line[7:].strip().split(" ", 1)
             proposal_id = parts[0]
@@ -97,6 +108,46 @@ def interactive_shell(host: str = "127.0.0.1", port: int = 8123) -> None:
             continue
 
         print("Unknown command. Type 'help' for available commands.")
+
+
+def _print_implementation(host: str, port: int, proposal_id: str) -> None:
+    """Print stored implementation status, or the API error text."""
+    quoted = urllib.parse.quote(proposal_id, safe="")
+    url = f"http://{host}:{port}/api/proposals/{quoted}/implementation"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            raw = resp.read().decode("utf-8")
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        status = exc.code
+    except Exception as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return
+
+    try:
+        body = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        print(f"[error] HTTP {status}: {raw}", file=sys.stderr)
+        return
+
+    if not isinstance(body, dict):
+        print(f"[error] HTTP {status}: {raw}", file=sys.stderr)
+        return
+
+    if status != 200:
+        print(f"[error] HTTP {status}: {body.get('error') or raw}", file=sys.stderr)
+        return
+
+    if body.get("result_recorded") is False and body.get("implementation_status") in {
+        "in_progress",
+        "completed",
+        "failed",
+    }:
+        print("[warning] Implementation result was not stored", file=sys.stderr)
+    if body.get("history_readable") is False:
+        print("[warning] Implementation history was not readable", file=sys.stderr)
+    print(json.dumps(body, indent=2))
 
 
 def _fetch_json(host: str, port: int, path: str) -> Optional[dict]:

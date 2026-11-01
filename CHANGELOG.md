@@ -497,3 +497,10 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — implementation status (2026-11-01)
+
+- The implementer stores `last_implementation_result` when it marks a proposal in progress, completed, or failed.
+- `GET /api/proposals/<id>/implementation` returns that stored result and sets `result_recorded` only when the field is saved. A missing implementation status stays unset instead of being reported as `not_started`.
+- Unreadable implementation history returns JSON with `history_readable: false` instead of an HTML 500.
+- The shell command `implementation <id>` prints that JSON, or the API error text.

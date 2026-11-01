@@ -3577,3 +3577,38 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — implementation status (2026-11-01)
+
+**Status:** COMPLETE on this branch. Not integrated to `main`.
+
+**Lane:** Product workflow. Unclaimed. `CONTROL.md` `CURRENT_TASK` remains `NONE`. Reconciliation queue `TASKS/TASK-0053.md` on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72cf397de2a5ef8d9a0bcaccd86462b0e577`) stays OPEN review-only. Do not merge `elysia-local-reconciliation-20260909-1657`. Codex Campaign 41 tip remains `3223ebbadd6e835870a87fdca2008eec65c969d8` on `origin/codex/limited-live-activation-wrapper`. This run did not implement live memory or vector writes.
+
+**Why this gap:** The `/api/events` limit fix, the implement HTTP-status fix, the WebScout research-status fix, the chat answer-status fix, and the proposal decision-status fix stay on their earlier product branches and were not copied. Before this change, a live dry-run `POST /api/proposals/fictional-impl/implement` returned HTTP 200 `success: true`, then `GET /api/proposals/fictional-impl/implementation` returned HTTP 200 `implementation_status: completed` with `last_implementation_result: null`. The stored metadata had no `last_implementation_result`. `GET /api/proposals/fictional-bad-history/implementation` returned an HTML 500 when `history` was a string.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c` (`main`). No other branch dependency. Not based on the events-limit, implement-status, research-status, chat-status, or decision-status branches.
+
+**Ownership checked:** Did not edit `elysia/core/proposal_system.py`. Runtime integrity today is `a6f25dc3dad0473d00030b8f67508a2035ebf5cd` on `origin/cursor/elysia-runtime-integrity-a363` (`elysia/core/proposal_system.py`, `tests/test_elysia_proposal_watcher_symlink.py`). Earlier runtime-safety and runtime-integrity commits that own that file were left untouched: `0eb52e2` on `origin/cursor/application-runtime-safety-668d` and `9aab238` on `origin/cursor/elysia-runtime-integrity-1dce`. Left dashboard drafts #147–#149 and #153–#160, chat and Windows drafts #161–#181, and the PR #154 repairs to their owners. Open issues #150 and #152 remain non-implementation backlogs. #139 remains the Windows vertical slice. `elysia_proposals_cli.py` still cannot be imported here because `project_guardian.module_activity` is missing; PR #157 owns that repair.
+
+**Acceptance:**
+- After a dry-run implement of fictional proposal `fictional-impl` (status `approved`, one generic plan step), the stored metadata has `implementation_status: completed`, lifecycle `implemented`, and `last_implementation_result: Implementation completed: 1/1 steps`
+- `GET /api/proposals/fictional-impl/implementation` returns HTTP 200 JSON with that same stored result, `result_recorded: true`, and `history_readable: true`
+- A failing step with no filesystem path stores `implementation_status: failed` and a `last_implementation_result` that contains `Could not extract file path`. The GET body returns that stored string. The fictional proposal directory still contains only `design/` and `metadata.json`
+- A proposal with no `implementation_status` field returns HTTP 200 `implementation_status: null` and `implementation_status_recorded: false`, not the invented value `not_started`
+- `history` set to a string returns HTTP 200 JSON `history_readable: false` and `recent_history: []`, not an HTML 500. A list that mixes a string with one implementer entry keeps that entry and sets `history_readable: false`
+- Metadata that is a JSON array returns HTTP 500 JSON `Proposal metadata is unreadable`
+- A missing proposal returns HTTP 404 JSON `Proposal not found`. With no proposal system, the route returns HTTP 503 JSON
+- The shell command `implementation fictional-missing` prints `[error] HTTP 404: Proposal not found`. `implementation fictional-bad-history` prints the unreadable-history warning and the unsaved-result warning. `implementation fictional-dry-run` prints the stored `Implementation completed: 1/1 steps`
+- The contract holds through Flask's test client and through a live Werkzeug HTTP server on 127.0.0.1. No external service was called
+
+**Command:** `python3 -m pytest tests/test_runtime_api_implementation.py -v --tb=short` — 4 passed. `python3 -m pytest tests/test_implementer_agent.py -v --tb=short` — 9 passed, and `test_implementer_rejects_non_accepted_proposal` still fails on the pre-existing assertion `not in 'accepted' status`. This run did not change that assertion or the error text.
+
+**Files:** `elysia/agents/implementer.py`, `elysia/api/server.py`, `elysia/shell.py`, `tests/test_runtime_api_implementation.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`.
+
+**Remaining limitations:** `POST /api/proposals/<id>/implement` on this branch still returns HTTP 200 when `success` is false. That HTTP-status fix remains only on `origin/cursor/elysia-product-workflow-process-9429`. `ImplementerAgent.run_batch` still lists `status_filter="accepted"`, so an `approved` fictional proposal is skipped (`total: 0` before any approved work). The proposals CLI that calls `run_batch` cannot be imported until `project_guardian.module_activity` exists. Do not edit `elysia/core/proposal_system.py` from this lane. `GET /api/events` limit handling, WebScout queue status, general chat status, and proposal decision status remain only on their earlier product branches. This does not change memory, governance, CI, or deployment settings. A branch commit is not integrated product readiness.
+
+**Next action:** Leave `TASK-0053` unmerged. Do not repeat the events-limit fix, the implement HTTP-status fix, the research-status fix, the chat-status fix, the decision-status fix, or this implementation-result fix from `main`. A later product run can teach `run_batch` to include lifecycle status `approved` once the proposals CLI imports, or pick a different unclaimed API error path. The missing `project_guardian.module_activity` module stays with PR #157.
+
+**Commit:** `f2f0ed90cf34ccff9d343bb8a80ed4bab9514997` on `cursor/product-workflow-engineering-583c`. Base `722d8e4fe85d7e42ac34066c2d651849d15e734c`.

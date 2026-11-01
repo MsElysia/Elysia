@@ -20,6 +20,7 @@ MAX_TEXT = 500_000
 VERSION = 'document-v1'
 SUPPORTED = {'.txt', '.md', '.csv', '.pdf', '.docx'}
 _LOCK = threading.RLock()
+_ACTIVE_SOURCES = set()
 
 
 class ImportFailure(ValueError):
@@ -169,6 +170,10 @@ class DocumentLibrary:
             raise ImportFailure('Memory write was suppressed; import is not complete')
 
     def preview_bytes(self, filename, raw):
+        with _LOCK:
+            return self._preview_bytes(filename, raw)
+
+    def _preview_bytes(self, filename, raw):
         """Extract and estimate chunks without writing memory or managed copies."""
         if not filename or len(filename) > 180 or '/' in filename or '\\' in filename or ':' in filename or filename in {'.', '..'}:
             raise ImportFailure('Unsafe filename')
@@ -259,6 +264,7 @@ class DocumentLibrary:
                            status='processing', attempt=(previous or {}).get('attempt', 0) + 1,
                            processing_version=VERSION)
             self._save('document_source', 'Document import started', receipt.copy())
+            _ACTIVE_SOURCES.add(source)
             try:
                 output = original.with_suffix('.extracted.json')
                 physical(output)
@@ -288,6 +294,8 @@ class DocumentLibrary:
                 receipt.update(status='failed', error=detail, failed_at=now())
                 self._save('document_source', 'Document import failed', receipt.copy())
                 raise ImportFailure(detail) from exc
+            finally:
+                _ACTIVE_SOURCES.discard(source)
 
     def search(self, query, limit=6):
         tokens = set(re.findall(r'\w{3,}', query.casefold())) - {'the', 'what', 'which', 'does', 'and', 'from', 'with'}
@@ -303,7 +311,11 @@ class DocumentLibrary:
             overlap = tokens & set(re.findall(r'\w{3,}', text.casefold()))
             if overlap:
                 found.append(dict(meta, text=text, score=len(overlap) / len(tokens)))
-        return sorted(found, key=lambda x: (-x['score'], x['chunk_id']))[:limit]
+        matches = sorted(found, key=lambda x: (-x['score'], x['chunk_id']))[:limit]
+        if matches:
+            from project_guardian.runtime_activity import record
+            record('Document evidence retrieved')
+        return matches
 
 
 if __name__ == '__main__':

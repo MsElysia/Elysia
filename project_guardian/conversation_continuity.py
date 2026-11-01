@@ -3344,6 +3344,7 @@ class ConversationStore:
         role: str,
         content: str,
         kind: str = "chat",
+        source_references: Optional[Sequence[Mapping[str, Any]]] = None,
     ) -> Dict[str, Any]:
         if role not in {"user", "assistant", "system"}:
             raise ContinuityError("invalid message role")
@@ -3360,6 +3361,13 @@ class ConversationStore:
                 "kind": kind,
                 "ts": _utc_now(),
             }
+            if source_references:
+                # Provenance is untrusted context, never a stored tool grant.
+                msg['source_references'] = [
+                    {key: str(row[key])[:240] for key in
+                     ('source_id', 'chunk_id', 'filename', 'page', 'source_sha256') if key in row}
+                    for row in list(source_references)[:6] if isinstance(row, Mapping)
+                ]
             messages.append(msg)
             if len(messages) > MAX_MESSAGES_RETAINED:
                 # Keep original earlier messages in a side archive file, do not destroy.

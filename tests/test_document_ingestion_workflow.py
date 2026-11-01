@@ -110,7 +110,7 @@ def test_upload_api_requires_operator_and_preserves_sources(tmp_path):
     status = client.get('/api/documents', headers=_auth(panel)).get_json()
     assert status['state'] == 'Idle'
     assert status['indexed_chunks'] == 1
-    assert len(status['events']) == 2
+    assert len([e for e in status['events'] if e['event'].startswith('Document import') or e['event'].startswith('Document chunks')]) == 2
     assert FACT not in json.dumps(status['events'])
     assert 'blank_console_note' in status
     assert client.get('/api/documents', headers=_auth(panel), environ_overrides={'REMOTE_ADDR': '203.0.113.3'}).status_code == 403
@@ -127,3 +127,36 @@ def test_model_status_does_not_confuse_configuration_with_connectivity(tmp_path,
     assert status['configured'] and not status['connected'] and not status['available']
     monkeypatch.setattr(LocalOllama, 'installed_models', lambda self: ['test-local:1'])
     assert panel.app.test_client().get('/api/local-model/status').get_json()['available']
+
+
+def test_first_homepage_send_persists_without_start_new(tmp_path, monkeypatch):
+    from project_guardian import local_memory_chat as chat
+    monkeypatch.setenv('ELYSIA_LOCAL_MODEL', 'test-local:1')
+    monkeypatch.setattr(chat.LocalOllama, 'generate', lambda self, messages, **kw: '{"answer":"Hello from the test model."}')
+    config = {'contained_startup': True, 'disposable_root': str(tmp_path)}
+    panel = _panel(_memory(tmp_path / 'memory.json'), config=config)
+    DocumentLibrary(panel._runtime_memory_core()).import_bytes('hello.txt', b'Hello Elysia. This is synthetic evidence for the greeting test.')
+    result = panel.app.test_client().post('/api/chat', json={'message': 'Hello Elysia', 'use_local_model': True})
+    assert result.status_code == 200, result.get_json()
+    cid = result.get_json()['conversation_id']
+    restored = _panel(_memory(tmp_path / 'memory.json'), config=config)
+    history = restored.app.test_client().get('/api/conversations/' + cid).get_json()['conversation']['messages']
+    assert [m['role'] for m in history] == ['user', 'assistant']
+    assert history[0]['content'] == 'Hello Elysia'
+    assert history[1]['content'] == 'Hello from the test model.'
+    assert history[1]['source_references'][0]['filename'] == 'hello.txt'
+
+
+def test_failed_history_write_cannot_report_success(tmp_path, monkeypatch):
+    from project_guardian import local_memory_chat as chat
+    from project_guardian.conversation_continuity import ConversationStore
+    monkeypatch.setenv('ELYSIA_LOCAL_MODEL', 'test-local:1')
+    monkeypatch.setattr(chat.LocalOllama, 'generate', lambda self, messages, **kw: '{"answer":"A real-shaped reply."}')
+    def fail(*args, **kwargs):
+        raise OSError('synthetic full disk')
+    monkeypatch.setattr(ConversationStore, 'append_message', fail)
+    panel = _panel(_memory(tmp_path / 'memory.json'), config={'contained_startup': True, 'disposable_root': str(tmp_path)})
+    response = panel.app.test_client().post('/api/chat', json={'message': 'Hello Elysia', 'use_local_model': True})
+    assert response.status_code == 503
+    assert response.get_json()['success'] is False
+    assert response.get_json()['conversation_saved'] is False

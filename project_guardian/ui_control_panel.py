@@ -1937,6 +1937,11 @@ CONTROL_PANEL_TEMPLATE = """
                         'Memory records: ' + data.memory_records + ' · indexed document chunks: ' + data.indexed_chunks + '\\n' +
                         'source: ' + (runtime.source_root || 'n/a') + '\\ndata: ' + (runtime.data_root || 'n/a') + '\\n' +
                         'application_base_sha: ' + (runtime.application_base_sha || 'n/a') + '\\n' +
+                        'source commit: ' + (runtime.delivery_commit || 'unavailable') + ' · ' + (runtime.delivery_status || '') + '\\n' +
+                        'UI started: ' + (runtime.ui_started_at || 'unavailable') + '\\n' +
+                        'Jobs: ' + JSON.stringify(data.jobs || {}) + '\\n' +
+                        'Last ingestion: ' + (data.last_successful_ingestion || 'none') + '\\n' +
+                        'Last retrieval: ' + (data.last_successful_retrieval || 'none this session') + '\\n' +
                         (data.events || []).map(function(e) { return e.time + ' · ' + e.event; }).join('\\n');
                 }).catch(function(err) {
                     document.getElementById('document-activity').textContent = 'Disconnected or unavailable: ' + err;
@@ -1964,7 +1969,7 @@ CONTROL_PANEL_TEMPLATE = """
                     status.textContent += '\\nExtracting ' + file.name + '...';
                     try {
                         var form = new FormData(); form.append('file', file);
-                        var response = await fetch('/api/documents/preview', {method: 'POST', headers: restrictedHeaders(), body: form});
+                        var response = await fetch('/api/documents/preview', {method: 'POST', headers: restrictedUploadHeaders(), body: form});
                         var data = await response.json();
                         if (!response.ok || !data.success) throw new Error(data.error || ('HTTP ' + response.status));
                         var p = data.preview;
@@ -2000,7 +2005,7 @@ CONTROL_PANEL_TEMPLATE = """
                     status.textContent += '\\nSaving ' + item.file.name + ' to durable memory...';
                     try {
                         var form = new FormData(); form.append('file', item.file);
-                        var response = await fetch('/api/documents', {method: 'POST', headers: restrictedHeaders(), body: form});
+                        var response = await fetch('/api/documents', {method: 'POST', headers: restrictedUploadHeaders(), body: form});
                         var data = await response.json();
                         if (!response.ok || !data.success) throw new Error(data.error || ('HTTP ' + response.status));
                         status.textContent += data.document.duplicate
@@ -2037,7 +2042,12 @@ CONTROL_PANEL_TEMPLATE = """
                 .then(function(data) {
                     if (!data.success) throw new Error(data.error || 'History unavailable');
                     view.textContent = ((data.conversation || {}).messages || []).map(function(m) {
-                        return (m.role === 'user' ? 'You' : 'Elysia') + ': ' + m.content;
+                        var text = (m.role === 'user' ? 'You' : 'Elysia') + ': ' + m.content;
+                        (m.source_references || []).forEach(function(source) {
+                            text += '\\nSource: ' + (source.filename || source.source_id) +
+                                (source.page ? ' · page/location ' + source.page : '') + ' · ' + source.chunk_id;
+                        });
+                        return text;
                     }).join('\\n\\n');
                     view.scrollTop = view.scrollHeight;
                 })
@@ -3106,6 +3116,7 @@ CONTROL_PANEL_TEMPLATE = """
         };
 
         window.sendLocalModelChat = function() {
+            if (window._chatPending) return;
             const msg = (document.getElementById('api-chat-message') || {}).value;
             const el = document.getElementById('api-chat-result');
             const allowCalc = !!(document.getElementById('allow-labor-calculator') || {}).checked;
@@ -3113,6 +3124,7 @@ CONTROL_PANEL_TEMPLATE = """
             const docsFolder = ((document.getElementById('documents-search-folder') || {}).value || '').trim();
             const sel = document.getElementById('conversation-select');
             if (!msg || !msg.trim()) { if (el) el.textContent = 'Enter a message first.'; return; }
+            window._chatPending = true;
             if (el) el.textContent = 'Asking local model...';
             var body = {
                 message: msg,
@@ -3142,6 +3154,11 @@ CONTROL_PANEL_TEMPLATE = """
                     }
                     if (data.evidence_supplied && data.evidence_supplied.length) {
                         text += '\\n\\nevidence: ' + data.evidence_supplied.length + ' item(s); model=' + (data.model || '');
+                        data.evidence_supplied.forEach(function(source) {
+                            text += '\\nSource: ' + (source.filename || source.source_id) +
+                                (source.page ? ' · page/location ' + source.page : '') +
+                                ' · ' + source.chunk_id;
+                        });
                     }
                     if (el) el.textContent = text;
                     var status = document.getElementById('conversation-continuity-status');
@@ -3156,7 +3173,8 @@ CONTROL_PANEL_TEMPLATE = """
                     var docsAuth = document.getElementById('allow-documents-search');
                     if (docsAuth) docsAuth.checked = false;
                 })
-                .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Local model chat error: ' + err, 'error'); });
+                .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Local model chat error: ' + err, 'error'); })
+                .finally(function() { window._chatPending = false; });
         };
 
         window.runLocalDocumentsSearch = function() {
@@ -3287,6 +3305,13 @@ CONTROL_PANEL_TEMPLATE = """
                 })
                 .catch(function(err) { addLog('Error: ' + err, 'error'); });
         };
+
+        function restrictedUploadHeaders() {
+            var headers = restrictedHeaders();
+            // The browser must supply multipart/form-data and its boundary.
+            delete headers['Content-Type'];
+            return headers;
+        }
 
         function restrictedHeaders() {
             return {
@@ -3984,6 +4009,9 @@ class UIControlPanel:
         self._restricted_runtime_adapter = None
         self._restricted_memory = None
         self._dashboard_operator_token_value = None
+        from project_guardian.runtime_activity import record
+        self._ui_started_utc = datetime.now().isoformat()
+        record('UI runtime initialized')
         self._setup_routes()
         self._setup_socketio()
         self.running = False
@@ -4504,6 +4532,11 @@ class UIControlPanel:
                         error = "Selected local model is not installed: " + model
                 except ChatBoundaryError as exc:
                     error = str(exc)
+            model_state = (connected, available, model)
+            if model_state != getattr(self, '_last_model_state', None):
+                from project_guardian.runtime_activity import record
+                record('Local model available' if available else 'Local model unavailable')
+                self._last_model_state = model_state
             return jsonify({
                 "ok": True,
                 "connected": connected,
@@ -4550,7 +4583,12 @@ class UIControlPanel:
             for entry in library.memory.memory_log:
                 if entry.get('category') == 'document_source':
                     events.append({'time': entry['time'], 'event': entry['thought']})
-            active = any(r['status'] == 'processing' for r in rows)
+            from project_guardian.document_ingestion import _ACTIVE_SOURCES
+            from project_guardian.runtime_activity import recent
+            active = len(_ACTIVE_SOURCES)
+            interrupted = sum(r['status'] == 'processing' and r['source_id'] not in _ACTIVE_SOURCES for r in rows)
+            events.extend(recent())
+            events.sort(key=lambda e: e['time'])
             identity = {}
             try:
                 from pilot.pilot_paths import APPLICATION_BASE_SHA, PILOT_DATA_ROOT, PILOT_SOURCE_ROOT
@@ -4558,14 +4596,22 @@ class UIControlPanel:
                     'source_root': str(PILOT_SOURCE_ROOT),
                     'data_root': str(PILOT_DATA_ROOT),
                     'application_base_sha': APPLICATION_BASE_SHA,
+                    'ui_started_at': self._ui_started_utc,
                 }
+                from pilot_identity import read_delivery_identity
+                delivery = read_delivery_identity()
+                identity.update({key: delivery.get(key) for key in ('delivery_commit', 'delivery_status')})
             except Exception:
                 identity = {}
             return jsonify({'success': True, 'documents': rows,
-                            'state': 'Processing or interrupted; retry to recover' if active else 'Idle',
+                            'state': 'Processing' if active else ('Interrupted; retry to recover' if interrupted else 'Idle'),
+                            'jobs': {'queued': 0, 'active': active, 'interrupted': interrupted,
+                                     'completed': len(completed), 'failed': sum(r['status'] == 'failed' for r in rows)},
                             'memory_records': len(library.memory.memory_log),
                             'indexed_chunks': sum(e.get('category') == 'document_chunk' and e.get('metadata', {}).get('source_id') in completed for e in library.memory.memory_log),
                             'events': events[-30:],
+                            'last_successful_ingestion': max((r.get('completed_at', '') for r in rows if r['status'] == 'completed'), default=None),
+                            'last_successful_retrieval': next((e['time'] for e in reversed(events) if e['event'] == 'Document evidence retrieved'), None),
                             'runtime': identity,
                             'blank_console_note': (
                                 'The separate black server window is the normal loopback console for this app; '
@@ -5310,6 +5356,8 @@ class UIControlPanel:
             except ContinuityError as exc:
                 return jsonify({"success": False, "error": str(exc)}), 404
             missing = []
+            from project_guardian.runtime_activity import record as record_event
+            record_event('Conversation resumed')
             if not (record.get("objective") or (checkpoint or {}).get("objective")):
                 missing.append("objective")
             next_step = record.get("next_safe_action") or (checkpoint or {}).get("next_safe_action")
@@ -7162,29 +7210,30 @@ class UIControlPanel:
         active_conversation_id = None
         store = None
         try:
-            if conversation_id or task_update is not None:
-                store = self._conversation_store()
-                if conversation_id:
-                    record = store.get(conversation_id)
-                else:
-                    record = store.create(title="Dashboard conversation", objective=message[:800])
-                active_conversation_id = record["conversation_id"]
-                if task_update:
-                    safe_update = {
-                        k: v
-                        for k, v in task_update.items()
-                        if k
-                        not in {
-                            "authorization",
-                            "allow_calculator",
-                            "token",
-                            "credential",
-                            "api_key",
-                            "password",
-                            "scopes",
-                        }
+            # Every homepage send needs a durable conversation, including the
+            # initial send before the operator has clicked Start new.
+            store = self._conversation_store()
+            if conversation_id:
+                record = store.get(conversation_id)
+            else:
+                record = store.create(title=message[:80], objective=message[:800])
+            active_conversation_id = record["conversation_id"]
+            if task_update:
+                safe_update = {
+                    k: v
+                    for k, v in task_update.items()
+                    if k
+                    not in {
+                        "authorization",
+                        "allow_calculator",
+                        "token",
+                        "credential",
+                        "api_key",
+                        "password",
+                        "scopes",
                     }
-                    store.update_task_fields(active_conversation_id, safe_update)
+                }
+                store.update_task_fields(active_conversation_id, safe_update)
         except ContinuityError as exc:
             return jsonify({
                 "success": False,
@@ -7271,6 +7320,8 @@ class UIControlPanel:
             )
         except ChatBoundaryError as exc:
             detail = str(exc)
+            from project_guardian.runtime_activity import record as record_event
+            record_event('Local model request failed')
             status = 503 if "unavailable" in detail.casefold() or "not installed" in detail.casefold() else 400
             if "authorization" in detail.casefold():
                 status = 403
@@ -7310,10 +7361,19 @@ class UIControlPanel:
                         active_conversation_id,
                         role="assistant",
                         content=str(result.get("answer")),
+                        source_references=result.get('evidence_supplied') or [],
                     )
-            except ContinuityError as exc:
-                logger.warning("Could not persist conversation turn: %s", exc)
+            except Exception:
+                logger.error("Could not persist conversation turn")
+                return jsonify({
+                    'success': False, 'reply': result.get('answer'),
+                    'error': 'Local reply received, but conversation history could not be saved. Retry after checking local storage.',
+                    'conversation_id': active_conversation_id,
+                    'conversation_saved': False, 'provider': 'local-ollama',
+                }), 503
 
+        from project_guardian.runtime_activity import record as record_event
+        record_event('Conversation turn saved')
         return jsonify({
             "success": True,
             "reply": result.get("answer"),

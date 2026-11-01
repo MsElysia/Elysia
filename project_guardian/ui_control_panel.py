@@ -4010,7 +4010,8 @@ class UIControlPanel:
         self._restricted_memory = None
         self._dashboard_operator_token_value = None
         from project_guardian.runtime_activity import record
-        self._ui_started_utc = datetime.now().isoformat()
+        from datetime import timezone
+        self._ui_started_utc = datetime.now(timezone.utc).isoformat()
         record('UI runtime initialized')
         self._setup_routes()
         self._setup_socketio()
@@ -4582,7 +4583,9 @@ class UIControlPanel:
             events = []
             for entry in library.memory.memory_log:
                 if entry.get('category') == 'document_source':
-                    events.append({'time': entry['time'], 'event': entry['thought']})
+                    meta = entry.get('metadata', {})
+                    timestamp = meta.get('failed_at') or meta.get('completed_at') or meta.get('imported_at')
+                    events.append({'time': timestamp or entry['time'], 'event': entry['thought']})
             from project_guardian.document_ingestion import _ACTIVE_SOURCES
             from project_guardian.runtime_activity import recent
             active = len(_ACTIVE_SOURCES)

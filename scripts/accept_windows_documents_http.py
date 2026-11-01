@@ -48,7 +48,12 @@ def main():
     headers = {'X-Elysia-Identity': 'dashboard-operator', 'X-Elysia-Token': json.loads(token[1])}
     def api(method, path, **kwargs):
         response = session.request(method, args.url + path, headers=headers, timeout=100, **kwargs)
-        response.raise_for_status()
+        if not response.ok:
+            try:
+                detail = response.json().get('error', 'Request failed')
+            except ValueError:
+                detail = 'Non-JSON failure response'
+            raise RuntimeError(f'{path}: HTTP {response.status_code}: {detail}')
         data = response.json()
         assert data.get('success', True), data.get('error')
         return data

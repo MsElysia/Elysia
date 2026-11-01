@@ -52,6 +52,9 @@ Repository: https://github.com/MsElysia/Elysia
 - Local model prose does not reliably copy full SHA identifiers. The application therefore displays the host-retrieved source/chunk metadata independently of the model wording. It does not claim arbitrary model prose is automatically fact-checked.
 - Browser and HTTP observations refer to disposable candidate execution, not the installed release or the actual desktop-shortcut path. Operational acceptance and replacement remain pending approval.
 - No cloud model, paid dependency, credential edit, autonomy/background activation, or personal document was used.
+- Clean checkpoint `0bc60511d430684add0ab6069d91ff2b4b6942e3` launched through the actual `START_ELYSIA_VERIFIED_PILOT.bat` and published ready with the disposable interpreter/root. Hosted Linux and Windows RC jobs both passed: https://github.com/MsElysia/Elysia/actions/runs/41338749050 . Subsequent timestamp-only/source-error-diagnostic repair is recorded in the next commit; check the draft PR for its exact-head CI.
+- One repeated live model acceptance returned HTTP 503; one explicit retry passed in approximately three seconds. The initial response body was not captured, so its precise cause is unresolved. Do not describe local-model availability as flawless. Existing refusal/error behavior did not issue a false successful model receipt.
+- Browser Activity showed the clean source identity, idle state, real completed/failed import counts and actual retrieval events. Its mixed local/UTC receipt timestamps were corrected to receipt UTC metadata; UI initialization is now explicitly UTC.
 
 ## Architecture and remaining limitations
 

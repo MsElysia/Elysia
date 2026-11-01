@@ -15,6 +15,22 @@ from ..events import EventBus
 logger = logging.getLogger(__name__)
 
 
+def _regular_metadata_file(proposal_dir: Path) -> Optional[Path]:
+    """Return metadata.json only when the leaf is not a symlink.
+
+    A planted metadata.json symlink would otherwise let watcher/validator
+    follow it out of the proposal directory even when proposal_id is a
+    single component.
+    """
+    metadata_file = Path(proposal_dir) / "metadata.json"
+    try:
+        if metadata_file.is_symlink():
+            return None
+    except OSError:
+        return None
+    return metadata_file
+
+
 class ProposalValidator:
     """Validates proposal structure and metadata schema."""
 
@@ -26,7 +42,9 @@ class ProposalValidator:
         if not proposal_path.exists():
             return False, "Proposal directory does not exist"
 
-        metadata_file = proposal_path / "metadata.json"
+        metadata_file = _regular_metadata_file(proposal_path)
+        if metadata_file is None:
+            return False, "metadata.json is not a regular file"
         if not metadata_file.exists():
             return False, "metadata.json missing"
 
@@ -67,8 +85,11 @@ class ProposalValidator:
         if not valid:
             return valid, error
 
+        metadata_file = _regular_metadata_file(proposal_path)
+        if metadata_file is None:
+            return False, "metadata.json is not a regular file"
+
         try:
-            metadata_file = proposal_path / "metadata.json"
             with open(metadata_file, "r", encoding="utf-8") as f:
                 metadata = json.load(f)
         except Exception as e:
@@ -231,9 +252,14 @@ class ProposalWatcher:
         if not self.proposals_root.exists():
             return
 
-        current_proposals = {
-            p.name for p in self.proposals_root.iterdir() if p.is_dir() and (p / "metadata.json").exists()
-        }
+        current_proposals = set()
+        for p in self.proposals_root.iterdir():
+            if not p.is_dir():
+                continue
+            metadata_file = _regular_metadata_file(p)
+            if metadata_file is None or not metadata_file.exists():
+                continue
+            current_proposals.add(p.name)
 
         # Detect new proposals
         new_proposals = current_proposals - self._known_proposals

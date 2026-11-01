@@ -491,19 +491,180 @@ CONTROL_PANEL_TEMPLATE = """
         <div id="action-feedback" role="status" aria-live="polite" style="padding: 10px; min-height: 20px; white-space: pre-wrap;">Action results appear here. Detailed session messages are in Logs.</div>
 
         <div class="tabs">
-            <button class="tab active" onclick="showTab('dashboard', this)">📊 Dashboard</button>
+            <button class="tab active" onclick="showTab('chat', this)">Chat</button>
+            <button class="tab" onclick="showTab('documents', this); refreshDocumentLibrary()">Add to Memory</button>
+            <button class="tab" onclick="showTab('dashboard', this); refreshDocumentLibrary()">Activity / Runtime</button>
             <button class="tab" onclick="showTab('learning', this)">📚 Learning</button>
             <button class="tab" onclick="showTab('tasks', this)">📋 Tasks</button>
             <button class="tab" onclick="showTab('security', this)">🔒 Security</button>
             <button class="tab" onclick="showTab('memory', this)">🧠 Memory</button>
             <button class="tab" onclick="showTab('capabilities', this)">🧭 Capabilities</button>
             <button class="tab" onclick="showTab('introspection', this)">🔍 Introspection</button>
-            <button class="tab" onclick="showTab('control', this)">🎮 Control</button>
+            <button class="tab" onclick="showTab('control', this)">Advanced</button>
             <button class="tab" onclick="showTab('logs', this)">📝 Logs</button>
         </div>
 
+        <div id="documents" class="tab-content">
+            <div class="card" id="document-drop-zone">
+                <h2>Add to Memory</h2>
+                <p><strong>Durable memory import</strong> (not a chat attachment). Workflow: select → extract/preview → save chunks → search.
+                Supported: TXT, Markdown, text-based PDF, DOCX, CSV · up to 8 MiB each · local only.
+                Raw files are stored separately from extracted text and search chunks. Unchanged reimports do not duplicate.</p>
+                <p style="font-size: 12px; color: var(--text-secondary);">Local OCR is <strong>not</strong> available here. Scanned PDFs with no extractable text fail with a clear error instead of saving empty text.</p>
+                <input type="file" id="document-files" multiple accept=".txt,.md,.pdf,.docx,.csv" aria-label="Choose files to add to memory">
+                <button id="document-preview-button" onclick="previewSelectedDocuments()">Extract &amp; preview</button>
+                <button id="document-import-button" onclick="savePreviewedDocuments()" disabled title="Run Extract &amp; preview first">Save to memory</button>
+                <button onclick="window._cancelDocumentQueue = true">Cancel remaining files</button>
+                <button onclick="refreshDocumentLibrary()">Refresh library</button>
+                <p style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">Chunk settings: ~1000 characters with 200-character overlap (document-v1). Failed saves can be retried (up to three attempts).</p>
+                <div id="document-import-status" role="status" aria-live="polite"></div>
+                <pre id="document-preview" style="white-space: pre-wrap; max-height: 280px; overflow: auto; background: var(--bg-dark); padding: 10px; border-radius: 8px;"></pre>
+                <label for="document-query">Search saved memory</label>
+                <input id="document-query" maxlength="800" placeholder="Search imported document chunks">
+                <button onclick="searchImportedDocuments()">Search</button>
+                <pre id="document-search-results" style="white-space: pre-wrap;"></pre>
+                <h3 style="margin-top: 12px;">Saved sources</h3>
+                <pre id="document-library" style="white-space: pre-wrap;"></pre>
+            </div>
+        </div>
         <!-- Dashboard Tab -->
-        <div id="dashboard" class="tab-content active">
+        <div id="chat" class="tab-content active"><div class="card"><h2>Chat</h2>
+                <p id="home-model-status" style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">Checking model / backend availability…</p>
+                <div id="chat-history" role="log" aria-live="polite" style="min-height: 240px; max-height: 480px; overflow: auto; white-space: pre-wrap; background: var(--bg-dark); padding: 12px; border-radius: 8px; margin-bottom: 12px;">Conversation history will appear here.</div>
+                <div class="input-group" style="margin-bottom: 12px;">
+                    <label for="api-chat-message">Message</label>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <input type="text" id="api-chat-message" placeholder="Type a message…" style="flex: 1; min-width: 200px;" aria-label="Message box">
+                        <button onclick="sendHomeChat()" aria-label="Send message">Send</button>
+                        <button type="button" onclick="showTab('documents', document.querySelectorAll('.tab')[1]); refreshDocumentLibrary();" title="Save files into durable memory (separate from chat)">Add to Memory</button>
+                    </div>
+                    <div id="local-model-chat-controls" style="display: none; margin-top: 8px;">
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 13px;">
+                            <input type="checkbox" id="allow-labor-calculator">
+                            Allow the labor calculator for this question
+                        </label>
+                        <div style="margin-top: 8px;">
+                            <label for="documents-search-folder" style="font-size: 13px;">Local documents folder (absolute path, this request only):</label>
+                            <input type="text" id="documents-search-folder" placeholder="C:\\path\\to\\selected\\folder" style="width: 100%; margin-top: 4px;">
+                            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; margin-top: 6px;">
+                                <input type="checkbox" id="allow-documents-search">
+                                Allow local.documents.search in the selected folder for this question
+                            </label>
+                            <button type="button" onclick="runLocalDocumentsSearch()" style="margin-top: 6px;">Search documents only</button>
+                        </div>
+                        <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);">
+                            <label for="conversation-select" style="font-size: 13px;">Conversation continuity:</label>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px;">
+                                <select id="conversation-select" style="flex: 1; min-width: 180px;">
+                                    <option value="">New conversation</option>
+                                </select>
+                                <button type="button" onclick="refreshConversations()">Refresh</button>
+                                <button type="button" onclick="startNewConversation()">Start new</button>
+                                <button type="button" onclick="resumeSelectedConversation()">Resume</button>
+                                <button type="button" onclick="saveConversationCheckpoint()">Save checkpoint</button>
+                            </div>
+                            <p id="conversation-continuity-status" style="font-size: 12px; color: var(--text-secondary); margin-top: 6px;">No conversation selected.</p>
+                            <div id="task-state-panel" style="display: none; margin-top: 10px; padding: 10px; background: var(--bg-dark); border-radius: 8px;">
+                                <strong style="font-size: 13px;">Task State</strong>
+                                <p style="font-size: 12px; color: var(--text-secondary); margin: 4px 0 8px 0;">Operator edits of outstanding steps and next action become the authoritative continuity checkpoint. Objective and constraints stay read-only here.</p>
+                                <div style="font-size: 12px; margin-bottom: 6px;"><span style="color: var(--text-secondary);">Title:</span> <span id="task-state-title">—</span></div>
+                                <div style="font-size: 12px; margin-bottom: 6px;"><span style="color: var(--text-secondary);">Objective:</span> <span id="task-state-objective">—</span></div>
+                                <div style="font-size: 12px; margin-bottom: 6px;"><span style="color: var(--text-secondary);">Checkpoint:</span> r<span id="task-state-revision">0</span> · <span id="task-state-saved-at">never</span></div>
+                                <label for="task-state-outstanding" style="font-size: 12px;">Outstanding steps (one per line)</label>
+                                <textarea id="task-state-outstanding" rows="3" style="width: 100%; margin: 4px 0 8px 0;"></textarea>
+                                <label for="task-state-next-action" style="font-size: 12px;">Next action</label>
+                                <input type="text" id="task-state-next-action" style="width: 100%; margin: 4px 0 8px 0;" maxlength="800">
+                                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                    <button type="button" onclick="saveTaskState()">Save task state</button>
+                                    <button type="button" onclick="cancelTaskStateEdit()">Cancel</button>
+                                </div>
+                                <div id="task-steps-list" style="margin-top: 10px; font-size: 12px;"></div>
+                                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px;">
+                                        <input type="checkbox" id="authorize-step-calculator">
+                                        Authorize calculator.labor for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-documents">
+                                        Authorize local.documents.search for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-assemble">
+                                        Authorize estimate.assemble for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-draft">
+                                        Authorize estimate.draft for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-compose-aggregate">
+                                        Authorize compose.aggregate_usd for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-compose-synthesize">
+                                        Authorize compose.synthesize for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-compose-extract">
+                                        Authorize compose.extract_fields for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-compose-extract-records">
+                                        Authorize compose.extract_records for the selected bound step (this request only)
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
+                                        <input type="checkbox" id="authorize-step-record">
+                                        Authorize recording the verified result as step completion (this request only)
+                                    </label>
+                                </div>
+                                <div id="plan-progress-panel" style="margin-top: 12px; padding: 10px; background: var(--bg-dark); border-radius: 8px; border: 1px solid var(--border);">
+                                    <strong style="font-size: 13px;">Plan &amp; Progress</strong>
+                                    <p style="font-size: 12px; color: var(--text-secondary); margin: 4px 0 8px 0;">
+                                        Uses existing composition APIs. A validated plan is <em>not</em> an execution grant.
+                                        Chat, step execution, and completion authorizations stay separate checkboxes above.
+                                    </p>
+                                    <label for="plan-goal-input" style="font-size: 12px;">Unfamiliar goal / objective</label>
+                                    <textarea id="plan-goal-input" rows="2" style="width: 100%; margin: 4px 0 8px 0;" placeholder="Describe the general task goal…"></textarea>
+                                    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+                                        <button type="button" onclick="proposeCapabilityPlan()">Propose plan</button>
+                                        <button type="button" onclick="rankCapabilitiesForGoal()">Show recommendations</button>
+                                        <button type="button" onclick="applyValidatedPlanToTaskState()">Apply validated steps to task state</button>
+                                    </div>
+                                    <div id="plan-ranking-view" style="font-size: 12px; margin-bottom: 8px; white-space: pre-wrap;"></div>
+                                    <div id="plan-validated-view" style="font-size: 12px; margin-bottom: 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; background: #0f172a; padding: 8px; border-radius: 6px;"></div>
+                                    <p style="font-size: 12px; margin: 6px 0;">Selected step for evaluate/replan: <code id="plan-selected-step">none</code></p>
+                                    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+                                        <button type="button" onclick="evaluateSelectedPlanStep()">Evaluate selected step</button>
+                                        <button type="button" onclick="proposeReplanForSelectedStep()">Propose replan</button>
+                                        <button type="button" onclick="applyProposedReplan()">Apply replan (no execute)</button>
+                                    </div>
+                                    <div id="plan-eval-view" style="font-size: 12px; margin-bottom: 8px; white-space: pre-wrap;"></div>
+                                    <div id="plan-replan-view" style="font-size: 12px; margin-bottom: 8px; max-height: 200px; overflow: auto; white-space: pre-wrap; background: #0f172a; padding: 8px; border-radius: 6px;"></div>
+                                    <p id="plan-progress-status" style="font-size: 12px; color: var(--text-secondary); margin: 0;"></p>
+                                </div>
+                                <div id="estimate-bundle-panel" style="display: none; margin-top: 10px; padding: 8px; background: var(--bg-dark); border-radius: 6px; font-size: 12px;">
+                                    <strong>Verified estimate values</strong>
+                                    <pre id="estimate-bundle-view" style="white-space: pre-wrap; margin: 6px 0 0 0; font-size: 11px;"></pre>
+                                </div>
+                                <div id="estimate-draft-panel" style="display: none; margin-top: 10px; padding: 8px; background: var(--bg-dark); border-radius: 6px; font-size: 12px;">
+                                    <strong>Estimate draft (local only — not approved for customer delivery)</strong>
+                                    <pre id="estimate-draft-view" style="white-space: pre-wrap; margin: 6px 0 0 0; font-size: 11px; max-height: 220px; overflow: auto;"></pre>
+                                    <button type="button" onclick="copyEstimateDraft()" style="margin-top: 6px;">Copy draft</button>
+                                </div>
+                                <p id="task-state-review-note" style="font-size: 12px; margin-top: 6px; color: var(--text-secondary);"></p>
+                                <p id="task-state-save-status" style="font-size: 12px; margin-top: 6px; color: var(--text-secondary);"></p>
+                                <input type="hidden" id="task-state-expected-revision" value="0">
+                            </div>
+                            <pre id="conversation-checkpoint-view" style="font-size: 11px; max-height: 120px; overflow: auto; margin-top: 6px; white-space: pre-wrap; background: var(--bg-dark); padding: 8px; border-radius: 6px;"></pre>
+                        </div>
+                        <button type="button" onclick="sendLocalModelChat()" style="margin-top: 8px;">Ask local model</button>
+                        <p id="local-model-chat-hint" style="font-size: 12px; color: var(--text-secondary); margin-top: 6px;"></p>
+                    </div>
+                    <div role="status" id="api-chat-result" style="margin-top: 8px; padding: 10px; background: var(--bg-dark); border-radius: 8px; font-size: 13px; min-height: 40px; white-space: pre-wrap;"></div>
+                </div>
+</div></div>
+        <div id="dashboard" class="tab-content">
+            <div class="card"><h2>Document processing</h2><pre id="document-activity" style="white-space: pre-wrap;">Loading runtime activity...</pre></div>
             <div class="grid">
                 <div class="card">
                     <h2>System Status</h2>
@@ -888,7 +1049,7 @@ CONTROL_PANEL_TEMPLATE = """
                 <h2>System Controls</h2>
                 <button onclick="pauseLoop()">Pause Event Loop</button>
                 <button onclick="resumeLoop()">Resume Event Loop</button>
-                <button onclick="createSnapshot()">Create Memory Snapshot</button>
+                <button id="create-snapshot-btn" onclick="createSnapshot()" disabled title="Memory snapshot API is not available in this contained Windows install. Use Add to Memory for document imports, or restricted-fact Save on the Memory tab.">Create Memory Snapshot (unavailable)</button>
                 <button onclick="triggerDreamCycle()" class="danger">Trigger Dream Cycle</button>
                 
                 <div class="input-group" style="margin-top: 16px;">
@@ -912,136 +1073,6 @@ CONTROL_PANEL_TEMPLATE = """
 
                 <h3 style="margin-top: 24px;">APIs &amp; Tools</h3>
                 <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: 12px;">Trigger income, research, harvest, and AI chat from the dashboard.</p>
-                <div class="input-group" style="margin-bottom: 12px;">
-                    <label>Chat with AI (OpenAI/OpenRouter):</label>
-                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                        <input type="text" id="api-chat-message" placeholder="Ask anything..." style="flex: 1; min-width: 200px;">
-                        <button onclick="sendApiChat()">Send</button>
-                    </div>
-                    <div id="local-model-chat-controls" style="display: none; margin-top: 8px;">
-                        <label style="display: flex; align-items: center; gap: 8px; font-size: 13px;">
-                            <input type="checkbox" id="allow-labor-calculator">
-                            Allow the labor calculator for this question
-                        </label>
-                        <div style="margin-top: 8px;">
-                            <label for="documents-search-folder" style="font-size: 13px;">Local documents folder (absolute path, this request only):</label>
-                            <input type="text" id="documents-search-folder" placeholder="C:\\path\\to\\selected\\folder" style="width: 100%; margin-top: 4px;">
-                            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; margin-top: 6px;">
-                                <input type="checkbox" id="allow-documents-search">
-                                Allow local.documents.search in the selected folder for this question
-                            </label>
-                            <button type="button" onclick="runLocalDocumentsSearch()" style="margin-top: 6px;">Search documents only</button>
-                        </div>
-                        <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);">
-                            <label for="conversation-select" style="font-size: 13px;">Conversation continuity:</label>
-                            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px;">
-                                <select id="conversation-select" style="flex: 1; min-width: 180px;">
-                                    <option value="">New conversation</option>
-                                </select>
-                                <button type="button" onclick="refreshConversations()">Refresh</button>
-                                <button type="button" onclick="startNewConversation()">Start new</button>
-                                <button type="button" onclick="resumeSelectedConversation()">Resume</button>
-                                <button type="button" onclick="saveConversationCheckpoint()">Save checkpoint</button>
-                            </div>
-                            <p id="conversation-continuity-status" style="font-size: 12px; color: var(--text-secondary); margin-top: 6px;">No conversation selected.</p>
-                            <div id="task-state-panel" style="display: none; margin-top: 10px; padding: 10px; background: var(--bg-dark); border-radius: 8px;">
-                                <strong style="font-size: 13px;">Task State</strong>
-                                <p style="font-size: 12px; color: var(--text-secondary); margin: 4px 0 8px 0;">Operator edits of outstanding steps and next action become the authoritative continuity checkpoint. Objective and constraints stay read-only here.</p>
-                                <div style="font-size: 12px; margin-bottom: 6px;"><span style="color: var(--text-secondary);">Title:</span> <span id="task-state-title">—</span></div>
-                                <div style="font-size: 12px; margin-bottom: 6px;"><span style="color: var(--text-secondary);">Objective:</span> <span id="task-state-objective">—</span></div>
-                                <div style="font-size: 12px; margin-bottom: 6px;"><span style="color: var(--text-secondary);">Checkpoint:</span> r<span id="task-state-revision">0</span> · <span id="task-state-saved-at">never</span></div>
-                                <label for="task-state-outstanding" style="font-size: 12px;">Outstanding steps (one per line)</label>
-                                <textarea id="task-state-outstanding" rows="3" style="width: 100%; margin: 4px 0 8px 0;"></textarea>
-                                <label for="task-state-next-action" style="font-size: 12px;">Next action</label>
-                                <input type="text" id="task-state-next-action" style="width: 100%; margin: 4px 0 8px 0;" maxlength="800">
-                                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                    <button type="button" onclick="saveTaskState()">Save task state</button>
-                                    <button type="button" onclick="cancelTaskStateEdit()">Cancel</button>
-                                </div>
-                                <div id="task-steps-list" style="margin-top: 10px; font-size: 12px;"></div>
-                                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">
-                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px;">
-                                        <input type="checkbox" id="authorize-step-calculator">
-                                        Authorize calculator.labor for the selected bound step (this request only)
-                                    </label>
-                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
-                                        <input type="checkbox" id="authorize-step-documents">
-                                        Authorize local.documents.search for the selected bound step (this request only)
-                                    </label>
-                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
-                                        <input type="checkbox" id="authorize-step-assemble">
-                                        Authorize estimate.assemble for the selected bound step (this request only)
-                                    </label>
-                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
-                                        <input type="checkbox" id="authorize-step-draft">
-                                        Authorize estimate.draft for the selected bound step (this request only)
-                                    </label>
-                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
-                                        <input type="checkbox" id="authorize-step-compose-aggregate">
-                                        Authorize compose.aggregate_usd for the selected bound step (this request only)
-                                    </label>
-                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
-                                        <input type="checkbox" id="authorize-step-compose-synthesize">
-                                        Authorize compose.synthesize for the selected bound step (this request only)
-                                    </label>
-                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
-                                        <input type="checkbox" id="authorize-step-compose-extract">
-                                        Authorize compose.extract_fields for the selected bound step (this request only)
-                                    </label>
-                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
-                                        <input type="checkbox" id="authorize-step-compose-extract-records">
-                                        Authorize compose.extract_records for the selected bound step (this request only)
-                                    </label>
-                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px;">
-                                        <input type="checkbox" id="authorize-step-record">
-                                        Authorize recording the verified result as step completion (this request only)
-                                    </label>
-                                </div>
-                                <div id="plan-progress-panel" style="margin-top: 12px; padding: 10px; background: var(--bg-dark); border-radius: 8px; border: 1px solid var(--border);">
-                                    <strong style="font-size: 13px;">Plan &amp; Progress</strong>
-                                    <p style="font-size: 12px; color: var(--text-secondary); margin: 4px 0 8px 0;">
-                                        Uses existing composition APIs. A validated plan is <em>not</em> an execution grant.
-                                        Chat, step execution, and completion authorizations stay separate checkboxes above.
-                                    </p>
-                                    <label for="plan-goal-input" style="font-size: 12px;">Unfamiliar goal / objective</label>
-                                    <textarea id="plan-goal-input" rows="2" style="width: 100%; margin: 4px 0 8px 0;" placeholder="Describe the general task goal…"></textarea>
-                                    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
-                                        <button type="button" onclick="proposeCapabilityPlan()">Propose plan</button>
-                                        <button type="button" onclick="rankCapabilitiesForGoal()">Show recommendations</button>
-                                        <button type="button" onclick="applyValidatedPlanToTaskState()">Apply validated steps to task state</button>
-                                    </div>
-                                    <div id="plan-ranking-view" style="font-size: 12px; margin-bottom: 8px; white-space: pre-wrap;"></div>
-                                    <div id="plan-validated-view" style="font-size: 12px; margin-bottom: 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; background: #0f172a; padding: 8px; border-radius: 6px;"></div>
-                                    <p style="font-size: 12px; margin: 6px 0;">Selected step for evaluate/replan: <code id="plan-selected-step">none</code></p>
-                                    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
-                                        <button type="button" onclick="evaluateSelectedPlanStep()">Evaluate selected step</button>
-                                        <button type="button" onclick="proposeReplanForSelectedStep()">Propose replan</button>
-                                        <button type="button" onclick="applyProposedReplan()">Apply replan (no execute)</button>
-                                    </div>
-                                    <div id="plan-eval-view" style="font-size: 12px; margin-bottom: 8px; white-space: pre-wrap;"></div>
-                                    <div id="plan-replan-view" style="font-size: 12px; margin-bottom: 8px; max-height: 200px; overflow: auto; white-space: pre-wrap; background: #0f172a; padding: 8px; border-radius: 6px;"></div>
-                                    <p id="plan-progress-status" style="font-size: 12px; color: var(--text-secondary); margin: 0;"></p>
-                                </div>
-                                <div id="estimate-bundle-panel" style="display: none; margin-top: 10px; padding: 8px; background: var(--bg-dark); border-radius: 6px; font-size: 12px;">
-                                    <strong>Verified estimate values</strong>
-                                    <pre id="estimate-bundle-view" style="white-space: pre-wrap; margin: 6px 0 0 0; font-size: 11px;"></pre>
-                                </div>
-                                <div id="estimate-draft-panel" style="display: none; margin-top: 10px; padding: 8px; background: var(--bg-dark); border-radius: 6px; font-size: 12px;">
-                                    <strong>Estimate draft (local only — not approved for customer delivery)</strong>
-                                    <pre id="estimate-draft-view" style="white-space: pre-wrap; margin: 6px 0 0 0; font-size: 11px; max-height: 220px; overflow: auto;"></pre>
-                                    <button type="button" onclick="copyEstimateDraft()" style="margin-top: 6px;">Copy draft</button>
-                                </div>
-                                <p id="task-state-review-note" style="font-size: 12px; margin-top: 6px; color: var(--text-secondary);"></p>
-                                <p id="task-state-save-status" style="font-size: 12px; margin-top: 6px; color: var(--text-secondary);"></p>
-                                <input type="hidden" id="task-state-expected-revision" value="0">
-                            </div>
-                            <pre id="conversation-checkpoint-view" style="font-size: 11px; max-height: 120px; overflow: auto; margin-top: 6px; white-space: pre-wrap; background: var(--bg-dark); padding: 8px; border-radius: 6px;"></pre>
-                        </div>
-                        <button type="button" onclick="sendLocalModelChat()" style="margin-top: 8px;">Ask local model</button>
-                        <p id="local-model-chat-hint" style="font-size: 12px; color: var(--text-secondary); margin-top: 6px;"></p>
-                    </div>
-                    <div id="api-chat-result" style="margin-top: 8px; padding: 10px; background: var(--bg-dark); border-radius: 8px; font-size: 13px; min-height: 40px; white-space: pre-wrap;"></div>
-                </div>
                 <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
                     <button onclick="refreshIncomeStatus()">Income / API Status</button>
                     <button onclick="runHarvestReport()">Harvest Report</button>
@@ -1159,6 +1190,11 @@ CONTROL_PANEL_TEMPLATE = """
         // Initialize on page load - show UI immediately
         document.addEventListener('DOMContentLoaded', function() {
             try {
+                var drop = document.getElementById('document-drop-zone');
+                drop.addEventListener('dragover', function(e) { e.preventDefault(); });
+                drop.addEventListener('drop', function(e) { e.preventDefault(); window.importSelectedDocuments(e.dataTransfer.files); });
+                window.refreshDocumentLibrary();
+                setInterval(window.refreshDocumentLibrary, 10000);
                 // Presentation only; backend authorization remains mandatory.
                 if (CONTAINED_DASHBOARD) {
                     document.querySelectorAll('#learning .badge.success').forEach(function(el) { el.classList.remove('success'); });
@@ -1178,15 +1214,29 @@ CONTROL_PANEL_TEMPLATE = """
                     fetch('/api/local-model/status')
                         .then(function(r) { return r.json(); })
                         .then(function(data) {
+                            var home = document.getElementById('home-model-status');
+                            if (home) {
+                                if (!data.configured) home.textContent = 'No local model is configured (ELYSIA_LOCAL_MODEL). Chat will report that clearly.';
+                                else if (!data.connected) home.textContent = 'Local model configured (' + (data.model || '?') + ') but the backend is unreachable: ' + (data.error || 'connection failed');
+                                else if (!data.available) home.textContent = 'Local model configured (' + (data.model || '?') + ') but not installed/available: ' + (data.error || 'unavailable');
+                                else home.textContent = 'Local model ready: ' + data.model + ' via ' + (data.endpoint || 'Ollama');
+                            }
                             var hint = document.getElementById('local-model-chat-hint');
                             if (!hint) return;
-                            if (data && data.configured) {
-                                hint.textContent = 'Local model: ' + (data.model || '') + ' (loopback Ollama only; no cloud fallback).';
+                            if (data && data.available) {
+                                hint.textContent = 'Ollama connected · ' + data.model + ' · ready for a local request.';
+                            } else if (data && data.configured) {
+                                hint.textContent = (data.error || 'Selected model unavailable') + '. Start Ollama and install/select the named local model, then reload. No cloud fallback.';
                             } else {
                                 hint.textContent = 'Local model not configured (set ELYSIA_LOCAL_MODEL). Memory retrieve still works.';
                             }
                         })
-                        .catch(function() {});
+                        .catch(function(err) {
+                            var home = document.getElementById('home-model-status');
+                            if (home) home.textContent = 'Model status unavailable: ' + err;
+                            var hint = document.getElementById('local-model-chat-hint');
+                            if (hint) hint.textContent = 'Model status unavailable: ' + err;
+                        });
                 }
                 document.querySelectorAll('label').forEach(function(label) {
                     var input = label.parentElement.querySelector('input[id], select[id], textarea[id]');
@@ -1517,13 +1567,7 @@ CONTROL_PANEL_TEMPLATE = """
         };
 
         window.createSnapshot = function() {
-            fetch('/api/memory/snapshot', { method: 'POST' })
-                .then(function(r) { return r.json().then(function(data) { return {ok: r.ok, data: data}; }); })
-                .then(function(res) {
-                    var data = res.data;
-                    addLog(res.ok && data.success ? (data.message || 'Memory saved; no snapshot path returned') : (data.error || data.message || 'Snapshot failed'), res.ok && data.success ? 'info' : 'error');
-                })
-                .catch(function(err) { addLog('Error: ' + err, 'error'); });
+            addLog('Create Memory Snapshot is unavailable in this contained Windows install. Prerequisite: a working /api/memory/snapshot implementation. Use Add to Memory for documents, or Save fact on the Memory tab.', 'warning');
         };
 
         window.refreshAutonomyStatus = function() {
@@ -1876,6 +1920,129 @@ CONTROL_PANEL_TEMPLATE = """
                 });
         };
 
+        window.sendHomeChat = function() {
+            if (CONTAINED_DASHBOARD) window.sendLocalModelChat();
+            else window.sendApiChat();
+        };
+        window.refreshDocumentLibrary = function() {
+            fetch('/api/documents', {headers: restrictedHeaders()})
+                .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+                .then(function(data) {
+                    document.getElementById('document-library').textContent = (data.documents || []).map(function(d) {
+                        return d.filename + ' · ' + d.status + ' · ' + (d.chunk_count || 0) + ' chunks · ' + d.source_id + (d.error ? ' · ' + d.error : '');
+                    }).join('\\n') || 'No documents imported.';
+                    var runtime = data.runtime || {};
+                    document.getElementById('document-activity').textContent = 'Server connected · ' + data.state + '\\n' +
+                        (data.blank_console_note ? (data.blank_console_note + '\\n') : '') +
+                        'Memory records: ' + data.memory_records + ' · indexed document chunks: ' + data.indexed_chunks + '\\n' +
+                        'source: ' + (runtime.source_root || 'n/a') + '\\ndata: ' + (runtime.data_root || 'n/a') + '\\n' +
+                        'application_base_sha: ' + (runtime.application_base_sha || 'n/a') + '\\n' +
+                        (data.events || []).map(function(e) { return e.time + ' · ' + e.event; }).join('\\n');
+                }).catch(function(err) {
+                    document.getElementById('document-activity').textContent = 'Disconnected or unavailable: ' + err;
+                    document.getElementById('document-library').textContent = 'Documents unavailable: ' + err;
+                });
+        };
+        window._documentPreviewQueue = [];
+        window.previewSelectedDocuments = async function(files) {
+            if (window._documentImportBusy) return;
+            files = files || document.getElementById('document-files').files;
+            window._documentImportBusy = true;
+            window._cancelDocumentQueue = false;
+            window._documentPreviewQueue = [];
+            var previewBtn = document.getElementById('document-preview-button');
+            var saveBtn = document.getElementById('document-import-button');
+            var status = document.getElementById('document-import-status');
+            var preview = document.getElementById('document-preview');
+            if (previewBtn) previewBtn.disabled = true;
+            if (saveBtn) saveBtn.disabled = true;
+            status.textContent = '';
+            preview.textContent = '';
+            try {
+                for (var file of Array.from(files || [])) {
+                    if (window._cancelDocumentQueue) { status.textContent += '\\nRemaining files cancelled.'; break; }
+                    status.textContent += '\\nExtracting ' + file.name + '...';
+                    try {
+                        var form = new FormData(); form.append('file', file);
+                        var response = await fetch('/api/documents/preview', {method: 'POST', headers: restrictedHeaders(), body: form});
+                        var data = await response.json();
+                        if (!response.ok || !data.success) throw new Error(data.error || ('HTTP ' + response.status));
+                        var p = data.preview;
+                        window._documentPreviewQueue.push({file: file, preview: p});
+                        status.textContent += ' Ready · ' + p.chunk_count + ' chunks · ' + p.page_count + ' page(s)' + (p.already_imported ? ' · already in memory (reimport will not duplicate)' : '');
+                        preview.textContent += '=== ' + p.filename + ' ===\\n' +
+                            'source_id=' + p.source_id + ' · chunks=' + p.chunk_count +
+                            ' · settings=' + JSON.stringify(p.chunk_settings) + '\\n' +
+                            (p.ocr_note || '') + '\\n--- extracted preview ---\\n' + (p.preview_text || '(empty)') + '\\n\\n';
+                    } catch (err) { status.textContent += ' Failed: ' + err.message; }
+                }
+                if (saveBtn) saveBtn.disabled = window._documentPreviewQueue.length === 0;
+            } finally {
+                window._documentImportBusy = false;
+                if (previewBtn) previewBtn.disabled = false;
+            }
+        };
+        window.savePreviewedDocuments = async function() {
+            if (window._documentImportBusy) return;
+            var queue = window._documentPreviewQueue || [];
+            if (!queue.length) {
+                document.getElementById('document-import-status').textContent = 'Nothing to save. Run Extract & preview first.';
+                return;
+            }
+            window._documentImportBusy = true;
+            window._cancelDocumentQueue = false;
+            var saveBtn = document.getElementById('document-import-button');
+            var status = document.getElementById('document-import-status');
+            if (saveBtn) saveBtn.disabled = true;
+            try {
+                for (var item of queue) {
+                    if (window._cancelDocumentQueue) { status.textContent += '\\nRemaining saves cancelled.'; break; }
+                    status.textContent += '\\nSaving ' + item.file.name + ' to durable memory...';
+                    try {
+                        var form = new FormData(); form.append('file', item.file);
+                        var response = await fetch('/api/documents', {method: 'POST', headers: restrictedHeaders(), body: form});
+                        var data = await response.json();
+                        if (!response.ok || !data.success) throw new Error(data.error || ('HTTP ' + response.status));
+                        status.textContent += data.document.duplicate
+                            ? (' Already indexed (' + data.document.source_id + '); no duplicates created.')
+                            : (' Saved · ' + (data.document.chunk_count || 0) + ' chunks · ' + data.document.source_id);
+                    } catch (err) { status.textContent += ' Failed: ' + err.message; }
+                    window.refreshDocumentLibrary();
+                }
+                window._documentPreviewQueue = [];
+            } finally {
+                window._documentImportBusy = false;
+                if (saveBtn) saveBtn.disabled = true;
+            }
+        };
+        window.importSelectedDocuments = function(files) {
+            // Drag/drop and legacy callers: extract & preview first (operator still confirms Save).
+            return window.previewSelectedDocuments(files);
+        };
+        window.searchImportedDocuments = function() {
+            var result = document.getElementById('document-search-results');
+            fetch('/api/documents/search', {method: 'POST', headers: Object.assign({'Content-Type': 'application/json'}, restrictedHeaders()),
+                body: JSON.stringify({query: document.getElementById('document-query').value})})
+                .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+                .then(function(data) { result.textContent = (data.matches || []).map(function(m) {
+                    return m.filename + ' · page/location ' + m.page + ' · ' + m.chunk_id + '\\n' + m.text;
+                }).join('\\n\\n') || 'No matching document evidence.'; })
+                .catch(function(err) { result.textContent = 'Search failed: ' + err; });
+        };
+        window.loadChatHistory = function(id) {
+            var view = document.getElementById('chat-history');
+            if (!id) { view.textContent = ''; return; }
+            fetch('/api/conversations/' + encodeURIComponent(id))
+                .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+                .then(function(data) {
+                    if (!data.success) throw new Error(data.error || 'History unavailable');
+                    view.textContent = ((data.conversation || {}).messages || []).map(function(m) {
+                        return (m.role === 'user' ? 'You' : 'Elysia') + ': ' + m.content;
+                    }).join('\\n\\n');
+                    view.scrollTop = view.scrollHeight;
+                })
+                .catch(function(err) { view.textContent = 'Could not load saved history: ' + err; });
+        };
         window.refreshConversations = function() {
             var sel = document.getElementById('conversation-select');
             var status = document.getElementById('conversation-continuity-status');
@@ -1916,6 +2083,7 @@ CONTROL_PANEL_TEMPLATE = """
                         return;
                     }
                     window._activeConversationId = data.conversation_id;
+                    window.loadChatHistory(data.conversation_id);
                     if (status) status.textContent = 'Started ' + data.conversation_id + ' (no authorization carried).';
                     if (view) view.textContent = '';
                     window.refreshConversations();
@@ -1941,6 +2109,7 @@ CONTROL_PANEL_TEMPLATE = """
                         return;
                     }
                     window._activeConversationId = id;
+                    window.loadChatHistory(id);
                     var recovered = data.continuity_recovered ? 'recovered' : 'partial';
                     var missing = (data.missing || []).join(', ') || 'none';
                     if (status) {
@@ -2982,6 +3151,7 @@ CONTROL_PANEL_TEMPLATE = """
                             ' · calculator auth is per-request only.';
                     }
                     var failed = !data.success || !!data.error || res.status >= 400;
+                    if (data.conversation_id) { window.loadChatHistory(data.conversation_id); window.refreshConversations(); }
                     addLog(failed ? ('Local model chat failed: ' + (data.error || text)) : 'Local model reply received', failed ? 'error' : 'info');
                     var docsAuth = document.getElementById('allow-documents-search');
                     if (docsAuth) docsAuth.checked = false;
@@ -4321,14 +4491,118 @@ class UIControlPanel:
             from project_guardian.local_memory_chat import configured_local_model_name
 
             model = configured_local_model_name()
+            from project_guardian.local_memory_chat import LocalOllama, ChatBoundaryError
+            connected = False
+            available = False
+            error = None
+            if model:
+                try:
+                    installed = LocalOllama(model).installed_models()
+                    connected = True
+                    available = model in installed
+                    if not available:
+                        error = "Selected local model is not installed: " + model
+                except ChatBoundaryError as exc:
+                    error = str(exc)
             return jsonify({
                 "ok": True,
+                "connected": connected,
+                "available": available,
+                "error": error,
                 "configured": bool(model),
                 "model": model,
                 "endpoint": "http://127.0.0.1:11434",
                 "cloud_fallback": False,
                 "contained": self._contained_startup_active(),
             })
+
+        def document_request_gate():
+            if not _is_loopback_addr(request.remote_addr):
+                return jsonify({'success': False, 'error': 'forbidden'}), 403
+            if not self._contained_startup_active():
+                return jsonify({'success': False, 'error': 'Unavailable in this contained session: contained startup required'}), 400
+            return self._dashboard_operator_auth_failure()
+
+        @self.app.route('/api/documents', methods=['GET', 'POST'])
+        def api_documents():
+            denied = document_request_gate()
+            if denied is not None:
+                return denied
+            from project_guardian.document_ingestion import DocumentLibrary, ImportFailure, MAX_BYTES
+            from werkzeug.exceptions import RequestEntityTooLarge
+            library = DocumentLibrary(self._runtime_memory_core())
+            if request.method == 'POST':
+                request.max_content_length = MAX_BYTES + 64 * 1024
+                try:
+                    upload = request.files.get('file')
+                    if upload is None:
+                        raise ImportFailure('Choose a file')
+                    receipt = library.import_bytes(upload.filename, upload.stream.read(MAX_BYTES + 1))
+                    return jsonify({'success': True, 'document': receipt})
+                except (ImportFailure, RequestEntityTooLarge) as exc:
+                    return jsonify({'success': False, 'error': str(exc)}), 400
+                except Exception:
+                    logger.error('Document import persistence failure')
+                    return jsonify({'success': False, 'error': 'Document persistence failed; no success receipt issued'}), 503
+            rows = library.receipts()
+            completed = {r['source_id'] for r in rows if r['status'] == 'completed'}
+            events = []
+            for entry in library.memory.memory_log:
+                if entry.get('category') == 'document_source':
+                    events.append({'time': entry['time'], 'event': entry['thought']})
+            active = any(r['status'] == 'processing' for r in rows)
+            identity = {}
+            try:
+                from pilot.pilot_paths import APPLICATION_BASE_SHA, PILOT_DATA_ROOT, PILOT_SOURCE_ROOT
+                identity = {
+                    'source_root': str(PILOT_SOURCE_ROOT),
+                    'data_root': str(PILOT_DATA_ROOT),
+                    'application_base_sha': APPLICATION_BASE_SHA,
+                }
+            except Exception:
+                identity = {}
+            return jsonify({'success': True, 'documents': rows,
+                            'state': 'Processing or interrupted; retry to recover' if active else 'Idle',
+                            'memory_records': len(library.memory.memory_log),
+                            'indexed_chunks': sum(e.get('category') == 'document_chunk' and e.get('metadata', {}).get('source_id') in completed for e in library.memory.memory_log),
+                            'events': events[-30:],
+                            'runtime': identity,
+                            'blank_console_note': (
+                                'The separate black server window is the normal loopback console for this app; '
+                                'it waits for local requests. Use this Activity / Runtime tab for status.'
+                            )})
+
+        @self.app.route('/api/documents/preview', methods=['POST'])
+        def api_documents_preview():
+            denied = document_request_gate()
+            if denied is not None:
+                return denied
+            from project_guardian.document_ingestion import DocumentLibrary, ImportFailure, MAX_BYTES
+            from werkzeug.exceptions import RequestEntityTooLarge
+            library = DocumentLibrary(self._runtime_memory_core())
+            request.max_content_length = MAX_BYTES + 64 * 1024
+            try:
+                upload = request.files.get('file')
+                if upload is None:
+                    raise ImportFailure('Choose a file')
+                preview = library.preview_bytes(upload.filename, upload.stream.read(MAX_BYTES + 1))
+                return jsonify({'success': True, 'preview': preview})
+            except (ImportFailure, RequestEntityTooLarge) as exc:
+                return jsonify({'success': False, 'error': str(exc)}), 400
+            except Exception:
+                logger.error('Document preview failure')
+                return jsonify({'success': False, 'error': 'Document preview failed'}), 503
+
+        @self.app.route('/api/documents/search', methods=['POST'])
+        def api_documents_search():
+            denied = document_request_gate()
+            if denied is not None:
+                return denied
+            from project_guardian.document_ingestion import DocumentLibrary
+            query = (request.get_json(silent=True) or {}).get('query')
+            if not isinstance(query, str) or not 1 <= len(query.strip()) <= 800:
+                return jsonify({'success': False, 'error': 'Enter a query of 1 to 800 characters'}), 400
+            return jsonify({'success': True, 'matches': DocumentLibrary(self._runtime_memory_core()).search(query)})
 
         @self.app.route('/api/local-documents/search', methods=['POST'])
         def api_local_documents_search():

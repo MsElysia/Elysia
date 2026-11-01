@@ -313,6 +313,20 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         selected.append(item)
         if len(selected) == EVIDENCE_ITEM_CAP:
             break
+    # Derived document chunks remain untrusted evidence, never personal facts.
+    from project_guardian.document_ingestion import DocumentLibrary
+    if hasattr(adapter, 'memory'):
+        for row in DocumentLibrary(adapter.memory).search(question):
+            item = {
+                'source_id': row['source_id'], 'chunk_id': row['chunk_id'],
+                'revision': 1, 'source_sha256': row['content_sha256'],
+                'score': row['score'], 'filename': row['filename'], 'page': row['page'],
+                'trust': 'untrusted_document',
+                'highlights': [{'highlight_id': row['chunk_id'], 'text': row['text']}],
+            }
+            if len(selected) >= EVIDENCE_ITEM_CAP or len(canonical(selected + [item]).encode('utf-8')) > EVIDENCE_BYTE_CAP:
+                break
+            selected.append(item)
     store = {}
     if hasattr(adapter, "store_identity"):
         try:

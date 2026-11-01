@@ -19,7 +19,7 @@ PILOT_DATA_ROOT = (
 )
 
 # Verified interpreter (read-only use; do not modify this venv from the pilot)
-PILOT_PYTHON = Path(r"C:\Users\Owner\Project guardian\.venv\Scripts\python.exe").resolve()
+PILOT_PYTHON = Path(os.environ.get('ELYSIA_PILOT_PYTHON') or r"C:\Users\Owner\Project guardian\.venv\Scripts\python.exe").resolve()
 
 PREFERRED_UI_HOST = "127.0.0.1"
 _port_override = (os.environ.get("ELYSIA_PREFERRED_UI_PORT") or "").strip()

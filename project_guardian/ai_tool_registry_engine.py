@@ -2,8 +2,10 @@
 # ToolRegistry: Auto-discovery and Management of External AI Tools
 # Based on Conversation 3 (elysia 4 sub a) design specifications
 #
-# SECURITY: This module handles AI tool registration and should be used with caution.
-# API keys are stored in metadata and should be encrypted in production.
+# SECURITY: Direct API keys are runtime-only and are never serialized to the
+# registry JSON or exported configuration. Persist only the environment variable
+# name when a secret must survive restart. Historical files may contain old
+# plaintext keys and require a separate operator-controlled cleanup.
 # All network operations route through WebReader gateway.
 
 import logging
@@ -40,13 +42,16 @@ class ToolMetadata:
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization."""
+        """Serialize configuration, not in-memory credentials.
+
+        Direct api_key values are deliberately ephemeral. Reloads must obtain
+        credentials from api_key_env or an explicit host-provided runtime input.
+        """
         return {
             "name": self.name,
             "description": self.description,
             "provider": self.provider,
             "api_endpoint": self.api_endpoint,
-            "api_key": self.api_key,  # In production, encrypt this
             "api_key_env": self.api_key_env,
             "capabilities": self.capabilities,
             "rate_limit": self.rate_limit,
@@ -267,7 +272,7 @@ class ToolRegistry:
             description: Tool description
             provider: Provider name (e.g., "openai", "anthropic")
             api_endpoint: API endpoint URL
-            api_key: API key (or use api_key_env)
+            api_key: Ephemeral API key, never persisted; prefer api_key_env
             api_key_env: Environment variable name for API key
             capabilities: List of capabilities this tool provides
             rate_limit: Rate limit configuration

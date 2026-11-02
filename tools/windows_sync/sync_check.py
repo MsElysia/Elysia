@@ -108,8 +108,9 @@ def build_status(*, do_fetch: bool) -> dict:
             save_json(status_path(), status)
             return status
     else:
-        status["fetch_ok"] = True  # caller skipped fetch intentionally
-        status["notes"].append("fetch skipped")
+        # Without fetch, origin/* is only the locally cached tracking ref.
+        # Do not mark the latest remote check as successful.
+        status["notes"].append("fetch skipped; GitHub SHA is cached and not freshly verified")
 
     remote_sha = gitutil.remote_ref_sha(dev, REMOTE_NAME, CANONICAL_BRANCH)
     status["github_sha"] = remote_sha
@@ -124,10 +125,25 @@ def build_status(*, do_fetch: bool) -> dict:
         ahead, behind = gitutil.ahead_behind(dev, wt.head, remote_sha)
         status["ahead"] = ahead
         status["behind"] = behind
-        if ahead == 0 and behind == 0:
+        if ahead < 0 or behind < 0:
+            # gitutil.ahead_behind returns -1 if rev-list fails. Unknown is
+            # not divergence, and must never be reported as verified parity.
+            status["divergence"] = "unknown"
+            status["pending_updates"] = True
+            status["synchronization_status"] = "degraded"
+            status["errors"].append("cannot compare local and remote commit history")
+        elif ahead == 0 and behind == 0:
             status["divergence"] = "identical"
             status["pending_updates"] = False
-            status["synchronization_status"] = "synchronized"
+            if wt.dirty:
+                status["synchronization_status"] = "local_uncommitted_changes"
+                status["notes"].append(
+                    "Commit IDs match, but uncommitted development changes are not on GitHub"
+                )
+            elif not do_fetch:
+                status["synchronization_status"] = "cached_sha_match_unverified"
+            else:
+                status["synchronization_status"] = "synchronized"
         elif ahead > 0 and behind == 0:
             status["divergence"] = "local_ahead"
             status["pending_updates"] = False
@@ -146,16 +162,23 @@ def build_status(*, do_fetch: bool) -> dict:
         status["release_verification_status"] = "not_installed"
         status["notes"].append("release root missing — run promote_release after tests")
     elif remote_sha and status["installed_runtime_sha"] == remote_sha and status["divergence"] == "identical":
-        status["release_verification_status"] = "matches_github_and_dev"
+        if wt.dirty:
+            status["release_verification_status"] = "source_sha_matches_but_dev_dirty"
+        elif not do_fetch:
+            status["release_verification_status"] = "source_sha_matches_cached_remote"
+        else:
+            status["release_verification_status"] = "matches_github_and_dev"
     elif status["installed_runtime_sha"] == status["local_development_sha"]:
-        status["release_verification_status"] = "matches_dev"
+        status["release_verification_status"] = (
+            "source_sha_matches_but_dev_dirty" if wt.dirty else "matches_dev"
+        )
         if status.get("behind"):
-            status["notes"].append("release matches dirty/outdated local tip relative to GitHub")
+            status["notes"].append("release matches local tip, but local is behind GitHub")
     else:
         status["release_verification_status"] = "stale_or_mismatch"
         status["pending_updates"] = True
 
-    if not status["errors"] and status["fetch_ok"]:
+    if not status["errors"] and do_fetch and status["fetch_ok"]:
         status["last_successful_check_utc"] = now
 
     save_json(status_path(), status)

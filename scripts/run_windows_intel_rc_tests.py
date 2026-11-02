@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 RC_REQUIRED = [
+    "tests/test_windows_sync_status.py",
     "tests/test_document_ingestion_workflow.py",
     "tests/test_local_memory_chat_pilot.py",
     "tests/test_capability_awareness.py",

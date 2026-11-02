@@ -15,6 +15,22 @@ from ..events import EventBus
 logger = logging.getLogger(__name__)
 
 
+def _regular_proposal_dir(proposal_path: Path) -> Optional[Path]:
+    """Return the proposal folder only when the leaf is not a symlink.
+
+    A planted directory symlink would otherwise let watcher/validator treat
+    an outside folder as an in-root proposal when that folder's metadata.json
+    is a regular file. This does not confine proposal_id path components.
+    """
+    path = Path(proposal_path)
+    try:
+        if path.is_symlink():
+            return None
+    except OSError:
+        return None
+    return path
+
+
 class ProposalValidator:
     """Validates proposal structure and metadata schema."""
 
@@ -23,6 +39,9 @@ class ProposalValidator:
 
     def validate_structure(self, proposal_path: Path) -> tuple[bool, Optional[str]]:
         """Validate folder structure of a proposal."""
+        proposal_path = _regular_proposal_dir(proposal_path)
+        if proposal_path is None:
+            return False, "Proposal directory is not a regular directory"
         if not proposal_path.exists():
             return False, "Proposal directory does not exist"
 
@@ -231,9 +250,13 @@ class ProposalWatcher:
         if not self.proposals_root.exists():
             return
 
-        current_proposals = {
-            p.name for p in self.proposals_root.iterdir() if p.is_dir() and (p / "metadata.json").exists()
-        }
+        current_proposals = set()
+        for p in self.proposals_root.iterdir():
+            if _regular_proposal_dir(p) is None or not p.is_dir():
+                continue
+            if not (p / "metadata.json").exists():
+                continue
+            current_proposals.add(p.name)
 
         # Detect new proposals
         new_proposals = current_proposals - self._known_proposals

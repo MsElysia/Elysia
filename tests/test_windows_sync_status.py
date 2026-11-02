@@ -1,7 +1,6 @@
 """Deterministic sync-status evidence regressions; no git, network or user data."""
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 from tools.windows_sync import gitutil
@@ -17,9 +16,9 @@ def _status(monkeypatch, tmp_path, *, dirty=False, fetch=True,
             ahead=0, behind=0, release_sha=SHA,
             release_evidence="git_checkout", release_dirty=False):
     dev = tmp_path / "dev"
-    dev.mkdir()
+    dev.mkdir(exist_ok=True)
     release = tmp_path / "release"
-    release.mkdir()
+    release.mkdir(exist_ok=True)
     saved = []
     monkeypatch.setattr(sync_check, "dev_root", lambda: dev)
     monkeypatch.setattr(sync_check, "release_root", lambda: release)

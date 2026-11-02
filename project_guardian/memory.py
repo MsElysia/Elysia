@@ -49,7 +49,11 @@ class MemoryCore:
         self._lazy_load = lazy_load
         self.loaded: bool = False
         self._load_lock = threading.Lock()
-        self._save_file_lock = threading.Lock()
+        self._save_file_lock = threading.RLock()
+        # A corrupt/unreadable authoritative JSON file must never be silently
+        # overwritten by a later successful-looking memory write.
+        self.persistence_blocked = False
+        self.last_load_error: Optional[str] = None
         
         # Embeddings control (defer until startup completes)
         self._embeddings_enabled = False
@@ -111,7 +115,7 @@ class MemoryCore:
         """
         if load_if_needed:
             self.load_if_needed()
-        if not self.loaded:
+        if not self.loaded or self.persistence_blocked:
             return None
         return len(self.memory_log)
 
@@ -122,19 +126,14 @@ class MemoryCore:
         """
         if load_if_needed:
             self.load_if_needed()
-        if self.loaded:
-            n = len(self.memory_log)
-            return {
-                "memory_loaded": True,
-                "json_loaded": True,
-                "memory_count": n,
-                "memory_count_authoritative": True,
-            }
+        authoritative = self.loaded and not self.persistence_blocked
         return {
-            "memory_loaded": False,
-            "json_loaded": False,
-            "memory_count": None,
-            "memory_count_authoritative": False,
+            "memory_loaded": authoritative,
+            "json_loaded": authoritative,
+            "memory_count": len(self.memory_log) if authoritative else None,
+            "memory_count_authoritative": authoritative,
+            "persistence_blocked": self.persistence_blocked,
+            "last_load_error": self.last_load_error,
         }
     
     def _build_vector_index(self):
@@ -187,6 +186,11 @@ class MemoryCore:
             metadata: Optional additional metadata
         """
         self.load_if_needed()
+        with self._save_file_lock:
+            return self._remember_committed(thought, category, priority, metadata)
+
+    def _remember_committed(self, thought, category, priority, metadata):
+        """Serialize eviction, primary save and secondary publication per instance."""
         try:
             from .startup_runtime_guard import should_skip_nonessential_remember
 
@@ -225,6 +229,9 @@ class MemoryCore:
                     return
         except Exception:
             pass
+        # Preserve the complete prior state, including any entry evicted to
+        # enforce capacity, until the primary JSON commit actually succeeds.
+        previous_log = list(self.memory_log)
         # Enforce max_memories limit if set
         if self.max_memories is not None and len(self.memory_log) >= self.max_memories:
             # Remove oldest memory to make room
@@ -242,10 +249,9 @@ class MemoryCore:
         try:
             self._save()
         except Exception:
-            # Roll back the in-memory append so failed persistence cannot poison
-            # subsequent dedupe / "already in memory" acknowledgements.
-            if self.memory_log and self.memory_log[-1] is entry:
-                self.memory_log.pop()
+            # A failed write must not evict the oldest item or leave a phantom
+            # new entry visible to retrieval and duplicate suppression.
+            self.memory_log[:] = previous_log
             raise
         
         # Add to vector search index (only if embeddings are enabled)
@@ -542,6 +548,8 @@ class MemoryCore:
         import tempfile
 
         with self._save_file_lock:
+            if self.persistence_blocked:
+                raise RuntimeError("MemoryCore persistence blocked: repair/reload original history first")
             last_err: Optional[Exception] = None
             directory = os.path.dirname(os.path.abspath(self.filepath)) or "."
             os.makedirs(directory, exist_ok=True)
@@ -561,10 +569,13 @@ class MemoryCore:
                     tmp_path = None
                     try:
                         from memory_storage_config import notify_usb_persist_mirror
-
                         notify_usb_persist_mirror(self.filepath)
                     except ImportError:
                         pass
+                    except Exception as mirror_error:
+                        # Primary bytes have already committed; the optional
+                        # mirror must not convert that success into a false fail.
+                        logger.warning("MemoryCore optional mirror failed: %s", mirror_error)
                     return True
                 except Exception as e:
                     last_err = e
@@ -578,17 +589,33 @@ class MemoryCore:
             raise RuntimeError(f"MemoryCore durable save failed: {last_err}")
             
     def load(self) -> None:
+        """Reload authoritative JSON and preserve unreadable originals in place.
+
+        A broken file is not an empty store. Keep its bytes untouched and fence
+        further primary writes until an explicit successful reload after repair.
+        This avoids destructive automatic quarantine/migration in an installed app.
         """
-        Load memories from JSON file.
-        """
-        if os.path.exists(self.filepath):
+        with self._save_file_lock:
+            if not os.path.exists(self.filepath):
+                self.memory_log = []
+                self.persistence_blocked = False
+                self.last_load_error = None
+                return
             try:
                 with open(self.filepath, "r", encoding="utf-8") as f:
-                    self.memory_log = json.load(f)
+                    decoded = json.load(f)
+                if not isinstance(decoded, list) or any(not isinstance(x, dict) for x in decoded):
+                    raise ValueError("memory history must be a JSON list of records")
+                self.memory_log = decoded
+                self.persistence_blocked = False
+                self.last_load_error = None
                 print(f"[Guardian Memory] Loaded {len(self.memory_log)} past memories.")
-            except Exception as e:
-                print(f"[Guardian Memory] Load failed: {e}")
-                
+            except Exception as exc:
+                self.memory_log = []
+                self.persistence_blocked = True
+                self.last_load_error = f"{type(exc).__name__}: {exc}"[:200]
+                logger.error("MemoryCore authoritative history unreadable; writes blocked: %s", self.last_load_error)
+
     def consolidate(self, max_memories: int = 5000, keep_recent_days: int = 30) -> Dict[str, Any]:
         """
         Consolidate memories to reduce memory usage.

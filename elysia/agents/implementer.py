@@ -15,6 +15,12 @@ from ..events import EventBus
 
 logger = logging.getLogger(__name__)
 
+# The runtime API stores an operator approval as "approved". Older fixtures
+# still use "accepted". Batch work has to see both, or approved proposals
+# are reported as an empty run.
+BATCH_STATUSES = ("accepted", "approved")
+BATCH_IMPLEMENTATION_STATUSES = (None, "pending", "failed", "not_started")
+
 
 class ImplementationStep:
     """Represents a single step in an implementation plan."""
@@ -270,15 +276,21 @@ class ImplementerAgent:
 
     def run_batch(self) -> Dict[str, Any]:
         """
-        Process all eligible proposals (status == 'accepted', implementation_status in {'pending', 'failed'}).
+        Process eligible proposals.
+
+        A proposal is eligible when its lifecycle status is ``accepted`` or
+        ``approved`` and its implementation status is unset, pending, failed,
+        or not started. Proposals already in progress or completed are left
+        alone.
 
         Returns summary of batch execution.
         """
-        proposals = self.proposal_system.list_proposals(status_filter="accepted")
+        proposals = self.proposal_system.list_proposals()
         eligible = [
             p
             for p in proposals
-            if p.get("implementation_status") in (None, "pending", "failed", "not_started")
+            if p.get("status") in BATCH_STATUSES
+            and p.get("implementation_status") in BATCH_IMPLEMENTATION_STATUSES
         ]
 
         logger.info(f"Found {len(eligible)} eligible proposals for batch implementation")
@@ -296,6 +308,7 @@ class ImplementerAgent:
             "total": len(eligible),
             "successful": sum(1 for r in results if r.get("success")),
             "failed": sum(1 for r in results if not r.get("success")),
+            "statuses": list(BATCH_STATUSES),
             "results": results,
         }
 

@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — approved batch implementation (2026-11-02)
+
+- `ImplementerAgent.run_batch` now includes lifecycle statuses `accepted` and `approved`. A proposal that is already in progress or completed is still skipped.
+- `POST /api/proposals/implement-batch` returns HTTP 200 `completed` only when every eligible proposal succeeds, HTTP 200 `empty` when none are eligible, and HTTP 400 `partial` when any eligible proposal fails. A non-boolean `dry_run` is HTTP 400 and does not run the batch.
+- The shell command `implement-batch dry-run|live` prints that JSON, or the API error text. `implement-batch` alone prints the usage line and does not call the API.

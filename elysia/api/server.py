@@ -263,6 +263,64 @@ class RuntimeAPIServer:
 
             return jsonify(impl_info)
 
+        @self._app.route("/api/proposals/implement-batch", methods=["POST"])
+        def api_implement_batch():
+            """Implement every accepted or approved proposal that is still eligible."""
+            if not self._proposal_system:
+                return jsonify({"error": "Proposal system not available"}), 503
+
+            data = request.get_json(force=True, silent=True)
+            if data is None:
+                data = {}
+            elif not isinstance(data, dict):
+                return jsonify({"error": "request body must be a JSON object"}), 400
+
+            if "dry_run" not in data:
+                dry_run = False
+            elif isinstance(data.get("dry_run"), bool):
+                dry_run = data["dry_run"]
+            else:
+                return jsonify({"error": "dry_run must be a boolean"}), 400
+
+            try:
+                from ..agents.implementer import ImplementerAgent
+                from pathlib import Path
+
+                implementer = ImplementerAgent(
+                    repo_root=Path("."),
+                    proposal_system=self._proposal_system,
+                    event_bus=self._event_bus,
+                    dry_run=dry_run,
+                )
+                result = implementer.run_batch()
+            except ImportError:
+                return jsonify({"error": "Implementer agent not available"}), 503
+            except Exception as exc:
+                logger.exception("Batch implementation error")
+                return jsonify({"error": str(exc)}), 500
+
+            total = int(result.get("total", 0))
+            failed = int(result.get("failed", 0))
+            successful = int(result.get("successful", 0))
+            if total == 0:
+                status = "empty"
+            elif failed == 0:
+                status = "completed"
+            else:
+                status = "partial"
+            body = {
+                "status": status,
+                "dry_run": dry_run,
+                "total": total,
+                "successful": successful,
+                "failed": failed,
+                "statuses": result.get("statuses", []),
+                "results": result.get("results", []),
+            }
+            if status == "partial":
+                return jsonify(body), 400
+            return jsonify(body)
+
     def start(self) -> None:
         if self._running:
             logger.warning("API server already running")

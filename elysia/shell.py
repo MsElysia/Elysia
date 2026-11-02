@@ -24,7 +24,10 @@ def interactive_shell(host: str = "127.0.0.1", port: int = 8123) -> None:
         if line in {"exit", "quit"}:
             break
         if line == "help":
-            print("commands: status, events, proposals, chat <message>, approve <id>, reject <id> <reason>, exit")
+            print(
+                "commands: status, events, proposals, chat <message>, "
+                "approve <id>, reject <id> <reason>, implement-batch dry-run|live, exit"
+            )
             continue
         if line == "status":
             data = _fetch_json(host, port, "/api/status")
@@ -73,6 +76,29 @@ def interactive_shell(host: str = "127.0.0.1", port: int = 8123) -> None:
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     reply = json.loads(resp.read().decode("utf-8"))
                     print(json.dumps(reply, indent=2))
+            except Exception as exc:
+                print(f"[error] {exc}", file=sys.stderr)
+            continue
+        if line == "implement-batch" or line.startswith("implement-batch "):
+            mode = line[len("implement-batch") :].strip()
+            if mode not in {"dry-run", "live"}:
+                print("usage: implement-batch dry-run|live")
+                continue
+            payload = json.dumps({"dry_run": mode == "dry-run"}).encode("utf-8")
+            url = f"http://{host}:{port}/api/proposals/implement-batch"
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    reply = json.loads(resp.read().decode("utf-8"))
+                    print(json.dumps(reply, indent=2))
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                print(f"[error] HTTP {exc.code}: {detail}", file=sys.stderr)
             except Exception as exc:
                 print(f"[error] {exc}", file=sys.stderr)
             continue

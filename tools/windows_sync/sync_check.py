@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,16 +31,31 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def read_release_sha(root: Path) -> str | None:
+def read_release_identity(root: Path) -> tuple[str | None, str, bool | None]:
+    """Read source checkout identity, never claim this proves a live process.
+
+    A RELEASE_SHA.txt marker may assist legacy diagnostics, but is not trusted
+    as Git provenance. Unreadable/corrupt sources are explicitly unverified.
+    """
     if not root.is_dir():
-        return None
+        return None, "missing", None
     try:
-        return gitutil.rev_parse(root, "HEAD")
+        checkout = gitutil.worktree_state(root)
+        return checkout.head, "git_checkout", checkout.dirty
     except gitutil.GitError:
         marker = root / "RELEASE_SHA.txt"
-        if marker.is_file():
-            return marker.read_text(encoding="utf-8").strip() or None
-        return None
+        try:
+            sha = marker.read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            return None, "unavailable", None
+        if re.fullmatch(r"[0-9a-f]{40}", sha):
+            return sha, "marker_unverified", None
+        return None, "invalid_marker", None
+
+
+def read_release_sha(root: Path) -> str | None:
+    """Compatibility API: this is installed *source*, not the running process."""
+    return read_release_identity(root)[0]
 
 
 def build_status(*, do_fetch: bool) -> dict:
@@ -61,7 +77,14 @@ def build_status(*, do_fetch: bool) -> dict:
         "fetch_error": None,
         "github_sha": None,
         "local_development_sha": None,
+        # installed_runtime_sha is a deprecated compatibility alias for
+        # installed_release_source_sha. Neither identifies a running process.
         "installed_runtime_sha": None,
+        "installed_release_source_sha": None,
+        "release_source_evidence": "unknown",
+        "release_source_dirty": None,
+        "running_runtime_sha": None,
+        "running_runtime_verification": "not_checked",
         "dev_branch": None,
         "dev_dirty": None,
         "ahead": None,
@@ -157,18 +180,35 @@ def build_status(*, do_fetch: bool) -> dict:
             status["pending_updates"] = behind > 0
             status["synchronization_status"] = "diverged"
 
-    status["installed_runtime_sha"] = read_release_sha(release)
-    if status["installed_runtime_sha"] is None:
-        status["release_verification_status"] = "not_installed"
-        status["notes"].append("release root missing — run promote_release after tests")
-    elif remote_sha and status["installed_runtime_sha"] == remote_sha and status["divergence"] == "identical":
+    release_sha, release_evidence, release_dirty = read_release_identity(release)
+    status["installed_release_source_sha"] = release_sha
+    status["installed_runtime_sha"] = release_sha  # legacy alias; not a live PID
+    status["release_source_evidence"] = release_evidence
+    status["release_source_dirty"] = release_dirty
+    # A checked-out SHA, even with clean Git status, cannot prove that the
+    # launched process is using that tree or still alive.
+    status["notes"].append(
+        "Release SHA is source checkout identity only; active process was not verified"
+    )
+    if release_sha is None:
+        status["release_verification_status"] = (
+            "not_installed" if release_evidence == "missing" else "release_source_unavailable"
+        )
+        status["pending_updates"] = True
+    elif release_evidence != "git_checkout":
+        status["release_verification_status"] = "release_source_unverified_marker"
+        status["pending_updates"] = True
+    elif release_dirty:
+        status["release_verification_status"] = "release_source_dirty"
+        status["pending_updates"] = True
+    elif remote_sha and release_sha == remote_sha and status["divergence"] == "identical":
         if wt.dirty:
             status["release_verification_status"] = "source_sha_matches_but_dev_dirty"
         elif not do_fetch:
             status["release_verification_status"] = "source_sha_matches_cached_remote"
         else:
             status["release_verification_status"] = "matches_github_and_dev"
-    elif status["installed_runtime_sha"] == status["local_development_sha"]:
+    elif release_sha == status["local_development_sha"]:
         status["release_verification_status"] = (
             "source_sha_matches_but_dev_dirty" if wt.dirty else "matches_dev"
         )

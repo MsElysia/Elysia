@@ -527,13 +527,15 @@ class MemoryCore:
         return self.memory_log.copy()
         
     def forget(self) -> None:
-        """
-        Clear all memories and delete the memory file.
-        """
+        """Clear the primary store only when preservation state is healthy."""
         self.load_if_needed()
-        self.memory_log = []
-        if os.path.exists(self.filepath):
-            os.remove(self.filepath)
+        with self._save_file_lock:
+            if self.persistence_blocked:
+                raise RuntimeError("MemoryCore persistence blocked: cannot delete unreadable history")
+            # Do not publish an empty in-memory state if deletion fails.
+            if os.path.exists(self.filepath):
+                os.remove(self.filepath)
+            self.memory_log = []
         print("[Guardian Memory] All memories cleared.")
         
     def _save(self) -> bool:
@@ -597,8 +599,10 @@ class MemoryCore:
         """
         with self._save_file_lock:
             if not os.path.exists(self.filepath):
+                if self.persistence_blocked:
+                    self.last_load_error = "Previously unreadable history missing; recovery not verified"
+                    return
                 self.memory_log = []
-                self.persistence_blocked = False
                 self.last_load_error = None
                 return
             try:

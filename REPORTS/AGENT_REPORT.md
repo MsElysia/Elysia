@@ -3577,3 +3577,39 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — approved batch implementation (2026-11-02)
+
+**Status:** COMPLETE on this branch. Not integrated to `main`.
+
+**Lane:** Product workflow. Unclaimed. `CONTROL.md` `CURRENT_TASK` remains `NONE`. Reconciliation queue `TASKS/TASK-0053.md` on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72cf397de2a5ef8d9a0bcaccd86462b0e577`) stays OPEN review-only. Do not merge `elysia-local-reconciliation-20260909-1657`. Codex Campaign 41 tip remains `3223ebbadd6e835870a87fdca2008eec65c969d8` on `origin/codex/limited-live-activation-wrapper`. This run did not implement live memory or vector writes.
+
+**Why this gap:** The events-limit, implement HTTP-status, WebScout research-status, chat answer-status, proposal decision-status, and implementation-result fixes stay on their earlier product branches and were not copied. The proposals CLI still cannot be imported (`project_guardian.module_activity` is missing; PR #157). Before this change, `ImplementerAgent.run_batch` on a fictional approved proposal `fictional-approved` returned `{"total": 0, "successful": 0, "failed": 0, "results": []}`. The runtime API had no batch route, so an operator who approved through the API could not run that batch.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c` (`main`). No other branch dependency. Not based on the events-limit, implement-status, research-status, chat-status, decision-status, or implementation-result branches.
+
+**Ownership checked:** Did not edit `elysia/core/proposal_system.py`. Application runtime safety today is `76ec67af598680a34160902440badcb550c35b5f` on `origin/cursor/application-runtime-safety-91a3` (`elysia/core/proposal_system.py`, `tests/test_elysia_proposal_dir_symlink.py`). Runtime integrity `a6f25dc` on `origin/cursor/elysia-runtime-integrity-a363` was left untouched. Left dashboard drafts #147–#149 and #153–#160, chat and Windows drafts #161–#181, registry drafts #182–#186, and the PR #154 repairs to their owners. Open issues #150 and #152 remain non-implementation backlogs. #139 remains the Windows vertical slice.
+
+**Acceptance:**
+- `POST /api/proposals/implement-batch` with `{"dry_run": true}` against fictional proposals returns HTTP 400 JSON `status: partial` when `fictional-approved` and `fictional-accepted` succeed and `fictional-no-plan` fails with `Implementation plan not found`
+- The same body lists only those three ids, `statuses: ["accepted", "approved"]`, `total: 3`, `successful: 2`, `failed: 1`. `fictional-draft` (status `proposal`) and `fictional-done` (`implementation_status: completed`) are not included
+- `fictional-approved` is stored as lifecycle `implemented` and `implementation_status: completed`. `fictional-accepted` stays lifecycle `accepted` because that value is not a lifecycle transition, and its `implementation_status` is `completed`. `fictional-no-plan` stays `approved` with no implementation status. The approved directory still contains only `design/` and `metadata.json`
+- A second dry-run returns HTTP 400 `partial` with only `fictional-no-plan`
+- `{"dry_run": "false"}` returns HTTP 400 `dry_run must be a boolean` and does not change `fictional-approved`
+- A JSON array returns HTTP 400 `request body must be a JSON object`
+- A directory that contains only a draft returns HTTP 200 `status: empty`, `total: 0`
+- No proposal system returns HTTP 503 `Proposal system not available`
+- The shell command `implement-batch` prints `usage: implement-batch dry-run|live` and does not call the API. `implement-batch dry-run` prints HTTP 200 `status: completed` for fictional proposal `fictional-shell`
+- The contract holds through Flask's test client and through a live Werkzeug HTTP server on 127.0.0.1. No external service was called
+
+**Command:** `python3 -m pytest tests/test_runtime_api_implement_batch.py tests/test_implementer_agent.py::test_implementer_batch_processing -v --tb=short` — 4 passed.
+
+**Files:** `elysia/agents/implementer.py`, `elysia/api/server.py`, `elysia/shell.py`, `tests/test_runtime_api_implement_batch.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`.
+
+**Remaining limitations:** `POST /api/proposals/<id>/implement` on this branch still returns HTTP 200 when `success` is false. That HTTP-status fix remains only on `origin/cursor/elysia-product-workflow-process-9429`. The batch route builds a new `ImplementerAgent` with `repo_root=Path(".")` and ignores a stored `self._implementer`. A partial batch keeps the proposals that already succeeded; the HTTP 400 reports that mix and a retry does not select the completed ones. Lifecycle status `accepted` still cannot move through `ProposalLifecycleManager`. Do not edit `elysia/core/proposal_system.py` from this lane. `elysia_proposals_cli.py` still cannot import until `project_guardian.module_activity` exists. `GET /api/events` limit handling, WebScout queue status, general chat status, proposal decision status, and stored implementation-result reads remain only on their earlier product branches. This does not change memory, governance, CI, or deployment settings. A branch commit is not integrated product readiness.
+
+**Next action:** Leave `TASK-0053` unmerged. Do not repeat the events-limit fix, the implement HTTP-status fix, the research-status fix, the chat-status fix, the decision-status fix, the implementation-result fix, or this approved-batch fix from `main`. A later product run should pick a different unclaimed API or dashboard error path. The missing `project_guardian.module_activity` module stays with PR #157.
+
+**Commit:** `49467ef8c53868b36db86dda43867a2a679bfad9` on `cursor/product-workflow-engineering-process-2f69`. Base `722d8e4fe85d7e42ac34066c2d651849d15e734c`.

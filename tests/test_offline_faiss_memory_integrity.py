@@ -312,3 +312,29 @@ def test_generation_changes_after_successful_cleanup_and_restart(fixture):
     new_id = json.loads(manifest_file.read_text())["generation_id"]
     assert new_id != original_id
     assert new_engine().vector_memory.degraded is False
+
+
+def test_unverified_generation_cannot_be_recertified_by_normal_memory_add(fixture):
+    engine, new_engine, primary, index_path, metadata_path = fixture
+    manifest_file = _generation_path(metadata_path)
+    manifest_file.unlink()  # Simulated existing legacy/unverified pair.
+    before_index, before_meta = index_path.read_bytes(), metadata_path.read_bytes()
+    restarted = new_engine()
+    assert restarted.vector_memory.degraded
+    attempted = restarted.vector_memory.add_memory(
+        "Synthetic attempted re-certification", category="fact"
+    )
+    assert attempted is None
+    assert index_path.read_bytes() == before_index
+    assert metadata_path.read_bytes() == before_meta
+    assert not manifest_file.exists()
+    assert new_engine().vector_memory.degraded
+    # Explicit rebuild from authoritative JSON is the permitted recovery path.
+    rebuilt = restarted.vector_memory.rebuild_from_memories(
+        restarted.json_memory.dump_all()
+    )
+    assert rebuilt["vector_rebuild_success"] is True
+    assert restarted.vector_memory.add_memory(
+        "Synthetic verified new row", category="fact"
+    ) is not None
+    assert new_engine().vector_memory.degraded is False

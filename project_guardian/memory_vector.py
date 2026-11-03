@@ -320,6 +320,25 @@ class VectorMemory:
         else:
             self.metadata = []
 
+        # Metadata and FAISS index commit as two separate files. A crash after
+        # metadata replacement but before index replacement can load a mixed
+        # generation on restart. Never make that pair queryable as trustworthy.
+        if FAISS_AVAILABLE and self.index is not None:
+            try:
+                index_rows = int(self.index.ntotal)
+                metadata_rows = len(self.metadata)
+                if index_rows != metadata_rows:
+                    reason = f"FAISS/metadata row-count mismatch: {index_rows}!={metadata_rows}"
+                    self.degraded = True
+                    self.rebuild_pending = True
+                    self._set_rebuild_status("failed", "index_metadata_mismatch", reason)
+                    logger.error("VectorMemory: %s; semantic reads fenced", reason)
+            except Exception as exc:
+                self.degraded = True
+                self.rebuild_pending = True
+                self._set_rebuild_status("failed", "index_metadata_unverifiable", str(exc))
+                logger.error("VectorMemory index/metadata validation failed: %s", exc)
+
     def _atomic_write_json(self, path: str, payload: Any) -> None:
         """Atomically write JSON with flush+fsync to reduce corruption risk."""
         parent = os.path.dirname(path) or "."
@@ -697,6 +716,10 @@ class VectorMemory:
             pass
 
         self.load_if_needed()
+        # A partially committed or corrupt vector generation is not a search
+        # source, even for callers bypassing EnhancedMemoryCore's JSON filter.
+        if self.degraded or self.rebuild_pending:
+            return []
         if self.index is None or len(self.metadata) == 0:
             return []
             
@@ -866,7 +889,9 @@ class EnhancedMemoryCore:
                     st["vector_memory_count"] = int(self.vector_memory.index.ntotal)
                 except Exception:
                     st["vector_memory_count"] = len(self.vector_memory.metadata or [])
-                st["vector_count_authoritative"] = True
+                st["vector_count_authoritative"] = not (
+                    self.vector_memory.degraded or self.vector_memory.rebuild_pending
+                )
             else:
                 st["vector_memory_count"] = None
                 st["vector_count_authoritative"] = False

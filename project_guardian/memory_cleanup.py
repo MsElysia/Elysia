@@ -155,8 +155,8 @@ class MemoryCleanup:
                 json_mem.memory_log = previous
                 raise
 
-            # Vector reconciliation (EnhancedMemoryCore only): primary is committed.
-            from .memory_vector import VECTOR_REBUILD_SAFE_MAX
+            # Optional vector dependencies must not break JSON-only cleanup.
+            # Import vector code only when an actual vector store is attached.
             metadata_before = 0
             metadata_after = 0
             faiss_before = 0
@@ -166,6 +166,7 @@ class MemoryCleanup:
             vector_error = None
 
             if vector_mem is not None:
+                from .memory_vector import VECTOR_REBUILD_SAFE_MAX
                 vector_rebuild_status = "deferred"
                 vector_rebuild_success = False
                 try:

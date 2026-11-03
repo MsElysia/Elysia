@@ -131,3 +131,39 @@ def test_unrelated_facts_remain_absent_and_no_cloud_used():
     )
     assert out["evidence"] == []
     assert out["no_memory_support"] is True
+
+
+@pytest.mark.parametrize("wrong_name,right_name", [
+    ("Atlas", "Atla"),
+    ("Texas", "Texa"),
+    ("James", "Jame"),
+    ("Charles", "Charle"),
+    ("Elias", "Elia"),
+])
+def test_proper_name_endings_do_not_swallow_distinct_entities(wrong_name, right_name):
+    """A generic plural rule must not treat different place/person names alike."""
+    assert set(_context_tokens(wrong_name)) != set(_context_tokens(right_name))
+    distractors = [
+        _fact(f"fact_00{i}",
+              f"The {wrong_name} mosaic ledger is filed in the stone archive.")
+        for i in range(5)
+    ]
+    target = _fact(
+        "fact_target", f"The {right_name} mosaic ledger is filed in the stone archive."
+    )
+    result = _query(
+        distractors + [target], f"Which archive holds the {right_name} mosaic ledger?"
+    )
+    assert result["evidence"][0]["source_id"] == "fact_target"
+    assert result["evidence"][0]["revision"] == 2
+
+
+@pytest.mark.parametrize("words", [
+    ("vaults", "vault"),
+    ("costs", "price"),
+    ("photos", "picture"),
+    ("bought", "purchased"),
+])
+def test_safe_high_confidence_variants_remain_supported(words):
+    left, right = words
+    assert _context_tokens(left) == _context_tokens(right)

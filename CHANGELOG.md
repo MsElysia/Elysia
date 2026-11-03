@@ -497,3 +497,11 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product API — status availability
+
+- `GET /api/status` returns HTTP 200 only when the status provider returns a dict. That dict is the body.
+- A non-dict payload, including a list, returns HTTP 500 JSON `error: Invalid status format`, `running: false`, and `status_available: false`.
+- A provider exception returns HTTP 500 JSON with that error text and `running: false`. It does not report `running: true`.
+- `elysia status` and the shell `status` command print that error text. They do not print an empty object. A server that does not respond is still "Runtime not reachable."
+- Contract: `tests/test_runtime_api_status.py` (Flask client, live Werkzeug HTTP, real `ElysiaRuntime.get_status` with fictional proposal files, and the status clients; no external services).

@@ -53,23 +53,29 @@ class RuntimeAPIServer:
     def _setup_routes(self) -> None:
         @self._app.route("/api/status", methods=["GET"])
         def api_status():
-            """Status endpoint - optimized for fast response."""
+            """Status endpoint. HTTP 200 only when the provider returns a dict."""
             try:
                 status = self._status_provider()
-                
-                # Ensure response is always valid JSON
-                if not isinstance(status, dict):
-                    status = {"error": "Invalid status format"}
-                
-                return jsonify(status)
-            except Exception as exc:  # pragma: no cover - defensive
+            except Exception as exc:
                 logger.exception("Status endpoint failure")
-                # Return minimal status even on error
-                return jsonify({
-                    "error": str(exc),
-                    "components": {"api_server": True},
-                    "running": True,
-                }), 500
+                message = str(exc).strip() or "Status provider failed"
+                return _status_unavailable(message)
+
+            if not isinstance(status, dict):
+                logger.error(
+                    "Status provider returned %s", type(status).__name__
+                )
+                return _status_unavailable("Invalid status format")
+
+            return jsonify(status)
+
+        def _status_unavailable(message: str):
+            return jsonify({
+                "error": message,
+                "running": False,
+                "status_available": False,
+                "components": {"api_server": True},
+            }), 500
 
         @self._app.route("/api/events", methods=["GET"])
         def api_events():

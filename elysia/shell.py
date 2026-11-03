@@ -27,8 +27,7 @@ def interactive_shell(host: str = "127.0.0.1", port: int = 8123) -> None:
             print("commands: status, events, proposals, chat <message>, approve <id>, reject <id> <reason>, exit")
             continue
         if line == "status":
-            data = _fetch_json(host, port, "/api/status")
-            print(json.dumps(data or {}, indent=2))
+            show_status(host, port)
             continue
         if line == "events":
             data = _fetch_json(host, port, "/api/events?limit=10")
@@ -97,6 +96,22 @@ def interactive_shell(host: str = "127.0.0.1", port: int = 8123) -> None:
             continue
 
         print("Unknown command. Type 'help' for available commands.")
+
+
+def show_status(host: str, port: int) -> int:
+    """Print runtime status, or the API error. Does not print an empty object."""
+    from .status import read_status
+
+    status, body, raw = read_status(host, port)
+    if status == 0:
+        print(f"[error] {raw}", file=sys.stderr)
+        return 0
+    if status != 200 or not isinstance(body, dict):
+        error = body.get("error") if isinstance(body, dict) else None
+        print(f"[error] HTTP {status}: {error or raw}", file=sys.stderr)
+        return status
+    print(json.dumps(body, indent=2))
+    return status
 
 
 def _fetch_json(host: str, port: int, path: str) -> Optional[dict]:

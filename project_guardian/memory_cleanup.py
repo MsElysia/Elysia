@@ -7,6 +7,7 @@ Automatic memory cleanup and consolidation to reduce memory usage
 
 import logging
 import json
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -26,6 +27,16 @@ class MemoryCleanup:
         self.memory_core = memory_core
     
     def consolidate_memories(self, max_memories: int = 4000, keep_recent_days: int = 30) -> Dict[str, Any]:
+        """Serialize cleanup against normal MemoryCore writes where RLock exists."""
+        core = self.memory_core
+        primary = core.json_memory if hasattr(core, "json_memory") else core
+        lock = getattr(primary, "_save_file_lock", None)
+        if isinstance(lock, type(threading.RLock())):
+            with lock:
+                return self._consolidate_memories_locked(max_memories, keep_recent_days)
+        return self._consolidate_memories_locked(max_memories, keep_recent_days)
+
+    def _consolidate_memories_locked(self, max_memories: int, keep_recent_days: int) -> Dict[str, Any]:
         """
         Authoritative cleanup for JSON + vector memory.
         Handles both MemoryCore and EnhancedMemoryCore without causing a second heavy spike.
@@ -130,11 +141,21 @@ class MemoryCleanup:
                 memories_to_keep.sort(key=lambda x: x.get("priority", 0.5), reverse=True)
                 memories_to_keep = memories_to_keep[:max_memories]
             
-            # Update JSON memory log
+            # Commit authoritative JSON before publishing derived vector changes.
+            # A rejected/failed commit must restore the full in-process history.
             removed_count = original_count - len(memories_to_keep)
+            previous = list(json_mem.memory_log)
             json_mem.memory_log = memories_to_keep
+            try:
+                if hasattr(json_mem, "_save"):
+                    persisted = json_mem._save()
+                    if persisted is False:
+                        raise RuntimeError("Primary memory cleanup persistence was rejected")
+            except Exception:
+                json_mem.memory_log = previous
+                raise
 
-            # Vector reconciliation (EnhancedMemoryCore only)
+            # Vector reconciliation (EnhancedMemoryCore only): primary is committed.
             from .memory_vector import VECTOR_REBUILD_SAFE_MAX
             metadata_before = 0
             metadata_after = 0
@@ -227,10 +248,7 @@ class MemoryCleanup:
             except Exception:
                 pass
             
-            # Save consolidated memories
-            if hasattr(json_mem, '_save'):
-                json_mem._save()
-            
+            # Primary commit occurred before optional vector reconciliation.
             logger.info(f"Memory consolidation: {original_count} -> {len(memories_to_keep)} (removed {removed_count})")
             
             return {
@@ -274,6 +292,14 @@ class MemoryCleanup:
             }
     
     def cleanup_old_memories(self, days: int = 90, min_priority: float = 0.3) -> Dict[str, Any]:
+        """Serialize pruning against normal MemoryCore writes when supported."""
+        lock = getattr(self.memory_core, "_save_file_lock", None)
+        if isinstance(lock, type(threading.RLock())):
+            with lock:
+                return self._cleanup_old_memories_locked(days, min_priority)
+        return self._cleanup_old_memories_locked(days, min_priority)
+
+    def _cleanup_old_memories_locked(self, days: int, min_priority: float) -> Dict[str, Any]:
         """
         Remove old low-priority memories.
         
@@ -312,14 +338,20 @@ class MemoryCleanup:
                 else:
                     removed_memories.append(memory)
             
-            # Update memory log
+            # Stage and commit; never leave an uncommitted reduced history
+            # active when the authoritative primary JSON save fails.
+            previous = list(self.memory_core.memory_log)
             self.memory_core.memory_log = kept_memories
-            
-            # Save
-            if hasattr(self.memory_core, '_save'):
-                self.memory_core._save()
-            
-            logger.info(f"Memory cleanup: {original_count} -> {len(kept_memories)} (removed {len(removed_memories)})")
+            try:
+                if hasattr(self.memory_core, "_save"):
+                    persisted = self.memory_core._save()
+                    if persisted is False:
+                        raise RuntimeError("Primary memory cleanup persistence was rejected")
+            except Exception:
+                self.memory_core.memory_log = previous
+                raise
+
+            logger.info(f"Memory cleanup: {original_count} -> {len(kept_memories)} (removed {len(removed_memories)})
             
             return {
                 "action": "cleaned",

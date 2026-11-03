@@ -15,7 +15,12 @@ import sys
 import threading
 from datetime import datetime, timezone
 
-from project_guardian.retrieval_vocabulary import normalize_retrieval_term
+# The extractor also runs directly as a file in a bounded subprocess.
+# Preserve both package imports and the standalone worker entrypoint.
+if __package__:
+    from .retrieval_vocabulary import normalize_retrieval_term
+else:
+    from retrieval_vocabulary import normalize_retrieval_term
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_TEXT = 500_000

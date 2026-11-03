@@ -116,9 +116,9 @@ def test_document_search_uses_same_safe_variants_before_top_six(tmp_path: Path):
 
     restored = MemoryCore(filepath=str(path), enable_timeline_logging=False)
     library = DocumentLibrary(restored)
-    matches = library.search("What was the Bellford mosaic cost?")
+    matches = library.search("What is the Bellford mosaic cost?")
     assert matches and matches[0]["source_id"] == source_id
-    bundle = _query([], "What was the Bellford mosaic cost?", restored)
+    bundle = _query([], "What is the Bellford mosaic cost?", restored)
     assert bundle["evidence"][0]["source_id"] == source_id
     assert bundle["evidence"][0]["trust"] == "untrusted_document"
     assert bundle["evidence"][0]["filename"] == "target.txt"

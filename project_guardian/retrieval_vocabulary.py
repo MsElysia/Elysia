@@ -13,35 +13,23 @@ _EQUIVALENT_GROUPS = {
     "picture": ("picture", "pictures", "photo", "photos", "photograph", "photographs"),
     "repair": ("repair", "repairs", "repaired", "fix", "fixes", "fixed"),
     "purchase": ("purchase", "purchases", "purchased", "buy", "buys", "buying", "bought"),
+    # Plurals are only folded where both forms are explicitly high-confidence.
+    # Blanket trailing-s reduction conflated proper nouns (Atlas -> Atla).
+    "vault": ("vault", "vaults"),
 }
 _EQUIVALENTS = {
     variant: canonical
     for canonical, variants in _EQUIVALENT_GROUPS.items()
     for variant in variants
 }
-_PLURAL_INVARIANTS = frozenset({
-    "series", "species", "news", "analysis", "status", "glass",
-})
-
-
 def normalize_retrieval_term(term: str) -> str:
-    """Conservatively normalize a single already-tokenized English word.
+    """Use only explicit, high-confidence local vocabulary equivalences.
 
-    No cross-term expansion, LLM inference, external calls, or data writes.
-    Do not introduce broad place/object equivalence without negative tests.
+    Inferring a singular from a trailing "s" is unsafe for place/person names,
+    brand names and technical identifiers. A missed paraphrase is preferable to
+    presenting a different person's or place's fact as the requested one.
+    Additional aliases require positive AND hard-negative retrieval tests.
+    No LLM inference, external calls, data writes or source-text rewriting.
     """
     word = term.casefold()
-    mapped = _EQUIVALENTS.get(word)
-    if mapped is not None:
-        return mapped
-    if word in _PLURAL_INVARIANTS:
-        return word
-    if len(word) < 5:
-        return word
-    if word.endswith("ies") and len(word) > 5:
-        word = word[:-3] + "y"
-    elif word.endswith(("sses", "ches", "shes", "xes", "zes")):
-        word = word[:-2]
-    elif word.endswith("s") and not word.endswith(("ss", "us", "is")):
-        word = word[:-1]
     return _EQUIVALENTS.get(word, word)

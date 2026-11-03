@@ -3577,3 +3577,39 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+
+---
+
+## Product workflow — status availability (2026-11-03)
+
+**Status:** COMPLETE on this branch. Not integrated to `main`.
+
+**Lane:** Product workflow. Unclaimed. `CONTROL.md` `CURRENT_TASK` remains `NONE`. Reconciliation queue `TASKS/TASK-0053.md` on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72cf397de2a5ef8d9a0bcaccd86462b0e577`) stays OPEN review-only. Do not merge `elysia-local-reconciliation-20260909-1657`. Codex Campaign 41 tip remains `3223ebbadd6e835870a87fdca2008eec65c969d8` on `origin/codex/limited-live-activation-wrapper`. This run did not implement live memory or vector writes.
+
+**Why this gap:** The events-limit, implement HTTP-status, WebScout research-status, chat answer-status, proposal decision-status, implementation-result, and approved-batch fixes stay on their earlier product branches and were not copied. Before this change, live `GET /api/status` with a provider that returned a list responded HTTP 200 `{"error":"Invalid status format"}`. A provider that raised `RuntimeError("fictional-status-failure")` responded HTTP 500 `{"components":{"api_server":true},"error":"fictional-status-failure","running":true}`. The shell `status` command then printed `{}` after a URL error.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c` (`main`). No other branch dependency. Not based on the earlier product branches.
+
+**Ownership checked:** Did not edit `elysia/core/proposal_system.py`. Runtime integrity today is `bc-ae75b86b-ead8-41e7-a7cd-39be0bbe4b68`, commit `f8b8b6f` on `origin/cursor/elysia-runtime-integrity-b98e` (`elysia/core/proposal_system.py`, `tests/test_elysia_proposal_list_dir_symlink.py`). Application runtime safety has no newer automation run; its last push remains `76ec67a` on `origin/cursor/application-runtime-safety-91a3`. Did not edit `project_guardian/ui_control_panel.py`. Dashboard status-truth branches `origin/cursor/dashboard-status-truth-94db` and `origin/cursor/dashboard-truthful-status-2ccc` already own that file, and its `/api/status` still returns HTTP 200 from the panel exception handler. Left open draft PRs #192–#194 (memory and Windows integration, updated 2026-11-03) and earlier dashboard, governance, and memory drafts to their owners.
+
+**Acceptance:**
+- A dict from the provider, including `ElysiaRuntime.get_status`, returns HTTP 200 and that dict. `status_available` is not added
+- A list payload returns HTTP 500 JSON `error: Invalid status format`, `running: false`, `status_available: false`, `components.api_server: true`
+- `RuntimeError("fictional-status-failure")` returns HTTP 500 JSON with that error text and `running: false`
+- `elysia status` prints `[error] HTTP 500: fictional-status-failure` and exits 1. It does not say the runtime is unreachable when the server answered
+- The shell `status` command prints the same error and does not print `{}`
+- A closed port still prints `Runtime not reachable.` and exits 1
+- A healthy shell status prints the JSON, including `running: true` only when the provider said so
+- Live `ElysiaRuntime.get_status` over Werkzeug HTTP, with `ProposalSystem` watcher off, counted one fictional proposal directory and ignored a non-directory file. `init()` was not called, so API keys and WebScout were not loaded
+- The contract holds through Flask's test client and through a live Werkzeug HTTP server on 127.0.0.1
+
+**Command:** `python3 -m pytest tests/test_runtime_api_status.py -v --tb=short` — 4 passed.
+
+**Files:** `elysia/api/server.py`, `elysia/status.py`, `elysia/shell.py`, `tests/test_runtime_api_status.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`.
+
+**Remaining limitations:** The Guardian control panel `/api/status` in `project_guardian/ui_control_panel.py` can still return HTTP 200 when its own status build throws. That file stays with the dashboard status-truth branches. `GET /api/events` limit handling, implement HTTP status, WebScout queue status, general chat status, proposal decision status, stored implementation result, and approved batch selection remain only on their earlier product branches. This does not change memory, governance, CI, or deployment settings. A branch commit is not integrated product readiness.
+
+**Next action:** Leave `TASK-0053` unmerged. Do not repeat this status-availability fix, or the earlier product API fixes, from `main`. A later product run should pick a different unclaimed API or dashboard error path, and should re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`.
+
+**Commit:** `9cd922e33106a02a0279b973e85e4302b1f3195e` on `cursor/product-workflow-engineering-process-8b2d`. Base `722d8e4fe85d7e42ac34066c2d651849d15e734c`.

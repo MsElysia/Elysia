@@ -23,9 +23,12 @@ publish readiness and identify the exact candidate source, data root and process
 It must not attach to an unknown listener. Use the matching stop tool with the
 same environment; mismatched interpreter ownership must fail closed.
 
-For extraction dependencies in a disposable environment only:
-`python -m pip install -r requirements.txt -r requirements-documents.txt flask-socketio requests openai pyttsx3 reportlab`.
-Do not install into the existing release environment during development.
+For launcher + document-import dependencies in a disposable environment only
+(declared files; no pip-freeze supplementation):
+`python -m pip install -r requirements.txt -r requirements-documents.txt`.
+That covers Flask-SocketIO, requests, openai, pyttsx3, and TXT/PDF/DOCX
+extractors. Do not install into the existing release environment during
+development. reportlab is test-fixture only, not a runtime import dependency.
 
 ## Scenarios and evidence to capture
 

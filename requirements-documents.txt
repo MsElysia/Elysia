@@ -1,4 +1,7 @@
-# Optional local extractors. No model downloads or network services at runtime.
+# Local document extractors (TXT via stdlib; PDF/DOCX via these packages).
+# No model downloads or network services at runtime.
+# Install with core runtime for Windows launcher + import:
+#   python -m pip install -r requirements.txt -r requirements-documents.txt
 Flask>=3.1,<4
 pypdf>=5,<7
 python-docx>=1.1,<2

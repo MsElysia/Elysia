@@ -1,10 +1,18 @@
 # Project Guardian - Python Dependencies
 # Core Requirements
+#
+# Complete Windows launcher + document-import install (declared files only):
+#   python -m pip install -r requirements.txt -r requirements-documents.txt
+# Optional embeddings/FAISS/OCR remain in requirements-optional.txt — do not
+# install those for basic chat/import. FastAPI stack stays in requirements-ui.txt.
 
 # Web Framework & API
 Flask>=2.3.0
 flask-cors>=4.0.0
-# Note: FastAPI/uvicorn/jinja2 moved to requirements-ui.txt (optional UI dependencies)
+# Flask control panel (Windows launcher UI). Hard import in ui_control_panel;
+# verified ops freeze had Flask-SocketIO==5.6.1; CI bounds flask-socketio>=5,<6.
+Flask-SocketIO>=5.3.0,<6
+# Note: FastAPI/uvicorn/jinja2 moved to requirements-ui.txt (optional alternate UI)
 
 # Cryptography (for SecretsManager)
 cryptography>=41.0.0

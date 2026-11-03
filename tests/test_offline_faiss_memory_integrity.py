@@ -123,8 +123,20 @@ def test_interrupted_index_write_cannot_revalidate_mismatched_files_after_restar
     restarted = new_engine()
     assert restarted.vector_memory.degraded is True
     assert restarted.vector_memory.rebuild_pending is True
+    assert restarted.get_memory_state()["vector_count_authoritative"] is False
     assert restarted.semantic_search(RETIRED, threshold=0.0) == []
     assert restarted.vector_memory.search(RETIRED, threshold=0.0) == []
+
+    # Recovery uses the current primary JSON, never stale vector metadata.
+    restored = restarted.vector_memory.rebuild_from_memories(
+        restarted.json_memory.dump_all()
+    )
+    assert restored["vector_rebuild_success"] is True
+    assert restarted.vector_memory.degraded is False
+    assert restarted.get_memory_state()["vector_count_authoritative"] is True
+    assert faiss.read_index(str(index_path)).ntotal == 1
+    assert [row["text"] for row in json.loads(metadata_path.read_text())] == [CURRENT]
+    assert [row["text"] for row in restarted.semantic_search(CURRENT, threshold=0.0)] == [CURRENT]
 
 
 def test_failed_metadata_replace_does_not_reexpose_removed_memories(fixture, monkeypatch):
@@ -169,3 +181,24 @@ def test_offline_faiss_read_after_restart_with_corrupt_json_returns_no_hits(fixt
     restarted = new_engine()
     assert restarted.json_memory.get_memory_state()["persistence_blocked"]
     assert restarted.semantic_search(RETIRED, threshold=0.0) == []
+
+
+def test_missing_vector_metadata_is_not_mistaken_for_valid_empty_index(fixture):
+    engine, new_engine, primary, index_path, metadata_path = fixture
+    assert faiss.read_index(str(index_path)).ntotal == 2
+    metadata_path.unlink()  # Disposable test fixture only.
+    restarted = new_engine()
+    assert restarted.vector_memory.degraded
+    assert restarted.vector_memory.rebuild_pending
+    assert restarted.get_memory_state()["vector_count_authoritative"] is False
+    assert restarted.vector_memory.search(RETIRED, threshold=0.0) == []
+    assert restarted.semantic_search(CURRENT, threshold=0.0) == []
+    # Rebuild from authoritative JSON restores both files to a healthy pair.
+    repaired = restarted.vector_memory.rebuild_from_memories(
+        restarted.json_memory.dump_all()
+    )
+    assert repaired["vector_rebuild_success"] is True
+    assert restarted.vector_memory.index.ntotal == 2
+    assert len(restarted.vector_memory.metadata) == 2
+    assert metadata_path.is_file()
+    assert restarted.get_memory_state()["vector_count_authoritative"] is True

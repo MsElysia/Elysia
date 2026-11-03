@@ -945,12 +945,32 @@ class EnhancedMemoryCore:
             List of similar memories
         """
         self.load_if_needed()
+        # A vector hit is not proof that its memory remains current. Filter
+        # against authoritative JSON even after restart or an interrupted
+        # derived-index rebuild; do not return hits from corrupt primary data.
+        state = self.json_memory.get_memory_state(load_if_needed=False)
+        if not state.get("memory_count_authoritative"):
+            return []
         if self.vector_memory:
-            return self.vector_memory.search(query, limit, threshold, category)
-        else:
-            # Fallback to keyword search
-            logger.warning("Vector memory not available, using keyword search")
-            return self.json_memory.search_memories(query, limit)
+            if getattr(self.vector_memory, "degraded", False) or getattr(
+                self.vector_memory, "rebuild_pending", False
+            ):
+                return []
+            current = {
+                (row.get("thought"), row.get("category", "general"))
+                for row in self.json_memory.dump_all()
+                if isinstance(row, dict) and isinstance(row.get("thought"), str)
+            }
+            if not current:
+                return []
+            hits = self.vector_memory.search(query, limit, threshold, category)
+            return [
+                hit for hit in hits
+                if isinstance(hit, dict)
+                and (hit.get("text"), hit.get("category", "general")) in current
+            ][:limit]
+        logger.warning("Vector memory not available, using keyword search")
+        return self.json_memory.search_memories(query, limit)
             
     def search_memories(
         self,
@@ -1033,5 +1053,7 @@ class EnhancedMemoryCore:
         Returns:
             Dictionary with cleanup statistics
         """
-        return self.json_memory.cleanup_old_memories(days=days, min_priority_to_keep=min_priority_to_keep)
+        # Use the transactional JSON-first cleanup and optional vector rebuild.
+        from .memory_cleanup import MemoryCleanup
+        return MemoryCleanup(self).cleanup_old_memories(days=days, min_priority=min_priority_to_keep)
 

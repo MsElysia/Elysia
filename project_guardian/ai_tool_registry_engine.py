@@ -2,8 +2,12 @@
 # ToolRegistry: Auto-discovery and Management of External AI Tools
 # Based on Conversation 3 (elysia 4 sub a) design specifications
 #
-# SECURITY: This module handles AI tool registration and should be used with caution.
-# API keys are stored in metadata and should be encrypted in production.
+# SECURITY: Direct API keys are runtime-only and are never serialized to the
+# registry JSON or exported configuration. Persist only the environment variable
+# name when a secret must survive restart. Nested metadata credential fields
+# and URL userinfo/query/fragment are omitted in persisted projections; free-
+# form prose and credential-bearing URL paths are NOT certified safe. Historical
+# files may contain plaintext keys and need operator-controlled cleanup.
 # All network operations route through WebReader gateway.
 
 import logging
@@ -14,8 +18,55 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 import importlib
 import inspect
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
+
+
+def _credential_field(name: object) -> bool:
+    """Conservative screening of free-form registry metadata field names."""
+    normalized = "".join(c for c in str(name).casefold() if c.isalnum())
+    if normalized in {"apikeyenv", "tokenenv", "passwordenv", "secretenv"}:
+        return False  # Environment variable *names* contain no credential.
+    return any(word in normalized for word in (
+        "apikey", "token", "password", "secret", "credential",
+        "authorization", "bearer", "privatekey", "clientsecret",
+    ))
+
+
+def _safe_registry_url(value: str) -> str:
+    """Keep endpoint route; discard URL userinfo, query and fragment credentials.
+
+    A credential embedded in a URL *path* cannot be reliably distinguished
+    from ordinary routing data and is NOT covered by this function.
+    """
+    if "://" not in value:
+        return value
+    parts = urlsplit(value)
+    if not parts.scheme or not parts.netloc:
+        return value
+    host = parts.netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
+def _safe_registry_value(value: Any, *, depth: int = 0) -> Any:
+    """Filter free-form credential fields before registry JSON save/export.
+
+    The original runtime objects are not changed. Refuse excessively nested
+    data rather than silently persisting an unexamined subtree.
+    """
+    if depth >= 24:
+        raise ValueError("registry metadata nesting exceeds safe serialization limit")
+    if isinstance(value, dict):
+        return {
+            k: _safe_registry_value(v, depth=depth + 1)
+            for k, v in value.items() if not _credential_field(k)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_safe_registry_value(v, depth=depth + 1) for v in value]
+    if isinstance(value, str):
+        return _safe_registry_url(value)
+    return value
 
 
 @dataclass
@@ -40,16 +91,19 @@ class ToolMetadata:
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization."""
+        """Serialize configuration, not in-memory credentials.
+
+        Direct api_key values are deliberately ephemeral. Reloads must obtain
+        credentials from api_key_env or an explicit host-provided runtime input.
+        """
         return {
             "name": self.name,
             "description": self.description,
             "provider": self.provider,
-            "api_endpoint": self.api_endpoint,
-            "api_key": self.api_key,  # In production, encrypt this
+            "api_endpoint": _safe_registry_url(self.api_endpoint),
             "api_key_env": self.api_key_env,
-            "capabilities": self.capabilities,
-            "rate_limit": self.rate_limit,
+            "capabilities": _safe_registry_value(self.capabilities),
+            "rate_limit": _safe_registry_value(self.rate_limit),
             "cost_per_request": self.cost_per_request,
             "adapter_class": self.adapter_class,
             "adapter_path": self.adapter_path,
@@ -58,7 +112,7 @@ class ToolMetadata:
             "usage_count": self.usage_count,
             "success_count": self.success_count,
             "failure_count": self.failure_count,
-            "metadata": self.metadata
+            "metadata": _safe_registry_value(self.metadata)
         }
     
     @classmethod
@@ -267,7 +321,7 @@ class ToolRegistry:
             description: Tool description
             provider: Provider name (e.g., "openai", "anthropic")
             api_endpoint: API endpoint URL
-            api_key: API key (or use api_key_env)
+            api_key: Ephemeral API key, never persisted; prefer api_key_env
             api_key_env: Environment variable name for API key
             capabilities: List of capabilities this tool provides
             rate_limit: Rate limit configuration

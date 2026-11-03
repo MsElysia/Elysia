@@ -15,6 +15,23 @@ from ..events import EventBus
 logger = logging.getLogger(__name__)
 
 
+def _regular_proposal_dir(proposal_path: Path) -> Optional[Path]:
+    """Return the proposal folder only when the leaf is not a symlink.
+
+    A planted directory symlink would otherwise let list_proposals/get_proposal
+    treat an outside folder as an in-root proposal when that folder's
+    metadata.json is a regular file. This does not confine proposal_id path
+    components and does not change watcher or validator scan behavior.
+    """
+    path = Path(proposal_path)
+    try:
+        if path.is_symlink():
+            return None
+    except OSError:
+        return None
+    return path
+
+
 class ProposalValidator:
     """Validates proposal structure and metadata schema."""
 
@@ -315,7 +332,7 @@ class ProposalSystem:
             return proposals
 
         for proposal_dir in self.proposals_root.iterdir():
-            if not proposal_dir.is_dir():
+            if _regular_proposal_dir(proposal_dir) is None or not proposal_dir.is_dir():
                 continue
 
             metadata_file = proposal_dir / "metadata.json"
@@ -337,7 +354,9 @@ class ProposalSystem:
 
     def get_proposal(self, proposal_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific proposal by ID."""
-        proposal_path = self.proposals_root / proposal_id
+        proposal_path = _regular_proposal_dir(self.proposals_root / proposal_id)
+        if proposal_path is None:
+            return None
         metadata_file = proposal_path / "metadata.json"
 
         if not metadata_file.exists():

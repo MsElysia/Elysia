@@ -352,7 +352,7 @@ class MemoryCleanup:
                 self.memory_core.memory_log = previous
                 raise
 
-            logger.info(f"Memory cleanup: {original_count} -> {len(kept_memories)} (removed {len(removed_memories)})
+            logger.info(f"Memory cleanup: {original_count} -> {len(kept_memories)} (removed {len(removed_memories)})")
             
             return {
                 "action": "cleaned",

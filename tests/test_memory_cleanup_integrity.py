@@ -87,3 +87,53 @@ def test_successful_consolidation_still_commits_and_survives_restart(tmp_path):
     assert saved == core.dump_all()
     assert len(saved) < len(before)
     assert MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all() == saved
+
+
+def test_lazy_cleanup_loads_disk_before_pruning(tmp_path):
+    """An unopened but populated file is not an empty memory history."""
+    path, originals, _ = seeded(tmp_path)
+    deferred = MemoryCore(filepath=str(path), lazy_load=True, enable_timeline_logging=False)
+    assert deferred.is_loaded() is False
+    result = MemoryCleanup(deferred).cleanup_old_memories(days=90, min_priority=0.3)
+    assert result["action"] == "cleaned"
+    assert result["original_count"] == len(originals)
+    assert deferred.get_memory_state()["memory_count_authoritative"] is True
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved == [originals[-1]]
+    assert deferred.dump_all() == saved
+
+
+def test_lazy_cleanup_refuses_corrupt_file_without_overwriting_it(tmp_path):
+    """Failed deferred load must fence cleanup, rather than saving empty data."""
+    path = tmp_path / "synthetic_guardian_memory.json"
+    original = b'{not-valid JSON; preserve these exact original bytes'
+    path.write_bytes(original)
+    deferred = MemoryCore(filepath=str(path), lazy_load=True, enable_timeline_logging=False)
+    result = MemoryCleanup(deferred).cleanup_old_memories(days=90, min_priority=0.3)
+    assert "error" in result
+    assert path.read_bytes() == original
+    assert deferred.get_memory_state()["persistence_blocked"] is True
+    assert deferred.get_memory_state()["memory_count_authoritative"] is False
+
+
+def test_corrupt_primary_consolidation_does_not_claim_healthy_noop(tmp_path):
+    """A corrupt history is not an empty history below the cleanup threshold."""
+    path = tmp_path / "synthetic_guardian_memory.json"
+    original = b'[{"synthetic":"broken"'
+    path.write_bytes(original)
+    core = MemoryCore(filepath=str(path), enable_timeline_logging=False)
+    result = MemoryCleanup(core).consolidate_memories(max_memories=2000)
+    assert result["action"] == "error"
+    assert result["action_taken"] is False
+    assert path.read_bytes() == original
+    assert core.get_memory_state()["persistence_blocked"] is True
+
+
+def test_lazy_consolidation_sees_original_count_below_threshold(tmp_path):
+    path, originals, _ = seeded(tmp_path)
+    before = path.read_bytes()
+    deferred = MemoryCore(filepath=str(path), lazy_load=True, enable_timeline_logging=False)
+    result = MemoryCleanup(deferred).consolidate_memories(max_memories=20)
+    assert result["action"] == "no_action_needed"
+    assert result["original_count"] == len(originals)
+    assert path.read_bytes() == before

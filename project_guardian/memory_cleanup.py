@@ -72,6 +72,24 @@ class MemoryCleanup:
                 "error": "Memory core does not have memory_log",
             }
         
+        # Never interpret a deferred/failed authoritative load as an empty
+        # history. In particular, corrupt JSON must not report a healthy no-op.
+        if hasattr(json_mem, "get_memory_state"):
+            state = json_mem.get_memory_state(load_if_needed=False)
+            if state.get("memory_count_authoritative") is False:
+                return {
+                    "action": "error",
+                    "attempted": True,
+                    "action_taken": False,
+                    "no_op_reason": "authoritative_history_unavailable",
+                    "original_count": None,
+                    "final_count": None,
+                    "removed": 0,
+                    "vector_rebuild_status": "not_attempted",
+                    "vector_rebuild_success": False,
+                    "error": "Primary memory history is not authoritative; cleanup refused",
+                }
+
         original_count = len(json_mem.memory_log)
 
         # Capture RSS before cleanup (best-effort)
@@ -313,7 +331,19 @@ class MemoryCleanup:
         """
         if not hasattr(self.memory_core, 'memory_log'):
             return {"error": "Memory core does not have memory_log"}
-        
+
+        # Direct manual cleanup must initialize lazy JSON history before
+        # reading its count or committing a reduced copy to disk.
+        try:
+            if hasattr(self.memory_core, "load_if_needed"):
+                self.memory_core.load_if_needed()
+            if hasattr(self.memory_core, "get_memory_state"):
+                state = self.memory_core.get_memory_state(load_if_needed=False)
+                if state.get("memory_count_authoritative") is False:
+                    return {"error": "Primary memory history is not authoritative; cleanup refused"}
+        except Exception as exc:
+            return {"error": f"Primary memory history could not be loaded: {type(exc).__name__}"}
+
         original_count = len(self.memory_core.memory_log)
         cutoff_date = datetime.now() - timedelta(days=days)
         

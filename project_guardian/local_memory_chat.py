@@ -20,6 +20,8 @@ import threading
 from typing import Any, Dict, Mapping, Optional, Sequence
 from urllib.parse import urlsplit
 
+from project_guardian.retrieval_vocabulary import normalize_retrieval_term
+
 REQUEST_DEADLINE_SECONDS = 35
 PROMPT_BYTE_CAP = 18000
 EVIDENCE_BYTE_CAP = 10000
@@ -249,7 +251,7 @@ _CONTEXT_STOPWORDS = frozenset(
 
 def _context_tokens(text: str) -> list[str]:
     words = re.findall(r"[a-z0-9]+", text.lower())
-    return [w for w in words if w not in _CONTEXT_STOPWORDS and len(w) > 1]
+    return [normalize_retrieval_term(w) for w in words if w not in _CONTEXT_STOPWORDS and len(w) > 1]
 
 
 def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str, str]) -> Dict[str, Any]:

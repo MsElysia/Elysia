@@ -723,6 +723,12 @@ class VectorMemory:
             pass
 
         self.load_if_needed()
+        # An ordinary write cannot repair or certify an unverified legacy,
+        # corrupt, or interrupted index. Only an explicit rebuild using
+        # authoritative JSON may create a new trusted generation.
+        if self.degraded or self.rebuild_pending:
+            logger.warning("Vector add refused: generation unverified; rebuild required")
+            return None
         if self.index is None:
             logger.warning("FAISS index not available")
             return None

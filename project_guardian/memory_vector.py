@@ -7,6 +7,8 @@ import json
 import logging
 import threading
 import tempfile
+import hashlib
+import uuid
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 import numpy as np
@@ -55,6 +57,9 @@ class VectorMemory:
         self.vector_dim = vector_dim
         self.index_path = index_path
         self.metadata_path = metadata_path
+        # A generation manifest is committed LAST, after the real FAISS index
+        # and metadata bytes. SHA-256 binds files even if row counts match.
+        self.generation_path = metadata_path + ".generation.json"
         self.embedding_model = embedding_model
         self._sentence_transformer_model = None  # Lazy-loaded for sentence-transformers
         # After load/encode failure, do not retry ST for every embed in this process
@@ -209,6 +214,15 @@ class VectorMemory:
             self._atomic_write_json(self.metadata_path, new_metadata)
             if FAISS_AVAILABLE:
                 self._atomic_write_faiss(self.index_path, new_index)
+                # Commit checksum generation using the NEW index size before
+                # publishing it in RAM. Existing manifest is never rewritten
+                # until metadata + index bytes have both committed.
+                previous_index, previous_metadata = self.index, self.metadata
+                self.index, self.metadata = new_index, new_metadata
+                try:
+                    self._commit_generation()
+                finally:
+                    self.index, self.metadata = previous_index, previous_metadata
             self.index = new_index
             self.metadata = new_metadata
             self.degraded = False
@@ -316,6 +330,8 @@ class VectorMemory:
                 self.rebuild_pending = True
                 self._set_rebuild_status("failed", "metadata_corrupt_or_unreadable", str(e))
                 # Persist an empty metadata list so next startup can proceed cleanly.
+                # Keep the unreadable primary bytes preserved in the
+                # quarantine file. Do not silently certify replacement metadata.
                 self._save_metadata()
         else:
             self.metadata = []
@@ -338,6 +354,77 @@ class VectorMemory:
                 self.rebuild_pending = True
                 self._set_rebuild_status("failed", "index_metadata_unverifiable", str(exc))
                 logger.error("VectorMemory index/metadata validation failed: %s", exc)
+
+        # Row counts alone cannot detect different generations of equal size.
+        self._verify_generation()
+
+    @staticmethod
+    def _file_sha256(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _commit_generation(self) -> None:
+        """Publish the validated file pair's identity ONLY after both saves."""
+        if not FAISS_AVAILABLE or self.index is None:
+            return
+        if int(self.index.ntotal) != len(self.metadata):
+            raise RuntimeError("Cannot commit FAISS generation with mismatched rows")
+        self._atomic_write_json(self.generation_path, {
+            "schema": "elysia.vector_generation.v1",
+            "generation_id": uuid.uuid4().hex,
+            "vector_dim": self.vector_dim,
+            "count": int(self.index.ntotal),
+            "index_sha256": self._file_sha256(self.index_path),
+            "metadata_sha256": self._file_sha256(self.metadata_path),
+        })
+
+    def _verify_generation(self) -> None:
+        """Fail closed for incomplete, legacy or cross-generation persisted pairs.
+
+        Existing unmanifested files are preserved, not stamped as verified;
+        explicit rebuilding from authoritative JSON creates a new generation.
+        """
+        if not FAISS_AVAILABLE or self.index is None:
+            return
+        index_present = os.path.isfile(self.index_path)
+        metadata_present = os.path.isfile(self.metadata_path)
+        generation_present = os.path.isfile(self.generation_path)
+        if not (index_present or metadata_present or generation_present):
+            return  # Never persisted: legitimate fresh empty store.
+        try:
+            if not (index_present and metadata_present and generation_present):
+                raise ValueError("Unverified legacy/incomplete vector generation")
+            with open(self.generation_path, "r", encoding="utf-8") as source:
+                generation = json.load(source)
+            if not isinstance(generation, dict):
+                raise ValueError("Invalid vector generation record")
+            if generation.get("schema") != "elysia.vector_generation.v1":
+                raise ValueError("Unknown vector generation schema")
+            generation_id = generation.get("generation_id")
+            if not isinstance(generation_id, str) or len(generation_id) < 16:
+                raise ValueError("Invalid vector generation identifier")
+            if type(generation.get("vector_dim")) is not int or generation["vector_dim"] != self.vector_dim:
+                raise ValueError("Vector generation dimension mismatch")
+            count = generation.get("count")
+            if type(count) is not int or count != int(self.index.ntotal) or count != len(self.metadata):
+                raise ValueError("Vector generation count mismatch")
+            for key, file_path in (
+                ("index_sha256", self.index_path),
+                ("metadata_sha256", self.metadata_path),
+            ):
+                expected = generation.get(key)
+                if not isinstance(expected, str) or len(expected) != 64:
+                    raise ValueError("Missing vector generation checksum")
+                if self._file_sha256(file_path) != expected:
+                    raise ValueError("Vector generation checksum mismatch: " + key)
+        except Exception as exc:
+            self.degraded = True
+            self.rebuild_pending = True
+            self._set_rebuild_status("failed", "vector_generation_unverified", str(exc))
+            logger.error("VectorMemory unverified persisted generation; semantic reads fenced: %s", exc)
 
     def _atomic_write_json(self, path: str, payload: Any) -> None:
         """Atomically write JSON with flush+fsync to reduce corruption risk."""
@@ -417,6 +504,7 @@ class VectorMemory:
         self._atomic_write_json(self.metadata_path, self.metadata)
         if FAISS_AVAILABLE and self.index is not None:
             self._atomic_write_faiss(self.index_path, self.index)
+            self._commit_generation()
                 
     def generate_embedding(self, text: str) -> Optional[np.ndarray]:
         """
@@ -635,6 +723,12 @@ class VectorMemory:
             pass
 
         self.load_if_needed()
+        # An ordinary write cannot repair or certify an unverified legacy,
+        # corrupt, or interrupted index. Only an explicit rebuild using
+        # authoritative JSON may create a new trusted generation.
+        if self.degraded or self.rebuild_pending:
+            logger.warning("Vector add refused: generation unverified; rebuild required")
+            return None
         if self.index is None:
             logger.warning("FAISS index not available")
             return None
@@ -773,6 +867,8 @@ class VectorMemory:
     def get_by_id(self, memory_id: int) -> Optional[Dict[str, Any]]:
         """Get memory by ID."""
         self.load_if_needed()
+        if self.degraded or self.rebuild_pending:
+            return None
         if 0 <= memory_id < len(self.metadata):
             return self.metadata[memory_id].copy()
         return None
@@ -810,14 +906,18 @@ class VectorMemory:
         }
         
     def clear(self):
-        """Clear all vector memories."""
+        """Clear vector memory and commit a matching empty generation."""
         self.load_if_needed()
-        if FAISS_AVAILABLE and self.index is not None:
-            # Create new empty index
-            self.index = faiss.IndexFlatL2(self.vector_dim)
+        self.index = faiss.IndexFlatL2(self.vector_dim) if FAISS_AVAILABLE else None
         self.metadata = []
-        self._save_metadata()
-        self._save_index()
+        try:
+            self._persist_vector_state()
+        except Exception:
+            self.degraded = True
+            self.rebuild_pending = True
+            raise
+        self.degraded = False
+        self.rebuild_pending = False
         logger.info("Vector memory cleared")
 
 

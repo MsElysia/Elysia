@@ -202,3 +202,139 @@ def test_missing_vector_metadata_is_not_mistaken_for_valid_empty_index(fixture):
     assert len(restarted.vector_memory.metadata) == 2
     assert metadata_path.is_file()
     assert restarted.get_memory_state()["vector_count_authoritative"] is True
+
+
+def _generation_path(metadata_path):
+    return Path(str(metadata_path) + ".generation.json")
+
+
+def test_generation_manifest_binds_real_index_and_metadata(fixture):
+    import hashlib
+    engine, new_engine, _, index_path, metadata_path = fixture
+    manifest_file = _generation_path(metadata_path)
+    assert manifest_file.is_file()
+    m = json.loads(manifest_file.read_text(encoding="utf-8"))
+    assert m["schema"] == "elysia.vector_generation.v1"
+    assert len(m["generation_id"]) >= 16
+    assert m["index_sha256"] == hashlib.sha256(index_path.read_bytes()).hexdigest()
+    assert m["metadata_sha256"] == hashlib.sha256(metadata_path.read_bytes()).hexdigest()
+    assert m["count"] == 2
+    assert m["vector_dim"] == DIMS
+    assert new_engine().vector_memory.degraded is False
+
+
+def test_same_count_index_change_is_fenced_by_generation(fixture):
+    engine, new_engine, _, index_path, metadata_path = fixture
+    assert _generation_path(metadata_path).is_file()
+    # Synthetic same-size corruption: swap vector positions. Row counts match.
+    altered = faiss.IndexFlatL2(DIMS)
+    altered.add(np.stack([_embedding(None, CURRENT), _embedding(None, RETIRED)]))
+    faiss.write_index(altered, str(index_path))
+    assert faiss.read_index(str(index_path)).ntotal == 2
+    assert len(json.loads(metadata_path.read_text())) == 2
+    restarted = new_engine()
+    assert restarted.vector_memory.degraded is True
+    assert restarted.vector_memory.rebuild_pending is True
+    assert restarted.get_memory_state()["vector_count_authoritative"] is False
+    assert restarted.vector_memory.search(RETIRED, threshold=0.0) == []
+    assert restarted.vector_memory.get_by_id(0) is None
+
+
+def test_same_count_metadata_change_is_fenced_by_generation(fixture):
+    engine, new_engine, _, index_path, metadata_path = fixture
+    rows = json.loads(metadata_path.read_text())
+    rows[0]["text"] = "Synthetic counterfeit text of equal count"
+    metadata_path.write_text(json.dumps(rows), encoding="utf-8")
+    assert faiss.read_index(str(index_path)).ntotal == len(rows) == 2
+    restarted = new_engine()
+    assert restarted.vector_memory.degraded is True
+    assert restarted.vector_memory.search(CURRENT, threshold=0.0) == []
+
+
+def test_interrupted_equal_count_rebuild_does_not_validate_mixed_generation(
+    fixture, monkeypatch
+):
+    engine, new_engine, primary, index_path, metadata_path = fixture
+    rows = engine.json_memory.dump_all()
+    rows[0]["thought"] = "Synthetic amended retired ferry schedule"
+    engine.json_memory.memory_log = rows
+    engine.json_memory._save()
+    with monkeypatch.context() as broken:
+        broken.setattr(
+            engine.vector_memory, "_atomic_write_faiss",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("synthetic FAISS replace crash"))
+        )
+        outcome = engine.vector_memory.rebuild_from_memories(rows)
+    assert outcome["vector_rebuild_success"] is False
+    assert faiss.read_index(str(index_path)).ntotal == 2
+    assert len(json.loads(metadata_path.read_text())) == 2
+    restarted = new_engine()
+    assert restarted.vector_memory.degraded is True
+    assert restarted.vector_memory.search(RETIRED, threshold=0.0) == []
+    assert restarted.semantic_search(CURRENT, threshold=0.0) == []
+
+
+def test_missing_manifest_fences_legacy_pair_until_verified_rebuild(fixture):
+    engine, new_engine, primary, index_path, metadata_path = fixture
+    manifest_file = _generation_path(metadata_path)
+    assert manifest_file.exists()
+    original_index, original_metadata = index_path.read_bytes(), metadata_path.read_bytes()
+    manifest_file.unlink()  # Disposable test only. No user history.
+    restarted = new_engine()
+    assert restarted.vector_memory.degraded is True
+    assert restarted.vector_memory.rebuild_pending is True
+    assert index_path.read_bytes() == original_index
+    assert metadata_path.read_bytes() == original_metadata
+    assert restarted.semantic_search(RETIRED, threshold=0.0) == []
+    repaired = restarted.vector_memory.rebuild_from_memories(restarted.json_memory.dump_all())
+    assert repaired["vector_rebuild_success"] is True
+    assert manifest_file.is_file()
+    assert new_engine().vector_memory.degraded is False
+
+
+def test_corrupt_manifest_is_not_auto_rewritten_or_accepted(fixture):
+    engine, new_engine, primary, index_path, metadata_path = fixture
+    manifest_file = _generation_path(metadata_path)
+    corrupt = b"{corrupt generation manifest; preserve for operator"
+    manifest_file.write_bytes(corrupt)
+    restarted = new_engine()
+    assert restarted.vector_memory.degraded is True
+    assert manifest_file.read_bytes() == corrupt
+    assert restarted.vector_memory.search(CURRENT, threshold=0.0) == []
+
+
+def test_generation_changes_after_successful_cleanup_and_restart(fixture):
+    engine, new_engine, primary, index_path, metadata_path = fixture
+    manifest_file = _generation_path(metadata_path)
+    original_id = json.loads(manifest_file.read_text())["generation_id"]
+    result = engine.cleanup_old_memories(days=90, min_priority_to_keep=0.7)
+    assert result["vector_rebuild_success"] is True
+    new_id = json.loads(manifest_file.read_text())["generation_id"]
+    assert new_id != original_id
+    assert new_engine().vector_memory.degraded is False
+
+
+def test_unverified_generation_cannot_be_recertified_by_normal_memory_add(fixture):
+    engine, new_engine, primary, index_path, metadata_path = fixture
+    manifest_file = _generation_path(metadata_path)
+    manifest_file.unlink()  # Simulated existing legacy/unverified pair.
+    before_index, before_meta = index_path.read_bytes(), metadata_path.read_bytes()
+    restarted = new_engine()
+    assert restarted.vector_memory.degraded
+    attempted = restarted.vector_memory.add_memory(
+        "Synthetic attempted re-certification", category="fact"
+    )
+    assert attempted is None
+    assert index_path.read_bytes() == before_index
+    assert metadata_path.read_bytes() == before_meta
+    assert not manifest_file.exists()
+    assert new_engine().vector_memory.degraded
+    # Explicit rebuild from authoritative JSON is the permitted recovery path.
+    rebuilt = restarted.vector_memory.rebuild_from_memories(
+        restarted.json_memory.dump_all()
+    )
+    assert rebuilt["vector_rebuild_success"] is True
+    assert restarted.vector_memory.add_memory(
+        "Synthetic verified new row", category="fact"
+    ) is not None
+    assert new_engine().vector_memory.degraded is False

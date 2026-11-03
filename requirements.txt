@@ -30,6 +30,13 @@ httpx>=0.25.0  # Modern HTTP client for web fetching
 beautifulsoup4>=4.12.0  # HTML parsing
 lxml>=4.9.0  # Fast XML/HTML parser (optional but recommended)
 
+# Hard runtime imports (project_guardian.external / mutation). Isolated restore
+# 2026-11-02 failed launch with ModuleNotFoundError without these; present in
+# verified ops pip-freeze but previously missing from this file. Keep
+# sentence-transformers / faiss / OCR out of core (see requirements-optional.txt).
+requests>=2.31.0
+openai>=1.40.0
+
 # Testing (Optional)
 pytest>=7.4.0  # For testing
 pytest-asyncio>=0.21.0  # For async tests (if needed)

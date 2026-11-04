@@ -137,3 +137,35 @@ def test_lazy_consolidation_sees_original_count_below_threshold(tmp_path):
     assert result["action"] == "no_action_needed"
     assert result["original_count"] == len(originals)
     assert path.read_bytes() == before
+
+
+def test_utc_offset_timestamps_are_safe_for_manual_cleanup(tmp_path):
+    """Timezone-aware imports should not make durable pruning fail or discard data."""
+    from datetime import datetime, timezone
+    path, originals, _ = seeded(tmp_path)
+    rows = list(originals)
+    rows[0] = dict(rows[0], time="2021-01-05T09:00:00+05:30")
+    rows[-1] = dict(rows[-1], time=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+    path.write_text(json.dumps(rows), encoding="utf-8")
+    core = MemoryCore(filepath=str(path), enable_timeline_logging=False)
+    outcome = MemoryCleanup(core).cleanup_old_memories(days=90, min_priority=0.3)
+    assert outcome["action"] == "cleaned"
+    assert outcome["removed"] == len(rows) - 1
+    assert json.loads(path.read_text(encoding="utf-8")) == [rows[-1]]
+    assert MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all() == [rows[-1]]
+
+
+def test_utc_offset_timestamps_are_safe_for_consolidation(tmp_path):
+    """Consolidation must handle both legacy naive timestamps and UTC ISO stamps."""
+    from datetime import datetime, timezone
+    path, originals, _ = seeded(tmp_path)
+    rows = list(originals)
+    rows[1] = dict(rows[1], time="2021-01-05T09:00:00-04:00")
+    rows[-1] = dict(rows[-1], time=datetime.now(timezone.utc).isoformat())
+    path.write_text(json.dumps(rows), encoding="utf-8")
+    core = MemoryCore(filepath=str(path), enable_timeline_logging=False)
+    outcome = MemoryCleanup(core).consolidate_memories(max_memories=2, keep_recent_days=90)
+    assert outcome["action"] == "consolidated"
+    assert outcome["removed"] == len(rows) - 1
+    assert json.loads(path.read_text(encoding="utf-8")) == [rows[-1]]
+    assert MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all() == [rows[-1]]

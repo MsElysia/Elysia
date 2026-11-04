@@ -1,0 +1,53 @@
+# Real FAISS native-wheel verification, wholly synthetic and offline.
+name: Elysia offline FAISS preservation
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-faiss:
+    name: Offline real FAISS (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact source
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = git rev-parse HEAD
+          if ($actual -ne $env:EXPECTED_SHA) { throw "Wrong source SHA" }
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install local test dependencies and FAISS CPU wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-documents.txt reportlab
+          python -m pip install "openai>=1.0,<2" "requests>=2.31,<3" "flask-socketio>=5,<6"
+          python -m pip install "numpy>=1.26,<3" "faiss-cpu>=1.9,<2" "pytest>=7.4,<9"
+      - name: Verify real FAISS and run offline-only tests
+        env:
+          PYTHONUTF8: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+          OPENAI_API_KEY: ''
+          ANTHROPIC_API_KEY: ''
+          OPENROUTER_API_KEY: ''
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+          PYTHONPATH: ${{ github.workspace }}/ci_stubs
+        run: |
+          python -c "import faiss,numpy; print('REAL FAISS',faiss.__version__,'NumPy',numpy.__version__)"
+          python -B -m pytest --noconftest -q -rs -p no:cacheprovider tests/test_offline_faiss_memory_integrity.py

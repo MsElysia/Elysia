@@ -1,0 +1,50 @@
+# Canonical large-document extraction + local memory retrieval, real disposable stores.
+name: Elysia large-document integration
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  large-doc-integration:
+    name: Large-document integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert checked out source
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = git rev-parse HEAD
+          if ($actual -ne $env:EXPECTED_SHA) { throw "Unexpected source SHA" }
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install required local dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-documents.txt reportlab
+          python -m pip install "openai>=1.0,<2" "requests>=2.31,<3" "flask-socketio>=5,<6" "pytest>=7.4,<9"
+      - name: Exercise actual large-document worker and memory reconciliation
+        env:
+          PYTHONUTF8: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+          OPENAI_API_KEY: ''
+          ANTHROPIC_API_KEY: ''
+          OPENROUTER_API_KEY: ''
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+          PYTHONPATH: ${{ github.workspace }}/ci_stubs
+        run: python -B -m pytest --noconftest -q -rs -p no:cacheprovider tests/test_large_document_ingestion.py tests/test_large_document_retrieval_integration.py

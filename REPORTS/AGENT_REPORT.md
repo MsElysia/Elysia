@@ -3577,3 +3577,39 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — unreadable proposals (2026-11-04)
+
+**Status:** COMPLETE on this branch. Not integrated to `main`.
+
+**Lane:** Product workflow. Unclaimed. `CONTROL.md` `CURRENT_TASK` remains `NONE`. Reconciliation queue `TASKS/TASK-0053.md` on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72cf397de2a5ef8d9a0bcaccd86462b0e577`) stays OPEN review-only. Do not merge `elysia-local-reconciliation-20260909-1657`. Codex Campaign 41 tip remains `3223ebbadd6e835870a87fdca2008eec65c969d8` on `origin/codex/limited-live-activation-wrapper`. This run did not implement live memory or vector writes.
+
+**Why this gap:** The events-limit, implement HTTP-status, WebScout research-status, chat answer-status, proposal decision-status, implementation-result, approved-batch, and status-availability fixes stay on their earlier product branches and were not copied. Before this change, live `GET /api/proposals` with fictional metadata `{not-json` plus a JSON array returned HTML 500 (`list` object has no attribute `get`). `GET /api/proposals/fictional-broken` returned HTTP 404 `Proposal not found`. `GET /api/proposals/fictional-array` returned HTTP 200 `[1,2]`. `GET /api/proposals/..` returned HTTP 200 for a sentinel metadata file stored in the parent directory (`title: SENTINEL-OUTSIDE`). `POST` approve on the broken file returned HTTP 400 `Proposal not found`.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c` (`main`). No other branch dependency. Not based on the earlier product branches.
+
+**Ownership checked:** Did not edit `elysia/core/proposal_system.py`. Runtime integrity today is `bc-6a61c440-56ce-48fc-8585-f099fdaba99d`, commit `e929816028fa6c00da0ec188f61b0dee660e8e54` on `origin/cursor/elysia-runtime-integrity-8a0e` (`elysia/core/proposal_system.py`, `tests/test_elysia_proposal_loadsave_dir_symlink.py`). That branch refuses a directory symlink and explicitly does not confine proposal id path components or change list/get. Application runtime safety has no run today; its last push remains `76ec67a` on `origin/cursor/application-runtime-safety-91a3`. Did not edit `project_guardian/ui_control_panel.py`. Dashboard branches `origin/cursor/dashboard-status-truth-94db` and `origin/cursor/dashboard-truthful-status-2ccc` still own that file. Left open draft PRs #192–#200 and earlier dashboard, governance, and memory drafts to their owners.
+
+**Acceptance:**
+- `GET /api/proposals` returns HTTP 200 JSON when a sibling metadata file is a JSON array. The readable fictional proposal is the only item in `proposals`. `unreadable` lists the array and the invalid-JSON ids. The body is not HTML
+- `GET /api/proposals?status=proposal` still returns that readable proposal and the same `unreadable` ids. `status=implemented` returns `count: 0` and still lists those ids
+- Invalid JSON, JSON null, and a JSON array return HTTP 500 JSON `error: Proposal metadata is unreadable` from get, implementation, chat, approve, reject, status, and implement
+- A missing id stays HTTP 404 `Proposal not found` on get and implementation
+- Proposal id `..` returns HTTP 400 `invalid proposal id` for get, chat, approve, status, and implement. The parent sentinel file is not returned and its bytes do not change
+- Approve, reject, status, and implement do not rewrite unreadable metadata
+- A readable fictional proposal in status `proposal` still approves over the real `ProposalSystem`, and the stored status becomes `approved`
+- The shell `proposals` command prints `fictional-readable: Readable [proposal]` and one `metadata unreadable` line per broken id
+- No proposal system stays HTTP 503 JSON
+- The contract holds through Flask's test client and through a live Werkzeug HTTP server on 127.0.0.1. `ProposalSystem` watcher is off. `init()` is not called
+
+**Command:** `python3 -m pytest tests/test_runtime_api_proposals_read.py -v --tb=short` — 4 passed.
+
+**Files:** `elysia/api/server.py`, `elysia/shell.py`, `tests/test_runtime_api_proposals_read.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`.
+
+**Remaining limitations:** `ProposalSystem.list_proposals` still raises when a metadata file is a JSON array, and `ProposalSystem.get_proposal` still joins `..` onto the proposals root. Callers that do not go through this API still have that behavior. Do not edit `elysia/core/proposal_system.py` from this lane; runtime integrity owns it. A readable proposal whose `history` is not a list can still make `GET /api/proposals/<id>/implementation` return HTML 500. That reporting fix stays on `origin/cursor/product-workflow-engineering-583c`. `GET /api/events` limit handling, implement HTTP status, WebScout queue status, general chat status, proposal decision status, stored implementation result, approved batch selection, and status availability remain only on their earlier product branches. This does not change memory, governance, CI, or deployment settings. A branch commit is not integrated product readiness.
+
+**Next action:** Leave `TASK-0053` unmerged. Do not repeat this unreadable-proposal fix, or the earlier product API fixes, from `main`. A later product run should pick a different unclaimed API or dashboard error path, and should re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`. The proposal-store path join for `..` and the `list_proposals` sort crash remain with runtime integrity.
+
+**Commit:** `ee0e9f13a4965638c0f1d1ae7791a56c3dea84b9` on `cursor/product-workflow-engineering-process-6ef0`. Base `722d8e4fe85d7e42ac34066c2d651849d15e734c`.

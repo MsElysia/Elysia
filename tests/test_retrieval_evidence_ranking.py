@@ -95,6 +95,83 @@ def test_large_top_hit_does_not_hide_small_relevant_hit():
     assert len(canonical(result["evidence"]).encode("utf-8")) <= EVIDENCE_BYTE_CAP
 
 
+def test_oversized_best_source_keeps_bounded_excerpt_instead_of_silent_loss():
+    """Independently chosen: the only strong hit is huge — keep a relevant excerpt."""
+    needle = "The Nahlia chronometer serial NX-441 is sealed in the east annex vault."
+    padding = ("background inventory filler note " * 400)
+    docs = [_doc("huge", padding + needle + " " + padding)]
+    result = _context([], docs, "Where is the Nahlia chronometer serial NX-441 sealed?")
+    assert result["evidence"], "oversized best source must not disappear"
+    hit = result["evidence"][0]
+    assert hit["source_id"] == "doc_huge"
+    text = hit["highlights"][0]["text"]
+    assert "NX-441" in text and "east annex" in text
+    assert hit["highlights"][0].get("excerpted") is True
+    assert len(text) < len(docs[0]["text"])
+    assert len(canonical(result["evidence"]).encode("utf-8")) <= EVIDENCE_BYTE_CAP
+
+
+def test_relevant_passage_inside_large_document_is_selected():
+    """Independently chosen: buried passage in a long document must surface."""
+    prefix = ("routine sensor heartbeat telemetry line\n" * 80)
+    passage = "The Kestrel relay codebook is filed under shelf R-17 in Harbor Stack."
+    suffix = ("routine sensor heartbeat telemetry line\n" * 80)
+    docs = [
+        _doc("noise", "Harbor Stack visitor pamphlet with no codebook details."),
+        _doc("large", prefix + passage + suffix),
+    ]
+    result = _context([], docs, "Where is the Kestrel relay codebook filed?")
+    assert any(e["source_id"] == "doc_large" for e in result["evidence"])
+    blob = canonical(result["evidence"])
+    assert "R-17" in blob and "Kestrel" in blob
+
+
+def test_paraphrase_corrected_conflict_duplicate_and_unsupported_suite():
+    # Paraphrase
+    facts = [_fact("fact_harbor", "The fictional Veridia harbor city is called Glasshaven.")]
+    r = _context(facts, [], "What city is Veridia's harbor known as?")
+    assert "fact_harbor" in [e["source_id"] for e in r["evidence"]]
+    assert "Glasshaven" in canonical(r["evidence"])
+    # Corrected revision
+    facts = [_fact("fact_city", "The fictional Veridia harbor is Glasshaven.", revision=2)]
+    r = _context(facts, [], "What is the Veridia harbor city called?")
+    assert next(e for e in r["evidence"] if e["source_id"] == "fact_city")["revision"] == 2
+    # Conflicting sources remain distinguishable
+    facts = [_fact("fact_a", "The Veridia compass is stored in the southern vault.")]
+    docs = [_doc("b", "The Veridia compass is stored in the northern tower.")]
+    r = _context(facts, docs, "Where is the Veridia compass stored?")
+    ids = {e["source_id"] for e in r["evidence"]}
+    assert "fact_a" in ids and "doc_b" in ids
+    # Duplicates do not exceed cap
+    facts = [_fact("fact_once", "The Veridia lantern is kept at Harbor Gate.")]
+    docs = [
+        _doc("dup1", "The Veridia lantern is kept at Harbor Gate."),
+        _doc("dup2", "The Veridia lantern is kept at Harbor Gate."),
+    ]
+    r = _context(facts, docs, "Where is the Veridia lantern kept?")
+    assert len(r["evidence"]) <= EVIDENCE_ITEM_CAP and "fact_once" in [
+        e["source_id"] for e in r["evidence"]
+    ]
+    # Unsupported
+    r = _context(
+        [_fact("fact_other", "The fictional Veridia lanterns are purple.")],
+        [],
+        "Where is the Orbleth weatherstone stored?",
+    )
+    assert r["evidence"] == [] and r["no_memory_support"] is True
+
+
+def test_diagnostic_log_rows_excluded_from_personal_memory_retrieval():
+    diag = _doc("diag", "Traceback ProposalWatcher diagnostic runtime failure detail.")
+    diag["trust"] = "diagnostic_log"
+    diag["collection"] = "diagnostic_logs"
+    facts = [_fact("fact_ok", "The Veridia compass is kept in the southern vault.")]
+    result = _context(facts, [diag], "Where is the Veridia compass kept?")
+    ids = [e["source_id"] for e in result["evidence"]]
+    assert "doc_diag" not in ids
+    assert "fact_ok" in ids
+
+
 def test_absent_evidence_never_fabricated():
     result = _context(
         [_fact("fact_other", "The fictional Veridia lanterns are purple.")],

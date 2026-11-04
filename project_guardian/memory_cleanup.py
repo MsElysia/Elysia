@@ -8,11 +8,31 @@ Automatic memory cleanup and consolidation to reduce memory usage
 import logging
 import json
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _memory_timestamp_utc(raw: object) -> datetime:
+    """Compare records in UTC while preserving legacy naive-local semantics.
+
+    Older MemoryCore records use local timestamps without timezone info.
+    Python's astimezone() interprets those using the host's local timezone.
+    Newer records may carry Z or explicit UTC offsets. Malformed/missing
+    timestamps retain the historical keep-as-recent behavior.
+    """
+    try:
+        if not isinstance(raw, str) or not raw:
+            return datetime.now(timezone.utc)
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.astimezone()
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return datetime.now(timezone.utc)
+
 
 class MemoryCleanup:
     """Memory cleanup and optimization utilities"""
@@ -123,7 +143,7 @@ class MemoryCleanup:
         
         try:
             # Get cutoff date
-            cutoff_date = datetime.now() - timedelta(days=keep_recent_days)
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=keep_recent_days)
             
             # Separate memories into categories
             recent_memories = []
@@ -131,14 +151,7 @@ class MemoryCleanup:
             old_low_priority = []
             
             for memory in json_mem.memory_log:
-                memory_time = memory.get("time", "")
-                try:
-                    if memory_time:
-                        mem_date = datetime.fromisoformat(memory_time.replace('Z', '+00:00'))
-                    else:
-                        mem_date = datetime.now()
-                except Exception:
-                    mem_date = datetime.now()
+                mem_date = _memory_timestamp_utc(memory.get("time", ""))
                 
                 priority = memory.get("priority", 0.5)
                 
@@ -350,7 +363,7 @@ class MemoryCleanup:
             return {"error": f"Primary memory history could not be loaded: {type(exc).__name__}"}
 
         original_count = len(json_mem.memory_log)
-        cutoff_date = datetime.now() - timedelta(days=days)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
         
         try:
             kept_memories = []
@@ -360,13 +373,7 @@ class MemoryCleanup:
                 memory_time = memory.get("time", "")
                 priority = memory.get("priority", 0.5)
                 
-                try:
-                    if memory_time:
-                        mem_date = datetime.fromisoformat(memory_time.replace('Z', '+00:00'))
-                    else:
-                        mem_date = datetime.now()
-                except Exception:
-                    mem_date = datetime.now()
+                mem_date = _memory_timestamp_utc(memory_time)
                 
                 # Keep if recent OR high priority
                 if mem_date >= cutoff_date or priority >= min_priority:

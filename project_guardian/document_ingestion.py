@@ -21,6 +21,13 @@ import threading
 import time
 from datetime import datetime, timezone
 
+# The extractor also runs as a standalone, resource-bounded subprocess.
+# Keep that path importable while sharing the exact same search normalization.
+if __package__:
+    from .retrieval_vocabulary import normalize_retrieval_term
+else:
+    from retrieval_vocabulary import normalize_retrieval_term
+
 # Source upload / managed-copy bound (browser + API align on this).
 MAX_BYTES = 8 * 1024 * 1024
 # Extracted Unicode length bound — sized to the source byte cap so a full UTF-8
@@ -540,7 +547,7 @@ class DocumentLibrary:
                 _ACTIVE_SOURCES.discard(source)
 
     def search(self, query, limit=6):
-        tokens = set(re.findall(r'\w{3,}', query.casefold())) - {'the', 'what', 'which', 'does', 'and', 'from', 'with'}
+        tokens = {normalize_retrieval_term(w) for w in re.findall(r'\w{3,}', query.casefold())} - {'the', 'what', 'which', 'does', 'and', 'from', 'with'}
         if not tokens:
             return []
         completed = {r['source_id'] for r in self.receipts() if r['status'] == 'completed'}
@@ -550,7 +557,7 @@ class DocumentLibrary:
             if entry.get('category') != 'document_chunk' or meta.get('source_id') not in completed:
                 continue
             text = entry['thought']
-            overlap = tokens & set(re.findall(r'\w{3,}', text.casefold()))
+            overlap = tokens & {normalize_retrieval_term(w) for w in re.findall(r'\w{3,}', text.casefold())}
             if overlap:
                 found.append(dict(meta, text=text, score=len(overlap) / len(tokens)))
         matches = sorted(found, key=lambda x: (-x['score'], x['chunk_id']))[:limit]

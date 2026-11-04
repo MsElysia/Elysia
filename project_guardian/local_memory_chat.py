@@ -248,7 +248,7 @@ _CONTEXT_STOPWORDS = frozenset(
 
 
 def _context_tokens(text: str) -> list[str]:
-    words = re.findall(r"[a-z0-9]+", text.lower())
+    words = re.findall(r"[^\W_]+", text.casefold())
     return [w for w in words if w not in _CONTEXT_STOPWORDS and len(w) > 1]
 
 
@@ -265,7 +265,10 @@ def _bounded_relevant_excerpt(
     best_start = 0
     best_hits = -1
     step = max(80, max_chars // 6)
-    for start in range(0, max(1, len(text) - max_chars + 1), step):
+    last_start = len(text) - max_chars
+    starts = set(range(0, last_start + 1, step))
+    starts.add(last_start)
+    for start in sorted(starts):
         window = lowered[start : start + max_chars]
         hits = sum(1 for t in query_tokens if t in window)
         if hits > best_hits:
@@ -368,6 +371,8 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
             # Diagnostic log chunks use a separate collection/categories and must
             # never enter ordinary personal-memory / chat evidence retrieval.
             trust = row.get("trust")
+            if trust is not None and not isinstance(trust, str):
+                continue
             if trust in {"diagnostic_log", "diagnostic"} or str(
                 row.get("collection") or ""
             ).startswith("diagnostic"):

@@ -779,7 +779,15 @@ class VectorMemory:
             return memory_id
             
         except Exception as e:
-            logger.error(f"Failed to add memory to index: {e}")
+            # FAISS add/metadata append may already have modified live memory,
+            # and metadata/index/manifest can commit separately. Do not expose
+            # that unverified generation or allow another ordinary add to
+            # silently certify it. Only rebuild from authoritative JSON clears
+            # this quarantine.
+            self.degraded = True
+            self.rebuild_pending = True
+            self._set_rebuild_status("failed", "vector_add_uncommitted", str(e))
+            logger.error("Vector add failed; uncommitted vector generation fenced: %s", e)
             return None
             
     def search(

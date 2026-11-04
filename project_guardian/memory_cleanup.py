@@ -7,6 +7,7 @@ Automatic memory cleanup and consolidation to reduce memory usage
 
 import logging
 import json
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -26,6 +27,16 @@ class MemoryCleanup:
         self.memory_core = memory_core
     
     def consolidate_memories(self, max_memories: int = 4000, keep_recent_days: int = 30) -> Dict[str, Any]:
+        """Serialize cleanup against normal MemoryCore writes where RLock exists."""
+        core = self.memory_core
+        primary = core.json_memory if hasattr(core, "json_memory") else core
+        lock = getattr(primary, "_save_file_lock", None)
+        if isinstance(lock, type(threading.RLock())):
+            with lock:
+                return self._consolidate_memories_locked(max_memories, keep_recent_days)
+        return self._consolidate_memories_locked(max_memories, keep_recent_days)
+
+    def _consolidate_memories_locked(self, max_memories: int, keep_recent_days: int) -> Dict[str, Any]:
         """
         Authoritative cleanup for JSON + vector memory.
         Handles both MemoryCore and EnhancedMemoryCore without causing a second heavy spike.
@@ -61,6 +72,24 @@ class MemoryCleanup:
                 "error": "Memory core does not have memory_log",
             }
         
+        # Never interpret a deferred/failed authoritative load as an empty
+        # history. In particular, corrupt JSON must not report a healthy no-op.
+        if hasattr(json_mem, "get_memory_state"):
+            state = json_mem.get_memory_state(load_if_needed=False)
+            if state.get("memory_count_authoritative") is False:
+                return {
+                    "action": "error",
+                    "attempted": True,
+                    "action_taken": False,
+                    "no_op_reason": "authoritative_history_unavailable",
+                    "original_count": None,
+                    "final_count": None,
+                    "removed": 0,
+                    "vector_rebuild_status": "not_attempted",
+                    "vector_rebuild_success": False,
+                    "error": "Primary memory history is not authoritative; cleanup refused",
+                }
+
         original_count = len(json_mem.memory_log)
 
         # Capture RSS before cleanup (best-effort)
@@ -130,12 +159,22 @@ class MemoryCleanup:
                 memories_to_keep.sort(key=lambda x: x.get("priority", 0.5), reverse=True)
                 memories_to_keep = memories_to_keep[:max_memories]
             
-            # Update JSON memory log
+            # Commit authoritative JSON before publishing derived vector changes.
+            # A rejected/failed commit must restore the full in-process history.
             removed_count = original_count - len(memories_to_keep)
+            previous = list(json_mem.memory_log)
             json_mem.memory_log = memories_to_keep
+            try:
+                if hasattr(json_mem, "_save"):
+                    persisted = json_mem._save()
+                    if persisted is False:
+                        raise RuntimeError("Primary memory cleanup persistence was rejected")
+            except Exception:
+                json_mem.memory_log = previous
+                raise
 
-            # Vector reconciliation (EnhancedMemoryCore only)
-            from .memory_vector import VECTOR_REBUILD_SAFE_MAX
+            # Optional vector dependencies must not break JSON-only cleanup.
+            # Import vector code only when an actual vector store is attached.
             metadata_before = 0
             metadata_after = 0
             faiss_before = 0
@@ -145,6 +184,7 @@ class MemoryCleanup:
             vector_error = None
 
             if vector_mem is not None:
+                from .memory_vector import VECTOR_REBUILD_SAFE_MAX
                 vector_rebuild_status = "deferred"
                 vector_rebuild_success = False
                 try:
@@ -227,10 +267,7 @@ class MemoryCleanup:
             except Exception:
                 pass
             
-            # Save consolidated memories
-            if hasattr(json_mem, '_save'):
-                json_mem._save()
-            
+            # Primary commit occurred before optional vector reconciliation.
             logger.info(f"Memory consolidation: {original_count} -> {len(memories_to_keep)} (removed {removed_count})")
             
             return {
@@ -274,6 +311,15 @@ class MemoryCleanup:
             }
     
     def cleanup_old_memories(self, days: int = 90, min_priority: float = 0.3) -> Dict[str, Any]:
+        """Serialize pruning against normal MemoryCore writes when supported."""
+        primary = self.memory_core.json_memory if hasattr(self.memory_core, "json_memory") else self.memory_core
+        lock = getattr(primary, "_save_file_lock", None)
+        if isinstance(lock, type(threading.RLock())):
+            with lock:
+                return self._cleanup_old_memories_locked(days, min_priority)
+        return self._cleanup_old_memories_locked(days, min_priority)
+
+    def _cleanup_old_memories_locked(self, days: int, min_priority: float) -> Dict[str, Any]:
         """
         Remove old low-priority memories.
         
@@ -284,17 +330,33 @@ class MemoryCleanup:
         Returns:
             Dictionary with cleanup results
         """
-        if not hasattr(self.memory_core, 'memory_log'):
+        # Enhanced memory owns a primary JSON MemoryCore and an optional
+        # derived vector. Both use the existing primary save lock above.
+        json_mem = self.memory_core.json_memory if hasattr(self.memory_core, "json_memory") else self.memory_core
+        vector_mem = getattr(self.memory_core, "vector_memory", None) if json_mem is not self.memory_core else None
+        if not hasattr(json_mem, 'memory_log'):
             return {"error": "Memory core does not have memory_log"}
-        
-        original_count = len(self.memory_core.memory_log)
+
+        # Direct manual cleanup must initialize lazy JSON history before
+        # reading its count or committing a reduced copy to disk.
+        try:
+            if hasattr(json_mem, "load_if_needed"):
+                json_mem.load_if_needed()
+            if hasattr(json_mem, "get_memory_state"):
+                state = json_mem.get_memory_state(load_if_needed=False)
+                if state.get("memory_count_authoritative") is False:
+                    return {"error": "Primary memory history is not authoritative; cleanup refused"}
+        except Exception as exc:
+            return {"error": f"Primary memory history could not be loaded: {type(exc).__name__}"}
+
+        original_count = len(json_mem.memory_log)
         cutoff_date = datetime.now() - timedelta(days=days)
         
         try:
             kept_memories = []
             removed_memories = []
             
-            for memory in self.memory_core.memory_log:
+            for memory in json_mem.memory_log:
                 memory_time = memory.get("time", "")
                 priority = memory.get("priority", 0.5)
                 
@@ -312,20 +374,51 @@ class MemoryCleanup:
                 else:
                     removed_memories.append(memory)
             
-            # Update memory log
-            self.memory_core.memory_log = kept_memories
-            
-            # Save
-            if hasattr(self.memory_core, '_save'):
-                self.memory_core._save()
-            
+            # Stage and commit; never leave an uncommitted reduced history
+            # active when the authoritative primary JSON save fails.
+            previous = list(json_mem.memory_log)
+            json_mem.memory_log = kept_memories
+            try:
+                if hasattr(json_mem, "_save"):
+                    persisted = json_mem._save()
+                    if persisted is False:
+                        raise RuntimeError("Primary memory cleanup persistence was rejected")
+            except Exception:
+                json_mem.memory_log = previous
+                raise
+
+            # Update the optional vector only after the primary JSON commit.
+            # A partial/deferred rebuild must not look like a verified sync.
+            vector_status = "not_applicable"
+            vector_success = True
+            vector_error = None
+            if vector_mem is not None:
+                try:
+                    outcome = vector_mem.rebuild_from_memories(kept_memories)
+                    if not isinstance(outcome, dict):
+                        raise RuntimeError("vector rebuild returned no status")
+                    vector_status = outcome.get("vector_rebuild_status", "unknown")
+                    vector_success = outcome.get("vector_rebuild_success") is True
+                    vector_error = outcome.get("error")
+                except Exception as exc:
+                    vector_status = "failed"
+                    vector_success = False
+                    vector_error = f"{type(exc).__name__}: {exc}"[:200]
+                if not vector_success:
+                    # Do not allow a stale derived index to appear healthy.
+                    vector_mem.degraded = True
+                    vector_mem.rebuild_pending = True
+
             logger.info(f"Memory cleanup: {original_count} -> {len(kept_memories)} (removed {len(removed_memories)})")
             
             return {
                 "action": "cleaned",
                 "original_count": original_count,
                 "final_count": len(kept_memories),
-                "removed": len(removed_memories)
+                "removed": len(removed_memories),
+                "vector_rebuild_status": vector_status,
+                "vector_rebuild_success": vector_success,
+                "vector_rebuild_error": vector_error,
             }
             
         except Exception as e:

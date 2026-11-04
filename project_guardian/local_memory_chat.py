@@ -12,12 +12,15 @@ import ast
 import hashlib
 import http.client
 import json
+import math
 import os
 import re
 import socket
 import threading
 from typing import Any, Dict, Mapping, Optional, Sequence
 from urllib.parse import urlsplit
+
+from project_guardian.retrieval_vocabulary import normalize_retrieval_term
 
 REQUEST_DEADLINE_SECONDS = 35
 PROMPT_BYTE_CAP = 18000
@@ -248,7 +251,7 @@ _CONTEXT_STOPWORDS = frozenset(
 
 def _context_tokens(text: str) -> list[str]:
     words = re.findall(r"[a-z0-9]+", text.lower())
-    return [w for w in words if w not in _CONTEXT_STOPWORDS and len(w) > 1]
+    return [normalize_retrieval_term(w) for w in words if w not in _CONTEXT_STOPWORDS and len(w) > 1]
 
 
 def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str, str]) -> Dict[str, Any]:
@@ -266,7 +269,10 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
     if not query_tokens:
         raise ChatBoundaryError("query has no content words")
     query_set = set(query_tokens)
-    ranked = []
+    # Current fact revisions and completed document chunks compete for the same
+    # four evidence slots. A generic fact must not hide a specific document.
+    # The retrieved documents are still untrusted data, never verified facts.
+    candidates = []
     for fact in adapter.current_fact_snapshots():
         if not isinstance(fact, dict):
             continue
@@ -274,59 +280,97 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         fact_id = fact.get("fact_id")
         if not isinstance(statement, str) or not isinstance(fact_id, str):
             continue
-        fact_tokens = _context_tokens(statement)
-        if not fact_tokens:
-            continue
-        overlap = query_set.intersection(fact_tokens)
-        if len(overlap) < 2 and not overlap.intersection({t for t in fact_tokens if len(t) >= 6}):
-            continue
-        # Prefer shared rare tokens; do not require query-coverage >= 0.5.
-        score = len(overlap) / float(max(len(query_set), 1))
-        boost = len([t for t in overlap if len(t) >= 6]) * 0.15
-        score = min(1.0, score + boost)
-        if score < 0.22 and len(overlap) < 2:
+        fact_tokens = set(_context_tokens(statement))
+        overlap = query_set & fact_tokens
+        if not overlap:
             continue
         try:
             rev_n = int(fact.get("revision"))
         except (TypeError, ValueError):
             continue
-        ranked.append((score, fact_id, rev_n, statement, sorted(overlap)))
-    ranked.sort(key=lambda row: (-row[0], row[1]))
-    selected = []
-    for score, fact_id, rev_n, statement, matched in ranked:
+        if rev_n < 1:
+            continue
         item = {
             "source_id": fact_id,
             "chunk_id": fact_id,
             "revision": rev_n,
             "source_sha256": hashlib.sha256(statement.encode("utf-8")).hexdigest(),
-            "score": round(score, 6),
-            "matched_tokens": matched,
-            "highlights": [
-                {
-                    "highlight_id": f"{fact_id}:r{rev_n}",
-                    "text": statement,
-                }
-            ],
+            "matched_tokens": sorted(overlap),
+            "highlights": [{
+                "highlight_id": f"{fact_id}:r{rev_n}",
+                "text": statement,
+            }],
         }
-        if len(canonical(selected + [item]).encode("utf-8")) > EVIDENCE_BYTE_CAP:
-            break
-        selected.append(item)
-        if len(selected) == EVIDENCE_ITEM_CAP:
-            break
-    # Derived document chunks remain untrusted evidence, never personal facts.
+        candidates.append(("fact", fact_tokens, item))
+
     from project_guardian.document_ingestion import DocumentLibrary
-    if hasattr(adapter, 'memory'):
+    if hasattr(adapter, "memory"):
         for row in DocumentLibrary(adapter.memory).search(question):
-            item = {
-                'source_id': row['source_id'], 'chunk_id': row['chunk_id'],
-                'revision': 1, 'source_sha256': row['content_sha256'],
-                'score': row['score'], 'filename': row['filename'], 'page': row['page'],
-                'trust': 'untrusted_document',
-                'highlights': [{'highlight_id': row['chunk_id'], 'text': row['text']}],
-            }
-            if len(selected) >= EVIDENCE_ITEM_CAP or len(canonical(selected + [item]).encode('utf-8')) > EVIDENCE_BYTE_CAP:
-                break
-            selected.append(item)
+            if not isinstance(row, dict):
+                continue
+            content = row.get("text")
+            if not isinstance(content, str):
+                continue
+            doc_tokens = set(_context_tokens(content))
+            overlap = query_set & doc_tokens
+            if not overlap:
+                continue
+            try:
+                item = {
+                    "source_id": row["source_id"],
+                    "chunk_id": row["chunk_id"],
+                    "revision": 1,
+                    "source_sha256": row["content_sha256"],
+                    "filename": row["filename"],
+                    "page": row["page"],
+                    "trust": "untrusted_document",
+                    "matched_tokens": sorted(overlap),
+                    "highlights": [{
+                        "highlight_id": row["chunk_id"],
+                        "text": content,
+                    }],
+                }
+            except KeyError:
+                continue
+            candidates.append(("document", doc_tokens, item))
+
+    # Query-term rarity among retrieved candidates separates specific answers
+    # from generic repeated words. No embeddings, cloud calls, or learned model.
+    total = len(candidates)
+    frequencies = {
+        term: sum(term in tokens for _, tokens, _ in candidates)
+        for term in query_set
+    }
+    term_weight = {
+        term: 1.0 + math.log((total + 1) / (frequencies[term] + 1))
+        for term in query_set
+    }
+    denominator = sum(term_weight.values())
+    ranked = []
+    for kind, tokens, item in candidates:
+        overlap = query_set & tokens
+        score = sum(term_weight[t] for t in overlap) / denominator
+        # Require more than a generic single-word hit unless the long term
+        # itself is sufficiently distinctive. Preserve the existing threshold.
+        if len(overlap) < 2 and not any(len(t) >= 6 for t in overlap):
+            continue
+        if score < 0.22 and len(overlap) < 2:
+            continue
+        item["score"] = round(min(1.0, score), 6)
+        # Current durable facts win a genuinely equal relevance score, but
+        # cannot monopolize slots when documents are demonstrably stronger.
+        ranked.append((score, kind != "fact", str(item["source_id"]),
+                       str(item["chunk_id"]), item))
+    ranked.sort(key=lambda row: (-row[0], row[1], row[2], row[3]))
+
+    selected = []
+    for _, _, _, _, item in ranked:
+        if len(selected) >= EVIDENCE_ITEM_CAP:
+            break
+        if len(canonical(selected + [item]).encode("utf-8")) > EVIDENCE_BYTE_CAP:
+            # One oversized candidate must not hide smaller relevant evidence.
+            continue
+        selected.append(item)
     store = {}
     if hasattr(adapter, "store_identity"):
         try:

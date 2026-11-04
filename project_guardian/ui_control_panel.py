@@ -508,7 +508,7 @@ CONTROL_PANEL_TEMPLATE = """
             <div class="card" id="document-drop-zone">
                 <h2>Add to Memory</h2>
                 <p><strong>Durable memory import</strong> (not a chat attachment). Workflow: select → extract/preview → save chunks → search.
-                Supported: TXT, Markdown, text-based PDF, DOCX, CSV · up to 8 MiB each · local only.
+                Supported: TXT, Markdown, text-based PDF, DOCX, CSV · up to 8 MiB source / ~8M extracted characters each · local only. Oversize files are rejected with a clear error (never silently truncated).
                 Raw files are stored separately from extracted text and search chunks. Unchanged reimports do not duplicate.</p>
                 <p style="font-size: 12px; color: var(--text-secondary);">Local OCR is <strong>not</strong> available here. Scanned PDFs with no extractable text fail with a clear error instead of saving empty text.</p>
                 <input type="file" id="document-files" multiple accept=".txt,.md,.pdf,.docx,.csv" aria-label="Choose files to add to memory">
@@ -2010,7 +2010,10 @@ CONTROL_PANEL_TEMPLATE = """
                         if (!response.ok || !data.success) throw new Error(data.error || ('HTTP ' + response.status));
                         status.textContent += data.document.duplicate
                             ? (' Already indexed (' + data.document.source_id + '); no duplicates created.')
-                            : (' Saved · ' + (data.document.chunk_count || 0) + ' chunks · ' + data.document.source_id);
+                            : (' Saved · ' + (data.document.chunk_count || 0) + ' chunks'
+                               + (data.document.char_count ? (' · ' + data.document.char_count + ' chars') : '')
+                               + (data.document.elapsed_ms ? (' · ' + data.document.elapsed_ms + ' ms') : '')
+                               + ' · ' + data.document.source_id);
                     } catch (err) { status.textContent += ' Failed: ' + err.message; }
                     window.refreshDocumentLibrary();
                 }

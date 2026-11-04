@@ -13,7 +13,8 @@ def test_tail_excerpt_keeps_answer_and_hash():
     hit = result["evidence"][0]
     excerpt = hit["highlights"][0]["text"]
     assert "Cedar Pier" in excerpt
-    assert hit["source_sha256"] == hashlib.sha256(excerpt.encode()).hexdigest()
+    assert hit["source_sha256"] == "0" * 64
+    assert hit["highlights"][0]["excerpt_sha256"] == hashlib.sha256(excerpt.encode()).hexdigest()
 
 
 def test_unicode_evidence_and_byte_boundary():
@@ -56,7 +57,6 @@ def test_unsupported_question():
                     "When did Maribel purchase a kayak?")["no_memory_support"]
 
 
-@pytest.mark.xfail(strict=True, reason="Existing selector does not collapse identical evidence from distinct sources")
 def test_duplicate_pressure_records_existing_limitation():
     docs = [_doc(str(i), "Zircon beacon location Cedar Pier") for i in range(8)]
     docs.append(_doc("z_conflict", "Zircon beacon location Basalt Point"))
@@ -70,3 +70,46 @@ def test_semantic_paraphrase_records_lexical_limitation():
                       "When does the doctor visit start?")
     assert any(e["source_id"] == "doc_medical" for e in result["evidence"])
 
+
+
+@pytest.mark.parametrize("prefix,needle,query", [
+    ("背景 " * 6000, "星空 望远镜 保存在 北塔。", "星空 望远镜"),
+    ("Straße " * 2000, "Straße beacon stored at Cedar Pier.", "STRASSE beacon kept"),
+    ("background " * 2000, "Bellford mosaic price was 47 credits.", "Bellford mosaic cost"),
+], ids=["cjk-tail", "casefold-tail", "alias-tail"])
+def test_combined_unicode_alias_tail_excerpt_preserves_real_hash(prefix, needle, query):
+    text = prefix + needle
+    doc = _doc("combined", text)
+    doc["content_sha256"] = hashlib.sha256(text.encode()).hexdigest()
+    before = canonical(doc)
+    result = _context([], [doc], query)
+    hit = result["evidence"][0]
+    excerpt = hit["highlights"][0]
+    assert needle in excerpt["text"]
+    assert hit["source_id"] == doc["source_id"]
+    assert hit["chunk_id"] == doc["chunk_id"]
+    assert excerpt["highlight_id"] == doc["chunk_id"]
+    assert hit["source_sha256"] == doc["content_sha256"]
+    assert excerpt["excerpt_sha256"] == hashlib.sha256(excerpt["text"].encode()).hexdigest()
+    assert len(canonical(result["evidence"]).encode()) <= EVIDENCE_BYTE_CAP
+    assert canonical(doc) == before
+
+
+def test_long_near_identical_contradiction_survives_duplicate_pressure():
+    common = "Zircon beacon maintenance survey certified equipment " * 45
+    a = _doc("a", common + "Zircon beacon is at Cedar Pier.")
+    docs = [dict(a, source_id=f"doc_{i}", chunk_id=f"chunk_{i}") for i in range(8)]
+    b = _doc("z_conflict", common + "Zircon beacon is NOT at Cedar Pier; it is at Basalt Point.")
+    docs.append(b)
+    result = _context([], docs, "Zircon beacon maintenance location")
+    assert "doc_z_conflict" in {e["source_id"] for e in result["evidence"]}
+    assert any("NOT at Cedar Pier" in e["highlights"][0]["text"] for e in result["evidence"])
+
+
+@pytest.mark.parametrize("field,value", [("trust", "DIAGNOSTIC_LOG"),
+                                         ("collection", "Diagnostic_Logs"),
+                                         ("collection", ["diagnostic_logs"])])
+def test_diagnostic_metadata_variants_fail_closed(field, value):
+    bad = _doc("bad", "Zircon beacon location Cedar Pier")
+    bad[field] = value
+    assert _context([], [bad], "Zircon beacon location")["evidence"] == []

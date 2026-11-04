@@ -338,3 +338,54 @@ def test_unverified_generation_cannot_be_recertified_by_normal_memory_add(fixtur
         "Synthetic verified new row", category="fact"
     ) is not None
     assert new_engine().vector_memory.degraded is False
+
+
+def test_failed_vector_add_is_fenced_in_same_process_and_after_restart(fixture, monkeypatch):
+    engine, new_engine, primary, index_path, metadata_path = fixture
+    vector = engine.vector_memory
+    manifest_file = _generation_path(metadata_path)
+    original_manifest = manifest_file.read_bytes()
+    before_json = primary.read_bytes()
+    with monkeypatch.context() as fault:
+        fault.setattr(
+            vector, "_atomic_write_faiss",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("synthetic write denied"))
+        )
+        assert vector.add_memory(
+            "Synthetic new uncommitted beacon", category="fact"
+        ) is None
+    assert vector.degraded is True
+    assert vector.rebuild_pending is True
+    assert vector.search(RETIRED, threshold=0.0) == []
+    assert vector.get_by_id(0) is None
+    assert vector.add_memory("Synthetic next rejected row", category="fact") is None
+    assert primary.read_bytes() == before_json
+    assert manifest_file.read_bytes() == original_manifest
+    restarted = new_engine()
+    assert restarted.vector_memory.degraded is True
+    assert restarted.vector_memory.search(CURRENT, threshold=0.0) == []
+
+
+def test_failed_metadata_add_does_not_claim_valid_index_or_further_writes(fixture, monkeypatch):
+    engine, new_engine, primary, index_path, metadata_path = fixture
+    vector = engine.vector_memory
+    original_bytes = (index_path.read_bytes(), metadata_path.read_bytes())
+    with monkeypatch.context() as fault:
+        fault.setattr(
+            vector, "_atomic_write_json",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("synthetic metadata disk full"))
+        )
+        assert vector.add_memory("Synthetic new uncommitted beacon", category="fact") is None
+    assert vector.degraded is True
+    assert vector.rebuild_pending is True
+    assert vector.search(CURRENT, threshold=0.0) == []
+    assert vector.get_by_id(0) is None
+    assert vector.add_memory("Synthetic further unsafe add", category="fact") is None
+    assert (index_path.read_bytes(), metadata_path.read_bytes()) == original_bytes
+    # Rebuild solely from authoritative JSON repairs the volatile vector state.
+    result = vector.rebuild_from_memories(engine.json_memory.dump_all())
+    assert result["vector_rebuild_success"] is True
+    assert vector.degraded is False
+    assert vector.index.ntotal == len(json.loads(primary.read_text()))
+    assert vector.search(CURRENT, threshold=0.0)
+    assert new_engine().vector_memory.degraded is False

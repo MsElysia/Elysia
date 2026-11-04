@@ -441,18 +441,36 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         # Current durable facts win a genuinely equal relevance score, but
         # cannot monopolize slots when documents are demonstrably stronger.
         ranked.append((score, kind != "fact", str(item["source_id"]),
-                       str(item["chunk_id"]), item))
+                       str(item["chunk_id"]), item, tokens))
     ranked.sort(key=lambda row: (-row[0], row[1], row[2], row[3]))
 
+    # Relevance alone can fill every evidence slot with near-identical question
+    # restatements. Diversify by passage-token overlap after the first strong
+    # hit, without deleting any source, overriding revisions, or merging
+    # conflicting facts. All candidates retain their authoritative identities.
     selected = []
-    for _, _, _, _, item in ranked:
-        if len(selected) >= EVIDENCE_ITEM_CAP:
-            break
+    selected_tokens = []
+    remaining = list(ranked)
+    while remaining and len(selected) < EVIDENCE_ITEM_CAP:
+        best_at = 0
+        best_score = float("-inf")
+        for pos, (relevance, _is_doc, _source, _chunk, _item, tokens) in enumerate(remaining):
+            redundancy = max(
+                (len(tokens & prior) / len(tokens | prior)
+                 for prior in selected_tokens if tokens or prior),
+                default=0.0,
+            )
+            effective = relevance - 0.65 * redundancy
+            # Original rank is the deterministic tie break, preserving
+            # fact-first and source-order behavior for truly equal scores.
+            if effective > best_score + 1e-12:
+                best_at, best_score = pos, effective
+        _, _, _, _, item, tokens = remaining.pop(best_at)
         fitted = _fit_evidence_item(selected, item, query_set)
         if fitted is None:
-            # One oversized/unfittable candidate must not hide smaller evidence.
             continue
         selected.append(fitted)
+        selected_tokens.append(tokens)
     store = {}
     if hasattr(adapter, "store_identity"):
         try:

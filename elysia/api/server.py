@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, Dict, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
 
 from flask import Flask, jsonify, request
 from werkzeug.serving import make_server
@@ -17,6 +18,28 @@ except ImportError:  # pragma: no cover
 from ..events import EventBus
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_proposal_id(proposal_id: str) -> bool:
+    """Accept one path segment. Reject blanks and parent-directory ids."""
+    if not isinstance(proposal_id, str) or proposal_id in {"", ".", ".."}:
+        return False
+    if "/" in proposal_id or "\\" in proposal_id or "\x00" in proposal_id:
+        return False
+    return Path(proposal_id).name == proposal_id
+
+
+def _invalid_proposal_id_response(proposal_id: str):
+    return jsonify({"error": "invalid proposal id", "proposal_id": proposal_id}), 400
+
+
+def _unreadable_proposal_response(proposal_id: str):
+    return (
+        jsonify(
+            {"error": "Proposal metadata is unreadable", "proposal_id": proposal_id}
+        ),
+        500,
+    )
 
 
 class RuntimeAPIServer:
@@ -49,6 +72,91 @@ class RuntimeAPIServer:
         self._server: Optional[Any] = None
         self._running = False
         self._setup_routes()
+
+    def _proposal_root(self) -> Optional[Path]:
+        root = getattr(self._proposal_system, "proposals_root", None)
+        if root is None:
+            return None
+        return Path(root)
+
+    def _metadata_exists(self, proposal_id: str) -> bool:
+        root = self._proposal_root()
+        if root is None:
+            return False
+        try:
+            return (root / proposal_id / "metadata.json").exists()
+        except OSError:
+            return True
+
+    def _read_proposal(self, proposal_id: str):
+        """Return ``(metadata, error_response)``.
+
+        ``metadata`` is a dict when the file is a JSON object. ``error_response``
+        is set for an unsafe id or for metadata that exists but is not a JSON
+        object. Both values are ``None`` when the proposal is absent.
+        """
+        if not _safe_proposal_id(proposal_id):
+            return None, _invalid_proposal_id_response(proposal_id)
+        if not self._proposal_system:
+            return None, (jsonify({"error": "Proposal system not available"}), 503)
+        try:
+            loaded = self._proposal_system.get_proposal(proposal_id)
+        except Exception:
+            logger.exception("Proposal read failed for %s", proposal_id)
+            return None, _unreadable_proposal_response(proposal_id)
+        if isinstance(loaded, dict):
+            return loaded, None
+        if self._metadata_exists(proposal_id):
+            return None, _unreadable_proposal_response(proposal_id)
+        return None, None
+
+    def _list_proposals_by_directory(self, status_filter: Optional[str]) -> List[Dict[str, Any]]:
+        """Read each direct child when ``list_proposals`` cannot return a page."""
+        root = self._proposal_root()
+        if root is None or not root.is_dir():
+            return []
+        found: List[Dict[str, Any]] = []
+        for child in root.iterdir():
+            try:
+                is_dir = child.is_dir()
+            except OSError:
+                continue
+            if not is_dir or not _safe_proposal_id(child.name):
+                continue
+            loaded, error = self._read_proposal(child.name)
+            if error is not None or not isinstance(loaded, dict):
+                continue
+            if status_filter and loaded.get("status") != status_filter:
+                continue
+            found.append(loaded)
+        return sorted(
+            found,
+            key=lambda proposal: proposal.get("created_at")
+            if isinstance(proposal.get("created_at"), str)
+            else "",
+            reverse=True,
+        )
+
+    def _unreadable_proposal_ids(self) -> List[str]:
+        root = self._proposal_root()
+        if root is None or not root.is_dir():
+            return []
+        found: List[str] = []
+        for child in root.iterdir():
+            try:
+                is_dir = child.is_dir()
+            except OSError:
+                continue
+            if not is_dir:
+                continue
+            name = child.name
+            if not _safe_proposal_id(name):
+                found.append(name)
+                continue
+            _loaded, error = self._read_proposal(name)
+            if error is not None and error[1] == 500:
+                found.append(name)
+        return sorted(found)
 
     def _setup_routes(self) -> None:
         @self._app.route("/api/status", methods=["GET"])
@@ -90,7 +198,9 @@ class RuntimeAPIServer:
                 proposal_id = context.split(":", 1)[1]
                 # Handle proposal-specific chat
                 if self._proposal_system:
-                    proposal = self._proposal_system.get_proposal(proposal_id)
+                    proposal, error_response = self._read_proposal(proposal_id)
+                    if error_response is not None:
+                        return error_response
                     if proposal:
                         response = f"Proposal '{proposal.get('title', proposal_id)}' status: {proposal.get('status', 'unknown')}"
                         self._event_bus.emit("api", "chat", {"message": message, "context": context, "response": response})
@@ -127,8 +237,59 @@ class RuntimeAPIServer:
                 return jsonify({"error": "Proposal system not available"}), 503
 
             status_filter = request.args.get("status")
-            proposals = self._proposal_system.list_proposals(status_filter=status_filter)
-            return jsonify({"proposals": proposals, "count": len(proposals)})
+            try:
+                proposals = self._proposal_system.list_proposals(status_filter=status_filter)
+            except Exception as exc:
+                logger.warning(
+                    "Proposal list failed (%s); reading each proposal directory",
+                    exc,
+                )
+                try:
+                    proposals = self._list_proposals_by_directory(status_filter)
+                except Exception:
+                    logger.exception("Proposal directory read failed")
+                    return (
+                        jsonify(
+                            {
+                                "error": "Proposal list failed",
+                                "proposals": [],
+                                "count": 0,
+                                "unreadable": [],
+                            }
+                        ),
+                        500,
+                    )
+            if not isinstance(proposals, list):
+                return (
+                    jsonify(
+                        {
+                            "error": "Proposal list failed",
+                            "proposals": [],
+                            "count": 0,
+                            "unreadable": [],
+                        }
+                    ),
+                    500,
+                )
+            try:
+                unreadable = self._unreadable_proposal_ids()
+            except Exception:
+                logger.exception("Unreadable proposal scan failed")
+                return (
+                    jsonify(
+                        {
+                            "error": "Proposal list failed",
+                            "proposals": [],
+                            "count": 0,
+                            "unreadable": [],
+                        }
+                    ),
+                    500,
+                )
+            readable = [item for item in proposals if isinstance(item, dict)]
+            return jsonify(
+                {"proposals": readable, "count": len(readable), "unreadable": unreadable}
+            )
 
         @self._app.route("/api/proposals/<proposal_id>", methods=["GET"])
         def api_get_proposal(proposal_id: str):
@@ -136,7 +297,9 @@ class RuntimeAPIServer:
             if not self._proposal_system:
                 return jsonify({"error": "Proposal system not available"}), 503
 
-            proposal = self._proposal_system.get_proposal(proposal_id)
+            proposal, error_response = self._read_proposal(proposal_id)
+            if error_response is not None:
+                return error_response
             if not proposal:
                 return jsonify({"error": "Proposal not found"}), 404
 
@@ -147,6 +310,10 @@ class RuntimeAPIServer:
             """Approve a proposal."""
             if not self._proposal_system:
                 return jsonify({"error": "Proposal system not available"}), 503
+
+            _loaded, error_response = self._read_proposal(proposal_id)
+            if error_response is not None:
+                return error_response
 
             data = request.get_json(force=True, silent=True) or {}
             approver = data.get("approver", "api_user")
@@ -161,6 +328,10 @@ class RuntimeAPIServer:
             """Reject a proposal."""
             if not self._proposal_system:
                 return jsonify({"error": "Proposal system not available"}), 503
+
+            _loaded, error_response = self._read_proposal(proposal_id)
+            if error_response is not None:
+                return error_response
 
             data = request.get_json(force=True, silent=True) or {}
             reason = data.get("reason", "No reason provided")
@@ -183,6 +354,10 @@ class RuntimeAPIServer:
 
             if not new_status:
                 return jsonify({"error": "status is required"}), 400
+
+            _loaded, error_response = self._read_proposal(proposal_id)
+            if error_response is not None:
+                return error_response
 
             success, error = self._proposal_system.transition_status(proposal_id, new_status, actor)
             if success:
@@ -216,6 +391,10 @@ class RuntimeAPIServer:
             data = request.get_json(force=True, silent=True) or {}
             dry_run = data.get("dry_run", False)
 
+            _loaded, error_response = self._read_proposal(proposal_id)
+            if error_response is not None:
+                return error_response
+
             try:
                 from ..agents.implementer import ImplementerAgent
                 from pathlib import Path
@@ -241,7 +420,9 @@ class RuntimeAPIServer:
             if not self._proposal_system:
                 return jsonify({"error": "Proposal system not available"}), 503
 
-            proposal = self._proposal_system.get_proposal(proposal_id)
+            proposal, error_response = self._read_proposal(proposal_id)
+            if error_response is not None:
+                return error_response
             if not proposal:
                 return jsonify({"error": "Proposal not found"}), 404
 

@@ -39,8 +39,17 @@ def interactive_shell(host: str = "127.0.0.1", port: int = 8123) -> None:
         if line == "proposals":
             data = _fetch_json(host, port, "/api/proposals")
             proposals = (data or {}).get("proposals", [])
+            if not isinstance(proposals, list):
+                proposals = []
             for prop in proposals[:10]:  # Show first 10
+                if not isinstance(prop, dict):
+                    print(f"{prop}: metadata unreadable")
+                    continue
                 print(f"{prop.get('proposal_id', 'unknown')}: {prop.get('title', 'No title')} [{prop.get('status', 'unknown')}]")
+            unreadable = (data or {}).get("unreadable", [])
+            if isinstance(unreadable, list):
+                for proposal_id in unreadable:
+                    print(f"{proposal_id}: metadata unreadable")
             continue
         if line.startswith("chat "):
             message = line[5:].strip()

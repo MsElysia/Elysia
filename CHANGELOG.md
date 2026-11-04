@@ -497,3 +497,12 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product API — unreadable proposals
+
+- `GET /api/proposals` stays HTTP 200 JSON when one metadata file is a JSON array. Readable proposals are returned, and unreadable ids are listed instead of an HTML 500.
+- `GET /api/proposals/<id>` returns HTTP 500 JSON `Proposal metadata is unreadable` when metadata exists but is not a JSON object. A missing id stays HTTP 404.
+- A proposal id of `..` returns HTTP 400 `invalid proposal id` and is not passed to the proposal store.
+- Approve, reject, status, implement, implementation status, and proposal chat use that same read result. Unreadable metadata is not reported as "Proposal not found" and is not rewritten.
+- The shell `proposals` command prints each unreadable id.
+- Contract: `tests/test_runtime_api_proposals_read.py` (Flask client, live Werkzeug HTTP, real `ProposalSystem` with fictional files, and the shell; no external services).

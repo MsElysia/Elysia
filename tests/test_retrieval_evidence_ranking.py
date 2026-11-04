@@ -199,3 +199,102 @@ def test_question_validation_preserved():
         _context([], [], "and the please")
     with pytest.raises(ChatBoundaryError):
         _context([], [], "x" * 801)
+
+
+def test_oversized_best_source_keeps_cited_excerpt_and_original_provenance():
+    import hashlib
+
+    needle = "The Nahlia chronometer serial NX-441 is sealed in the east annex vault."
+    padding = "background inventory filler note " * 400
+    doc = _doc("huge", padding + needle + " " + padding)
+    original = canonical(doc)
+    result = _context([], [doc], "Where is the Nahlia chronometer serial NX-441 sealed?")
+    assert result["evidence"], "the only strong source must not silently disappear"
+    hit = result["evidence"][0]
+    assert hit["source_id"] == "doc_huge"
+    assert hit["source_sha256"] == "0" * 64, "do not relabel excerpts as original bytes"
+    highlight = hit["highlights"][0]
+    assert "NX-441" in highlight["text"] and "east annex" in highlight["text"]
+    assert highlight["excerpted"] is True
+    assert highlight["original_chars"] == len(doc["text"])
+    assert highlight["excerpt_sha256"] == hashlib.sha256(
+        highlight["text"].encode("utf-8")
+    ).hexdigest()
+    assert len(canonical(result["evidence"]).encode("utf-8")) <= EVIDENCE_BYTE_CAP
+    assert canonical(doc) == original
+
+
+def test_buried_tail_passage_keeps_relevant_source_without_false_hash():
+    text = ("routine telemetry for passive observers\n" * 230)
+    text += "The Kestrel relay codebook is filed on shelf R-17 in Harbor Stack."
+    doc = _doc("buried", text)
+    result = _context([], [doc], "Where is the Kestrel relay codebook filed?")
+    assert result["evidence"][0]["source_id"] == "doc_buried"
+    assert "shelf R-17" in result["evidence"][0]["highlights"][0]["text"]
+    assert result["evidence"][0]["source_sha256"] == doc["content_sha256"]
+
+
+def test_oversized_fact_preserves_authoritative_statement_hash():
+    import hashlib
+
+    fact = _fact(
+        "fact_long",
+        "Veridia compass vault " + "irrelevant inventory filler " * 1200
+        + "The Veridia compass is stored at the eastern watchtower.",
+    )
+    result = _context([fact], [], "Where is the Veridia compass stored?")
+    hit = result["evidence"][0]
+    assert hit["source_sha256"] == hashlib.sha256(
+        fact["statement"].encode("utf-8")
+    ).hexdigest()
+    assert "eastern watchtower" in hit["highlights"][0]["text"]
+    assert hit["highlights"][0]["excerpted"] is True
+
+
+def test_diagnostic_and_malformed_document_rows_are_not_evidence():
+    diag = _doc("diag", "Veridia compass stored at north tower diagnostic traceback.")
+    diag["trust"], diag["collection"] = "diagnostic_log", "diagnostic_logs"
+    malformed = _doc("bad", "Veridia compass stored at north tower.")
+    malformed["trust"] = ["diagnostic_log"]
+    casefold_diag = _doc("case", "Veridia compass stored at north tower.")
+    casefold_diag["collection"] = "Diagnostic_Logs"
+    safe = _doc("safe", "The Veridia compass is stored at the eastern watchtower.")
+    result = _context([], [diag, malformed, casefold_diag, safe],
+                      "Where is the Veridia compass stored?")
+    assert [x["source_id"] for x in result["evidence"]] == ["doc_safe"]
+
+
+def test_unicode_heavy_evidence_stays_within_utf8_byte_cap():
+    doc = _doc("unicode", "Veridia compass vault " + "☃" * 9000
+               + " The Veridia compass is at the eastern watchtower.")
+    result = _context([], [doc], "Where is the Veridia compass?")
+    assert result["evidence"]
+    assert len(canonical(result["evidence"]).encode("utf-8")) <= EVIDENCE_BYTE_CAP
+    assert result["evidence"][0]["source_sha256"] == doc["content_sha256"]
+
+
+@pytest.mark.parametrize("subject", ["Nahlia beacon", "Torvyn telescope", "Veridia atlas"])
+def test_repeated_question_only_memories_cannot_crowd_out_document_answer(subject):
+    """Four question echoes are not four independent answers to a location query."""
+    question = f"Where is the {subject} stored?"
+    facts = [
+        _fact(f"fact_pending_{i}",
+              f"Where is the {subject} stored? Answer still pending confirmation, note {i}.")
+        for i in range(5)
+    ]
+    document = _doc("located", f"The {subject} is located at Cedar Pier.")
+    first = _context(facts, [document], question)
+    second = _context(facts, [document], question)
+    assert "doc_located" in [e["source_id"] for e in first["evidence"]]
+    assert len(first["evidence"]) <= EVIDENCE_ITEM_CAP
+    assert first["evidence"] == second["evidence"]
+
+
+def test_distinct_conflicting_facts_are_not_deduplicated_by_similarity():
+    facts = [
+        _fact("fact_east", "The Nahlia beacon is located at Cedar Pier."),
+        _fact("fact_west", "The Nahlia beacon is located at Willow Cove."),
+    ]
+    result = _context(facts, [], "Where is the Nahlia beacon located?")
+    ids = {item["source_id"] for item in result["evidence"]}
+    assert {"fact_east", "fact_west"}.issubset(ids)

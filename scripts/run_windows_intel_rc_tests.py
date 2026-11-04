@@ -11,6 +11,9 @@ import subprocess
 import sys
 
 RC_REQUIRED = [
+    "tests/test_retrieval_vocabulary.py",
+    "tests/test_memory_cleanup_integrity.py",
+    "tests/test_enhanced_memory_cleanup.py",
     "tests/test_retrieval_independent_review.py",
     "tests/test_retrieval_evidence_ranking.py",
     "tests/test_memory_integrity_windows.py",

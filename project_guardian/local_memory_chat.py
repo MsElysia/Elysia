@@ -254,6 +254,73 @@ def _context_tokens(text: str) -> list[str]:
     return [normalize_retrieval_term(w) for w in words if w not in _CONTEXT_STOPWORDS and len(w) > 1]
 
 
+def _bounded_relevant_excerpt(
+    text: str, query_tokens: set[str], *, max_chars: int = 900
+) -> str:
+    """Keep a bounded, query-relevant window of an oversized source."""
+    if not isinstance(text, str) or not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    final_start = len(text) - max_chars
+    step = max(80, max_chars // 6)
+    starts = list(range(0, final_start + 1, step))
+    if starts[-1] != final_start:
+        starts.append(final_start)
+    best_start, best_hits = 0, -1
+    for start in starts:
+        window_terms = set(_context_tokens(text[start : start + max_chars]))
+        hits = len(window_terms & query_tokens)
+        if hits > best_hits:
+            best_start, best_hits = start, hits
+        if best_hits == len(query_tokens):
+            break
+    excerpt = text[best_start : best_start + max_chars].strip()
+    if not excerpt:
+        excerpt = text[:max_chars]
+    return (
+        ("…" if best_start else "")
+        + excerpt
+        + ("…" if best_start + max_chars < len(text) else "")
+    )
+
+
+def _fit_evidence_item(
+    selected: list[dict], item: dict, query_tokens: set[str]
+) -> dict | None:
+    """Fit a source without changing its original identity or source hash."""
+    if len(canonical(selected + [item]).encode("utf-8")) <= EVIDENCE_BYTE_CAP:
+        return item
+    highlights = item.get("highlights")
+    if (
+        not isinstance(highlights, list)
+        or len(highlights) != 1
+        or not isinstance(highlights[0], dict)
+    ):
+        return None
+    original = highlights[0].get("text")
+    if not isinstance(original, str) or not original:
+        return None
+    for max_chars in (900, 600, 400, 240):
+        excerpt = _bounded_relevant_excerpt(
+            original, query_tokens, max_chars=max_chars
+        )
+        highlight = dict(highlights[0])
+        highlight.update({
+            "text": excerpt,
+            "excerpted": True,
+            "original_chars": len(original),
+            "excerpt_chars": len(excerpt),
+            # Derived presentation hash, never a replacement for the source hash.
+            "excerpt_sha256": hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+        })
+        shrunk = dict(item)
+        shrunk["highlights"] = [highlight]
+        if len(canonical(selected + [shrunk]).encode("utf-8")) <= EVIDENCE_BYTE_CAP:
+            return shrunk
+    return None
+
+
 def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str, str]) -> Dict[str, Any]:
     """Bounded read-only context from the pilot's RestrictedRuntimeAdapter / MemoryCore.
 
@@ -307,6 +374,20 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
     if hasattr(adapter, "memory"):
         for row in DocumentLibrary(adapter.memory).search(question):
             if not isinstance(row, dict):
+                continue
+            # Diagnostic stores are not personal facts or document evidence.
+            trust, collection = row.get("trust"), row.get("collection")
+            if (
+                (trust is not None and not isinstance(trust, str))
+                or (collection is not None and not isinstance(collection, str))
+            ):
+                continue
+            if (
+                (isinstance(trust, str)
+                 and trust.casefold() in {"diagnostic", "diagnostic_log"})
+                or (isinstance(collection, str)
+                    and collection.casefold().startswith("diagnostic"))
+            ):
                 continue
             content = row.get("text")
             if not isinstance(content, str):
@@ -367,10 +448,11 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
     for _, _, _, _, item in ranked:
         if len(selected) >= EVIDENCE_ITEM_CAP:
             break
-        if len(canonical(selected + [item]).encode("utf-8")) > EVIDENCE_BYTE_CAP:
-            # One oversized candidate must not hide smaller relevant evidence.
+        fitted = _fit_evidence_item(selected, item, query_set)
+        if fitted is None:
+            # One oversized/unfittable candidate must not hide smaller evidence.
             continue
-        selected.append(item)
+        selected.append(fitted)
     store = {}
     if hasattr(adapter, "store_identity"):
         try:

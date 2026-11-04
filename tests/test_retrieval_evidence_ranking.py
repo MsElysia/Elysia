@@ -194,3 +194,30 @@ def test_unicode_heavy_evidence_stays_within_utf8_byte_cap():
     assert result["evidence"]
     assert len(canonical(result["evidence"]).encode("utf-8")) <= EVIDENCE_BYTE_CAP
     assert result["evidence"][0]["source_sha256"] == doc["content_sha256"]
+
+
+@pytest.mark.parametrize("subject", ["Nahlia beacon", "Torvyn telescope", "Veridia atlas"])
+def test_repeated_question_only_memories_cannot_crowd_out_document_answer(subject):
+    """Four question echoes are not four independent answers to a location query."""
+    question = f"Where is the {subject} stored?"
+    facts = [
+        _fact(f"fact_pending_{i}",
+              f"Where is the {subject} stored? Answer still pending confirmation, note {i}.")
+        for i in range(5)
+    ]
+    document = _doc("located", f"The {subject} is located at Cedar Pier.")
+    first = _context(facts, [document], question)
+    second = _context(facts, [document], question)
+    assert "doc_located" in [e["source_id"] for e in first["evidence"]]
+    assert len(first["evidence"]) <= EVIDENCE_ITEM_CAP
+    assert first["evidence"] == second["evidence"]
+
+
+def test_distinct_conflicting_facts_are_not_deduplicated_by_similarity():
+    facts = [
+        _fact("fact_east", "The Nahlia beacon is located at Cedar Pier."),
+        _fact("fact_west", "The Nahlia beacon is located at Willow Cove."),
+    ]
+    result = _context(facts, [], "Where is the Nahlia beacon located?")
+    ids = {item["source_id"] for item in result["evidence"]}
+    assert {"fact_east", "fact_west"}.issubset(ids)

@@ -15,6 +15,23 @@ from ..events import EventBus
 logger = logging.getLogger(__name__)
 
 
+def _regular_proposal_dir(proposal_path: Path) -> Optional[Path]:
+    """Return the proposal folder only when the leaf is not a symlink.
+
+    A planted directory symlink would otherwise let _load_metadata/_save_metadata
+    treat an outside folder as an in-root proposal when that folder's
+    metadata.json is a regular file. This does not confine proposal_id path
+    components and does not change list/get or watcher/validator behavior.
+    """
+    path = Path(proposal_path)
+    try:
+        if path.is_symlink():
+            return None
+    except OSError:
+        return None
+    return path
+
+
 class ProposalValidator:
     """Validates proposal structure and metadata schema."""
 
@@ -86,7 +103,9 @@ class ProposalLifecycleManager:
 
     def _load_metadata(self, proposal_id: str) -> Optional[Dict[str, Any]]:
         """Load metadata for a proposal."""
-        proposal_path = self.proposals_root / proposal_id
+        proposal_path = _regular_proposal_dir(self.proposals_root / proposal_id)
+        if proposal_path is None:
+            return None
         metadata_file = proposal_path / "metadata.json"
         if not metadata_file.exists():
             return None
@@ -99,7 +118,9 @@ class ProposalLifecycleManager:
 
     def _save_metadata(self, proposal_id: str, metadata: Dict[str, Any]) -> bool:
         """Save metadata for a proposal."""
-        proposal_path = self.proposals_root / proposal_id
+        proposal_path = _regular_proposal_dir(self.proposals_root / proposal_id)
+        if proposal_path is None:
+            return False
         proposal_path.mkdir(parents=True, exist_ok=True)
         metadata_file = proposal_path / "metadata.json"
 

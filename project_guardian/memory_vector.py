@@ -7,6 +7,8 @@ import json
 import logging
 import threading
 import tempfile
+import hashlib
+import uuid
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 import numpy as np
@@ -18,14 +20,6 @@ except ImportError:
     FAISS_AVAILABLE = False
     logger = logging.getLogger(__name__)
     logger.warning("FAISS not available. Install with: pip install faiss-cpu")
-
-try:
-    import openai
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("OpenAI not available. Embeddings will not work without API key.")
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -46,7 +40,7 @@ class VectorMemory:
     
     def __init__(
         self,
-        vector_dim: int = 1536,  # OpenAI ada-002 dimension
+        vector_dim: int = 1536,  # Preserve the legacy persisted index dimension.
         index_path: str = "memory/vectors/index.faiss",
         metadata_path: str = "memory/vectors/metadata.json",
         embedding_model: str = "text-embedding-ada-002",
@@ -55,11 +49,14 @@ class VectorMemory:
         self.vector_dim = vector_dim
         self.index_path = index_path
         self.metadata_path = metadata_path
+        # A generation manifest is committed LAST, after the real FAISS index
+        # and metadata bytes. SHA-256 binds files even if row counts match.
+        self.generation_path = metadata_path + ".generation.json"
         self.embedding_model = embedding_model
+        self.embedding_status = {"available": False, "provider": None, "reason": "not_attempted"}
         self._sentence_transformer_model = None  # Lazy-loaded for sentence-transformers
         # After load/encode failure, do not retry ST for every embed in this process
         self._st_local_model_broken: bool = False
-        self._st_load_failure_logged: bool = False
         # Degraded / rebuild state for cleanup
         self.degraded: bool = False
         self.rebuild_pending: bool = False
@@ -185,11 +182,15 @@ class VectorMemory:
             if not text:
                 continue
             try:
+                from .memory_noise import is_embedding_entirely_skipped, is_low_value_memory_text
+
+                if is_embedding_entirely_skipped(text) or is_low_value_memory_text(
+                    text, min_chars_for_substantive=20
+                ):
+                    continue
                 emb = self.generate_embedding(text)
-                if emb is None:
-                    continue
-                if emb.shape[0] != self.vector_dim:
-                    continue
+                if emb is None or emb.shape != (self.vector_dim,) or not np.isfinite(emb).all():
+                    raise ValueError("Required local embedding unavailable or invalid")
                 emb = emb.reshape(1, -1)
                 new_index.add(emb)
                 new_metadata.append({
@@ -201,14 +202,32 @@ class VectorMemory:
                     "metadata": mem.get("metadata", {}),
                 })
             except Exception:
-                # Skip problematic entries; continue with others
-                continue
+                # Never publish a partial/empty index as a successful rebuild
+                # when required local embeddings could not be produced.
+                self.degraded = True
+                self.rebuild_pending = True
+                self._set_rebuild_status("failed", "embedding_unavailable")
+                return {
+                    "metadata_before": metadata_before, "metadata_after": metadata_before,
+                    "faiss_before": faiss_before, "faiss_after": faiss_before,
+                    "vector_rebuild_status": "failed", "vector_rebuild_success": False,
+                    "error": "Required local embedding unavailable or invalid",
+                }
 
         try:
             # Persist using fsync-backed atomic writes to reduce torn-file risk.
             self._atomic_write_json(self.metadata_path, new_metadata)
             if FAISS_AVAILABLE:
                 self._atomic_write_faiss(self.index_path, new_index)
+                # Commit checksum generation using the NEW index size before
+                # publishing it in RAM. Existing manifest is never rewritten
+                # until metadata + index bytes have both committed.
+                previous_index, previous_metadata = self.index, self.metadata
+                self.index, self.metadata = new_index, new_metadata
+                try:
+                    self._commit_generation()
+                finally:
+                    self.index, self.metadata = previous_index, previous_metadata
             self.index = new_index
             self.metadata = new_metadata
             self.degraded = False
@@ -316,9 +335,101 @@ class VectorMemory:
                 self.rebuild_pending = True
                 self._set_rebuild_status("failed", "metadata_corrupt_or_unreadable", str(e))
                 # Persist an empty metadata list so next startup can proceed cleanly.
+                # Keep the unreadable primary bytes preserved in the
+                # quarantine file. Do not silently certify replacement metadata.
                 self._save_metadata()
         else:
             self.metadata = []
+
+        # Metadata and FAISS index commit as two separate files. A crash after
+        # metadata replacement but before index replacement can load a mixed
+        # generation on restart. Never make that pair queryable as trustworthy.
+        if FAISS_AVAILABLE and self.index is not None:
+            try:
+                index_rows = int(self.index.ntotal)
+                metadata_rows = len(self.metadata)
+                if index_rows != metadata_rows:
+                    reason = f"FAISS/metadata row-count mismatch: {index_rows}!={metadata_rows}"
+                    self.degraded = True
+                    self.rebuild_pending = True
+                    self._set_rebuild_status("failed", "index_metadata_mismatch", reason)
+                    logger.error("VectorMemory: %s; semantic reads fenced", reason)
+            except Exception as exc:
+                self.degraded = True
+                self.rebuild_pending = True
+                self._set_rebuild_status("failed", "index_metadata_unverifiable", str(exc))
+                logger.error("VectorMemory index/metadata validation failed: %s", exc)
+
+        # Row counts alone cannot detect different generations of equal size.
+        self._verify_generation()
+
+    @staticmethod
+    def _file_sha256(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _commit_generation(self) -> None:
+        """Publish the validated file pair's identity ONLY after both saves."""
+        if not FAISS_AVAILABLE or self.index is None:
+            return
+        if int(self.index.ntotal) != len(self.metadata):
+            raise RuntimeError("Cannot commit FAISS generation with mismatched rows")
+        self._atomic_write_json(self.generation_path, {
+            "schema": "elysia.vector_generation.v1",
+            "generation_id": uuid.uuid4().hex,
+            "vector_dim": self.vector_dim,
+            "count": int(self.index.ntotal),
+            "index_sha256": self._file_sha256(self.index_path),
+            "metadata_sha256": self._file_sha256(self.metadata_path),
+        })
+
+    def _verify_generation(self) -> None:
+        """Fail closed for incomplete, legacy or cross-generation persisted pairs.
+
+        Existing unmanifested files are preserved, not stamped as verified;
+        explicit rebuilding from authoritative JSON creates a new generation.
+        """
+        if not FAISS_AVAILABLE or self.index is None:
+            return
+        index_present = os.path.isfile(self.index_path)
+        metadata_present = os.path.isfile(self.metadata_path)
+        generation_present = os.path.isfile(self.generation_path)
+        if not (index_present or metadata_present or generation_present):
+            return  # Never persisted: legitimate fresh empty store.
+        try:
+            if not (index_present and metadata_present and generation_present):
+                raise ValueError("Unverified legacy/incomplete vector generation")
+            with open(self.generation_path, "r", encoding="utf-8") as source:
+                generation = json.load(source)
+            if not isinstance(generation, dict):
+                raise ValueError("Invalid vector generation record")
+            if generation.get("schema") != "elysia.vector_generation.v1":
+                raise ValueError("Unknown vector generation schema")
+            generation_id = generation.get("generation_id")
+            if not isinstance(generation_id, str) or len(generation_id) < 16:
+                raise ValueError("Invalid vector generation identifier")
+            if type(generation.get("vector_dim")) is not int or generation["vector_dim"] != self.vector_dim:
+                raise ValueError("Vector generation dimension mismatch")
+            count = generation.get("count")
+            if type(count) is not int or count != int(self.index.ntotal) or count != len(self.metadata):
+                raise ValueError("Vector generation count mismatch")
+            for key, file_path in (
+                ("index_sha256", self.index_path),
+                ("metadata_sha256", self.metadata_path),
+            ):
+                expected = generation.get(key)
+                if not isinstance(expected, str) or len(expected) != 64:
+                    raise ValueError("Missing vector generation checksum")
+                if self._file_sha256(file_path) != expected:
+                    raise ValueError("Vector generation checksum mismatch: " + key)
+        except Exception as exc:
+            self.degraded = True
+            self.rebuild_pending = True
+            self._set_rebuild_status("failed", "vector_generation_unverified", str(exc))
+            logger.error("VectorMemory unverified persisted generation; semantic reads fenced: %s", exc)
 
     def _atomic_write_json(self, path: str, payload: Any) -> None:
         """Atomically write JSON with flush+fsync to reduce corruption risk."""
@@ -398,156 +509,62 @@ class VectorMemory:
         self._atomic_write_json(self.metadata_path, self.metadata)
         if FAISS_AVAILABLE and self.index is not None:
             self._atomic_write_faiss(self.index_path, self.index)
+            self._commit_generation()
                 
+    def _embedding_unavailable(self, reason: str) -> None:
+        self.embedding_status = {"available": False, "provider": None, "reason": reason}
+        return None
+
     def generate_embedding(self, text: str) -> Optional[np.ndarray]:
-        """
-        Generate embedding for text using multi-provider fallback chain.
-        
-        Fallback order:
-        1. OpenAI API (if API key available)
-        2. Sentence-transformers (local, no API needed)
-        3. Hash-based fallback (last resort, degraded quality)
-        
-        Args:
-            text: Text to embed
-            
-        Returns:
-            Embedding vector or None if all providers fail
+        """Use cached local models only; environment credentials grant no authority.
+
+        This path has no authorized cloud transport and therefore never creates
+        a cloud client. Do not add an environment/config bypass here. A missing
+        local provider is unavailable, not a successful hash/semantic fallback.
         """
         try:
             from .memory_noise import is_embedding_entirely_skipped, is_low_value_memory_text
+            from .startup_runtime_guard import defer_sentence_transformers_for_embed
 
-            if is_embedding_entirely_skipped(text):
-                logger.debug("Embedding: skipped (non-vectorizable bookkeeping fragment)")
-                return None
-            if is_low_value_memory_text(text, min_chars_for_substantive=20):
-                logger.debug("Embedding: low-value text skipped OpenAI/ST; using hash vector")
-                return self._generate_hash_embedding(text)
+            if is_embedding_entirely_skipped(text) or is_low_value_memory_text(
+                text, min_chars_for_substantive=20
+            ):
+                return self._embedding_unavailable("non_vectorizable_text")
+            if defer_sentence_transformers_for_embed():
+                return self._embedding_unavailable("local_model_deferred")
         except Exception:
-            pass
+            return self._embedding_unavailable("local_policy_unavailable")
+        if not HAS_SENTENCE_TRANSFORMERS:
+            return self._embedding_unavailable("local_dependency_unavailable")
+        if self._st_local_model_broken:
+            return self._embedding_unavailable("local_model_unavailable")
         try:
-            from .openai_degraded import note_openai_transport_failure, skip_openai_embeddings
-        except Exception:
-            def skip_openai_embeddings() -> bool:
-                return False
-
-            def note_openai_transport_failure(_e, _c=""):
-                return
-
-        # Try OpenAI API first (highest quality)
-        if OPENAI_AVAILABLE:
-            try:
-                api_key = os.getenv("OPENAI_API_KEY")
-                if api_key and not skip_openai_embeddings():
-                    client = openai.OpenAI(api_key=api_key)
-                    response = client.embeddings.create(
-                        model=self.embedding_model,
-                        input=text
-                    )
-                    embedding = np.array(response.data[0].embedding, dtype=np.float32)
-                    logger.debug(f"Generated embedding using OpenAI API")
-                    try:
-                        from .openai_degraded import note_openai_embedding_success_clear_streak
-
-                        note_openai_embedding_success_clear_streak()
-                    except Exception:
-                        pass
-                    return embedding
-            except Exception as e:
-                note_openai_transport_failure(e, "vector_openai_embed")
-                logger.debug("OpenAI embedding failed (fallback=reason:openai_error): %s", e)
-        
-        # Fallback to sentence-transformers (local, no API needed)
-        if HAS_SENTENCE_TRANSFORMERS and not self._st_local_model_broken:
-            try:
-                try:
-                    from .startup_runtime_guard import defer_sentence_transformers_for_embed
-
-                    if defer_sentence_transformers_for_embed():
-                        return self._generate_hash_embedding(text)
-                except Exception:
-                    pass
-                # Lazy-load model (only load once; deferred until after boot / first real need)
-                if self._sentence_transformer_model is None:
-                    # Use a lightweight model that doesn't require GPU
-                    logger.info("Loading sentence-transformers model for embedding fallback...")
-                    try:
-                        self._sentence_transformer_model = SentenceTransformer('all-MiniLM-L6-v2')  # 384 dimensions
-                    except Exception as load_e:
-                        self._st_local_model_broken = True
-                        if not self._st_load_failure_logged:
-                            self._st_load_failure_logged = True
-                            logger.warning(
-                                "Sentence-transformers load failed; local ST disabled for this process: %s",
-                                load_e,
-                            )
-                        return self._generate_hash_embedding(text)
-
-                model = self._sentence_transformer_model
-                try:
-                    embedding = model.encode(text)
-                except Exception as enc_e:
-                    self._st_local_model_broken = True
-                    if not self._st_load_failure_logged:
-                        self._st_load_failure_logged = True
-                        logger.warning(
-                            "Sentence-transformers encode failed; local ST disabled for this process: %s",
-                            enc_e,
-                        )
-                    else:
-                        logger.debug("ST encode skipped (local model disabled): %s", enc_e)
-                    return self._generate_hash_embedding(text)
-                # Resize to match expected dimension if needed
-                if len(embedding) != self.vector_dim:
-                    # Simple truncation or padding (not ideal, but works)
-                    if len(embedding) > self.vector_dim:
-                        embedding = embedding[:self.vector_dim]
-                    else:
-                        padding = np.zeros(self.vector_dim - len(embedding))
-                        embedding = np.concatenate([embedding, padding])
-                embedding = np.array(embedding, dtype=np.float32)
-                logger.info("Embedding fallback: method=sentence_transformers reason=openai_failed_or_unavailable")
-                return embedding
-            except Exception as e:
-                self._st_local_model_broken = True
-                if not self._st_load_failure_logged:
-                    self._st_load_failure_logged = True
-                    logger.warning(
-                        "Sentence-transformers path failed; local ST disabled for this process: %s",
-                        e,
-                    )
-                logger.debug("Sentence-transformers failed (fallback=reason:local_model_error): %s", e)
-        
-        # Last resort: hash-based fallback (degraded quality, but always works)
-        try:
-            embedding = self._generate_hash_embedding(text)
-            try:
-                from .memory_noise import is_low_value_memory_text
-
-                _quiet = is_low_value_memory_text(text, min_chars_for_substantive=20)
-            except Exception:
-                _quiet = False
-            _sample = (text[:50] + "...") if len(text) > 50 else text
-            if _quiet or self._st_local_model_broken:
-                logger.debug(
-                    "Embedding fallback: method=hash_based reason=degraded_or_low_value text_sample=%s",
-                    _sample,
+            if self._sentence_transformer_model is None:
+                # Unsupported offline-only options fail closed; never retry a
+                # legacy loader without these constraints or install packages.
+                self._sentence_transformer_model = SentenceTransformer(
+                    "all-MiniLM-L6-v2", local_files_only=True, trust_remote_code=False
                 )
-            else:
-                logger.warning(
-                    "Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=%s",
-                    _sample,
-                )
+            embedding = np.asarray(self._sentence_transformer_model.encode(text), dtype=np.float32)
+            if embedding.ndim != 1 or not embedding.size or not np.isfinite(embedding).all():
+                raise ValueError("Invalid local embedding")
+            # Retain legacy dimension adaptation for existing local FAISS stores.
+            if len(embedding) > self.vector_dim:
+                embedding = embedding[:self.vector_dim]
+            elif len(embedding) < self.vector_dim:
+                embedding = np.pad(embedding, (0, self.vector_dim - len(embedding)))
+            self.embedding_status = {
+                "available": True, "provider": "sentence_transformers", "reason": "local_model_ready"
+            }
             return embedding
-        except Exception as e:
-            logger.error(f"All embedding providers failed, including hash fallback: {e}")
-            return None
-    
+        except Exception:
+            self._st_local_model_broken = True
+            logger.warning("Cached local embedding unavailable; automatic fallback disabled")
+            return self._embedding_unavailable("local_model_unavailable")
+
     def _generate_hash_embedding(self, text: str) -> np.ndarray:
         """
-        Generate a simple hash-based embedding as last resort.
-        
-        This provides degraded quality but ensures embeddings are always available.
+        Explicit deterministic hash utility, never an automatic semantic fallback.
         
         Args:
             text: Text to embed
@@ -616,6 +633,12 @@ class VectorMemory:
             pass
 
         self.load_if_needed()
+        # An ordinary write cannot repair or certify an unverified legacy,
+        # corrupt, or interrupted index. Only an explicit rebuild using
+        # authoritative JSON may create a new trusted generation.
+        if self.degraded or self.rebuild_pending:
+            logger.warning("Vector add refused: generation unverified; rebuild required")
+            return None
         if self.index is None:
             logger.warning("FAISS index not available")
             return None
@@ -666,7 +689,15 @@ class VectorMemory:
             return memory_id
             
         except Exception as e:
-            logger.error(f"Failed to add memory to index: {e}")
+            # FAISS add/metadata append may already have modified live memory,
+            # and metadata/index/manifest can commit separately. Do not expose
+            # that unverified generation or allow another ordinary add to
+            # silently certify it. Only rebuild from authoritative JSON clears
+            # this quarantine.
+            self.degraded = True
+            self.rebuild_pending = True
+            self._set_rebuild_status("failed", "vector_add_uncommitted", str(e))
+            logger.error("Vector add failed; uncommitted vector generation fenced: %s", e)
             return None
             
     def search(
@@ -697,6 +728,10 @@ class VectorMemory:
             pass
 
         self.load_if_needed()
+        # A partially committed or corrupt vector generation is not a search
+        # source, even for callers bypassing EnhancedMemoryCore's JSON filter.
+        if self.degraded or self.rebuild_pending:
+            return []
         if self.index is None or len(self.metadata) == 0:
             return []
             
@@ -750,14 +785,18 @@ class VectorMemory:
     def get_by_id(self, memory_id: int) -> Optional[Dict[str, Any]]:
         """Get memory by ID."""
         self.load_if_needed()
+        if self.degraded or self.rebuild_pending:
+            return None
         if 0 <= memory_id < len(self.metadata):
             return self.metadata[memory_id].copy()
         return None
         
     def get_stats(self) -> Dict[str, Any]:
         """Get vector memory statistics."""
+        embedding_state = {"embedding_status": dict(self.embedding_status)}
         if not self.loaded and FAISS_AVAILABLE and self._lazy:
             return {
+                **embedding_state,
                 "vector_memory_enabled": True,
                 "vector_loaded": False,
                 "total_memories": 0,
@@ -765,6 +804,7 @@ class VectorMemory:
             }
         if self.index is None:
             return {
+                **embedding_state,
                 "vector_memory_enabled": False,
                 "vector_loaded": True,
                 "total_memories": 0,
@@ -777,6 +817,7 @@ class VectorMemory:
             categories[cat] = categories.get(cat, 0) + 1
             
         return {
+            **embedding_state,
             "vector_memory_enabled": True,
             "vector_loaded": True,
             "total_memories": len(self.metadata),
@@ -787,14 +828,18 @@ class VectorMemory:
         }
         
     def clear(self):
-        """Clear all vector memories."""
+        """Clear vector memory and commit a matching empty generation."""
         self.load_if_needed()
-        if FAISS_AVAILABLE and self.index is not None:
-            # Create new empty index
-            self.index = faiss.IndexFlatL2(self.vector_dim)
+        self.index = faiss.IndexFlatL2(self.vector_dim) if FAISS_AVAILABLE else None
         self.metadata = []
-        self._save_metadata()
-        self._save_index()
+        try:
+            self._persist_vector_state()
+        except Exception:
+            self.degraded = True
+            self.rebuild_pending = True
+            raise
+        self.degraded = False
+        self.rebuild_pending = False
         logger.info("Vector memory cleared")
 
 
@@ -860,13 +905,16 @@ class EnhancedMemoryCore:
         if self.vector_memory:
             if load_if_needed:
                 self.vector_memory.load_if_needed()
+            st["embedding_status"] = dict(self.vector_memory.embedding_status)
             st["vector_loaded"] = bool(self.vector_memory.loaded)
             if self.vector_memory.loaded and self.vector_memory.index is not None:
                 try:
                     st["vector_memory_count"] = int(self.vector_memory.index.ntotal)
                 except Exception:
                     st["vector_memory_count"] = len(self.vector_memory.metadata or [])
-                st["vector_count_authoritative"] = True
+                st["vector_count_authoritative"] = not (
+                    self.vector_memory.degraded or self.vector_memory.rebuild_pending
+                )
             else:
                 st["vector_memory_count"] = None
                 st["vector_count_authoritative"] = False
@@ -913,18 +961,34 @@ class EnhancedMemoryCore:
                 return
         except Exception:
             pass
-        # Store in JSON (existing functionality)
-        self.json_memory.remember(thought, category, priority)
-        
-        # Store in vector memory if available
-        if self.vector_memory:
-            self.vector_memory.add_memory(
-                text=thought,
-                category=category,
-                priority=priority,
-                metadata=metadata
-            )
-            
+        primary = self.json_memory
+        primary.load_if_needed()
+        # Keep the public primary writer and its suppression/security gates.
+        # Serialize receipt correlation and secondary publication with writes
+        # and cleanup on this MemoryCore instance; never infer success from a
+        # matching old row, a timestamp, count, or remember()'s None return.
+        with primary._save_file_lock:
+            before = primary._last_remember_receipt
+            primary.remember(thought, category, priority, metadata=metadata)
+            receipt = primary._last_remember_receipt
+            if receipt is None or receipt is before:
+                return
+            entry, path, checksum = receipt
+            expected = json.loads(json.dumps({
+                "thought": thought, "category": category,
+                "priority": priority, "metadata": metadata or {},
+            }))
+            if any(entry.get(key) != value for key, value in expected.items()):
+                logger.warning("Enhanced memory primary receipt does not match intended write")
+                return
+            if os.path.abspath(primary.filepath) != path or VectorMemory._file_sha256(path) != checksum:
+                raise RuntimeError("Enhanced memory primary commit no longer verifiable")
+            if self.vector_memory:
+                self.vector_memory.add_memory(
+                    text=entry["thought"], category=entry["category"],
+                    priority=entry["priority"], metadata=entry["metadata"],
+                )
+
     def semantic_search(
         self,
         query: str,
@@ -945,12 +1009,32 @@ class EnhancedMemoryCore:
             List of similar memories
         """
         self.load_if_needed()
+        # A vector hit is not proof that its memory remains current. Filter
+        # against authoritative JSON even after restart or an interrupted
+        # derived-index rebuild; do not return hits from corrupt primary data.
+        state = self.json_memory.get_memory_state(load_if_needed=False)
+        if not state.get("memory_count_authoritative"):
+            return []
         if self.vector_memory:
-            return self.vector_memory.search(query, limit, threshold, category)
-        else:
-            # Fallback to keyword search
-            logger.warning("Vector memory not available, using keyword search")
-            return self.json_memory.search_memories(query, limit)
+            if getattr(self.vector_memory, "degraded", False) or getattr(
+                self.vector_memory, "rebuild_pending", False
+            ):
+                return []
+            current = {
+                (row.get("thought"), row.get("category", "general"))
+                for row in self.json_memory.dump_all()
+                if isinstance(row, dict) and isinstance(row.get("thought"), str)
+            }
+            if not current:
+                return []
+            hits = self.vector_memory.search(query, limit, threshold, category)
+            return [
+                hit for hit in hits
+                if isinstance(hit, dict)
+                and (hit.get("text"), hit.get("category", "general")) in current
+            ][:limit]
+        logger.warning("Vector memory not available, using keyword search")
+        return self.json_memory.search_memories(query, limit)
             
     def search_memories(
         self,
@@ -970,10 +1054,18 @@ class EnhancedMemoryCore:
             List of matching memories
         """
         self.load_if_needed()
-        if use_semantic and self.vector_memory:
-            return self.semantic_search(query, limit)
-        else:
-            return self.json_memory.search_memories(query, limit)
+        vector = self.vector_memory
+        if use_semantic and vector:
+            if not self.json_memory.get_memory_state(load_if_needed=False).get("memory_count_authoritative"):
+                return []
+            results = self.semantic_search(query, limit)
+            if results or (
+                not vector.degraded
+                and not vector.rebuild_pending
+                and vector.embedding_status["available"]
+            ):
+                return results
+        return self.json_memory.search_memories(query, limit)
             
     def recall_last(self, count: int = 1, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """Retrieve most recent memories."""
@@ -1033,5 +1125,7 @@ class EnhancedMemoryCore:
         Returns:
             Dictionary with cleanup statistics
         """
-        return self.json_memory.cleanup_old_memories(days=days, min_priority_to_keep=min_priority_to_keep)
+        # Use the transactional JSON-first cleanup and optional vector rebuild.
+        from .memory_cleanup import MemoryCleanup
+        return MemoryCleanup(self).cleanup_old_memories(days=days, min_priority=min_priority_to_keep)
 

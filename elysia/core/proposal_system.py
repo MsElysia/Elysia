@@ -98,18 +98,33 @@ class ProposalLifecycleManager:
             return None
 
     def _save_metadata(self, proposal_id: str, metadata: Dict[str, Any]) -> bool:
-        """Save metadata for a proposal."""
+        """Save metadata for a proposal without truncating the live file first.
+
+        Direct open(..., "w") on metadata.json destroys authorized on-disk state
+        when json.dump fails mid-write. Stage to a sibling temp file and replace
+        only after the payload serializes. Failed checks leave the original file
+        in place and remove any leftover temp. This does not confine proposal_id
+        and does not change list/get, watcher, or validator behavior.
+        """
         proposal_path = self.proposals_root / proposal_id
         proposal_path.mkdir(parents=True, exist_ok=True)
         metadata_file = proposal_path / "metadata.json"
+        tmp_file = proposal_path / ".metadata.json.tmp"
 
         try:
-            metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
-            with open(metadata_file, "w", encoding="utf-8") as f:
-                json.dump(metadata, f, indent=2, ensure_ascii=False)
+            payload = dict(metadata)
+            payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            tmp_file.replace(metadata_file)
+            metadata["updated_at"] = payload["updated_at"]
             return True
         except Exception as e:
             logger.error(f"Failed to save metadata for {proposal_id}: {e}")
+            try:
+                tmp_file.unlink()
+            except OSError:
+                pass
             return False
 
     def _add_history_entry(

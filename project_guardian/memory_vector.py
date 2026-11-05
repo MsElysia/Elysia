@@ -1054,10 +1054,18 @@ class EnhancedMemoryCore:
             List of matching memories
         """
         self.load_if_needed()
-        if use_semantic and self.vector_memory:
-            return self.semantic_search(query, limit)
-        else:
-            return self.json_memory.search_memories(query, limit)
+        vector = self.vector_memory
+        if use_semantic and vector:
+            if not self.json_memory.get_memory_state(load_if_needed=False).get("memory_count_authoritative"):
+                return []
+            results = self.semantic_search(query, limit)
+            if results or (
+                not vector.degraded
+                and not vector.rebuild_pending
+                and vector.embedding_status["available"]
+            ):
+                return results
+        return self.json_memory.search_memories(query, limit)
             
     def recall_last(self, count: int = 1, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """Retrieve most recent memories."""

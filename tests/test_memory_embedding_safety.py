@@ -50,6 +50,27 @@ def vector(tmp_path):
                            metadata_path=str(tmp_path / "v/metadata.json"))
 
 
+@pytest.mark.parametrize("legacy_index", [False, True])
+def test_default_search_recalls_primary_memory_offline_after_restart(tmp_path, monkeypatch, legacy_index):
+    monkeypatch.setattr(mv, "HAS_SENTENCE_TRANSFORMERS", False)
+    config = {
+        "vector_dim": 8,
+        "index_path": str(tmp_path / "v/index.faiss"),
+        "metadata_path": str(tmp_path / "v/metadata.json"),
+    }
+    primary = tmp_path / "primary.json"
+    engine = mv.EnhancedMemoryCore(json_filepath=str(primary), vector_config=config)
+    engine.remember(TEXT, category="fact", priority=0.9)
+    if legacy_index:
+        engine.vector_memory.add_memory("Vector-only stale entry", embedding=np.ones(8, dtype=np.float32))
+        (tmp_path / "v/metadata.json.generation.json").unlink()
+
+    restarted = mv.EnhancedMemoryCore(json_filepath=str(primary), vector_config=config)
+    assert restarted.semantic_search(TEXT) == []
+    assert [row["thought"] for row in restarted.search_memories(TEXT)] == [TEXT]
+    assert restarted.search_memories("Vector-only stale entry") == []
+
+
 @pytest.mark.parametrize("operation", ["generate", "add", "rebuild", "search"])
 def test_environment_key_cannot_authorize_cloud_embedding(tmp_path, monkeypatch, operation):
     attempts = []

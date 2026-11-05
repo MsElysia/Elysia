@@ -50,4 +50,4 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/ci_stubs
         run: |
           python -c "import faiss,numpy; print('REAL FAISS',faiss.__version__,'NumPy',numpy.__version__)"
-          python -B -m pytest --noconftest -q -rs -p no:cacheprovider tests/test_offline_faiss_memory_integrity.py
+          python -B -m pytest --noconftest -q -rs -p no:cacheprovider tests/test_offline_faiss_memory_integrity.py tests/test_memory_embedding_safety.py tests/test_enhanced_memory_write_safety.py

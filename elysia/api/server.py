@@ -214,6 +214,8 @@ class RuntimeAPIServer:
                 return jsonify({"error": "Proposal system not available"}), 503
 
             data = request.get_json(force=True, silent=True) or {}
+            if isinstance(data, dict) and "dry_run" in data and not isinstance(data["dry_run"], bool):
+                return jsonify({"error": "dry_run must be a boolean"}), 400
             dry_run = data.get("dry_run", False)
 
             try:

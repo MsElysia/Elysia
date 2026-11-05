@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product API — implement dry_run flag
+
+- `POST /api/proposals/<id>/implement` returns HTTP 400 JSON `dry_run must be a boolean` when `dry_run` is present and is not a JSON boolean. The implementer does not run, so a string `"false"` can no longer be recorded as a completed dry run.
+- A missing `dry_run` still means a live run. `true` and `false` are unchanged.
+- Contract: `tests/test_runtime_api_implement_dry_run.py` (Flask client and live Werkzeug HTTP, real `ProposalSystem` and `ImplementerAgent`, fictional proposals, no external services).

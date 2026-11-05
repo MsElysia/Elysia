@@ -22,14 +22,6 @@ except ImportError:
     logger.warning("FAISS not available. Install with: pip install faiss-cpu")
 
 try:
-    import openai
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("OpenAI not available. Embeddings will not work without API key.")
-
-try:
     from sentence_transformers import SentenceTransformer
     HAS_SENTENCE_TRANSFORMERS = True
 except ImportError:
@@ -48,7 +40,7 @@ class VectorMemory:
     
     def __init__(
         self,
-        vector_dim: int = 1536,  # OpenAI ada-002 dimension
+        vector_dim: int = 1536,  # Preserve the legacy persisted index dimension.
         index_path: str = "memory/vectors/index.faiss",
         metadata_path: str = "memory/vectors/metadata.json",
         embedding_model: str = "text-embedding-ada-002",
@@ -61,10 +53,10 @@ class VectorMemory:
         # and metadata bytes. SHA-256 binds files even if row counts match.
         self.generation_path = metadata_path + ".generation.json"
         self.embedding_model = embedding_model
+        self.embedding_status = {"available": False, "provider": None, "reason": "not_attempted"}
         self._sentence_transformer_model = None  # Lazy-loaded for sentence-transformers
         # After load/encode failure, do not retry ST for every embed in this process
         self._st_local_model_broken: bool = False
-        self._st_load_failure_logged: bool = False
         # Degraded / rebuild state for cleanup
         self.degraded: bool = False
         self.rebuild_pending: bool = False
@@ -191,10 +183,8 @@ class VectorMemory:
                 continue
             try:
                 emb = self.generate_embedding(text)
-                if emb is None:
-                    continue
-                if emb.shape[0] != self.vector_dim:
-                    continue
+                if emb is None or emb.shape != (self.vector_dim,) or not np.isfinite(emb).all():
+                    raise ValueError("Required local embedding unavailable or invalid")
                 emb = emb.reshape(1, -1)
                 new_index.add(emb)
                 new_metadata.append({
@@ -206,8 +196,17 @@ class VectorMemory:
                     "metadata": mem.get("metadata", {}),
                 })
             except Exception:
-                # Skip problematic entries; continue with others
-                continue
+                # Never publish a partial/empty index as a successful rebuild
+                # when required local embeddings could not be produced.
+                self.degraded = True
+                self.rebuild_pending = True
+                self._set_rebuild_status("failed", "embedding_unavailable")
+                return {
+                    "metadata_before": metadata_before, "metadata_after": metadata_before,
+                    "faiss_before": faiss_before, "faiss_after": faiss_before,
+                    "vector_rebuild_status": "failed", "vector_rebuild_success": False,
+                    "error": "Required local embedding unavailable or invalid",
+                }
 
         try:
             # Persist using fsync-backed atomic writes to reduce torn-file risk.
@@ -506,155 +505,60 @@ class VectorMemory:
             self._atomic_write_faiss(self.index_path, self.index)
             self._commit_generation()
                 
+    def _embedding_unavailable(self, reason: str) -> None:
+        self.embedding_status = {"available": False, "provider": None, "reason": reason}
+        return None
+
     def generate_embedding(self, text: str) -> Optional[np.ndarray]:
-        """
-        Generate embedding for text using multi-provider fallback chain.
-        
-        Fallback order:
-        1. OpenAI API (if API key available)
-        2. Sentence-transformers (local, no API needed)
-        3. Hash-based fallback (last resort, degraded quality)
-        
-        Args:
-            text: Text to embed
-            
-        Returns:
-            Embedding vector or None if all providers fail
+        """Use cached local models only; environment credentials grant no authority.
+
+        This path has no authorized cloud transport and therefore never creates
+        a cloud client. Do not add an environment/config bypass here. A missing
+        local provider is unavailable, not a successful hash/semantic fallback.
         """
         try:
             from .memory_noise import is_embedding_entirely_skipped, is_low_value_memory_text
+            from .startup_runtime_guard import defer_sentence_transformers_for_embed
 
-            if is_embedding_entirely_skipped(text):
-                logger.debug("Embedding: skipped (non-vectorizable bookkeeping fragment)")
-                return None
-            if is_low_value_memory_text(text, min_chars_for_substantive=20):
-                logger.debug("Embedding: low-value text skipped OpenAI/ST; using hash vector")
-                return self._generate_hash_embedding(text)
+            if is_embedding_entirely_skipped(text) or is_low_value_memory_text(
+                text, min_chars_for_substantive=20
+            ):
+                return self._embedding_unavailable("non_vectorizable_text")
+            if defer_sentence_transformers_for_embed():
+                return self._embedding_unavailable("local_model_deferred")
         except Exception:
-            pass
+            return self._embedding_unavailable("local_policy_unavailable")
+        if not HAS_SENTENCE_TRANSFORMERS:
+            return self._embedding_unavailable("local_dependency_unavailable")
+        if self._st_local_model_broken:
+            return self._embedding_unavailable("local_model_unavailable")
         try:
-            from .openai_degraded import note_openai_transport_failure, skip_openai_embeddings
-        except Exception:
-            def skip_openai_embeddings() -> bool:
-                return False
-
-            def note_openai_transport_failure(_e, _c=""):
-                return
-
-        # Try OpenAI API first (highest quality)
-        if OPENAI_AVAILABLE:
-            try:
-                api_key = os.getenv("OPENAI_API_KEY")
-                if api_key and not skip_openai_embeddings():
-                    client = openai.OpenAI(api_key=api_key)
-                    response = client.embeddings.create(
-                        model=self.embedding_model,
-                        input=text
-                    )
-                    embedding = np.array(response.data[0].embedding, dtype=np.float32)
-                    logger.debug(f"Generated embedding using OpenAI API")
-                    try:
-                        from .openai_degraded import note_openai_embedding_success_clear_streak
-
-                        note_openai_embedding_success_clear_streak()
-                    except Exception:
-                        pass
-                    return embedding
-            except Exception as e:
-                note_openai_transport_failure(e, "vector_openai_embed")
-                logger.debug("OpenAI embedding failed (fallback=reason:openai_error): %s", e)
-        
-        # Fallback to sentence-transformers (local, no API needed)
-        if HAS_SENTENCE_TRANSFORMERS and not self._st_local_model_broken:
-            try:
-                try:
-                    from .startup_runtime_guard import defer_sentence_transformers_for_embed
-
-                    if defer_sentence_transformers_for_embed():
-                        return self._generate_hash_embedding(text)
-                except Exception:
-                    pass
-                # Lazy-load model (only load once; deferred until after boot / first real need)
-                if self._sentence_transformer_model is None:
-                    # Use a lightweight model that doesn't require GPU
-                    logger.info("Loading sentence-transformers model for embedding fallback...")
-                    try:
-                        self._sentence_transformer_model = SentenceTransformer('all-MiniLM-L6-v2')  # 384 dimensions
-                    except Exception as load_e:
-                        self._st_local_model_broken = True
-                        if not self._st_load_failure_logged:
-                            self._st_load_failure_logged = True
-                            logger.warning(
-                                "Sentence-transformers load failed; local ST disabled for this process: %s",
-                                load_e,
-                            )
-                        return self._generate_hash_embedding(text)
-
-                model = self._sentence_transformer_model
-                try:
-                    embedding = model.encode(text)
-                except Exception as enc_e:
-                    self._st_local_model_broken = True
-                    if not self._st_load_failure_logged:
-                        self._st_load_failure_logged = True
-                        logger.warning(
-                            "Sentence-transformers encode failed; local ST disabled for this process: %s",
-                            enc_e,
-                        )
-                    else:
-                        logger.debug("ST encode skipped (local model disabled): %s", enc_e)
-                    return self._generate_hash_embedding(text)
-                # Resize to match expected dimension if needed
-                if len(embedding) != self.vector_dim:
-                    # Simple truncation or padding (not ideal, but works)
-                    if len(embedding) > self.vector_dim:
-                        embedding = embedding[:self.vector_dim]
-                    else:
-                        padding = np.zeros(self.vector_dim - len(embedding))
-                        embedding = np.concatenate([embedding, padding])
-                embedding = np.array(embedding, dtype=np.float32)
-                logger.info("Embedding fallback: method=sentence_transformers reason=openai_failed_or_unavailable")
-                return embedding
-            except Exception as e:
-                self._st_local_model_broken = True
-                if not self._st_load_failure_logged:
-                    self._st_load_failure_logged = True
-                    logger.warning(
-                        "Sentence-transformers path failed; local ST disabled for this process: %s",
-                        e,
-                    )
-                logger.debug("Sentence-transformers failed (fallback=reason:local_model_error): %s", e)
-        
-        # Last resort: hash-based fallback (degraded quality, but always works)
-        try:
-            embedding = self._generate_hash_embedding(text)
-            try:
-                from .memory_noise import is_low_value_memory_text
-
-                _quiet = is_low_value_memory_text(text, min_chars_for_substantive=20)
-            except Exception:
-                _quiet = False
-            _sample = (text[:50] + "...") if len(text) > 50 else text
-            if _quiet or self._st_local_model_broken:
-                logger.debug(
-                    "Embedding fallback: method=hash_based reason=degraded_or_low_value text_sample=%s",
-                    _sample,
+            if self._sentence_transformer_model is None:
+                # Unsupported offline-only options fail closed; never retry a
+                # legacy loader without these constraints or install packages.
+                self._sentence_transformer_model = SentenceTransformer(
+                    "all-MiniLM-L6-v2", local_files_only=True, trust_remote_code=False
                 )
-            else:
-                logger.warning(
-                    "Embedding fallback: method=hash_based reason=openai_unavailable_and_local_model_failed text_sample=%s",
-                    _sample,
-                )
+            embedding = np.asarray(self._sentence_transformer_model.encode(text), dtype=np.float32)
+            if embedding.ndim != 1 or not embedding.size or not np.isfinite(embedding).all():
+                raise ValueError("Invalid local embedding")
+            # Retain legacy dimension adaptation for existing local FAISS stores.
+            if len(embedding) > self.vector_dim:
+                embedding = embedding[:self.vector_dim]
+            elif len(embedding) < self.vector_dim:
+                embedding = np.pad(embedding, (0, self.vector_dim - len(embedding)))
+            self.embedding_status = {
+                "available": True, "provider": "sentence_transformers", "reason": "local_model_ready"
+            }
             return embedding
-        except Exception as e:
-            logger.error(f"All embedding providers failed, including hash fallback: {e}")
-            return None
-    
+        except Exception:
+            self._st_local_model_broken = True
+            logger.warning("Cached local embedding unavailable; automatic fallback disabled")
+            return self._embedding_unavailable("local_model_unavailable")
+
     def _generate_hash_embedding(self, text: str) -> np.ndarray:
         """
-        Generate a simple hash-based embedding as last resort.
-        
-        This provides degraded quality but ensures embeddings are always available.
+        Explicit deterministic hash utility, never an automatic semantic fallback.
         
         Args:
             text: Text to embed
@@ -883,8 +787,10 @@ class VectorMemory:
         
     def get_stats(self) -> Dict[str, Any]:
         """Get vector memory statistics."""
+        embedding_state = {"embedding_status": dict(self.embedding_status)}
         if not self.loaded and FAISS_AVAILABLE and self._lazy:
             return {
+                **embedding_state,
                 "vector_memory_enabled": True,
                 "vector_loaded": False,
                 "total_memories": 0,
@@ -892,6 +798,7 @@ class VectorMemory:
             }
         if self.index is None:
             return {
+                **embedding_state,
                 "vector_memory_enabled": False,
                 "vector_loaded": True,
                 "total_memories": 0,
@@ -904,6 +811,7 @@ class VectorMemory:
             categories[cat] = categories.get(cat, 0) + 1
             
         return {
+            **embedding_state,
             "vector_memory_enabled": True,
             "vector_loaded": True,
             "total_memories": len(self.metadata),
@@ -991,6 +899,7 @@ class EnhancedMemoryCore:
         if self.vector_memory:
             if load_if_needed:
                 self.vector_memory.load_if_needed()
+            st["embedding_status"] = dict(self.vector_memory.embedding_status)
             st["vector_loaded"] = bool(self.vector_memory.loaded)
             if self.vector_memory.loaded and self.vector_memory.index is not None:
                 try:
@@ -1046,18 +955,34 @@ class EnhancedMemoryCore:
                 return
         except Exception:
             pass
-        # Store in JSON (existing functionality)
-        self.json_memory.remember(thought, category, priority)
-        
-        # Store in vector memory if available
-        if self.vector_memory:
-            self.vector_memory.add_memory(
-                text=thought,
-                category=category,
-                priority=priority,
-                metadata=metadata
-            )
-            
+        primary = self.json_memory
+        primary.load_if_needed()
+        # Keep the public primary writer and its suppression/security gates.
+        # Serialize receipt correlation and secondary publication with writes
+        # and cleanup on this MemoryCore instance; never infer success from a
+        # matching old row, a timestamp, count, or remember()'s None return.
+        with primary._save_file_lock:
+            before = primary._last_remember_receipt
+            primary.remember(thought, category, priority, metadata=metadata)
+            receipt = primary._last_remember_receipt
+            if receipt is None or receipt is before:
+                return
+            entry, path, checksum = receipt
+            expected = json.loads(json.dumps({
+                "thought": thought, "category": category,
+                "priority": priority, "metadata": metadata or {},
+            }))
+            if any(entry.get(key) != value for key, value in expected.items()):
+                logger.warning("Enhanced memory primary receipt does not match intended write")
+                return
+            if os.path.abspath(primary.filepath) != path or VectorMemory._file_sha256(path) != checksum:
+                raise RuntimeError("Enhanced memory primary commit no longer verifiable")
+            if self.vector_memory:
+                self.vector_memory.add_memory(
+                    text=entry["thought"], category=entry["category"],
+                    priority=entry["priority"], metadata=entry["metadata"],
+                )
+
     def semantic_search(
         self,
         query: str,

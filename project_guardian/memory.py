@@ -7,6 +7,7 @@ import json
 import os
 import logging
 import threading
+import hashlib
 from typing import List, Dict, Any, Optional
 
 try:
@@ -50,6 +51,9 @@ class MemoryCore:
         self.loaded: bool = False
         self._load_lock = threading.Lock()
         self._save_file_lock = threading.RLock()
+        # Private per-write receipt; public remember() continues to return None.
+        # Published only after acknowledged save AND exact primary read-back.
+        self._last_remember_receipt = None
         # A corrupt/unreadable authoritative JSON file must never be silently
         # overwritten by a later successful-looking memory write.
         self.persistence_blocked = False
@@ -246,13 +250,35 @@ class MemoryCore:
             "metadata": metadata or {}
         }
         self.memory_log.append(entry)
+        persisted = False
         try:
-            self._save()
+            persisted = self._save()
+            if persisted is not True:
+                raise RuntimeError("MemoryCore primary save did not acknowledge a durable commit")
+            if not any(row is entry for row in self.memory_log):
+                raise RuntimeError("MemoryCore intended entry was displaced during commit")
+            with open(self.filepath, "rb") as committed:
+                primary_bytes = committed.read()
+            expected = json.loads(json.dumps(self.memory_log))
+            if json.loads(primary_bytes) != expected:
+                raise RuntimeError("MemoryCore primary commit read-back mismatch")
+            receipt = (
+                json.loads(json.dumps(entry)),
+                os.path.abspath(self.filepath),
+                hashlib.sha256(primary_bytes).hexdigest(),
+            )
         except Exception:
             # A failed write must not evict the oldest item or leave a phantom
             # new entry visible to retrieval and duplicate suppression.
             self.memory_log[:] = previous_log
+            if persisted is True:
+                # Replace may have committed before verification failed. Do not
+                # overwrite that uncertain primary from the restored RAM copy.
+                self.persistence_blocked = True
+                self.last_load_error = "Primary commit read-back unverified; explicit reload required"
             raise
+
+        self._last_remember_receipt = receipt
         
         # Add to vector search index (only if embeddings are enabled)
         if self.vector_search and self._embeddings_enabled:
@@ -752,4 +778,4 @@ class MemoryCore:
             return memories
         except Exception as e:
             logger.error(f"Error querying TimelineMemory: {e}")
-            return [] 
+            return []

@@ -3,7 +3,6 @@ import json
 import socket
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -115,6 +114,9 @@ def test_concurrent_identical_content_keeps_own_metadata_and_no_suppressed_vecto
     primary = json.loads((tmp_path / "primary.json").read_text())
     assert sorted(r["metadata"]["request"] for r in primary) == list(range(4))
     assert sorted(r["metadata"]["request"] for r in e.vector_memory.metadata) == list(range(4))
+    assert e.vector_memory.index.ntotal == 4
+    assert not e.vector_memory.degraded
+    assert engine(tmp_path).vector_memory.metadata == e.vector_memory.metadata
     before = list(e.vector_memory.metadata)
     monkeypatch.setattr(e.json_memory, "remember", lambda *a, **k: None)
     e.remember(TEXT, "fact", 0.9, {"request": 3})
@@ -136,3 +138,70 @@ def test_memorycore_public_return_contract_stays_none(tmp_path):
     core = engine(tmp_path).json_memory
     assert core.remember(TEXT, "fact", 0.9, {"source": "synthetic"}) is None
     assert core.dump_all()[0]["metadata"] == {"source": "synthetic"}
+
+
+@pytest.mark.parametrize("failure", ["fsync", "replace"])
+def test_real_primary_disk_failure_keeps_original_records_and_vectors(tmp_path, monkeypatch, failure):
+    import project_guardian.memory as module
+    e = engine(tmp_path, max_memories=1)
+    e.remember(TEXT, "fact", 0.9, {"source": "old"})
+    before = (tmp_path / "primary.json").read_bytes()
+    rows = list(e.json_memory.memory_log)
+    vectors = list(e.vector_memory.metadata)
+    def fail(*a, **k):
+        raise OSError("synthetic primary disk failure")
+    with monkeypatch.context() as fault:
+        fault.setattr(module.os, failure, fail)
+        with pytest.raises(RuntimeError, match="durable save failed"):
+            e.remember(TEXT + " amended", "fact", 0.9, {"source": "new"})
+    assert (tmp_path / "primary.json").read_bytes() == before
+    assert e.json_memory.memory_log == rows
+    assert e.vector_memory.metadata == vectors
+    assert engine(tmp_path).json_memory.dump_all() == rows
+
+
+def test_uncertain_readback_fences_writes_but_preserves_committed_primary_for_recovery(tmp_path, monkeypatch):
+    import builtins
+    e = engine(tmp_path)
+    e.remember(TEXT, "fact", 0.9, {"revision": 1})
+    old_receipt = getattr(e.json_memory, "_last_remember_receipt", None)
+    before_vectors = list(e.vector_memory.metadata)
+    original_open = builtins.open
+    def unreadable(path, mode="r", *a, **k):
+        if str(path) == e.json_memory.filepath and mode == "rb":
+            raise OSError("synthetic read-back denied after replace")
+        return original_open(path, mode, *a, **k)
+    with monkeypatch.context() as fault:
+        fault.setattr(builtins, "open", unreadable)
+        with pytest.raises(OSError, match="read-back denied"):
+            e.remember(TEXT + " amended", "fact", 0.9, {"revision": 2})
+    assert e.json_memory.persistence_blocked is True
+    assert e.json_memory._last_remember_receipt is old_receipt
+    assert e.vector_memory.metadata == before_vectors
+    with pytest.raises(RuntimeError, match="persistence blocked"):
+        e.remember(TEXT + " must not overwrite uncertain primary", "fact", 0.9)
+    committed = json.loads((tmp_path / "primary.json").read_text())
+    assert [r["metadata"]["revision"] for r in committed] == [1, 2]
+    recovered = engine(tmp_path)
+    assert recovered.json_memory.dump_all() == committed
+    assert recovered.vector_memory.rebuild_from_memories(committed)["vector_rebuild_success"] is True
+    assert [r["metadata"]["revision"] for r in engine(tmp_path).vector_memory.metadata] == [1, 2]
+
+
+def test_identical_content_metadata_and_timestamp_still_require_a_fresh_receipt(tmp_path, monkeypatch):
+    import project_guardian.memory as module
+    from datetime import datetime
+    class Frozen(datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 11, 4, 12, 0, 0)
+    monkeypatch.setattr(module.datetime, "datetime", Frozen)
+    e = engine(tmp_path)
+    for _ in range(2):
+        e.remember(TEXT, "fact", 0.9, {"source": "identical"})
+    rows = e.json_memory.dump_all()
+    assert len(rows) == 2 and rows[0] == rows[1]
+    assert e.vector_memory.index.ntotal == 2
+    monkeypatch.setattr(e.json_memory, "remember", lambda *a, **k: None)
+    e.remember(TEXT, "fact", 0.9, {"source": "identical"})
+    assert e.vector_memory.index.ntotal == 2

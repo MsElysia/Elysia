@@ -118,3 +118,26 @@ def test_missing_embedding_cannot_certify_partial_rebuild(tmp_path, monkeypatch)
     assert [Path(p).read_bytes() for p in paths] == before
     assert v.degraded and v.rebuild_pending
     assert v.search(TEXT) == []
+
+
+@pytest.mark.parametrize("gate", ["non_vectorizable", "deferred", "policy_error"])
+def test_local_guards_cannot_be_bypassed_by_hash_or_model_fallback(tmp_path, monkeypatch, gate):
+    monkeypatch.delenv("OPENAI_API_KEY")
+    attempted = []
+    def loader(*a, **k):
+        attempted.append(True)
+        return SimpleNamespace(encode=lambda text: np.ones(8, dtype=np.float32))
+    monkeypatch.setattr(mv, "HAS_SENTENCE_TRANSFORMERS", True)
+    monkeypatch.setattr(mv, "SentenceTransformer", loader, raising=False)
+    if gate == "non_vectorizable":
+        monkeypatch.setattr(memory_noise, "is_embedding_entirely_skipped", lambda text: True)
+    elif gate == "deferred":
+        monkeypatch.setattr(startup_runtime_guard, "defer_sentence_transformers_for_embed", lambda: True)
+    else:
+        def unavailable():
+            raise RuntimeError("synthetic unavailable local policy")
+        monkeypatch.setattr(startup_runtime_guard, "defer_sentence_transformers_for_embed", unavailable)
+    v = vector(tmp_path)
+    assert v.generate_embedding(TEXT) is None
+    assert attempted == []
+    assert v.get_stats()["embedding_status"]["available"] is False

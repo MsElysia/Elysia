@@ -12,6 +12,25 @@ from project_guardian import memory_noise, startup_runtime_guard, openai_degrade
 TEXT = "Synthetic lighthouse survey equipment is stored inside Cedar Pier vault."
 
 
+def test_optional_memorycore_vector_search_loader_is_offline_and_reports_fallback(monkeypatch):
+    from project_guardian import memory_vector_search as search
+
+    calls = []
+
+    def missing_model(model, **options):
+        calls.append(options)
+        raise OSError("synthetic empty model cache")
+
+    monkeypatch.setattr(search, "HAS_SENTENCE_TRANSFORMERS", True)
+    monkeypatch.setattr(search, "SentenceTransformer", missing_model)
+    monkeypatch.setattr(search, "_ST_SHARED", None)
+    vector_search = search.MemoryVectorSearch(use_faiss=False)
+    assert calls == [{"local_files_only": True, "trust_remote_code": False}]
+    stats = vector_search.get_statistics()
+    assert stats["using_sentence_transformers"] is False
+    assert stats["embedding_degraded"] is True
+
+
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
     def deny(*args, **kwargs):
@@ -118,6 +137,17 @@ def test_missing_embedding_cannot_certify_partial_rebuild(tmp_path, monkeypatch)
     assert [Path(p).read_bytes() for p in paths] == before
     assert v.degraded and v.rebuild_pending
     assert v.search(TEXT) == []
+
+
+def test_rebuild_can_skip_intentionally_non_vectorizable_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory_noise, "is_embedding_entirely_skipped", lambda text: text == "noise")
+    monkeypatch.setattr(mv, "HAS_SENTENCE_TRANSFORMERS", True)
+    monkeypatch.setattr(mv, "SentenceTransformer", lambda *a, **k: SimpleNamespace(
+        encode=lambda text: np.ones(8, dtype=np.float32)), raising=False)
+    v = vector(tmp_path)
+    result = v.rebuild_from_memories([{"thought": "noise"}, {"thought": TEXT}])
+    assert result["vector_rebuild_success"] is True
+    assert [row["text"] for row in v.metadata] == [TEXT]
 
 
 @pytest.mark.parametrize("gate", ["non_vectorizable", "deferred", "policy_error"])

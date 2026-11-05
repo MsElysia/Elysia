@@ -182,6 +182,12 @@ class VectorMemory:
             if not text:
                 continue
             try:
+                from .memory_noise import is_embedding_entirely_skipped, is_low_value_memory_text
+
+                if is_embedding_entirely_skipped(text) or is_low_value_memory_text(
+                    text, min_chars_for_substantive=20
+                ):
+                    continue
                 emb = self.generate_embedding(text)
                 if emb is None or emb.shape != (self.vector_dim,) or not np.isfinite(emb).all():
                     raise ValueError("Required local embedding unavailable or invalid")

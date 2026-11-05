@@ -3577,3 +3577,34 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — implement dry_run flag (2026-11-05)
+
+**Status:** COMPLETE on this branch. Not integrated to `main`.
+
+**Lane:** Product workflow. Unclaimed. `CONTROL.md` `CURRENT_TASK` remains `NONE`. Reconciliation queue `TASKS/TASK-0053.md` on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72cf397de2a5ef8d9a0bcaccd86462b0e577`) stays OPEN review-only. Do not merge `elysia-local-reconciliation-20260909-1657`. Codex Campaign 41 tip remains `3223ebbadd6e835870a87fdca2008eec65c969d8` on `origin/codex/limited-live-activation-wrapper`. This run did not implement live memory or vector writes.
+
+**Why this gap:** The events-limit, implement HTTP-status, WebScout research-status, chat answer-status, proposal decision-status, implementation-result, approved-batch, status-availability, and unreadable-proposal fixes stay on their earlier product branches and were not copied. Before this change, live `POST /api/proposals/fictional-dry-flag/implement` with `{"dry_run": "false"}` returned HTTP 200 `success: true` and `step_results[0].dry_run: true`. The stored fictional proposal status became `implemented` and `implementation_status` became `completed`. The planned file was not created.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c` (`main`). No other branch dependency. Not based on the earlier product branches.
+
+**Ownership checked:** Did not edit `elysia/core/proposal_system.py`. Runtime integrity today is `bc-661877c2-505a-41d9-ae73-1c131fa110d9`, commit `aa83ea352812cd2a72bb3020d57b16302913544b` on `origin/cursor/elysia-runtime-integrity-1f7d` (`elysia/core/proposal_system.py`, `tests/test_elysia_proposal_metadata_save_atomic.py`). Did not edit `project_guardian/ui_control_panel.py`. Dashboard branches `origin/cursor/dashboard-status-truth-94db`, `origin/cursor/dashboard-truthful-status-2ccc`, and `origin/cursor/dashboard-restricted-runtime-b653` still own that file. Its panel `/api/status` exception path was left to those branches. Application runtime safety has no run today; its last push remains `76ec67a` on `origin/cursor/application-runtime-safety-91a3`.
+
+**Acceptance:**
+- A present non-boolean `dry_run` (`"false"`, `"true"`, `0`, `1`, `null`, `"no"`, `1.5`, and an object) returns HTTP 400 JSON `{"error": "dry_run must be a boolean"}`. The fictional proposal metadata bytes do not change, and the planned sentinel file is not created.
+- The same 400 is returned for a missing proposal id, and no proposal directory is created.
+- `{"dry_run": true}` returns HTTP 200 with `success: true`, one completed step, and `step_results[0].dry_run: true`. The sentinel file is not created.
+- `{"dry_run": false}` and a body with no `dry_run` field run the real implementer live. Each returns HTTP 200 `success: true` and writes its fictional sentinel file in the temporary working directory. The file text contains the proposal id.
+- The contract holds through Flask's test client and through a live Werkzeug HTTP server on 127.0.0.1. `ProposalSystem` watcher is off. `init()` is not called. No external service is called.
+
+**Command:** `python3 -m pytest tests/test_runtime_api_implement_dry_run.py -v --tb=short` — 2 passed. `python3 -m pytest tests/test_implementer_agent.py -q --tb=line` — 9 passed, 1 failed. The failure is the pre-existing `test_implementer_rejects_non_accepted_proposal` assertion text (`'accepted' or 'approved'`). This run did not change `elysia/agents/implementer.py`.
+
+**Files:** `elysia/api/server.py`, `tests/test_runtime_api_implement_dry_run.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`.
+
+**Remaining limitations:** A real boolean `dry_run: true` still lets `ImplementerAgent` mark the proposal `implemented` and `implementation_status: completed` without writing the file. Unsuccessful implement results on this branch still return HTTP 200 when `success` is false. That HTTP mapping stays on `origin/cursor/elysia-product-workflow-process-9429`. This route still builds a new `ImplementerAgent` with `repo_root=Path(".")` and ignores `self._implementer`, so a live run writes relative to the process working directory. `POST /api/proposals/implement-batch` still does not exist on this branch; its boolean `dry_run` check stays on `origin/cursor/product-workflow-engineering-process-2f69`. Earlier product API fixes remain only on their branches. This does not change memory, governance, CI, or deployment settings. A branch commit is not integrated product readiness.
+
+**Next action:** Leave `TASK-0053` unmerged. Do not repeat this dry_run type check, or the earlier product API fixes, from `main`. A later product run should stop a boolean dry run from storing `implemented`, or pick a different unclaimed API or dashboard error path, and should re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`.
+
+**Commit:** `4ed3b33511e58a02c0e7f875ca4e5e466a41552b` on `cursor/elysia-product-workflow-6a1b`. Base `722d8e4fe85d7e42ac34066c2d651849d15e734c`.

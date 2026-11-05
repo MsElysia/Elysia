@@ -56,11 +56,11 @@ def test_unsupported_question():
                     "When did Maribel purchase a kayak?")["no_memory_support"]
 
 
-@pytest.mark.xfail(strict=True, reason="Existing selector does not collapse identical evidence from distinct sources")
-def test_duplicate_pressure_records_existing_limitation():
+def test_duplicate_pressure_preserves_conflicting_passage():
     docs = [_doc(str(i), "Zircon beacon location Cedar Pier") for i in range(8)]
     docs.append(_doc("z_conflict", "Zircon beacon location Basalt Point"))
     result = _context([], docs, "Zircon beacon location")
+    assert len(result["evidence"]) == 2
     assert any(e["source_id"] == "doc_z_conflict" for e in result["evidence"])
 
 

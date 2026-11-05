@@ -363,19 +363,16 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         }
         candidates.append(("fact", fact_tokens, item))
 
-    from project_guardian.document_ingestion import DocumentLibrary
+    from project_guardian.document_ingestion import (
+        DocumentLibrary, passage_identity, personal_document_row,
+    )
     if hasattr(adapter, "memory"):
-        for row in DocumentLibrary(adapter.memory).search(question):
+        for row in DocumentLibrary(adapter.memory).search(question, distinct_passages=True):
             if not isinstance(row, dict):
                 continue
             # Diagnostic log chunks use a separate collection/categories and must
             # never enter ordinary personal-memory / chat evidence retrieval.
-            trust = row.get("trust")
-            if trust is not None and not isinstance(trust, str):
-                continue
-            if trust in {"diagnostic_log", "diagnostic"} or str(
-                row.get("collection") or ""
-            ).startswith("diagnostic"):
+            if not personal_document_row(row):
                 continue
             content = row.get("text")
             if not isinstance(content, str):
@@ -405,6 +402,15 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
 
     # Query-term rarity among retrieved candidates separates specific answers
     # from generic repeated words. No embeddings, cloud calls, or learned model.
+    # One representative per passage, with current facts preferred over copies
+    # in documents. Keep the representative's source metadata intact.
+    distinct = {}
+    for candidate in sorted(candidates, key=lambda row: (
+        row[0] != "fact", str(row[2]["source_id"]), str(row[2]["chunk_id"])
+    )):
+        text = candidate[2]["highlights"][0]["text"]
+        distinct.setdefault(passage_identity(text), candidate)
+    candidates = list(distinct.values())
     total = len(candidates)
     frequencies = {
         term: sum(term in tokens for _, tokens, _ in candidates)

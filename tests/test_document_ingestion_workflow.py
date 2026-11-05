@@ -19,6 +19,44 @@ from project_guardian.document_ingestion import DocumentLibrary, ImportFailure
 from project_guardian.local_memory_chat import build_context_from_adapter
 
 
+def test_chat_prompt_keeps_conflict_after_document_shortlist(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from project_guardian.local_memory_chat import (
+        LocalOllama, ManualAuthorization, converse_bundle,
+    )
+
+    path = tmp_path / 'memory.json'
+    library = DocumentLibrary(_memory(path))
+    passage = 'Zircon beacon location: Cedar Pier.'
+    for n in range(1, 9):
+        receipt = library.import_bytes(f'copy-{n}.txt', passage.replace(' ', ' ' * n).encode())
+        assert not receipt['duplicate']
+    opposing = 'Zircon beacon: Basalt Point.'
+    conflict = library.import_bytes('survey.txt', opposing.encode())
+    stored = path.read_bytes()
+    restored = _memory(path)
+    assert len(DocumentLibrary(restored).receipts()) == 9
+    query = 'Zircon beacon location'
+    assert len(DocumentLibrary(restored).search(query)) == 6
+    bundle = build_context_from_adapter(
+        SimpleNamespace(memory=restored, current_fact_snapshots=lambda: []), query, {}
+    )
+    with patch.object(LocalOllama, 'generate', return_value='{"answer":"Synthetic probe"}') as model:
+        converse_bundle(bundle, query, ManualAuthorization(
+            'duplicate-probe', True, True, frozenset({'local.chat', 'memory.read'})
+        ), LocalOllama('test-local'))
+    supplied = json.loads(model.call_args.args[0][-1]['content'])['context_bundle']['evidence']
+    print(json.dumps([{k: row[k] for k in ('source_id', 'chunk_id', 'filename', 'page', 'highlights')}
+                      for row in supplied]))
+    assert {' '.join(row['highlights'][0]['text'].split()) for row in supplied} == {passage, opposing}
+    assert len(supplied) == 2
+    by_id = {row['source_id']: row for row in supplied}
+    assert by_id[conflict['source_id']]['filename'] == 'survey.txt'
+    assert by_id[conflict['source_id']]['page'] == 1
+    assert path.read_bytes() == stored
+
+
 FACT = 'The Veridia expedition stores its cobalt compass in the Lumenport observatory.'
 
 

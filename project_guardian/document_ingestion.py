@@ -305,6 +305,21 @@ def worker_memory_limit():
     globals()['_worker_job'] = handle
 
 
+def passage_identity(text):
+    """Collapse formatting-only whitespace differences, preserving claim wording."""
+    return ' '.join(text.split())
+
+
+def personal_document_row(row):
+    trust, collection = row.get('trust'), row.get('collection')
+    return (
+        (trust is None or isinstance(trust, str)
+         and trust.casefold() not in {'diagnostic', 'diagnostic_log'})
+        and (collection is None or isinstance(collection, str)
+             and not collection.casefold().startswith('diagnostic'))
+    )
+
+
 class DocumentLibrary:
     def __init__(self, memory):
         self.memory = memory
@@ -539,7 +554,7 @@ class DocumentLibrary:
             finally:
                 _ACTIVE_SOURCES.discard(source)
 
-    def search(self, query, limit=6):
+    def search(self, query, limit=6, *, distinct_passages=False):
         tokens = set(re.findall(r'\w{3,}', query.casefold())) - {'the', 'what', 'which', 'does', 'and', 'from', 'with'}
         if not tokens:
             return []
@@ -553,7 +568,19 @@ class DocumentLibrary:
             overlap = tokens & set(re.findall(r'\w{3,}', text.casefold()))
             if overlap:
                 found.append(dict(meta, text=text, score=len(overlap) / len(tokens)))
-        matches = sorted(found, key=lambda x: (-x['score'], x['chunk_id']))[:limit]
+        ranked = sorted(found, key=lambda x: (-x['score'], x['chunk_id']))
+        if distinct_passages:
+            seen = set()
+            unique = []
+            for row in ranked:
+                if not personal_document_row(row):
+                    continue
+                key = passage_identity(row['text'])
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(row)
+            ranked = unique
+        matches = ranked[:limit]
         if matches:
             from project_guardian.runtime_activity import record
             record('Document evidence retrieved')

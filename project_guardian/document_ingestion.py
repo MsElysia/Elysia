@@ -17,9 +17,17 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import threading
 import time
 from datetime import datetime, timezone
+
+# The extractor also runs as a standalone, resource-bounded subprocess.
+# Keep that path importable while sharing the exact same search normalization.
+if __package__:
+    from .retrieval_vocabulary import normalize_retrieval_term
+else:
+    from retrieval_vocabulary import normalize_retrieval_term
 
 # Source upload / managed-copy bound (browser + API align on this).
 MAX_BYTES = 8 * 1024 * 1024
@@ -375,14 +383,13 @@ class DocumentLibrary:
         previous = next((r for r in self.receipts() if r['source_id'] == source and r['status'] == 'completed'), None)
         physical(self.root)
         self.root.mkdir(parents=True, exist_ok=True)
-        staging = physical(self.root / ('_preview_' + source + extension))
-        try:
-            with staging.open('wb') as handle:
+        with TemporaryDirectory(prefix='.extract-', dir=self.root) as directory:
+            staging = Path(directory) / ('input' + extension)
+            with staging.open('xb') as handle:
                 handle.write(raw)
                 handle.flush()
                 os.fsync(handle.fileno())
-            output = staging.with_suffix('.extracted.json')
-            physical(output)
+            output = Path(directory) / 'output.json'
             payload = self._run_extract_worker(staging, extension, output, len(raw))
             rows = [(c['t'], c['m']) for c in payload['chunks']]
             # Preview only: first ~4000 chars from early chunks (not a truncation of the import).
@@ -421,13 +428,6 @@ class DocumentLibrary:
                     'Scanned PDFs without extractable text will fail clearly instead of saving empty text.'
                 ),
             }
-        finally:
-            for leftover in (staging, staging.with_suffix('.extracted.json')):
-                try:
-                    if leftover.exists():
-                        leftover.unlink()
-                except OSError:
-                    pass
 
     def import_bytes(self, filename, raw):
         if not filename or len(filename) > 180 or '/' in filename or '\\' in filename or ':' in filename or filename in {'.', '..'}:
@@ -482,9 +482,9 @@ class DocumentLibrary:
             self._save('document_source', 'Document import started', receipt.copy())
             _ACTIVE_SOURCES.add(source)
             try:
-                output = original.with_suffix('.extracted.json')
-                physical(output)
-                payload = self._run_extract_worker(original, extension, output, len(raw))
+                with TemporaryDirectory(prefix='.extract-', dir=self.root) as directory:
+                    output = Path(directory) / 'output.json'
+                    payload = self._run_extract_worker(original, extension, output, len(raw))
                 rows = [(c['t'], c['m']) for c in payload['chunks']]
                 existing = {
                     e.get('metadata', {}).get('chunk_id')
@@ -540,7 +540,7 @@ class DocumentLibrary:
                 _ACTIVE_SOURCES.discard(source)
 
     def search(self, query, limit=6):
-        tokens = set(re.findall(r'\w{3,}', query.casefold())) - {'the', 'what', 'which', 'does', 'and', 'from', 'with'}
+        tokens = {normalize_retrieval_term(w) for w in re.findall(r'\w{3,}', query.casefold())} - {'the', 'what', 'which', 'does', 'and', 'from', 'with'}
         if not tokens:
             return []
         completed = {r['source_id'] for r in self.receipts() if r['status'] == 'completed'}
@@ -550,7 +550,7 @@ class DocumentLibrary:
             if entry.get('category') != 'document_chunk' or meta.get('source_id') not in completed:
                 continue
             text = entry['thought']
-            overlap = tokens & set(re.findall(r'\w{3,}', text.casefold()))
+            overlap = tokens & {normalize_retrieval_term(w) for w in re.findall(r'\w{3,}', text.casefold())}
             if overlap:
                 found.append(dict(meta, text=text, score=len(overlap) / len(tokens)))
         matches = sorted(found, key=lambda x: (-x['score'], x['chunk_id']))[:limit]
@@ -590,4 +590,5 @@ if __name__ == '__main__':
             'error': str(exc)[:400] if isinstance(exc, (ImportFailure, UnicodeDecodeError)) else 'Malformed or unreadable document'
         }
     # Parent sets deadline; never put source contents on stdout or activity logs.
-    Path(sys.argv[3]).write_text(json.dumps(value, ensure_ascii=True), encoding='utf-8')
+    with Path(sys.argv[3]).open('x', encoding='utf-8') as output:
+        output.write(json.dumps(value, ensure_ascii=True))

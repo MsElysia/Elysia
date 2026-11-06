@@ -43,7 +43,7 @@ def _shared_sentence_transformer(model_name: str):
     with _ST_LOCK:
         if _ST_SHARED is not None and _ST_SHARED_NAME == model_name:
             return _ST_SHARED
-        inst = SentenceTransformer(model_name)
+        inst = SentenceTransformer(model_name, local_files_only=True, trust_remote_code=False)
         _ST_SHARED = inst
         _ST_SHARED_NAME = model_name
         logger.info("Loaded shared SentenceTransformer: %s", model_name)
@@ -151,8 +151,8 @@ class MemoryVectorSearch:
                 self.embedder = _shared_sentence_transformer(model_name)
                 self.embedding_dimension = self.embedder.get_sentence_embedding_dimension()
                 logger.info(f"Using SentenceTransformer model: {model_name} (shared instance)")
-            except Exception as e:
-                logger.warning(f"Failed to load SentenceTransformer: {e}, using fallback")
+            except Exception:
+                logger.warning("Cached local SentenceTransformer unavailable; using degraded lexical fallback")
                 self.embedder = SimpleEmbedder()
         else:
             self.embedder = SimpleEmbedder()
@@ -380,7 +380,8 @@ class MemoryVectorSearch:
             "embedding_dimension": self.embedding_dimension,
             "cache_size": len(self.embedding_cache),
             "using_faiss": self.use_faiss and HAS_FAISS,
-            "using_sentence_transformers": HAS_SENTENCE_TRANSFORMERS,
+            "using_sentence_transformers": not isinstance(self.embedder, SimpleEmbedder),
+            "embedding_degraded": isinstance(self.embedder, SimpleEmbedder),
             "has_numpy": HAS_NUMPY
         }
 

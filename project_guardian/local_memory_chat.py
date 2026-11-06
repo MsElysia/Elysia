@@ -20,6 +20,8 @@ import threading
 from typing import Any, Dict, Mapping, Optional, Sequence
 from urllib.parse import urlsplit
 
+from project_guardian.retrieval_vocabulary import normalize_retrieval_term
+
 REQUEST_DEADLINE_SECONDS = 35
 PROMPT_BYTE_CAP = 18000
 EVIDENCE_BYTE_CAP = 10000
@@ -249,66 +251,71 @@ _CONTEXT_STOPWORDS = frozenset(
 
 def _context_tokens(text: str) -> list[str]:
     words = re.findall(r"[^\W_]+", text.casefold())
-    return [w for w in words if w not in _CONTEXT_STOPWORDS and len(w) > 1]
+    return [normalize_retrieval_term(w) for w in words if w not in _CONTEXT_STOPWORDS and len(w) > 1]
 
 
 def _bounded_relevant_excerpt(
     text: str, query_tokens: set[str], *, max_chars: int = 900
 ) -> str:
-    """Keep a contiguous window covering query terms; never return empty if text exists."""
+    """Keep a bounded, query-relevant window of an oversized source."""
     if not isinstance(text, str) or not text:
         return ""
     if len(text) <= max_chars:
         return text
-    lowered = text.lower()
-    # Prefer the earliest window that contains the densest query-token hits.
-    best_start = 0
-    best_hits = -1
+    final_start = len(text) - max_chars
     step = max(80, max_chars // 6)
-    last_start = len(text) - max_chars
-    starts = set(range(0, last_start + 1, step))
-    starts.add(last_start)
-    for start in sorted(starts):
-        window = lowered[start : start + max_chars]
-        hits = sum(1 for t in query_tokens if t in window)
+    starts = list(range(0, final_start + 1, step))
+    if starts[-1] != final_start:
+        starts.append(final_start)
+    best_start, best_hits = 0, -1
+    for start in starts:
+        window_terms = set(_context_tokens(text[start : start + max_chars]))
+        hits = len(window_terms & query_tokens)
         if hits > best_hits:
-            best_hits = hits
-            best_start = start
-            if hits >= len(query_tokens):
-                break
+            best_start, best_hits = start, hits
+        if best_hits == len(query_tokens):
+            break
     excerpt = text[best_start : best_start + max_chars].strip()
-    if best_start > 0:
-        excerpt = "…" + excerpt
-    if best_start + max_chars < len(text):
-        excerpt = excerpt + "…"
-    return excerpt or text[:max_chars]
+    if not excerpt:
+        excerpt = text[:max_chars]
+    return (
+        ("…" if best_start else "")
+        + excerpt
+        + ("…" if best_start + max_chars < len(text) else "")
+    )
 
 
 def _fit_evidence_item(
     selected: list[dict], item: dict, query_tokens: set[str]
 ) -> dict | None:
-    """Append-ready item: full text if under budget, else a bounded relevant excerpt."""
-    trial = selected + [item]
-    if len(canonical(trial).encode("utf-8")) <= EVIDENCE_BYTE_CAP:
+    """Fit a source without changing its original identity or source hash."""
+    if len(canonical(selected + [item]).encode("utf-8")) <= EVIDENCE_BYTE_CAP:
         return item
     highlights = item.get("highlights")
-    if not isinstance(highlights, list) or not highlights:
+    if (
+        not isinstance(highlights, list)
+        or len(highlights) != 1
+        or not isinstance(highlights[0], dict)
+    ):
         return None
-    original = highlights[0].get("text") if isinstance(highlights[0], dict) else None
+    original = highlights[0].get("text")
     if not isinstance(original, str) or not original:
         return None
-    # Shrink until the item fits or the excerpt floor is reached.
     for max_chars in (900, 600, 400, 240):
-        excerpt = _bounded_relevant_excerpt(original, query_tokens, max_chars=max_chars)
-        shrunk = dict(item)
-        shrunk["highlights"] = [{
-            **highlights[0],
+        excerpt = _bounded_relevant_excerpt(
+            original, query_tokens, max_chars=max_chars
+        )
+        highlight = dict(highlights[0])
+        highlight.update({
             "text": excerpt,
             "excerpted": True,
             "original_chars": len(original),
             "excerpt_chars": len(excerpt),
-        }]
-        shrunk["source_sha256"] = hashlib.sha256(excerpt.encode("utf-8")).hexdigest()
+            # Derived presentation hash, never a replacement for the source hash.
+            "excerpt_sha256": hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+        })
+        shrunk = dict(item)
+        shrunk["highlights"] = [highlight]
         if len(canonical(selected + [shrunk]).encode("utf-8")) <= EVIDENCE_BYTE_CAP:
             return shrunk
     return None
@@ -368,14 +375,19 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         for row in DocumentLibrary(adapter.memory).search(question):
             if not isinstance(row, dict):
                 continue
-            # Diagnostic log chunks use a separate collection/categories and must
-            # never enter ordinary personal-memory / chat evidence retrieval.
-            trust = row.get("trust")
-            if trust is not None and not isinstance(trust, str):
+            # Diagnostic stores are not personal facts or document evidence.
+            trust, collection = row.get("trust"), row.get("collection")
+            if (
+                (trust is not None and not isinstance(trust, str))
+                or (collection is not None and not isinstance(collection, str))
+            ):
                 continue
-            if trust in {"diagnostic_log", "diagnostic"} or str(
-                row.get("collection") or ""
-            ).startswith("diagnostic"):
+            if (
+                (isinstance(trust, str)
+                 and trust.casefold() in {"diagnostic", "diagnostic_log"})
+                or (isinstance(collection, str)
+                    and collection.casefold().startswith("diagnostic"))
+            ):
                 continue
             content = row.get("text")
             if not isinstance(content, str):
@@ -429,18 +441,36 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         # Current durable facts win a genuinely equal relevance score, but
         # cannot monopolize slots when documents are demonstrably stronger.
         ranked.append((score, kind != "fact", str(item["source_id"]),
-                       str(item["chunk_id"]), item))
+                       str(item["chunk_id"]), item, tokens))
     ranked.sort(key=lambda row: (-row[0], row[1], row[2], row[3]))
 
+    # Relevance alone can fill every evidence slot with near-identical question
+    # restatements. Diversify by passage-token overlap after the first strong
+    # hit, without deleting any source, overriding revisions, or merging
+    # conflicting facts. All candidates retain their authoritative identities.
     selected = []
-    for _, _, _, _, item in ranked:
-        if len(selected) >= EVIDENCE_ITEM_CAP:
-            break
+    selected_tokens = []
+    remaining = list(ranked)
+    while remaining and len(selected) < EVIDENCE_ITEM_CAP:
+        best_at = 0
+        best_score = float("-inf")
+        for pos, (relevance, _is_doc, _source, _chunk, _item, tokens) in enumerate(remaining):
+            redundancy = max(
+                (len(tokens & prior) / len(tokens | prior)
+                 for prior in selected_tokens if tokens or prior),
+                default=0.0,
+            )
+            effective = relevance - 0.65 * redundancy
+            # Original rank is the deterministic tie break, preserving
+            # fact-first and source-order behavior for truly equal scores.
+            if effective > best_score + 1e-12:
+                best_at, best_score = pos, effective
+        _, _, _, _, item, tokens = remaining.pop(best_at)
         fitted = _fit_evidence_item(selected, item, query_set)
         if fitted is None:
-            # Still refuse to let one unreclaimable blob hide later smaller hits.
             continue
         selected.append(fitted)
+        selected_tokens.append(tokens)
     store = {}
     if hasattr(adapter, "store_identity"):
         try:

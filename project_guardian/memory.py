@@ -139,6 +139,18 @@ class MemoryCore:
             "persistence_blocked": self.persistence_blocked,
             "last_load_error": self.last_load_error,
         }
+
+    def fence_persistence_until_reload(self, reason: str) -> None:
+        """Block further primary writes until an explicit successful reload.
+
+        Used when a writer detects that on-disk primary bytes no longer match the
+        receipt it just obtained (for example an interleaved external commit).
+        The authoritative file is left untouched; only this instance is fenced.
+        """
+        message = (reason or "Primary commit no longer verifiable; explicit reload required")[:200]
+        with self._save_file_lock:
+            self.persistence_blocked = True
+            self.last_load_error = message
     
     def _build_vector_index(self):
         """Build vector index from existing memories (lazy, called on first use or if EMBED_ON_STARTUP=true)."""

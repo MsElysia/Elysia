@@ -205,3 +205,51 @@ def test_identical_content_metadata_and_timestamp_still_require_a_fresh_receipt(
     monkeypatch.setattr(e.json_memory, "remember", lambda *a, **k: None)
     e.remember(TEXT, "fact", 0.9, {"source": "identical"})
     assert e.vector_memory.index.ntotal == 2
+
+
+def test_detected_primary_checksum_mismatch_fences_stale_writer_until_reload(tmp_path, monkeypatch):
+    """Issue #206: a stale writer that detects an interleaved commit must not retry-overwrite it."""
+    path = tmp_path / "primary.json"
+    a = engine(tmp_path)
+    b = engine(tmp_path)
+    external = "Synthetic external writer record that must not be lost."
+    first = "Synthetic first writer record for checksum fence."
+    retry = "Synthetic retry after detected checksum mismatch must fail."
+    after_reload = "Synthetic write after explicit reload is allowed."
+    original_hash = VectorMemory._file_sha256
+    interleaved = {"done": False}
+
+    def hash_after_external_write(target):
+        if not interleaved["done"]:
+            interleaved["done"] = True
+            b.json_memory.load()
+            b.json_memory.remember(external, "fact", 0.9, {"writer": "b"})
+        return original_hash(target)
+
+    monkeypatch.setattr(VectorMemory, "_file_sha256", staticmethod(hash_after_external_write))
+    with pytest.raises(RuntimeError, match="no longer verifiable"):
+        a.remember(first, "fact", 0.9, {"writer": "a"})
+    monkeypatch.setattr(VectorMemory, "_file_sha256", staticmethod(original_hash))
+
+    after_detection = json.loads(path.read_text(encoding="utf-8"))
+    assert a.json_memory.persistence_blocked is True
+    assert external in {row["thought"] for row in after_detection}
+    assert first in {row["thought"] for row in after_detection}
+
+    with pytest.raises(RuntimeError, match="persistence blocked"):
+        a.remember(retry, "fact", 0.9, {"writer": "a-retry"})
+    after_retry = json.loads(path.read_text(encoding="utf-8"))
+    assert [row["thought"] for row in after_retry] == [row["thought"] for row in after_detection]
+    assert external in {row["thought"] for row in after_retry}
+    assert retry not in {row["thought"] for row in after_retry}
+
+    a.json_memory.load()
+    assert a.json_memory.persistence_blocked is False
+    a.remember(after_reload, "fact", 0.9, {"writer": "a-reloaded"})
+    final = json.loads(path.read_text(encoding="utf-8"))
+    thoughts = [row["thought"] for row in final]
+    assert external in thoughts
+    assert first in thoughts
+    assert after_reload in thoughts
+    assert retry not in thoughts
+    assert engine(tmp_path).json_memory.dump_all() == final

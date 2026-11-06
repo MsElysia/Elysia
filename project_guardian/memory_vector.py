@@ -982,6 +982,9 @@ class EnhancedMemoryCore:
                 logger.warning("Enhanced memory primary receipt does not match intended write")
                 return
             if os.path.abspath(primary.filepath) != path or VectorMemory._file_sha256(path) != checksum:
+                primary.fence_persistence_until_reload(
+                    "Enhanced memory primary commit no longer verifiable; explicit reload required"
+                )
                 raise RuntimeError("Enhanced memory primary commit no longer verifiable")
             if self.vector_memory:
                 self.vector_memory.add_memory(

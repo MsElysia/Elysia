@@ -497,3 +497,8 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product API — dry-run implementation lifecycle
+
+- `POST /api/proposals/<id>/implement` with `{"dry_run": true}` still previews the plan, and it no longer stores the proposal as `implemented` or `implementation_status: completed`. The response reports `dry_run: true`, `status_unchanged: true`, and the unchanged lifecycle status. A history note records the dry run. A live `{"dry_run": false}` run still writes the planned file and stores `implemented`.
+- Contract: `tests/test_runtime_api_implement_dry_run_lifecycle.py` (Flask client and live Werkzeug HTTP, real `ProposalSystem` and `ImplementerAgent`, fictional proposals, no external services).

@@ -121,21 +121,27 @@ class ImplementerAgent:
 
         logger.info(f"Parsed {len(steps)} implementation steps")
 
-        # 4. Transition to in_implementation
-        success, error = self.proposal_system.transition_status(
-            proposal_id, "in_implementation", actor="Elysia-Implementer"
-        )
-        if not success:
-            logger.warning(f"Failed to transition status: {error}")
+        # 4. A dry run only previews steps. It must not move the proposal
+        # into implementation or record it as implemented.
+        original_implementation_status = proposal.get("implementation_status")
+        if not self.dry_run:
+            success, error = self.proposal_system.transition_status(
+                proposal_id, "in_implementation", actor="Elysia-Implementer"
+            )
+            if not success:
+                logger.warning(f"Failed to transition status: {error}")
 
-        # Update implementation_status
-        self._update_implementation_status(proposal_id, "in_progress")
+            self._update_implementation_status(proposal_id, "in_progress")
 
         if self.event_bus:
             self.event_bus.emit(
                 "implementer",
                 "started",
-                {"proposal_id": proposal_id, "steps_total": len(steps)},
+                {
+                    "proposal_id": proposal_id,
+                    "steps_total": len(steps),
+                    "dry_run": bool(self.dry_run),
+                },
             )
 
         # 5. Execute steps
@@ -194,6 +200,45 @@ class ImplementerAgent:
 
         # 6. Finalize result
         if steps_failed == 0 and steps_completed == len(steps):
+            if self.dry_run:
+                self._add_history_entry(
+                    proposal_id,
+                    "Elysia-Implementer",
+                    "Dry run completed; proposal status unchanged",
+                    {
+                        "tasks_completed": steps_completed,
+                        "tasks_failed": steps_failed,
+                        "tasks_total": len(steps),
+                        "dry_run": True,
+                    },
+                )
+                stored = self.proposal_system.get_proposal(proposal_id) or {}
+                if self.event_bus:
+                    self.event_bus.emit(
+                        "implementer",
+                        "dry_run_completed",
+                        {
+                            "proposal_id": proposal_id,
+                            "steps_completed": steps_completed,
+                            "steps_total": len(steps),
+                            "lifecycle_status": stored.get("status"),
+                        },
+                    )
+                return {
+                    "success": True,
+                    "dry_run": True,
+                    "status_unchanged": (
+                        stored.get("status") == status
+                        and stored.get("implementation_status") == original_implementation_status
+                    ),
+                    "lifecycle_status": stored.get("status"),
+                    "implementation_status": stored.get("implementation_status"),
+                    "steps_completed": steps_completed,
+                    "steps_total": len(steps),
+                    "diff_summary": None,
+                    "step_results": step_results,
+                }
+
             # All steps succeeded
             self._update_implementation_status(proposal_id, "completed")
             success_transition, _ = self.proposal_system.transition_status(

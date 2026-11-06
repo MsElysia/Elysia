@@ -253,3 +253,71 @@ def test_detected_primary_checksum_mismatch_fences_stale_writer_until_reload(tmp
     assert after_reload in thoughts
     assert retry not in thoughts
     assert engine(tmp_path).json_memory.dump_all() == final
+
+
+@pytest.mark.parametrize("fault, error", [
+    ("missing", FileNotFoundError),
+    ("read_error", PermissionError),
+    ("changed_path", RuntimeError),
+    ("corrupt", RuntimeError),
+])
+def test_uncertain_primary_verification_fences_stale_retry_until_reload(tmp_path, monkeypatch, fault, error):
+    path = tmp_path / "primary.json"
+    alternate = tmp_path / "alternate.json"
+    stale = engine(tmp_path)
+    second = engine(tmp_path)
+    original_hash = VectorMemory._file_sha256
+    saved = None
+    corrupt = b"{invalid JSON"
+
+    def verify_after_second_write(target):
+        nonlocal saved
+        receipt_hash = original_hash(target)
+        second.json_memory.load()
+        second.json_memory.remember(TEXT + " second", "fact", 0.9)
+        saved = path.read_bytes()
+        if fault == "missing":
+            path.unlink()
+        elif fault == "read_error":
+            raise PermissionError("synthetic checksum read error")
+        elif fault == "changed_path":
+            stale.json_memory.filepath = str(alternate)
+            return receipt_hash
+        else:
+            path.write_bytes(corrupt)
+        return original_hash(target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(VectorMemory, "_file_sha256", staticmethod(verify_after_second_write))
+        with pytest.raises(error):
+            stale.remember(TEXT + " first", "fact", 0.9)
+
+    assert saved is not None
+    assert [row["thought"] for row in json.loads(saved)] == [TEXT + " first", TEXT + " second"]
+    assert stale.json_memory.persistence_blocked
+    assert stale.vector_memory.index.ntotal == 0
+
+    if fault in {"missing", "corrupt"}:
+        stale.json_memory.load()
+        with pytest.raises(RuntimeError, match="persistence blocked"):
+            stale.remember(TEXT + " retry", "fact", 0.9)
+        if fault == "missing":
+            assert not path.exists()
+        else:
+            assert path.read_bytes() == corrupt
+        path.write_bytes(saved)
+    elif fault == "changed_path":
+        with pytest.raises(RuntimeError, match="persistence blocked"):
+            stale.remember(TEXT + " retry", "fact", 0.9)
+        assert not alternate.exists()
+        stale.json_memory.filepath = str(path)
+
+    with pytest.raises(RuntimeError, match="persistence blocked"):
+        stale.remember(TEXT + " retry", "fact", 0.9)
+    assert path.read_bytes() == saved
+
+    stale.json_memory.load()
+    stale.remember(TEXT + " recovered", "fact", 0.9)
+    rows = json.loads(path.read_bytes())
+    assert rows[:2] == json.loads(saved)
+    assert [row["thought"] for row in rows[2:]] == [TEXT + " recovered"]

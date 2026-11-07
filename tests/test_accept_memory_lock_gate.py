@@ -135,3 +135,143 @@ def test_genuine_pytest_is_not_imported_from_repository_shadow(tmp_path):
                              capture_output=True, timeout=15, check=True)
     assert str(tmp_path) not in checked.stdout
     assert "site-packages" in checked.stdout or "dist-packages" in checked.stdout
+
+
+
+@pytest.mark.parametrize("status", ["SKIPPED", "FAIL", "ERROR"])
+def test_junit_rejects_nonpassing_status(tmp_path, status):
+    path = tmp_path / "junit.xml"
+    xml_report(path, ["test_write_restarts_with_authoritative_memory"], status=status)
+    cases, errors = gate.summary_from_junit(path)
+    _, missing = gate.audit_required_cases(cases)
+    assert errors
+    assert missing
+    assert cases["test_write_restarts_with_authoritative_memory"] == [status]
+
+
+def test_junit_wrong_file_missing_suite_counts_and_bad_root(tmp_path):
+    path = tmp_path / "junit.xml"
+    name = "test_write_restarts_with_authoritative_memory"
+    xml_report(path, [name])
+    tree = ET.parse(path)
+    case = next(tree.iter("testcase"))
+    case.set("file", "tests/foreign.py")
+    tree.write(path)
+    _, errors = gate.summary_from_junit(path)
+    assert any("file provenance" in value for value in errors)
+    tree = ET.parse(path)
+    suite = next(tree.iter("testsuite"))
+    suite.set("tests", "99")
+    tree.write(path)
+    _, errors = gate.summary_from_junit(path)
+    assert any("counts" in value for value in errors)
+    suite.attrib.pop("tests")
+    tree.write(path)
+    _, errors = gate.summary_from_junit(path)
+    assert any("metadata" in value for value in errors)
+    ET.ElementTree(ET.Element("not-junit")).write(path)
+    with pytest.raises(ValueError, match="root"):
+        gate.summary_from_junit(path)
+
+
+def test_required_case_audit_rejects_zero_missing_deselected_and_duplicates():
+    required = [name for scenario in gate.SCENARIOS.values()
+                for name, count in scenario.items() for _ in range(count)]
+    assert len(required) == 30
+    complete = {}
+    for name in required:
+        complete.setdefault(name, []).append("PASS")
+    good, errors = gate.audit_required_cases(complete)
+    assert not errors
+    assert len(good) == 9
+    assert all(entry["status"] == "PASS" for entry in good.values())
+    zero, errors = gate.audit_required_cases({})
+    assert errors and all(entry["status"] == "FAIL" for entry in zero.values())
+    for altered in (required[1:], required + [required[0]], ["renamed_" + value for value in required]):
+        observed = {}
+        for value in altered:
+            observed.setdefault(value, []).append("PASS")
+        groups, failures = gate.audit_required_cases(observed)
+        assert failures
+        assert any(entry["status"] == "FAIL" for entry in groups.values())
+
+
+def _minimal_synthetic_checkout(tmp_path):
+    root = tmp_path / "independent_synthetic_checkout"
+    (root / "scripts").mkdir(parents=True)
+    (root / "tests").mkdir()
+    shutil.copy2(ROOT / "scripts" / "accept_memory_lock.py",
+                 root / "scripts" / "accept_memory_lock.py")
+    test = root / "tests" / "test_memory_integrity_windows.py"
+    test.write_text("def test_real_failure():\n    assert False\n", encoding="utf-8")
+    run(["git", "init", "-q"], root)
+    run(["git", "config", "user.email", "synthetic@example.invalid"], root)
+    run(["git", "config", "user.name", "Synthetic Source"], root)
+    run(["git", "add", "scripts/accept_memory_lock.py",
+         "tests/test_memory_integrity_windows.py"], root)
+    run(["git", "commit", "-qm", "source under synthetic gate"], root)
+    sha = run(["git", "rev-parse", "HEAD"], root).stdout.strip()
+    return root, sha, test
+
+
+def _invoke_synthetic(root, sha):
+    return subprocess.run(
+        [sys.executable, "-I", "-B", "scripts/accept_memory_lock.py",
+         "--expected-sha", sha], cwd=root, text=True, capture_output=True,
+        timeout=30,
+    )
+
+
+def _sole_report(root):
+    docs = list((root / "REPORTS" / "memory-lock").glob("*.json"))
+    assert len(docs) == 1
+    return json.loads(docs[0].read_text(encoding="utf-8"))
+
+
+def test_wrong_sha_and_tracked_dirty_exit_before_pytest(tmp_path):
+    other = tmp_path / "wrong"
+    other.mkdir()
+    root, sha, tracked_test = _minimal_synthetic_checkout(other)
+    wrong = _invoke_synthetic(root, "0" * 40)
+    assert wrong.returncode != 0
+    report = _sole_report(root)
+    assert report["status"] == "FAIL"
+    assert report["tests"] == {}
+    assert any("SHA" in x for x in report["errors"])
+    # Existing evidence JSON may be left between runs without becoming source.
+    tracked_test.write_text("def test_changed():\n    assert False\n", encoding="utf-8")
+    dirty = _invoke_synthetic(root, sha)
+    assert dirty.returncode != 0
+    reports = sorted((root / "REPORTS" / "memory-lock").glob("*.json"))
+    assert len(reports) == 2
+    last = json.loads(reports[-1].read_text(encoding="utf-8"))
+    assert last["source_clean"] is False
+    assert last["tests"] == {}
+
+
+def test_no_git_identity_and_unwritable_report_exit_nonzero(tmp_path):
+    root = tmp_path / "missing_git"
+    (root / "scripts").mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "accept_memory_lock.py",
+                 root / "scripts" / "accept_memory_lock.py")
+    attempt = _invoke_synthetic(root, "0" * 40)
+    assert attempt.returncode != 0
+    assert _sole_report(root)["status"] == "FAIL"
+
+    base = tmp_path / "blocked_evidence"
+    base.mkdir()
+    checked, sha, _ = _minimal_synthetic_checkout(base)
+    (checked / "REPORTS").mkdir()
+    (checked / "REPORTS" / "memory-lock").write_text("synthetic obstruction", encoding="utf-8")
+    attempt = _invoke_synthetic(checked, sha)
+    assert attempt.returncode != 0
+    assert "Unable to preserve evidence" in attempt.stderr
+
+
+def test_missing_and_malformed_junit_is_not_accepted(tmp_path):
+    path = tmp_path / "missing.xml"
+    with pytest.raises(OSError):
+        gate.summary_from_junit(path)
+    path.write_text("<not-closed", encoding="utf-8")
+    with pytest.raises(ET.ParseError):
+        gate.summary_from_junit(path)

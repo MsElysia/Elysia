@@ -22,6 +22,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_in_root_proposal_dir(path: Path) -> bool:
+    """True only for a regular directory whose metadata.json leaf is not a symlink.
+
+    get_status() previously counted directory-symlink folders and folders whose
+    metadata.json was a file symlink as in-root proposals. Skip those leaves
+    without following them. This does not change proposal_system load/save/list.
+    """
+    try:
+        if path.is_symlink() or not path.is_dir():
+            return False
+        metadata = path / "metadata.json"
+        if metadata.is_symlink() or not metadata.exists():
+            return False
+    except OSError:
+        return False
+    return True
+
+
 class ElysiaRuntime:
     """High-level orchestration layer for Architect-Core + agents + API."""
 
@@ -222,10 +240,11 @@ class ElysiaRuntime:
             try:
                 proposals_root = self.proposal_system.proposals_root
                 if proposals_root.exists():
-                    # Ultra-fast: just count directories with metadata.json
+                    # Count only regular in-root folders; skip planted symlinks.
                     proposal_count = sum(
-                        1 for p in proposals_root.iterdir()
-                        if p.is_dir() and (p / "metadata.json").exists()
+                        1
+                        for p in proposals_root.iterdir()
+                        if _is_in_root_proposal_dir(p)
                     )
             except Exception as e:
                 logger.debug(f"Error counting proposals: {e}")

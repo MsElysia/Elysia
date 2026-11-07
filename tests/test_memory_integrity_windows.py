@@ -171,6 +171,7 @@ def test_two_loaded_instances_never_erase_external_commit(tmp_path):
     assert path.read_bytes() == peer_bytes
     assert MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all() == peer_records
     assert stale.persistence_blocked
+    assert stale.get_memory_stats()["memory_count_authoritative"] is False
     with pytest.raises(RuntimeError):
         stale.remember("Synthetic stale retry also must not overwrite peer", priority=0.9)
     assert path.read_bytes() == peer_bytes
@@ -366,3 +367,37 @@ def test_external_commit_during_temp_write_rechecked_before_replace(tmp_path, mo
     assert [r["thought"] for r in MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all()] == [
         "Synthetic peer saved while stale temporary file staged"
     ]
+
+
+def test_separate_process_writer_commit_survives_stale_parent(tmp_path):
+    """Real child Python process, not just threads sharing a process lock."""
+    import subprocess
+    path, stale = _store(tmp_path)
+    script = """
+import sys
+import types
+from pathlib import Path
+root = Path.cwd()
+package = types.ModuleType("project_guardian")
+package.__path__ = [str(root / "project_guardian")]
+package.__package__ = "project_guardian"
+sys.modules["project_guardian"] = package
+from project_guardian.memory import MemoryCore
+worker = MemoryCore(filepath=sys.argv[1], enable_timeline_logging=False, enable_vector_search=False)
+worker.remember("Synthetic independently launched child process record must survive", priority=0.9)
+"""
+    subprocess.run(
+        [sys.executable, "-c", script, str(path)],
+        cwd=str(_ROOT),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    committed_bytes = path.read_bytes()
+    with pytest.raises(RuntimeError, match="stale|changed|reload"):
+        stale.remember("Synthetic parent stale after child process", priority=0.9)
+    assert path.read_bytes() == committed_bytes
+    assert MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all()[0]["thought"] == (
+        "Synthetic independently launched child process record must survive"
+    )

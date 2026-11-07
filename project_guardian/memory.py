@@ -725,7 +725,7 @@ class MemoryCore:
         Returns:
             Dictionary with memory statistics
         """
-        if not self.loaded:
+        if not self.loaded or self.persistence_blocked:
             return {
                 "total_memories": None,
                 "categories": {},

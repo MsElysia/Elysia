@@ -95,16 +95,23 @@ def clean_source_issues() -> list[str]:
             continue
         issues.append("Tracked change or untracked source detected")
         break
-    # An ignored Python module is also executable source. In particular,
-    # git status alone will not reveal ignored ci_stubs/pytest.py.
-    ignored = git("ls-files", "--others", "--ignored", "--exclude-standard",
-                  "--", "scripts", "tests", "ci_stubs", "*.py")
-    for path in ignored.splitlines():
+    # Ignored files can be active pytest configuration or importable modules
+    # even outside conventional source folders (e.g. extra/forged_plugin.py).
+    # Inspect ALL ignored paths with NUL delimiters, not merely ci_stubs/tests.
+    ignored = git("ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+    executable_extensions = (".py", ".pyw", ".pyi", ".pyc", ".pth",
+                             ".pyd", ".so", ".dll", ".zip", ".egg", ".whl")
+    pytest_config_names = {"pytest.ini", ".pytest.ini", "pyproject.toml",
+                           "tox.ini", "setup.cfg"}
+    for path in ignored.split("\0"):
+        if not path:
+            continue
         normalized = path.replace("\\", "/").lower()
-        if (normalized.endswith((".py", ".pyw", ".pyi", ".pth", ".pyd", ".so", ".dll"))
-                and ("/" not in normalized
-                     or normalized.startswith(("scripts/", "tests/", "ci_stubs/")))):
-            issues.append("Ignored executable source detected")
+        basename = normalized.rsplit("/", 1)[-1]
+        if (basename in pytest_config_names
+                or normalized.endswith(executable_extensions)
+                or basename == "conftest.py"):
+            issues.append("Ignored pytest config or executable source detected")
             break
     return issues
 
@@ -276,10 +283,18 @@ def main() -> int:
                 xml = temp / "pytest.xml"
                 env = isolated_pytest_environment()
                 ensure_installed_pytest(env)
+                # A repo pytest.ini/addopts/pythonpath can explicitly load a
+                # collection plugin even with -I and plugin auto-load disabled.
+                # This minimal config is created outside the repo, with a
+                # pinned --rootdir for stable JUnit module provenance.
+                trusted_ini = temp / "isolated-pytest.ini"
+                trusted_ini.write_text("[pytest]\naddopts =\n", encoding="utf-8")
                 cmd = [
-                    sys.executable, "-I", "-B", "-m", "pytest", "--noconftest", "-q",
-                    "-rs", "-p", "no:cacheprovider", f"--basetemp={temp / 'cases'}",
-                    f"--junitxml={xml}", "tests/test_memory_integrity_windows.py",
+                    sys.executable, "-I", "-B", "-m", "pytest",
+                    "-c", str(trusted_ini), "--rootdir", str(ROOT),
+                    "--noconftest", "-q", "-rs", "-p", "no:cacheprovider",
+                    f"--basetemp={temp / 'cases'}", f"--junitxml={xml}",
+                    "tests/test_memory_integrity_windows.py",
                 ]
                 completed = subprocess.run(cmd, cwd=ROOT, env=env, text=True,
                                            capture_output=True, timeout=180)

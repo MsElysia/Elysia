@@ -348,24 +348,33 @@ def test_stale_rejection_never_publishes_vector_or_timeline(tmp_path):
 
 
 def test_external_commit_during_temp_write_rechecked_before_replace(tmp_path, monkeypatch):
-    path, stale = _store(tmp_path)
+    """A second participating writer cannot commit during an in-progress save."""
+    path, primary = _store(tmp_path)
     peer = MemoryCore(filepath=str(path), enable_timeline_logging=False)
-    original_check = stale._assert_primary_unchanged
+    peer._primary_lock_timeout_seconds = 0.15
+    original_check = primary._assert_primary_unchanged
     checks = [0]
 
     def interleave_peer_commit():
         checks[0] += 1
         if checks[0] == 2:
-            peer.remember("Synthetic peer saved while stale temporary file staged", priority=0.9)
+            with pytest.raises(RuntimeError, match="lock unavailable|reload"):
+                peer.remember("Synthetic peer cannot pass primary active lock", priority=0.9)
+            assert peer.persistence_blocked
         return original_check()
 
     with monkeypatch.context() as patch:
-        patch.setattr(stale, "_assert_primary_unchanged", interleave_peer_commit)
-        with pytest.raises(RuntimeError, match="stale|reload|changed"):
-            stale.remember("Synthetic staging race must not erase peer", priority=0.9)
+        patch.setattr(primary, "_assert_primary_unchanged", interleave_peer_commit)
+        primary.remember("Synthetic primary commits while lock held", priority=0.9)
     assert checks[0] >= 2
+    with pytest.raises(RuntimeError, match="blocked"):
+        peer.remember("Synthetic peer must reload after lock timeout", priority=0.9)
+    peer.load()
+    assert not peer.persistence_blocked
+    peer.remember("Synthetic peer commits after primary completes", priority=0.9)
     assert [r["thought"] for r in MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all()] == [
-        "Synthetic peer saved while stale temporary file staged"
+        "Synthetic primary commits while lock held",
+        "Synthetic peer commits after primary completes",
     ]
 
 
@@ -491,7 +500,6 @@ MemoryCore(filepath=sys.argv[1], enable_timeline_logging=False, enable_vector_se
             f"child_completed_before_parent_replace={child_completed_before_parent_replace[0]} "
             f"records={records!r}"
         )
-        assert path.read_bytes() == path.read_bytes()  # Primary remains readable after both commits.
         assert not restarted.persistence_blocked
     finally:
         if child is not None and child.poll() is None:

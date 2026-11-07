@@ -537,6 +537,8 @@ class MemoryCore:
         """Clear the primary store only when preservation state is healthy."""
         self.load_if_needed()
         with self._save_file_lock:
+            if self.persistence_blocked:
+                raise RuntimeError("MemoryCore persistence blocked: explicit reload required")
             with self._primary_process_lock():
                 if self.persistence_blocked:
                     raise RuntimeError("MemoryCore persistence blocked: cannot delete unreadable history")
@@ -683,6 +685,8 @@ class MemoryCore:
 
         self.load_if_needed()
         with self._save_file_lock:
+            if self.persistence_blocked:
+                raise RuntimeError("MemoryCore persistence blocked: explicit reload required")
             with self._primary_process_lock():
                 if self.persistence_blocked:
                     raise RuntimeError("MemoryCore persistence blocked: repair/reload original history first")

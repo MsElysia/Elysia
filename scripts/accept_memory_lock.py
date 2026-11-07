@@ -196,6 +196,33 @@ def summary_from_junit(filename: Path) -> tuple[dict[str, list[str]], list[str]]
     return found, bad
 
 
+def audit_required_cases(cases: dict[str, list[str]]) -> tuple[dict, list[str]]:
+    """Every required name must occur the exact declared number of times."""
+    details_by_scenario: dict = {}
+    bad: list[str] = []
+    for label, required in SCENARIOS.items():
+        details = {}
+        for name, count in required.items():
+            observed = cases.get(name, [])
+            details[name] = {
+                "expected": count,
+                "observed": len(observed),
+                "passed": sum(x == "PASS" for x in observed),
+            }
+            if len(observed) != count or any(x != "PASS" for x in observed):
+                bad.append(f"Required acceptance case missing, skipped or failed: {name}")
+        details_by_scenario[label] = {
+            "status": "PASS" if all(
+                value["observed"] == value["expected"]
+                and value["passed"] == value["expected"]
+                for value in details.values()) else "FAIL",
+            "cases": details,
+        }
+    if not cases:
+        bad.append("Zero test cases executed")
+    return details_by_scenario, bad
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-sha", help="Exact checked-out source SHA, for CI")
@@ -265,25 +292,9 @@ def main() -> int:
                 else:
                     cases, bad = summary_from_junit(xml)
                     errors.extend(bad)
-                    for label, required in SCENARIOS.items():
-                        details = {}
-                        for name, count in required.items():
-                            observed = cases.get(name, [])
-                            details[name] = {
-                                "expected": count, "observed": len(observed),
-                                "passed": sum(x == "PASS" for x in observed),
-                            }
-                            if len(observed) != count or any(x != "PASS" for x in observed):
-                                errors.append(f"Required acceptance case missing/failed: {name}")
-                        report["tests"][label] = {
-                            "status": "PASS" if all(
-                                value["observed"] == value["expected"]
-                                and value["passed"] == value["expected"]
-                                for value in details.values()) else "FAIL",
-                            "cases": details,
-                        }
-                    if not cases:
-                        errors.append("Zero test cases executed")
+                    audited, missing = audit_required_cases(cases)
+                    report["tests"].update(audited)
+                    errors.extend(missing)
         except (OSError, subprocess.SubprocessError, ET.ParseError, ValueError, RuntimeError) as exc:
             errors.append(f"Acceptance runner failed ({type(exc).__name__})")
 

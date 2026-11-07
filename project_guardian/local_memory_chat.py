@@ -368,14 +368,26 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         for row in DocumentLibrary(adapter.memory).search(question):
             if not isinstance(row, dict):
                 continue
-            # Diagnostic log chunks use a separate collection/categories and must
-            # never enter ordinary personal-memory / chat evidence retrieval.
-            trust = row.get("trust")
-            if trust is not None and not isinstance(trust, str):
+            # Diagnostic metadata is untrusted imported text; normalize only
+            # the labels used to classify it, never the original source.
+            trust, collection = row.get("trust"), row.get("collection")
+            if (
+                (trust is not None and not isinstance(trust, str))
+                or (collection is not None and not isinstance(collection, str))
+            ):
                 continue
-            if trust in {"diagnostic_log", "diagnostic"} or str(
-                row.get("collection") or ""
-            ).startswith("diagnostic"):
+            trust_label = (
+                re.sub(r"[\s-]+", "_", trust.strip().casefold())
+                if isinstance(trust, str) else ""
+            )
+            collection_label = (
+                re.sub(r"[\s-]+", "_", collection.strip().casefold())
+                if isinstance(collection, str) else ""
+            )
+            if (
+                trust_label in {"diagnostic", "diagnostic_log"}
+                or collection_label.startswith("diagnostic")
+            ):
                 continue
             content = row.get("text")
             if not isinstance(content, str):

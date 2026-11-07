@@ -418,3 +418,82 @@ def test_explicit_reload_does_not_accept_missing_previously_loaded_primary(tmp_p
     memory.load()
     assert not memory.persistence_blocked
     assert len(memory.dump_all()) == 1
+
+
+@pytest.mark.parametrize("repeat", [0, 1])
+def test_process_race_after_last_checksum_before_replace(tmp_path, monkeypatch, repeat):
+    """Real MemoryCore: child saves precisely while parent's replace is intercepted.
+
+    Before the process-wide repair, child B finishes and A destroys its bytes.
+    After the repair, B waits on the same lock, then loads A and saves both.
+    """
+    import os
+    import subprocess
+
+    path = tmp_path / f"synthetic_race_{repeat}.json"
+    parent = MemoryCore(filepath=str(path), enable_timeline_logging=False, enable_vector_search=False)
+    child_thought = f"Synthetic child concurrent protected entry {repeat}"
+    parent_thought = f"Synthetic parent concurrently protected entry {repeat}"
+    script = """
+import sys
+import types
+from pathlib import Path
+root = Path.cwd()
+pkg = types.ModuleType("project_guardian")
+pkg.__path__ = [str(root / "project_guardian")]
+pkg.__package__ = "project_guardian"
+sys.modules["project_guardian"] = pkg
+from project_guardian.memory import MemoryCore
+MemoryCore(filepath=sys.argv[1], enable_timeline_logging=False, enable_vector_search=False).remember(
+    sys.argv[2], priority=0.9
+)
+"""
+    real_replace = os.replace
+    child = None
+    intercepted = [0]
+    child_completed_before_parent_replace = [False]
+
+    def intercept_parent_replace(src, dst):
+        nonlocal child
+        if str(dst) == str(path) and intercepted[0] == 0:
+            intercepted[0] += 1
+            # This hook is in the REAL _save() after its last digest check.
+            child = subprocess.Popen(
+                [sys.executable, "-c", script, str(path), child_thought],
+                cwd=str(_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                # Without a lock, B completes DURING this window and loses data.
+                # With the lock, B is blocked until A finishes replacing.
+                child.wait(timeout=2.5)
+                child_completed_before_parent_replace[0] = True
+            except subprocess.TimeoutExpired:
+                pass
+        return real_replace(src, dst)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "replace", intercept_parent_replace)
+            parent.remember(parent_thought, priority=0.9)
+        assert intercepted[0] == 1, "Actual MemoryCore os.replace was not intercepted"
+        assert child is not None
+        out, err = child.communicate(timeout=20)
+        assert child.returncode == 0, (out, err)
+        restarted = MemoryCore(
+            filepath=str(path), enable_timeline_logging=False, enable_vector_search=False,
+        )
+        records = [entry["thought"] for entry in restarted.dump_all()]
+        assert records == [parent_thought, child_thought], (
+            "Real child writer acknowledged a commit that parent overwrote; "
+            f"child_completed_before_parent_replace={child_completed_before_parent_replace[0]} "
+            f"records={records!r}"
+        )
+        assert path.read_bytes() == path.read_bytes()  # Primary remains readable after both commits.
+        assert not restarted.persistence_blocked
+    finally:
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.communicate(timeout=10)

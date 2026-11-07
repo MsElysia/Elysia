@@ -385,11 +385,11 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
             # Imported diagnostic labels may have padding or different
             # separators. Classify normalized copies; never alter provenance.
             trust_label = (
-                re.sub(r"[\\s-]+", "_", trust.strip().casefold())
+                re.sub(r"[\s-]+", "_", trust.strip().casefold())
                 if isinstance(trust, str) else ""
             )
             collection_label = (
-                re.sub(r"[\\s-]+", "_", collection.strip().casefold())
+                re.sub(r"[\s-]+", "_", collection.strip().casefold())
                 if isinstance(collection, str) else ""
             )
             if (

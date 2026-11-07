@@ -1,6 +1,8 @@
 """Real local extraction/persistence; no model or network required."""
+import hashlib
 import io
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -114,6 +116,59 @@ def test_upload_api_requires_operator_and_preserves_sources(tmp_path):
     assert FACT not in json.dumps(status['events'])
     assert 'blank_console_note' in status
     assert client.get('/api/documents', headers=_auth(panel), environ_overrides={'REMOTE_ADDR': '203.0.113.3'}).status_code == 403
+
+
+
+def _seed_hard_link(sentinel, planted):
+    """Place a same-volume hard link, not a symlink, in the managed area."""
+    sentinel.write_bytes(b'outside-library-sentinel-must-survive')
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    os.link(sentinel, planted)
+    assert planted.samefile(sentinel)
+
+
+def test_preview_never_overwrites_or_deletes_preexisting_hardlink(tmp_path):
+    library = DocumentLibrary(_memory(tmp_path / 'memory.json'))
+    raw = FACT.encode('utf-8')
+    source = 'doc_' + hashlib.sha256(raw).hexdigest()
+    planted = library.root / ('_preview_' + source + '.txt')
+    sentinel = tmp_path / 'outside-preview-sentinel.txt'
+    _seed_hard_link(sentinel, planted)
+
+    preview = library.preview_bytes('compass.txt', raw)
+    assert preview['source_id'] == source
+    assert 'Veridia expedition' in preview['preview_text']
+    assert sentinel.read_bytes() == b'outside-library-sentinel-must-survive'
+    assert planted.samefile(sentinel)
+    assert not list(library.root.glob('.extract-*'))
+
+
+def test_import_never_overwrites_preexisting_worker_output_hardlink(tmp_path):
+    library = DocumentLibrary(_memory(tmp_path / 'memory.json'))
+    raw = FACT.encode('utf-8')
+    source = 'doc_' + hashlib.sha256(raw).hexdigest()
+    planted = library.root / (source + '.extracted.json')
+    sentinel = tmp_path / 'outside-import-sentinel.json'
+    _seed_hard_link(sentinel, planted)
+
+    receipt = library.import_bytes('compass.txt', raw)
+    assert receipt['status'] == 'completed'
+    assert (library.root / receipt['managed_copy']).read_bytes() == raw
+    assert sentinel.read_bytes() == b'outside-library-sentinel-must-survive'
+    assert planted.samefile(sentinel)
+    assert not list(library.root.glob('.extract-*'))
+
+
+def test_worker_refuses_to_replace_existing_output_file(tmp_path):
+    library = DocumentLibrary(_memory(tmp_path / 'memory.json'))
+    raw = FACT.encode('utf-8')
+    source = tmp_path / 'input.txt'
+    output = tmp_path / 'preexisting-output.json'
+    source.write_bytes(raw)
+    output.write_bytes(b'existing-output-sentinel')
+    with pytest.raises(ImportFailure):
+        library._run_extract_worker(source, '.txt', output, len(raw))
+    assert output.read_bytes() == b'existing-output-sentinel'
 
 
 def test_model_status_does_not_confuse_configuration_with_connectivity(tmp_path, monkeypatch):

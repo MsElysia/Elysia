@@ -74,3 +74,41 @@ packet for approval. Only after approval replace release source and correct the
 shortcut. Repeat all 16 scenarios against the installed environment, using new
 synthetic documents without deleting personal memory. Record installed source
 identity and distinguish failures/incomplete scenarios from operational success.
+
+## Disposable MemoryCore sidecar-lock gate (source-only)
+
+Run from an **independent, clean Windows worktree**, not the installed release
+or personal-memory directories:
+
+```powershell
+python -B scripts/accept_memory_lock.py
+```
+
+The command exercises the existing `tests/test_memory_integrity_windows.py`
+regressions with isolated synthetic temporary files. It records exact source SHA,
+tracked worktree cleanliness, OS/Python identity and each required scenario's
+actual test count/status under `REPORTS/memory-lock/memory-lock-*.json`.
+Return code **0** means every required case passed; nonzero means tests failed,
+were missing/skipped, source identity was unavailable/dirty, or evidence could
+not be retained. A no-test outcome is **never** accepted. To pin a candidate:
+`python -B scripts/accept_memory_lock.py --expected-sha <40-char-sha>`.
+
+The normal Windows intel RC GitHub workflow also invokes this command on both
+hosted Windows and Ubuntu, retains the JSON as a GitHub Actions artifact, and
+asserts exact source SHA. This is **not** an installed/native-owner-machine test.
+
+Checks cover first write/restart, real parent-child concurrency, blocked stale
+writers/reload, 5-second-class bounded lock behavior with synthetic shorter
+timeout, missing/corrupt/unreadable files, temporary-file cleanup, restored JSON
+in a new directory without copying a lock, and persistent sidecar lifecycle.
+
+**Permission limitation:** the existing sidecar read-only and directory
+read-only scenarios use explicitly injected `PermissionError` against synthetic
+paths. They establish expected fail-closed behavior, **not a real Windows ACL
+test**. The report records `native_windows_directory_acl_tested=false`.
+Before any installed release promotion, separately verify read-only legacy
+backups/sidecars and lock permissions using a disposable operator-Windows
+checkout. Do not change operational ACLs or delete a live sidecar lock.
+
+No private stores, credentials, providers, autonomy, network traffic or installed
+runtime are exercised. Source-only PASS never equals release OPERATIONAL.

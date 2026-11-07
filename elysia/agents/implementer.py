@@ -366,9 +366,13 @@ class ImplementerAgent:
             elif step.step_type == "update_config":
                 return self._execute_update_config(step, proposal_id)
             else:
-                # Generic step - just log it
-                logger.info(f"Generic step: {step.title}")
-                return {"success": True, "step_type": "generic", "message": "Step logged but not executed"}
+                logger.info("Generic step was not executed: %s", step.title)
+                return {
+                    "success": False,
+                    "error": "Step was not executed",
+                    "step_type": "generic",
+                    "executed": False,
+                }
 
         except Exception as e:
             logger.exception(f"Error executing step {step.step_number}: {e}")
@@ -436,16 +440,13 @@ class ImplementerAgent:
         if not file_path.exists():
             return {"success": False, "error": f"File does not exist: {file_path}"}
 
-        # For now, log the modification intent
-        # In a full implementation, this would parse the step content to determine
-        # what changes to make and apply them as a diff
-        logger.info(f"Would modify file: {file_path} (modification logic not fully implemented)")
-
+        logger.info("File modification was not applied: %s", file_path)
         return {
-            "success": True,
-            "message": "File modification logged (not fully implemented)",
+            "success": False,
+            "error": "File modification was not applied",
             "file_path": str(file_path),
             "step_type": "modify_file",
+            "executed": False,
         }
 
     def _execute_add_tests(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:

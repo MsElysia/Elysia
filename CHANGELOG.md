@@ -497,3 +497,8 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product API — unexecuted implementation steps
+
+- `POST /api/proposals/<id>/implement` no longer reports success for a live step that did not run. A generic plan step returns `success: false` with `Step was not executed`. A modify or config step that finds the file but does not change it returns `success: false` with `File modification was not applied`. The proposal is stored as `implementation_failed` instead of `implemented`. A create-file step still writes the file and stores `implemented`.
+- Contract: `tests/test_runtime_api_implement_unexecuted.py` (Flask client and live Werkzeug HTTP, real `ProposalSystem` and `ImplementerAgent`, fictional proposals, no external services).

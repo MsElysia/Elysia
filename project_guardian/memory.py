@@ -658,8 +658,11 @@ class MemoryCore:
         """
         with self._save_file_lock:
             if not os.path.exists(self.filepath):
-                if self.persistence_blocked:
-                    self.last_load_error = "Previously unreadable history missing; recovery not verified"
+                if self.persistence_blocked or self._primary_digest is not None:
+                    self.persistence_blocked = True
+                    self.last_load_error = (
+                        "Previously loaded primary missing; restore original before explicit reload"
+                    )
                     return
                 self.memory_log = []
                 self._primary_digest = None

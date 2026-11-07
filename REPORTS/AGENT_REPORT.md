@@ -3577,3 +3577,42 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product API — unexecuted implementation steps (2026-11-07)
+
+**Status:** COMPLETE on this branch. Not on `main`. No PR.
+
+**Branch:** `cursor/elysia-product-workflow-gaps-0e04`
+
+**Base:** `722d8e4` (`Merge pull request #2 from MsElysia/codex/eai-safety-framework`). Not based on the events-limit, implement-status, research-status, chat-status, decision-status, implementation-result, approved-batch, status-availability, unreadable-proposal, dry_run type-check, or dry-run lifecycle branches.
+
+**Implementation commit:** `f08b7ff6077596eba3cadae435c8d4cc9a77c5a3`
+
+**Files:**
+- `elysia/agents/implementer.py`
+- `tests/test_runtime_api_implement_unexecuted.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Acceptance:** A live `POST /api/proposals/<id>/implement` with `{"dry_run": false}` must not report success or store `implemented` when the step did not run.
+- A generic plan step returns `success: false`, error `Step 1 failed: Step was not executed`, and stores `status: implementation_failed` with `implementation_status: failed`.
+- A modify step, and an add-config step, that find an existing file but do not change it return `success: false`, error `Step 1 failed: File modification was not applied`, leave the file bytes unchanged, and store `implementation_failed`.
+- A create-file step still writes the file and stores `implemented`.
+
+**Before:** Live HTTP 200 for fictional proposal `fictional-generic` was `success: true`, step message `Step logged but not executed`, stored status `implemented`. Live HTTP 200 for `fictional-modify` was `success: true`, message `File modification logged (not fully implemented)`, stored status `implemented`, and `fictional-modify-sentinel.txt` stayed `original-bytes`. The create-file control wrote `fictional-create-sentinel.txt` and stored `implemented`.
+
+**After:** `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_runtime_api_implement_unexecuted.py -v --tb=short` — 2 passed. Flask test client and live Werkzeug HTTP. Real `ProposalSystem` and `ImplementerAgent`, watcher off, fictional proposals, temporary working directory, no external services.
+
+**Limitations:**
+- This route still returns HTTP 200 when `success` is false. That status mapping stays on `origin/cursor/elysia-product-workflow-process-9429`.
+- A boolean `dry_run: true` still short-circuits to `success: true` before these checks and, on this branch, still stores `implemented`. That lifecycle fix stays on `origin/cursor/product-workflow-engineering-process-b494` (`07e1de0`).
+- The route still builds `ImplementerAgent` with `repo_root=Path(".")`.
+- Modify and config steps cannot complete a proposal through this path until a real file edit exists. They now fail closed.
+- `tests/test_implementer_agent.py::test_implementer_rejects_non_accepted_proposal` still fails on the pre-existing assertion text `not in 'accepted' status`. It was not changed. The other seven tests in that file passed.
+- Did not edit `elysia/core/proposal_system.py` or `elysia/runtime.py`. Application runtime safety today is `2f8ce84` on `origin/cursor/application-runtime-safety-bf3f` (`bc-fa725e16`, `elysia/runtime.py` and `tests/test_elysia_runtime_status_symlink_count.py` only). Did not edit `project_guardian/ui_control_panel.py`.
+
+**Queue:** `CONTROL.md` remains `CURRENT_TASK: NONE`. `TASK-0053` remains OPEN review-only on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`). Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb` on `origin/codex/limited-live-activation-wrapper`. Do not implement live memory or vector writes. Leave open memory drafts through PR #209 to their owners.
+
+**Next action:** Pick a different unclaimed API or dashboard error path. Re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`. A branch commit is not integrated product readiness.

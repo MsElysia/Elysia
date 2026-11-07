@@ -61,11 +61,9 @@ jobs:
 
       - name: Strict disposable MemoryCore lock acceptance
         env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PYTHONUTF8: "1"
           PYTHONDONTWRITEBYTECODE: "1"
-          PYTHONPATH: ${{ github.workspace }}/ci_stubs
-        run: python -B scripts/accept_memory_lock.py --expected-sha "${{ github.event.pull_request.head.sha || github.sha }}"
+        run: python -I -B scripts/accept_memory_lock.py --expected-sha "${{ github.event.pull_request.head.sha || github.sha }}"
 
       - name: Preserve MemoryCore acceptance evidence
         if: always()

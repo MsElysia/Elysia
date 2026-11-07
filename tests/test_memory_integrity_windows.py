@@ -684,3 +684,37 @@ with holder._primary_process_lock():
     assert not memory.persistence_blocked
     memory.remember("Synthetic saved after contention release and explicit reload", priority=0.9)
     assert len(MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all()) == 2
+
+
+def test_acceptance_real_readonly_sidecar_file(tmp_path):
+    """OS filesystem read-only attribute/mode, on synthetic sidecar only.
+
+    Unlike injected PermissionError, exercises the actual Windows read-only file
+    attribute and POSIX mode permission. Always restores permissions in finally.
+    """
+    import os
+    import stat
+
+    path, memory = _store(tmp_path)
+    memory.remember("Synthetic primary survives real sidecar read-only mode", priority=0.9)
+    before = path.read_bytes()
+    lock = path.with_name(path.name + ".memorycore.lock")
+    before_lock = lock.read_bytes()
+    previous_mode = stat.S_IMODE(lock.stat().st_mode)
+    try:
+        lock.chmod(stat.S_IREAD)
+        # POSIX root might bypass mode restrictions, which is not proof.
+        # Hosted Windows/Ubuntu runners use normal unprivileged users.
+        with pytest.raises(RuntimeError, match="lock unavailable|reload"):
+            blocked = MemoryCore(filepath=str(path), enable_timeline_logging=False,
+                                 enable_vector_search=False)
+            blocked.remember("Synthetic write cannot bypass read-only sidecar", priority=0.9)
+    finally:
+        lock.chmod(previous_mode | stat.S_IWRITE | stat.S_IREAD)
+    assert path.read_bytes() == before
+    assert lock.read_bytes() == before_lock
+    restarted = MemoryCore(filepath=str(path), enable_timeline_logging=False,
+                           enable_vector_search=False)
+    assert not restarted.persistence_blocked
+    restarted.remember("Synthetic primary commits when read-only sidecar restored", priority=0.9)
+    assert len(MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all()) == 2

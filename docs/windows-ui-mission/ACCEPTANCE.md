@@ -81,7 +81,7 @@ Run from an **independent, clean Windows worktree**, not the installed release
 or personal-memory directories:
 
 ```powershell
-python -B scripts/accept_memory_lock.py
+python -I -B scripts/accept_memory_lock.py
 ```
 
 The command exercises the existing `tests/test_memory_integrity_windows.py`
@@ -91,7 +91,7 @@ actual test count/status under `REPORTS/memory-lock/memory-lock-*.json`.
 Return code **0** means every required case passed; nonzero means tests failed,
 were missing/skipped, source identity was unavailable/dirty, or evidence could
 not be retained. A no-test outcome is **never** accepted. To pin a candidate:
-`python -B scripts/accept_memory_lock.py --expected-sha <40-char-sha>`.
+`python -I -B scripts/accept_memory_lock.py --expected-sha <40-char-sha>`.
 
 The normal Windows intel RC GitHub workflow also invokes this command on both
 hosted Windows and Ubuntu, retains the JSON as a GitHub Actions artifact, and
@@ -113,3 +113,17 @@ checkout. Do not change operational ACLs or delete a live sidecar lock.
 
 No private stores, credentials, providers, autonomy, network traffic or installed
 runtime are exercised. Source-only PASS never equals release OPERATIONAL.
+
+**Evidence integrity:** Run the strict acceptance command with `-I` to prevent
+repository-local or inherited `PYTHONPATH` modules replacing installed pytest.
+The runner itself rejects tracked edits, untracked sources (including ignored
+executable Python modules under source/test/stub paths), verifies the installed
+pytest distribution under isolated Python, disables arbitrary pytest plugins
+and inherited pytest options, and rejects mismatched JUnit testcase module/file
+identities or missing/duplicate/skipped/failed required tests. Prior generated
+`REPORTS/memory-lock/*.json` are the only tolerated untracked evidence.
+The original false-green attack is covered by a separate disposable synthetic
+Git checkout regression with a fake `ci_stubs/pytest.py` and a real failing
+tracked test; an ignored fake module is covered too. Source integrity is
+checked against local Git metadata, not a signature or remote attestation;
+use a trusted clean worktree with a pinned exact SHA.

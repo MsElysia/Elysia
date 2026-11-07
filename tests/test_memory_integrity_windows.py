@@ -149,3 +149,35 @@ def test_failed_disk_commit_does_not_publish_secondary_events(tmp_path, monkeypa
             memory.remember("Synthetic rejected memory must not reach timeline", priority=0.9)
     assert memory.dump_all() == []
     assert not path.exists()
+
+
+def test_two_loaded_instances_never_erase_external_commit(tmp_path):
+    """Two real MemoryCore instances; a stale save must not erase a peer's bytes."""
+    path, stale = _store(tmp_path)
+    peer = MemoryCore(filepath=str(path), enable_timeline_logging=False, enable_vector_search=False)
+    peer.remember("Synthetic peer record must remain in authoritative history", priority=0.9)
+    peer_bytes = path.read_bytes()
+    peer_records = MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all()
+
+    try:
+        stale.remember("Synthetic stale record must not overwrite peer history", priority=0.9)
+    except RuntimeError as exc:
+        assert "stale" in str(exc).lower() or "changed" in str(exc).lower() or "reload" in str(exc).lower()
+    else:
+        # On the test-first baseline this assertion reveals the actual lost bytes.
+        assert path.read_bytes() == peer_bytes, "Stale writer overwrote peer's durable bytes"
+        pytest.fail("Stale writer committed without detecting the peer's intervening write")
+
+    assert path.read_bytes() == peer_bytes
+    assert MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all() == peer_records
+    assert stale.persistence_blocked
+    with pytest.raises(RuntimeError):
+        stale.remember("Synthetic stale retry also must not overwrite peer", priority=0.9)
+    assert path.read_bytes() == peer_bytes
+
+    stale.load()
+    assert not stale.persistence_blocked
+    stale.remember("Synthetic fresh write after explicit reload remains durable", priority=0.9)
+    restarted = MemoryCore(filepath=str(path), enable_timeline_logging=False)
+    assert len(restarted.dump_all()) == 2
+    assert restarted.dump_all()[0] == peer_records[0]

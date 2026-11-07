@@ -401,3 +401,20 @@ worker.remember("Synthetic independently launched child process record must surv
     assert MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all()[0]["thought"] == (
         "Synthetic independently launched child process record must survive"
     )
+
+
+def test_explicit_reload_does_not_accept_missing_previously_loaded_primary(tmp_path):
+    path, memory = _store(tmp_path)
+    memory.remember("Synthetic durable history must not vanish on missing reload", priority=0.9)
+    saved = path.read_bytes()
+    path.unlink()  # Deliberate disposable fixture mutation.
+    memory.load()  # An explicit reload cannot silently endorse the disappearance.
+    assert memory.persistence_blocked
+    assert memory.get_memory_state()["memory_count_authoritative"] is False
+    with pytest.raises(RuntimeError, match="blocked"):
+        memory.remember("Synthetic unsafe reload must not recreate file", priority=0.9)
+    assert not path.exists()
+    path.write_bytes(saved)
+    memory.load()
+    assert not memory.persistence_blocked
+    assert len(memory.dump_all()) == 1

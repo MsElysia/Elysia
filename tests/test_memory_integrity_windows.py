@@ -586,7 +586,7 @@ def test_acceptance_existing_sidecar_permission_denial_fails_closed(tmp_path, mo
     original_open = os.open
 
     def deny_existing_sidecar(name, flags, *args, **kwargs):
-        if os.fspath(name) == str(lock):
+        if os.path.normcase(os.path.abspath(os.fspath(name))) == os.path.normcase(os.path.abspath(str(lock))):
             raise PermissionError("synthetic existing sidecar denies O_RDWR")
         return original_open(name, flags, *args, **kwargs)
 
@@ -621,7 +621,7 @@ def test_acceptance_directory_permission_denial_fails_closed(tmp_path, monkeypat
     lock = str(path) + ".memorycore.lock"
 
     def deny_lock_creation(name, flags, *args, **kwargs):
-        if os.fspath(name) == lock:
+        if os.path.normcase(os.path.abspath(os.fspath(name))) == os.path.normcase(os.path.abspath(lock)):
             raise PermissionError("synthetic read-only directory blocks sidecar create")
         return original_open(name, flags, *args, **kwargs)
 

@@ -102,10 +102,11 @@ writers/reload, 5-second-class bounded lock behavior with synthetic shorter
 timeout, missing/corrupt/unreadable files, temporary-file cleanup, restored JSON
 in a new directory without copying a lock, and persistent sidecar lifecycle.
 
-**Permission limitation:** the existing sidecar read-only and directory
-read-only scenarios use explicitly injected `PermissionError` against synthetic
-paths. They establish expected fail-closed behavior, **not a real Windows ACL
-test**. The report records `native_windows_directory_acl_tested=false`.
+**Permission limitation:** the sidecar scenario now exercises an actual
+temporary read-only file mode/Windows attribute **and** an injected denied
+sidecar handle. Directory read-only behavior is a synthetic `PermissionError`
+injection, **not a real Windows directory ACL test**. The report records
+`native_windows_directory_acl_tested=false`.
 Before any installed release promotion, separately verify read-only legacy
 backups/sidecars and lock permissions using a disposable operator-Windows
 checkout. Do not change operational ACLs or delete a live sidecar lock.

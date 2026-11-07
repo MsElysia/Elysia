@@ -172,6 +172,35 @@ def test_diagnostic_log_rows_excluded_from_personal_memory_retrieval():
     assert "fact_ok" in ids
 
 
+@pytest.mark.parametrize(("trust", "collection"), [
+    (" diagnostic_log ", None),
+    (" \tDiAgNoStIc\t", None),
+    ("diagnostic-log", None),
+    (None, " Diagnostic_Logs \t"),
+    (None, "DIAGNOSTIC-logs"),
+    (None, " diagnostic logs "),
+])
+def test_padded_and_separator_variant_diagnostic_labels_never_become_evidence(trust, collection):
+    """Import metadata formatting must not turn diagnostics into answer sources."""
+    diagnostic = _doc("padded_diag", "The Veridia compass is stored at north tower.")
+    if trust is not None:
+        diagnostic["trust"] = trust
+    if collection is not None:
+        diagnostic["collection"] = collection
+    safe = _doc("safe_source", "The Veridia compass is stored at the south vault.")
+    original_diagnostic = dict(diagnostic)
+    result = _context([], [diagnostic, safe], "Where is the Veridia compass stored?")
+    assert [item["source_id"] for item in result["evidence"]] == ["doc_safe_source"]
+    assert diagnostic == original_diagnostic, "retrieval must not rewrite source metadata"
+
+
+def test_unlabeled_document_with_diagnostic_word_is_not_silently_discarded():
+    """Exclusion is based on explicit metadata, never a keyword in the body."""
+    ordinary = _doc("ordinary", "The Veridia compass diagnostic manual is at south vault.")
+    result = _context([], [ordinary], "Where is the Veridia compass manual?")
+    assert [item["source_id"] for item in result["evidence"]] == ["doc_ordinary"]
+
+
 def test_absent_evidence_never_fabricated():
     result = _context(
         [_fact("fact_other", "The fictional Veridia lanterns are purple.")],

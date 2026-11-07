@@ -541,3 +541,145 @@ def test_process_lock_sidecar_reuse_and_hardlink_rejection(tmp_path):
         blocked.remember("Synthetic unsafe hardlink must not be touched", priority=0.9)
     assert sentinel.read_bytes() == before
     assert not other.exists()
+
+
+def test_acceptance_synthetic_snapshot_restore_and_sidecar_lifecycle(tmp_path):
+    """Copy only synthetic JSON to a new root; restart and recreate a safe lock."""
+    import hashlib
+    import shutil
+
+    original = tmp_path / "source"
+    restored_root = tmp_path / "restored"
+    original.mkdir()
+    restored_root.mkdir()
+    source = original / "guardian_memory.json"
+    memory = MemoryCore(filepath=str(source), enable_timeline_logging=False, enable_vector_search=False)
+    memory.remember("Synthetic snapshot entry before backup", priority=0.9)
+    expected = source.read_bytes()
+    digest = hashlib.sha256(expected).hexdigest()
+    lock = source.with_name(source.name + ".memorycore.lock")
+    assert lock.is_file()
+    recovered_path = restored_root / source.name
+    shutil.copy2(source, recovered_path)
+    assert not (restored_root / lock.name).exists()
+    recovered = MemoryCore(filepath=str(recovered_path), enable_timeline_logging=False,
+                           enable_vector_search=False)
+    assert not recovered.persistence_blocked
+    assert recovered.dump_all() == memory.dump_all()
+    assert hashlib.sha256(recovered_path.read_bytes()).hexdigest() == digest
+    recovered.remember("Synthetic restored entry survives restart", priority=0.9)
+    assert (restored_root / lock.name).is_file()
+    restarted = MemoryCore(filepath=str(recovered_path), enable_timeline_logging=False,
+                           enable_vector_search=False)
+    assert len(restarted.dump_all()) == 2
+    assert not list(restored_root.glob(".guardian_memory_*.tmp"))
+
+
+def test_acceptance_existing_sidecar_permission_denial_fails_closed(tmp_path, monkeypatch):
+    """Deterministic denied writable sidecar handle, not a claim about Windows ACLs."""
+    import os
+
+    path, seed = _store(tmp_path)
+    seed.remember("Synthetic seed persists despite sidecar denial", priority=0.9)
+    before = path.read_bytes()
+    lock = path.with_name(path.name + ".memorycore.lock")
+    original_open = os.open
+
+    def deny_existing_sidecar(name, flags, *args, **kwargs):
+        if os.fspath(name) == str(lock):
+            raise PermissionError("synthetic existing sidecar denies O_RDWR")
+        return original_open(name, flags, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", deny_existing_sidecar)
+        denied = MemoryCore(filepath=str(path), enable_timeline_logging=False,
+                            enable_vector_search=False)
+        assert denied.persistence_blocked
+        with pytest.raises(RuntimeError):
+            denied.remember("Synthetic refused sidecar must preserve seed", priority=0.9)
+    assert path.read_bytes() == before
+    denied.load()
+    assert not denied.persistence_blocked
+    denied.remember("Synthetic recovery after sidecar access restored", priority=0.9)
+    assert len(MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all()) == 2
+
+
+def test_acceptance_directory_permission_denial_fails_closed(tmp_path, monkeypatch):
+    """Simulate EACCES creating lock in writable-JSON/read-only DIRECTORY.
+
+    Native Windows ACL enforcement is explicitly NOT established by this test.
+    """
+    import os
+
+    path = tmp_path / "locked_directory" / "guardian_memory.json"
+    path.parent.mkdir()
+    seeded = [{"time": "2026-11-01T00:00:00", "thought": "Synthetic archived history",
+               "category": "fact", "priority": 0.9, "metadata": {}}]
+    raw = json.dumps(seeded).encode("utf-8")
+    path.write_bytes(raw)
+    original_open = os.open
+    lock = str(path) + ".memorycore.lock"
+
+    def deny_lock_creation(name, flags, *args, **kwargs):
+        if os.fspath(name) == lock:
+            raise PermissionError("synthetic read-only directory blocks sidecar create")
+        return original_open(name, flags, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", deny_lock_creation)
+        memory = MemoryCore(filepath=str(path), enable_timeline_logging=False,
+                            enable_vector_search=False)
+        assert memory.persistence_blocked
+        assert memory.get_memory_state()["memory_count_authoritative"] is False
+        with pytest.raises(RuntimeError):
+            memory.remember("Synthetic cannot write in archive-like directory", priority=0.9)
+        assert path.read_bytes() == raw
+    assert not (path.parent / (path.name + ".memorycore.lock")).exists()
+    memory.load()
+    assert not memory.persistence_blocked
+    assert memory.dump_all() == seeded
+
+
+def test_acceptance_independent_process_held_lock_fences_and_recovers(tmp_path):
+    """Real independent process holds lock; timeout must not touch primary bytes."""
+    import subprocess
+
+    path, memory = _store(tmp_path)
+    memory.remember("Synthetic pre-contention durable record", priority=0.9)
+    before = path.read_bytes()
+    script = """
+import sys, types
+from pathlib import Path
+root = Path.cwd()
+pkg = types.ModuleType("project_guardian")
+pkg.__path__ = [str(root / "project_guardian")]
+pkg.__package__ = "project_guardian"
+sys.modules["project_guardian"] = pkg
+from project_guardian.memory import MemoryCore
+holder = MemoryCore(filepath=sys.argv[1], enable_timeline_logging=False, enable_vector_search=False)
+with holder._primary_process_lock():
+    print("SYNTHETIC_LOCK_HELD", flush=True)
+    sys.stdin.readline()
+"""
+    child = subprocess.Popen([sys.executable, "-c", script, str(path)], cwd=str(_ROOT),
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == "SYNTHETIC_LOCK_HELD"
+        memory._primary_lock_timeout_seconds = 0.20
+        with pytest.raises(RuntimeError, match="lock unavailable|reload"):
+            memory.remember("Synthetic busy-lock write cannot proceed", priority=0.9)
+        assert memory.persistence_blocked
+        assert path.read_bytes() == before
+        with pytest.raises(RuntimeError, match="blocked"):
+            memory.remember("Synthetic retry without reload prohibited", priority=0.9)
+    finally:
+        if child.poll() is None:
+            child.stdin.write("\n")
+            child.stdin.flush()
+        out, err = child.communicate(timeout=15)
+        assert child.returncode == 0, (out, err)
+    memory.load()
+    assert not memory.persistence_blocked
+    memory.remember("Synthetic saved after contention release and explicit reload", priority=0.9)
+    assert len(MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all()) == 2

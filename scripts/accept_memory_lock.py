@@ -76,14 +76,106 @@ def git(*args: str) -> str:
     return result.stdout.strip()
 
 
+def clean_source_issues() -> list[str]:
+    """Reject tracked changes, untracked code and ignored executable shadowing.
+
+    Only previous JSON evidence under REPORTS/memory-lock is allowed; it cannot
+    enter Python's isolated module search path. Git gives exact -z paths, so
+    quoting, spaces and Windows filename escapes cannot bypass this check.
+    """
+    issues: list[str] = []
+    status = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
+    for record in status.split("\0"):
+        if not record:
+            continue
+        state = record[:2]
+        path = record[3:].replace("\\", "/")
+        if (state == "??" and path.startswith("REPORTS/memory-lock/")
+                and path.endswith(".json") and ".." not in Path(path).parts):
+            continue
+        issues.append("Tracked change or untracked source detected")
+        break
+    # An ignored Python module is also executable source. In particular,
+    # git status alone will not reveal ignored ci_stubs/pytest.py.
+    ignored = git("ls-files", "--others", "--ignored", "--exclude-standard",
+                  "--", "scripts", "tests", "ci_stubs", "*.py")
+    for path in ignored.splitlines():
+        normalized = path.replace("\\", "/").lower()
+        if (normalized.endswith((".py", ".pyw", ".pyi", ".pth", ".pyd", ".so", ".dll"))
+                and ("/" not in normalized
+                     or normalized.startswith(("scripts/", "tests/", "ci_stubs/")))):
+            issues.append("Ignored executable source detected")
+            break
+    return issues
+
+
+def isolated_pytest_environment() -> dict[str, str]:
+    """Ignore caller-controlled Python/pytest injection while retaining deps."""
+    env = os.environ.copy()
+    for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT",
+                "PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_CURRENT_TEST"):
+        env.pop(key, None)
+    env.update({
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUTF8": "1",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        "OPENAI_API_KEY": "",
+        "ANTHROPIC_API_KEY": "",
+        "OPENROUTER_API_KEY": "",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+    })
+    return env
+
+
+def ensure_installed_pytest(env: dict[str, str]) -> None:
+    """Require -I to resolve the real installed pytest distribution.
+
+    A repository-local pytest.py or ci_stubs/pytest.py must never be executed.
+    """
+    check = (
+        "import importlib.metadata as m, importlib.util as u, pathlib; "
+        "dist=m.distribution('pytest'); "
+        "actual=pathlib.Path(u.find_spec('pytest').origin).resolve(); "
+        "expected=pathlib.Path(dist.locate_file('pytest/__init__.py')).resolve(); "
+        "assert actual==expected, 'pytest distribution origin mismatch'; "
+        "print('PYTEST_ORIGIN_OK')"
+    )
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", check],
+                            cwd=ROOT, env=env, capture_output=True,
+                            text=True, timeout=15)
+    if result.returncode != 0 or result.stdout.strip() != "PYTEST_ORIGIN_OK":
+        raise RuntimeError("Installed pytest origin could not be verified")
+
+
 def summary_from_junit(filename: Path) -> tuple[dict[str, list[str]], list[str]]:
+    """Validate actual source provenance, status and declared case totals."""
     found: dict[str, list[str]] = {}
     bad: list[str] = []
+    if filename.stat().st_size > 2_000_000:
+        raise ValueError("JUnit evidence exceeds bounded size")
     tree = ET.parse(filename)
-    for case in tree.iter("testcase"):
+    root = tree.getroot()
+    if root.tag not in ("testsuite", "testsuites"):
+        raise ValueError("Unexpected JUnit root")
+    suites = list(root.iter("testsuite"))
+    if len(suites) != 1:
+        raise ValueError("Exactly one pytest JUnit suite required")
+    suite = suites[0]
+    cases = list(root.iter("testcase"))
+    if not cases:
+        bad.append("Zero test cases executed")
+    for case in cases:
         name = case.get("name") or ""
+        classname = case.get("classname") or ""
+        path = (case.get("file") or "").replace("\\", "/").lstrip("./")
+        if classname not in ("tests.test_memory_integrity_windows",
+                             "test_memory_integrity_windows"):
+            bad.append("JUnit testcase module provenance mismatch")
+        if path and path != "tests/test_memory_integrity_windows.py":
+            bad.append("JUnit testcase file provenance mismatch")
         if not name:
-            bad.append("unnamed pytest case")
+            bad.append("Unnamed pytest case")
             continue
         status = "FAIL" if case.find("failure") is not None else (
             "ERROR" if case.find("error") is not None else (
@@ -91,6 +183,16 @@ def summary_from_junit(filename: Path) -> tuple[dict[str, list[str]], list[str]]
         found.setdefault(name.split("[", 1)[0], []).append(status)
         if status != "PASS":
             bad.append(f"{name}: {status}")
+    try:
+        declared = int(suite.attrib["tests"])
+        failures = int(suite.attrib["failures"])
+        errors = int(suite.attrib["errors"])
+        skipped = int(suite.attrib["skipped"])
+    except (KeyError, ValueError) as exc:
+        bad.append("JUnit suite status/count metadata missing")
+    else:
+        if declared != len(cases) or any((failures, errors, skipped)):
+            bad.append("JUnit suite counts or status disagree with testcases")
     return found, bad
 
 
@@ -130,9 +232,11 @@ def main() -> int:
         try:
             head = git("rev-parse", "HEAD")
             report["source_sha"] = head
-            report["source_clean"] = not bool(git("status", "--porcelain", "--untracked-files=no"))
-            if not report["source_clean"]:
-                errors.append("Tracked worktree changes present: source cannot be certified")
+            source_issues = clean_source_issues()
+            report["source_clean"] = not source_issues
+            errors.extend(source_issues)
+            if source_issues:
+                errors.append("Source cannot be certified: require a clean independent worktree")
             if args.expected_sha and head != args.expected_sha:
                 errors.append("Checked-out SHA does not match expected source SHA")
         except (subprocess.SubprocessError, OSError) as exc:
@@ -143,16 +247,10 @@ def main() -> int:
             with tempfile.TemporaryDirectory(prefix="elysia_memory_lock_accept_") as td:
                 temp = Path(td)
                 xml = temp / "pytest.xml"
-                env = os.environ.copy()
-                env.update({
-                    "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUTF8": "1",
-                    "OPENAI_API_KEY": "", "ANTHROPIC_API_KEY": "",
-                    "OPENROUTER_API_KEY": "", "HF_HUB_OFFLINE": "1",
-                    "TRANSFORMERS_OFFLINE": "1",
-                    "PYTHONPATH": str(ROOT / "ci_stubs"),
-                })
+                env = isolated_pytest_environment()
+                ensure_installed_pytest(env)
                 cmd = [
-                    sys.executable, "-B", "-m", "pytest", "--noconftest", "-q",
+                    sys.executable, "-I", "-B", "-m", "pytest", "--noconftest", "-q",
                     "-rs", "-p", "no:cacheprovider", f"--basetemp={temp / 'cases'}",
                     f"--junitxml={xml}", "tests/test_memory_integrity_windows.py",
                 ]
@@ -186,7 +284,7 @@ def main() -> int:
                         }
                     if not cases:
                         errors.append("Zero test cases executed")
-        except (OSError, subprocess.SubprocessError, ET.ParseError) as exc:
+        except (OSError, subprocess.SubprocessError, ET.ParseError, ValueError, RuntimeError) as exc:
             errors.append(f"Acceptance runner failed ({type(exc).__name__})")
 
     report["status"] = "PASS_SCOPED" if not errors else "FAIL"

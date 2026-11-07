@@ -56,6 +56,9 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/ci_stubs
         run: python -B scripts/run_windows_intel_rc_tests.py
 
+      - name: Adversarial MemoryCore acceptance-gate regressions
+        run: python -I -B -m pytest --noconftest -q -p no:cacheprovider tests/test_accept_memory_lock_gate.py
+
       - name: Strict disposable MemoryCore lock acceptance
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

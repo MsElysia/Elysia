@@ -382,11 +382,19 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
                 or (collection is not None and not isinstance(collection, str))
             ):
                 continue
+            # Imported diagnostic labels may have padding or different
+            # separators. Classify normalized copies; never alter provenance.
+            trust_label = (
+                re.sub(r"[\\s-]+", "_", trust.strip().casefold())
+                if isinstance(trust, str) else ""
+            )
+            collection_label = (
+                re.sub(r"[\\s-]+", "_", collection.strip().casefold())
+                if isinstance(collection, str) else ""
+            )
             if (
-                (isinstance(trust, str)
-                 and trust.casefold() in {"diagnostic", "diagnostic_log"})
-                or (isinstance(collection, str)
-                    and collection.casefold().startswith("diagnostic"))
+                trust_label in {"diagnostic", "diagnostic_log"}
+                or collection_label.startswith("diagnostic")
             ):
                 continue
             content = row.get("text")

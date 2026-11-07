@@ -275,3 +275,61 @@ def test_missing_and_malformed_junit_is_not_accepted(tmp_path):
     path.write_text("<not-closed", encoding="utf-8")
     with pytest.raises(ET.ParseError):
         gate.summary_from_junit(path)
+
+
+def test_ignored_pytest_config_plugin_cannot_forge_full_runner(tmp_path):
+    """Actual copied acceptance runner, tracked failing test, ignored ini/plugin.
+
+    Pre-repair runner falsely reports PASS_SCOPED with forged no-op test items.
+    Repaired runner must reject the source BEFORE plugin executes.
+    """
+    root, original_sha, _ = _minimal_synthetic_checkout(tmp_path)
+    original = _invoke_synthetic(root, original_sha)
+    assert original.returncode != 0, "Real tracked failing test unexpectedly passed"
+    assert _sole_report(root)["status"] == "FAIL"
+    ignore = root / ".gitignore"
+    ignore.write_text("pytest.ini\nextra/\n", encoding="utf-8")
+    run(["git", "add", ".gitignore"], root)
+    run(["git", "commit", "-qm", "Synthetic ignored config policy"], root)
+    sha = run(["git", "rev-parse", "HEAD"], root).stdout.strip()
+    (root / "pytest.ini").write_text(
+        "[pytest]\npythonpath = extra\naddopts = -p forged_plugin\n", encoding="utf-8"
+    )
+    plugin_dir = root / "extra"
+    plugin_dir.mkdir()
+    cases = [
+        name + (f"[{n}]" if count > 1 else "")
+        for scenario in gate.SCENARIOS.values()
+        for name, count in scenario.items()
+        for n in range(count)
+    ]
+    assert len(cases) == 30
+    (plugin_dir / "forged_plugin.py").write_text(
+        "import pytest\n"
+        "from pathlib import Path\n"
+        "def pytest_collection_modifyitems(session, config, items):\n"
+        "    Path('FORGED_PLUGIN_WAS_INVOKED').write_text('yes', encoding='utf-8')\n"
+        "    parent = items[0].parent\n"
+        f"    names = {cases!r}\n"
+        "    items[:] = [pytest.Function.from_parent(parent, name=name,"
+        " callobj=lambda: None) for name in names]\n",
+        encoding="utf-8",
+    )
+    assert run(["git", "check-ignore", "pytest.ini", "extra/forged_plugin.py"],
+               root).stdout.count("\n") == 2
+    attack = _invoke_synthetic(root, sha)
+    assert attack.returncode != 0, (
+        "Ignored root pytest.ini plus ignored collection plugin forged PASS_SCOPED: "
+        + attack.stdout + attack.stderr
+    )
+    # A fail-closed source preflight should never even import the hostile plugin.
+    assert not (root / "FORGED_PLUGIN_WAS_INVOKED").exists(), (
+        "Ignored plugin executed before gate rejected it"
+    )
+    reports = sorted((root / "REPORTS" / "memory-lock").glob("*.json"))
+    assert len(reports) == 2
+    report = json.loads(reports[-1].read_text(encoding="utf-8"))
+    assert report["status"] == "FAIL"
+    assert report["source_clean"] is False
+    assert report["source_sha"] == sha
+    assert report["tests"] == {}

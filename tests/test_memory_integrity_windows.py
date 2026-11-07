@@ -505,3 +505,39 @@ MemoryCore(filepath=sys.argv[1], enable_timeline_logging=False, enable_vector_se
         if child is not None and child.poll() is None:
             child.kill()
             child.communicate(timeout=10)
+
+
+def test_process_lock_sidecar_reuse_and_hardlink_rejection(tmp_path):
+    """Sidecar persists across primary replacement/delete; never write through hardlinks."""
+    import os
+
+    path, memory = _store(tmp_path)
+    lock_path = path.with_name(path.name + ".memorycore.lock")
+    assert lock_path.is_file()
+    assert lock_path.read_bytes() == bytes((0,))
+    memory.remember("Synthetic sidecar stays stable after primary replace", priority=0.9)
+    assert lock_path.is_file()
+    assert not list(tmp_path.glob(".guardian_memory_*.tmp"))
+    memory.forget()
+    assert not path.exists()
+    assert lock_path.is_file(), "Deleting a stable sidecar allows split-brain writers"
+    memory.remember("Synthetic reuse same sidecar after legitimate forget", priority=0.9)
+    assert len(MemoryCore(filepath=str(path), enable_timeline_logging=False).dump_all()) == 1
+    assert not list(tmp_path.glob(".guardian_memory_*.tmp"))
+
+    # A separate primary must not open a preexisting malicious hard-linked lock.
+    other = tmp_path / "other_memory.json"
+    sentinel = tmp_path / "sentinel_never_modify.txt"
+    sentinel.write_bytes(b"synthetic sentinel locked from accidental modifications")
+    malicious_lock = other.with_name(other.name + ".memorycore.lock")
+    try:
+        os.link(sentinel, malicious_lock)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Hardlink unavailable on this temporary volume: {exc}")
+    before = sentinel.read_bytes()
+    blocked = MemoryCore(filepath=str(other), enable_timeline_logging=False)
+    assert blocked.persistence_blocked
+    with pytest.raises(RuntimeError, match="blocked"):
+        blocked.remember("Synthetic unsafe hardlink must not be touched", priority=0.9)
+    assert sentinel.read_bytes() == before
+    assert not other.exists()

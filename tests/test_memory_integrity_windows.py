@@ -648,7 +648,7 @@ def test_acceptance_independent_process_held_lock_fences_and_recovers(tmp_path):
     memory.remember("Synthetic pre-contention durable record", priority=0.9)
     before = path.read_bytes()
     script = """
-import sys, types
+import sys, types, contextlib, io
 from pathlib import Path
 root = Path.cwd()
 pkg = types.ModuleType("project_guardian")
@@ -656,7 +656,8 @@ pkg.__path__ = [str(root / "project_guardian")]
 pkg.__package__ = "project_guardian"
 sys.modules["project_guardian"] = pkg
 from project_guardian.memory import MemoryCore
-holder = MemoryCore(filepath=sys.argv[1], enable_timeline_logging=False, enable_vector_search=False)
+with contextlib.redirect_stdout(io.StringIO()):
+    holder = MemoryCore(filepath=sys.argv[1], enable_timeline_logging=False, enable_vector_search=False)
 with holder._primary_process_lock():
     print("SYNTHETIC_LOCK_HELD", flush=True)
     sys.stdin.readline()

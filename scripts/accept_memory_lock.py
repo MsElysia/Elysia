@@ -38,8 +38,9 @@ SCENARIOS = {
         "test_external_commit_during_temp_write_rechecked_before_replace": 1,
         "test_acceptance_independent_process_held_lock_fences_and_recovers": 1,
     },
-    "read_only_sidecar_injection": {
+    "read_only_sidecar_permissions": {
         "test_acceptance_existing_sidecar_permission_denial_fails_closed": 1,
+        "test_acceptance_real_readonly_sidecar_file": 1,
     },
     "read_only_directory_injection": {
         "test_acceptance_directory_permission_denial_fails_closed": 1,
@@ -111,7 +112,7 @@ def main() -> int:
         "operational_data_used": False,
         "installed_release_tested": False,
         "native_windows_directory_acl_tested": False,
-        "permissions_scenarios": "synthetic injected PermissionError, not native Windows ACL proof",
+        "permissions_scenarios": "real temporary sidecar read-only mode plus injected directory EACCES; directory ACL unverified",
         "tests": {},
         "errors": [],
         "status": "FAIL",

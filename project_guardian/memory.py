@@ -7,6 +7,8 @@ import json
 import os
 import logging
 import threading
+import hashlib
+from contextlib import contextmanager
 from typing import List, Dict, Any, Optional
 
 try:
@@ -50,6 +52,11 @@ class MemoryCore:
         self.loaded: bool = False
         self._load_lock = threading.Lock()
         self._save_file_lock = threading.RLock()
+        # Exact primary bytes observed at successful load/save. None means absent.
+        # Instance locks do not protect against another MemoryCore process.
+        self._primary_digest: Optional[bytes] = None
+        self._loaded_filepath: Optional[str] = None
+        self._primary_lock_timeout_seconds = 5.0
         # A corrupt/unreadable authoritative JSON file must never be silently
         # overwritten by a later successful-looking memory write.
         self.persistence_blocked = False
@@ -531,13 +538,140 @@ class MemoryCore:
         self.load_if_needed()
         with self._save_file_lock:
             if self.persistence_blocked:
-                raise RuntimeError("MemoryCore persistence blocked: cannot delete unreadable history")
-            # Do not publish an empty in-memory state if deletion fails.
-            if os.path.exists(self.filepath):
-                os.remove(self.filepath)
-            self.memory_log = []
+                raise RuntimeError("MemoryCore persistence blocked: explicit reload required")
+            with self._primary_process_lock():
+                if self.persistence_blocked:
+                    raise RuntimeError("MemoryCore persistence blocked: cannot delete unreadable history")
+                self._assert_primary_unchanged()
+                # Do not publish an empty in-memory state if deletion fails.
+                if os.path.exists(self.filepath):
+                    os.remove(self.filepath)
+                self.memory_log = []
+                self._primary_digest = None
         print("[Guardian Memory] All memories cleared.")
         
+
+    @contextmanager
+    def _primary_process_lock(self):
+        """Bounded OS sidecar lock for all cooperating Elysia MemoryCore writers.
+
+        The stable sidecar must never be deleted (even after success); primary
+        replaces must always occur while the lock is held. External writers
+        that ignore this protocol and power-loss durability are not covered.
+        """
+        import errno
+        import stat
+        import time
+
+        lock_path = os.path.normcase(os.path.realpath(os.path.abspath(self.filepath))) + ".memorycore.lock"
+        fd = None
+        acquired = False
+        windows = os.name == "nt"
+        try:
+            if os.path.islink(self.filepath):
+                raise RuntimeError("MemoryCore primary symlink is not a safe write target")
+            os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+            flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
+            try:
+                fd = os.open(lock_path, flags | os.O_CREAT | os.O_EXCL | nofollow, 0o600)
+                os.write(fd, bytes((0,)))
+                os.fsync(fd)
+            except FileExistsError:
+                fd = os.open(lock_path, flags | nofollow)
+
+            def check_sidecar_identity():
+                opened = os.fstat(fd)
+                named = os.lstat(lock_path)
+                if (not stat.S_ISREG(opened.st_mode)
+                        or stat.S_ISLNK(named.st_mode)
+                        or opened.st_nlink != 1
+                        or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+                    raise RuntimeError("MemoryCore sidecar lock identity is unsafe")
+
+            check_sidecar_identity()
+            deadline = time.monotonic() + self._primary_lock_timeout_seconds
+            if windows:
+                import msvcrt
+            else:
+                import fcntl
+            while True:
+                try:
+                    if windows:
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    else:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("MemoryCore process lock timed out") from exc
+                    time.sleep(0.025)
+            check_sidecar_identity()
+        except Exception as exc:
+            if fd is not None:
+                os.close(fd)
+            self.persistence_blocked = True
+            self.last_load_error = (
+                f"MemoryCore primary lock unavailable ({type(exc).__name__}); explicit reload required"
+            )[:200]
+            raise RuntimeError(self.last_load_error) from exc
+        try:
+            yield
+        finally:
+            try:
+                if acquired:
+                    if windows:
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError as exc:
+                logger.warning("MemoryCore process lock release failed: %s", exc)
+            finally:
+                os.close(fd)
+
+    def _current_primary_digest(self) -> Optional[bytes]:
+        """Hash exact primary bytes, distinguishing missing from unreadable."""
+        try:
+            digest = hashlib.sha256()
+            with open(self.filepath, "rb") as source:
+                for block in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(block)
+            return digest.digest()
+        except FileNotFoundError:
+            return None
+
+    def _assert_primary_unchanged(self) -> None:
+        """Fence a loaded writer if another process changed its primary store.
+
+        This detects sequential/interleaved changes; it is NOT an OS-level
+        cross-process transaction lock for simultaneous replace operations.
+        """
+        if self._loaded_filepath != os.path.abspath(self.filepath):
+            reason = "MemoryCore primary path changed since load; explicit reload required"
+        else:
+            try:
+                current_digest = self._current_primary_digest()
+            except Exception as exc:
+                reason = (
+                    f"MemoryCore primary read failed ({type(exc).__name__}); "
+                    "explicit reload required"
+                )
+            else:
+                reason = (
+                    "MemoryCore primary changed since load; stale writer blocked "
+                    "until explicit reload"
+                    if current_digest != self._primary_digest else None
+                )
+        if reason:
+            self.persistence_blocked = True
+            self.last_load_error = reason[:200]
+            raise RuntimeError(reason)
+
     def _save(self) -> bool:
         """
         Atomically save memories to JSON file.
@@ -549,47 +683,64 @@ class MemoryCore:
         import time as _time
         import tempfile
 
+        self.load_if_needed()
         with self._save_file_lock:
             if self.persistence_blocked:
-                raise RuntimeError("MemoryCore persistence blocked: repair/reload original history first")
-            last_err: Optional[Exception] = None
-            directory = os.path.dirname(os.path.abspath(self.filepath)) or "."
-            os.makedirs(directory, exist_ok=True)
-            for attempt in range(3):
-                tmp_path = None
-                try:
-                    fd, tmp_path = tempfile.mkstemp(
-                        prefix=".guardian_memory_",
-                        suffix=".tmp",
-                        dir=directory,
-                    )
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        json.dump(self.memory_log, f, indent=2)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    os.replace(tmp_path, self.filepath)
+                raise RuntimeError("MemoryCore persistence blocked: explicit reload required")
+            with self._primary_process_lock():
+                if self.persistence_blocked:
+                    raise RuntimeError("MemoryCore persistence blocked: repair/reload original history first")
+                self._assert_primary_unchanged()
+                last_err: Optional[Exception] = None
+                directory = os.path.dirname(os.path.abspath(self.filepath)) or "."
+                os.makedirs(directory, exist_ok=True)
+                for attempt in range(3):
                     tmp_path = None
                     try:
-                        from memory_storage_config import notify_usb_persist_mirror
-                        notify_usb_persist_mirror(self.filepath)
-                    except ImportError:
-                        pass
-                    except Exception as mirror_error:
-                        # Primary bytes have already committed; the optional
-                        # mirror must not convert that success into a false fail.
-                        logger.warning("MemoryCore optional mirror failed: %s", mirror_error)
-                    return True
-                except Exception as e:
-                    last_err = e
-                    if tmp_path:
+                        fd, tmp_path = tempfile.mkstemp(
+                            prefix=".guardian_memory_",
+                            suffix=".tmp",
+                            dir=directory,
+                        )
+                        with os.fdopen(fd, "w", encoding="utf-8") as f:
+                            json.dump(self.memory_log, f, indent=2)
+                            f.flush()
+                            os.fsync(f.fileno())
+                        # Bind the next observed generation to the exact staged bytes.
+                        with open(tmp_path, "rb") as staged:
+                            staged_digest = hashlib.sha256(staged.read()).digest()
+                        # Recheck immediately before replace; another loaded writer
+                        # may have committed while our temp file was being written.
+                        self._assert_primary_unchanged()
+                        os.replace(tmp_path, self.filepath)
+                        self._primary_digest = staged_digest
+                        tmp_path = None
                         try:
-                            os.unlink(tmp_path)
-                        except OSError:
+                            from memory_storage_config import notify_usb_persist_mirror
+                            notify_usb_persist_mirror(self.filepath)
+                        except ImportError:
                             pass
-                    _time.sleep(0.04 * (attempt + 1))
-            print(f"[Guardian Memory] Save failed after retries: {last_err}")
-            raise RuntimeError(f"MemoryCore durable save failed: {last_err}")
-            
+                        except Exception as mirror_error:
+                            # Primary bytes have already committed; the optional
+                            # mirror must not convert that success into a false fail.
+                            logger.warning("MemoryCore optional mirror failed: %s", mirror_error)
+                        return True
+                    except Exception as e:
+                        last_err = e
+                        if tmp_path:
+                            try:
+                                os.unlink(tmp_path)
+                            except OSError:
+                                pass
+                        # Stale/unreadable history is not a transient disk failure.
+                        if self.persistence_blocked:
+                            raise RuntimeError(
+                                "MemoryCore persistence blocked: explicit reload required"
+                            ) from e
+                        _time.sleep(0.04 * (attempt + 1))
+                print(f"[Guardian Memory] Save failed after retries: {last_err}")
+                raise RuntimeError(f"MemoryCore durable save failed: {last_err}")
+
     def load(self) -> None:
         """Reload authoritative JSON and preserve unreadable originals in place.
 
@@ -598,27 +749,45 @@ class MemoryCore:
         This avoids destructive automatic quarantine/migration in an installed app.
         """
         with self._save_file_lock:
-            if not os.path.exists(self.filepath):
-                if self.persistence_blocked:
-                    self.last_load_error = "Previously unreadable history missing; recovery not verified"
-                    return
-                self.memory_log = []
-                self.last_load_error = None
-                return
             try:
-                with open(self.filepath, "r", encoding="utf-8") as f:
-                    decoded = json.load(f)
-                if not isinstance(decoded, list) or any(not isinstance(x, dict) for x in decoded):
-                    raise ValueError("memory history must be a JSON list of records")
-                self.memory_log = decoded
-                self.persistence_blocked = False
-                self.last_load_error = None
-                print(f"[Guardian Memory] Loaded {len(self.memory_log)} past memories.")
+                with self._primary_process_lock():
+                    if not os.path.exists(self.filepath):
+                        if self.persistence_blocked or self._primary_digest is not None:
+                            self.persistence_blocked = True
+                            self.last_load_error = (
+                                "Previously loaded primary missing; restore original before explicit reload"
+                            )
+                            return
+                        self.memory_log = []
+                        self._primary_digest = None
+                        self._loaded_filepath = os.path.abspath(self.filepath)
+                        self.last_load_error = None
+                        return
+                    try:
+                        # Decode the same bytes used for our generation receipt.
+                        with open(self.filepath, "rb") as f:
+                            raw = f.read()
+                        decoded = json.loads(raw.decode("utf-8"))
+                        if not isinstance(decoded, list) or any(not isinstance(x, dict) for x in decoded):
+                            raise ValueError("memory history must be a JSON list of records")
+                        self.memory_log = decoded
+                        self._primary_digest = hashlib.sha256(raw).digest()
+                        self._loaded_filepath = os.path.abspath(self.filepath)
+                        self.persistence_blocked = False
+                        self.last_load_error = None
+                        print(f"[Guardian Memory] Loaded {len(self.memory_log)} past memories.")
+                    except Exception as exc:
+                        self.memory_log = []
+                        self.persistence_blocked = True
+                        self.last_load_error = f"{type(exc).__name__}: {exc}"[:200]
+                        logger.error("MemoryCore authoritative history unreadable; writes blocked: %s", self.last_load_error)
+
             except Exception as exc:
+                # Failed lock acquisition is not an empty authoritative store.
                 self.memory_log = []
                 self.persistence_blocked = True
                 self.last_load_error = f"{type(exc).__name__}: {exc}"[:200]
-                logger.error("MemoryCore authoritative history unreadable; writes blocked: %s", self.last_load_error)
+                logger.error("MemoryCore authoritative load failed closed: %s", self.last_load_error)
 
     def consolidate(self, max_memories: int = 5000, keep_recent_days: int = 30) -> Dict[str, Any]:
         """
@@ -660,7 +829,7 @@ class MemoryCore:
         Returns:
             Dictionary with memory statistics
         """
-        if not self.loaded:
+        if not self.loaded or self.persistence_blocked:
             return {
                 "total_memories": None,
                 "categories": {},

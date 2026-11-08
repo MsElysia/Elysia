@@ -385,10 +385,17 @@ class ImplementerAgent:
         file_path_str = file_pattern.group(1)
         file_path = self.repo_root / file_path_str
 
-        # Check if file already exists
+        # An existing path was not created by this step. Reporting success
+        # stored the proposal as implemented while leaving the bytes unchanged.
         if file_path.exists():
-            logger.warning(f"File already exists: {file_path}, skipping creation")
-            return {"success": True, "message": "File already exists", "file_path": str(file_path)}
+            logger.warning(f"File already exists: {file_path}, creation was not applied")
+            return {
+                "success": False,
+                "error": "File already exists and was not created",
+                "file_path": str(file_path),
+                "step_type": "create_file",
+                "created": False,
+            }
 
         # Extract content from step or create placeholder
         # For now, create a minimal placeholder file

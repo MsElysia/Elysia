@@ -497,3 +497,10 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — existing create target is not success
+
+- `POST /api/proposals/<id>/implement` no longer reports success when a create-file or add-tests step finds the target path already present.
+- The step returns `success: false` and `File already exists and was not created`. The proposal is stored as `implementation_failed`, and the existing bytes stay unchanged.
+- A create-file step whose target is missing still writes that file and stores `implemented`.
+- Contract: `tests/test_runtime_api_implement_existing_file.py`.

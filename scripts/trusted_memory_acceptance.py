@@ -226,6 +226,8 @@ def main():
     except OSError as exc:
         print(f"Could not preserve acceptance evidence ({type(exc).__name__})", file=sys.stderr)
         return 1
+    for reason in report["errors"]:
+        print("TRUSTED MEMORY REJECTED: " + reason, file=sys.stderr)
     print(f"TRUSTED MEMORY ACCEPTANCE {report['status']} "
           f"sha={sha} cases={report['cases_passed']}/{report['cases_total']} "
           f"receipt={evidence}")

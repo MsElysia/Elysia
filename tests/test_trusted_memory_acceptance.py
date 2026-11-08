@@ -212,3 +212,146 @@ def test_git_archive_autocrlf_never_alters_verified_source_blobs(tmp_path):
     assert receipt.get("cases_failed") == 1, receipt
     assert receipt.get("cases_passed") == 0
     assert not any("Snapshot bytes differ" in error for error in receipt["errors"])
+
+
+def _passing_synthetic_repo(base):
+    """Exactly 25 real pytest items with all mandatory names, synthetic only."""
+    from runpy import run_path
+    pinned = _repo(base)
+    required = run_path(str(RUNNER))["REQUIRED"]
+    lines = ["import pytest"]
+    for name, count in required.items():
+        if count == 1:
+            lines.extend([f"def {name}():", "    assert True"])
+        else:
+            lines.extend([
+                f"@pytest.mark.parametrize('i', range({count}))",
+                f"def {name}(i):", "    assert i >= 0",
+            ])
+    padding = 25 - sum(required.values())
+    assert padding > 0
+    lines.extend([
+        f"@pytest.mark.parametrize('i', range({padding}))",
+        "def test_additional_synthetic_cases(i):",
+        "    assert i >= 0",
+    ])
+    (base / "tests" / "test_memory_integrity_windows.py").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8")
+    _run(["git", "add", "."], base)
+    _run(["git", "commit", "-qm", "synthetic 25-case positive fixture"], base)
+    return _run(["git", "rev-parse", "HEAD"], base).stdout.strip()
+
+
+def _run_default_receipt(base, sha):
+    return _run([
+        sys.executable, "-I", "-B", str(base / "scripts" / RUNNER.name),
+        "--expected-sha", sha,
+    ], base, check=False)
+
+
+def _symlink_or_skip(link, destination):
+    try:
+        link.symlink_to(destination, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Real directory symlink unavailable on this host: {type(exc).__name__}")
+
+
+def test_default_receipt_cannot_escape_via_ignored_reports_symlink(tmp_path):
+    """Full real runner must not write outside source via ignored REPORTS link."""
+    root = tmp_path / "source"
+    sha = _passing_synthetic_repo(root)
+    external = tmp_path / "external-sentinel"
+    external.mkdir()
+    (external / "do-not-change.txt").write_text("sentinel", encoding="utf-8")
+    # Git metadata only, does not modify tracked checkout and masks the link.
+    (root / ".git" / "info" / "exclude").write_text("REPORTS\n", encoding="utf-8")
+    _symlink_or_skip(root / "REPORTS", external)
+    assert not _run(["git", "status", "--porcelain"], root).stdout.strip()
+    result = _run_default_receipt(root, sha)
+    assert result.returncode != 0, (
+        "Unsafe default receipt produced false success: "
+        + result.stdout + result.stderr)
+    assert "receipt" in result.stderr.lower() or "outside" in result.stderr.lower()
+    assert sorted(p.name for p in external.iterdir()) == ["do-not-change.txt"]
+    assert (external / "do-not-change.txt").read_text(encoding="utf-8") == "sentinel"
+
+
+def test_subdirectory_receipt_symlink_never_writes_outside(tmp_path):
+    root = tmp_path / "source"
+    sha = _passing_synthetic_repo(root)
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "sentinel").write_text("unchanged", encoding="utf-8")
+    (root / "REPORTS").mkdir()
+    (root / ".git" / "info" / "exclude").write_text("REPORTS\n", encoding="utf-8")
+    _symlink_or_skip(root / "REPORTS" / "trusted-memory", external)
+    result = _run_default_receipt(root, sha)
+    assert result.returncode != 0
+    assert sorted(p.name for p in external.iterdir()) == ["sentinel"]
+
+
+def test_explicit_receipt_outside_checkout_is_rejected(tmp_path):
+    root = tmp_path / "source"
+    sha = _passing_synthetic_repo(root)
+    destination = tmp_path / "outside" / "receipt.json"
+    result = _run([
+        sys.executable, "-I", "-B", str(root / "scripts" / RUNNER.name),
+        "--expected-sha", sha, "--evidence", str(destination),
+    ], root, check=False)
+    assert result.returncode != 0
+    assert not destination.exists()
+    assert not destination.parent.exists()
+
+
+def test_legitimate_default_receipt_in_checkout_still_passes(tmp_path):
+    root = tmp_path / "source"
+    sha = _passing_synthetic_repo(root)
+    result = _run_default_receipt(root, sha)
+    assert result.returncode == 0, result.stderr
+    reports = list((root / "REPORTS" / "trusted-memory").glob("receipt-*.json"))
+    assert len(reports) == 1
+    report = json.loads(reports[0].read_text(encoding="utf-8"))
+    assert report["status"] == "PASS_SCOPED"
+    assert report["cases_passed"] == 25
+    assert report["snapshot_sha"] == sha
+
+
+def test_existing_receipt_symlink_or_alias_is_never_written(tmp_path):
+    root = tmp_path / "source"
+    sha = _passing_synthetic_repo(root)
+    report_dir = root / "REPORTS" / "trusted-memory"
+    report_dir.mkdir(parents=True)
+    external = tmp_path / "outside.json"
+    external.write_text("sentinel", encoding="utf-8")
+    alias = report_dir / "alias.json"
+    try:
+        alias.symlink_to(external)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Real file symlink unavailable: {type(exc).__name__}")
+    result = _run([
+        sys.executable, "-I", "-B", str(root / "scripts" / RUNNER.name),
+        "--expected-sha", sha, "--evidence", str(alias),
+    ], root, check=False)
+    assert result.returncode != 0
+    assert external.read_text(encoding="utf-8") == "sentinel"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction/reparse control only")
+def test_windows_real_junction_receipt_rejected_when_supported(tmp_path):
+    root = tmp_path / "source"
+    sha = _passing_synthetic_repo(root)
+    external = tmp_path / "junction-target"
+    external.mkdir()
+    (external / "sentinel").write_text("protected", encoding="utf-8")
+    (root / ".git" / "info" / "exclude").write_text("REPORTS\n", encoding="utf-8")
+    link = root / "REPORTS"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(external)],
+        text=True, capture_output=True, timeout=10,
+    )
+    if created.returncode != 0:
+        pytest.skip("Native Windows junction creation unavailable on hosted runner")
+    assert link.is_junction()
+    result = _run_default_receipt(root, sha)
+    assert result.returncode != 0
+    assert sorted(p.name for p in external.iterdir()) == ["sentinel"]

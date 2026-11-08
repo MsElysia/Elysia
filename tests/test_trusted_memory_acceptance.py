@@ -197,3 +197,18 @@ def test_control_a_clean_real_canonical_memory_is_covered_in_ci():
     """
     assert RUNNER.is_file()
     assert (ROOT / "tests" / "test_memory_integrity_windows.py").is_file()
+
+
+def test_git_archive_autocrlf_never_alters_verified_source_blobs(tmp_path):
+    """Git archive must export blob bytes, even with Windows checkout settings."""
+    root = tmp_path / "autocrlf"
+    pinned = _repo(root)
+    _run(["git", "config", "core.autocrlf", "true"], root)
+    result, receipt = _accept(root, pinned)
+    # Original tracked test asserts False, so the source must be run and FAIL.
+    assert result.returncode != 0
+    assert receipt["status"] == "FAIL"
+    assert receipt["source_blobs"], receipt["errors"]
+    assert receipt.get("cases_failed") == 1, receipt
+    assert receipt.get("cases_passed") == 0
+    assert not any("Snapshot bytes differ" in error for error in receipt["errors"])

@@ -332,21 +332,17 @@ def promote(
         _append_log(result)
         return result
 
-    # Preflight has already pinned live canonical source; bypass flags denied.
-    if not skip_tests:
-        ok, log = run_intel_tests(dev)
-        result["tests_ok"] = ok
-        result["test_log_tail"] = log[-4000:]
-        evidence = state_root() / f"promote-tests-{sha[:12]}.txt"
-        evidence.write_text(log, encoding="utf-8")
-        result["test_evidence"] = str(evidence)
-        if not ok:
-            result["error"] = "intel slice tests failed — release not updated"
-            _append_log(result)
-            return result
-    else:
-        result["tests_ok"] = None
-        result["notes"] = ["tests skipped by operator flag"]
+    # Preflight rejects legacy bypass flags; tests are always mandatory.
+    ok, log = run_intel_tests(dev)
+    result["tests_ok"] = ok
+    result["test_log_tail"] = log[-4000:]
+    evidence = state_root() / f"promote-tests-{sha[:12]}.txt"
+    evidence.write_text(log, encoding="utf-8")
+    result["test_evidence"] = str(evidence)
+    if not ok:
+        result["error"] = "intel slice tests failed — release not updated"
+        _append_log(result)
+        return result
 
     result["ops_manifest"] = str(backup_operational_data_manifest() or "")
     release = release_root()

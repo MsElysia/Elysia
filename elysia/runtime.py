@@ -22,6 +22,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_in_root_proposal_dir(path: Path) -> bool:
+    """True only for a regular directory whose metadata.json leaf is not a symlink.
+
+    Heartbeat previously counted via list_proposals(), which follows directory-symlink
+    folders and metadata.json file-symlinks. Skip those leaves without following them.
+    This does not change proposal_system list/get/load/save or get_status().
+    """
+    try:
+        if path.is_symlink() or not path.is_dir():
+            return False
+        metadata = path / "metadata.json"
+        if metadata.is_symlink() or not metadata.exists():
+            return False
+    except OSError:
+        return False
+    return True
+
+
 class ElysiaRuntime:
     """High-level orchestration layer for Architect-Core + agents + API."""
 
@@ -188,17 +206,28 @@ class ElysiaRuntime:
             architect=self.architect,
         )
 
+    def _count_in_root_proposals(self) -> int:
+        """Count regular in-root proposal folders without loading metadata."""
+        if not self.proposal_system:
+            return 0
+        try:
+            proposals_root = self.proposal_system.proposals_root
+            if not proposals_root.exists():
+                return 0
+            return sum(
+                1 for path in proposals_root.iterdir() if _is_in_root_proposal_dir(path)
+            )
+        except Exception as exc:
+            logger.debug("Error counting heartbeat proposals: %s", exc)
+            return 0
+
     def _start_heartbeat(self) -> None:
         def _loop():
             while not self._heartbeat_stop.is_set():
                 payload = {
                     "running": self._running,
                     "uptime": self.get_uptime_seconds(),
-                    "proposals": len(
-                        self.proposal_system.list_proposals()
-                    )
-                    if self.proposal_system
-                    else 0,
+                    "proposals": self._count_in_root_proposals(),
                 }
                 self.event_bus.emit("runtime", "heartbeat", payload)
                 self._heartbeat_stop.wait(timeout=60)

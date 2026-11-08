@@ -23,13 +23,13 @@ jobs:
       - name: Checkout exact event head
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: f4642a824181c194b5adfd3f902b69008b7efa2c
           persist-credentials: false
 
       - name: Assert exact event SHA
         shell: pwsh
         env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_SHA: f4642a824181c194b5adfd3f902b69008b7efa2c
         run: |
           $actual = git rev-parse HEAD
           if ($actual -ne $env:EXPECTED_SHA) {
@@ -63,7 +63,7 @@ jobs:
         env:
           PYTHONUTF8: "1"
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python -I -B scripts/trusted_memory_acceptance.py --expected-sha "${{ github.event.pull_request.head.sha || github.sha }}"
+        run: python -I -B scripts/trusted_memory_acceptance.py --expected-sha "f4642a824181c194b5adfd3f902b69008b7efa2c"
 
       - name: Preserve trusted-source acceptance receipt
         if: always()

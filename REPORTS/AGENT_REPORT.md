@@ -3577,3 +3577,49 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — existing create target is not success
+
+**Status:** COMPLETED on this branch. Not on `main`. No PR.
+
+**Implementation commit:** `c7d2d29c0a954b80bd4aff053a8c01fd114444b7`
+
+**Base:** `722d8e4` (`main`). Not based on the events-limit, implement-status, research-status, chat-status, decision-status, implementation-result, approved-batch, status-availability, unreadable-proposal, dry_run type-check, dry-run lifecycle, or unexecuted-step branches.
+
+**Files:**
+- `elysia/agents/implementer.py`
+- `tests/test_runtime_api_implement_existing_file.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Behavior:**
+- `POST /api/proposals/<id>/implement` with a create-file step, or an add-tests step that uses the same create path, no longer returns `success: true` when the target path already exists.
+- The step result is `success: false`, `created: false`, error `File already exists and was not created`.
+- The aggregate error is `Step 1 failed: File already exists and was not created`.
+- The stored proposal status is `implementation_failed` and `implementation_status` is `failed`. History does not say `Implementation completed`.
+- Existing file bytes stay unchanged. A missing target file is still created and stored as `implemented`.
+
+**Evidence:**
+- Before, live HTTP 200 for fictional proposal `fictional-existing-file` was `success: true`, stored status `implemented`, file bytes `original-bytes`.
+- After: `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_runtime_api_implement_existing_file.py -v --tb=short` — 2 passed. Flask test client and live Werkzeug HTTP. Real `ProposalSystem` and `ImplementerAgent`, watcher off, fictional proposals, temporary working directory, no external services.
+- Live HTTP after the change: HTTP 200 `success: false`, stored status `implementation_failed`, file bytes still `original-bytes`.
+- `tests/test_implementer_agent.py` still fails only on the pre-existing assertion text `test_implementer_rejects_non_accepted_proposal`. It was not changed.
+
+**Remaining limitations:**
+- Unsuccessful implement results on this branch still return HTTP 200. That mapping stays on `origin/cursor/elysia-product-workflow-process-9429`.
+- A generic step and a modify or config step that does not change a file still report success on this branch. That fix stays on `origin/cursor/elysia-product-workflow-gaps-0e04` (`f08b7ff`, handoff `8a459a0`).
+- Boolean `dry_run: true` still stores `implemented` on this branch. That fix stays on `origin/cursor/product-workflow-engineering-process-b494` (`07e1de0`, handoff `867b211`).
+- A non-boolean `dry_run` is still not rejected here. That check stays on `origin/cursor/elysia-product-workflow-6a1b` (`4ed3b33`, handoff `d4900c7`).
+- The route still builds `ImplementerAgent` with `repo_root=Path(".")`.
+- An add-tests step reports `step_type: create_file` because it delegates to the create-file executor.
+
+**Ownership left untouched:**
+- Did not edit `elysia/core/proposal_system.py` or `elysia/runtime.py`.
+- Runtime integrity today is `ff53d49` on `origin/cursor/elysia-runtime-integrity-7dce` (`bc-e117e264`, `elysia/runtime.py` and `tests/test_elysia_runtime_heartbeat_symlink_count.py` only).
+- Application runtime safety remains `2f8ce84` on `origin/cursor/application-runtime-safety-bf3f` (`bc-fa725e16`).
+- Did not edit `project_guardian/ui_control_panel.py`.
+- `CURRENT_TASK: NONE`. `TASK-0053` remains OPEN review-only on the brain-bridge line (`bf6c72c`). Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb`. Do not implement live memory or vector writes. Leave open memory drafts through PR #214 to their owners.
+
+A branch commit is not integrated product readiness. Next product run should pick a different unclaimed API or dashboard error path and should re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`.

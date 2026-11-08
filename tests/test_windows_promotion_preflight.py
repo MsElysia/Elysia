@@ -373,6 +373,17 @@ def test_release_overlapping_executing_repo_is_blocked(synthetic, shape):
         path = repo.parent
     synthetic.monkeypatch.setenv("ELYSIA_RELEASE_ROOT", str(path))
     synthetic.monkeypatch.setattr(promotion, "release_root", lambda: path)
+    # Assert the PRECISE guard, not merely a later non-Git Release error.
+    with pytest.raises(RuntimeError, match="release destination overlaps protected source/data/storage"):
+        promotion._safe_release_destination(synthetic.dev)
+    # Counterfactual: remove only the executing-source overlap by pointing
+    # _REPO somewhere unrelated. All other protected roots remain identical.
+    # The candidate must now pass destination validation; this prevents a
+    # vacuous green from an unrelated Dev/ops/state/backup overlap.
+    with synthetic.monkeypatch.context() as scope:
+        scope.setattr(promotion, "_REPO", synthetic.base / "unrelated-source")
+        assert promotion._safe_release_destination(synthetic.dev) == path
+    # Secondary full-entrypoint check preserves the no-side-effect contract.
     denied(synthetic)
 
 

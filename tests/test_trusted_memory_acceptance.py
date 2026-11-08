@@ -48,7 +48,7 @@ def _repo(base, *, ignore=""):
 def _accept(base, expected, *, extra_env=None, receipt=None):
     env = os.environ.copy()
     env.update(extra_env or {})
-    target = receipt or base.parent / (base.name + "-receipt.json")
+    target = receipt or base / "REPORTS" / "trusted-memory" / "synthetic-receipt.json"
     command = [sys.executable, "-I", "-B", str(base / "scripts" / RUNNER.name),
                "--expected-sha", expected, "--evidence", str(target)]
     result = _run(command, base, env=env, check=False)
@@ -147,7 +147,7 @@ def test_dirty_source_and_wrong_sha_fail_closed(tmp_path):
     result, receipt = _accept(root, "0" * 40)
     assert result.returncode != 0
     assert receipt["status"] == "FAIL"
-    other = tmp_path / "dirty-second-receipt.json"
+    other = root / "REPORTS" / "trusted-memory" / "dirty-second-receipt.json"
     (root / "tests" / "test_memory_integrity_windows.py").write_text(
         "def test_forged_noop():\n    assert True\n", encoding="utf-8")
     result, receipt = _accept(root, pinned, receipt=other)
@@ -179,6 +179,18 @@ def test_missing_evidence_and_installed_path_are_rejected(tmp_path):
                    root, check=False)
     assert failure.returncode != 0
     assert blocked.read_text(encoding="utf-8") == "sentinel"
+
+    # Even an in-scope receipt must fail closed when its directory is blocked.
+    (root / ".git" / "info" / "exclude").write_text("REPORTS\n", encoding="utf-8")
+    (root / "REPORTS").mkdir()
+    (root / "REPORTS" / "trusted-memory").write_text("synthetic obstruction", encoding="utf-8")
+    refusal = _run([
+        sys.executable, "-I", "-B", str(root / "scripts" / RUNNER.name),
+        "--expected-sha", pinned, "--evidence",
+        str(root / "REPORTS" / "trusted-memory" / "report.json"),
+    ], root, check=False)
+    assert refusal.returncode != 0
+    assert (root / "REPORTS" / "trusted-memory").read_text(encoding="utf-8") == "synthetic obstruction"
 
     installed = tmp_path / "Elysia-Windows-Release"
     shutil.copytree(root, installed)

@@ -63,10 +63,24 @@ def test_control_b_git_environment_cannot_substitute_clean_repo(tmp_path):
     pinned = _repo(source_a)
     shutil.copytree(source_a, source_b)
     modified = source_b / "tests" / "test_memory_integrity_windows.py"
-    modified.write_text(
-        "from pathlib import Path\n"
-        "def test_forged_noop():\n"
-        "    Path('FORGED_TEST_RAN').write_text('bad')\n", encoding="utf-8")
+    # Fake every required named case and pad to exactly 30 no-op PASSES,
+    # reproducing the prior false-green JUnit shape rather than one green test.
+    import runpy
+    required = runpy.run_path(str(RUNNER))["REQUIRED"]
+    assert sum(required.values()) < 30
+    forged = ["import pytest", "from pathlib import Path"]
+    for name, count in required.items():
+        forged.extend([
+            f"@pytest.mark.parametrize('i', range({count}))",
+            f"def {name}(i):",
+            "    Path('FORGED_TEST_RAN').write_text('bad')",
+        ])
+    forged.extend([
+        f"@pytest.mark.parametrize('i', range({30 - sum(required.values())}))",
+        "def test_padding_noop(i):",
+        "    assert True",
+    ])
+    modified.write_text("\n".join(forged) + "\n", encoding="utf-8")
     fake_env = {
         "GIT_DIR": str(source_a / ".git"),
         "GIT_WORK_TREE": str(source_a),

@@ -55,3 +55,21 @@ jobs:
           # is not polluted by comtypes SpeechLib codegen into site-packages.
           PYTHONPATH: ${{ github.workspace }}/ci_stubs
         run: python -B scripts/run_windows_intel_rc_tests.py
+
+      - name: Test trusted-source adversarial controls
+        run: python -I -B -m pytest --noconftest -q -p no:cacheprovider tests/test_trusted_memory_acceptance.py
+
+      - name: Run pinned-source synthetic MemoryCore acceptance
+        env:
+          PYTHONUTF8: "1"
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -I -B scripts/trusted_memory_acceptance.py --expected-sha "${{ github.event.pull_request.head.sha || github.sha }}"
+
+      - name: Preserve trusted-source acceptance receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trusted-memory-acceptance-${{ matrix.os }}
+          path: REPORTS/trusted-memory/*.json
+          if-no-files-found: warn
+          retention-days: 14

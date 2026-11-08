@@ -25,10 +25,23 @@ WRONG = "b" * 40
 def synthetic(monkeypatch, tmp_path):
     dev, release = tmp_path / "dev", tmp_path / "release"
     dev.mkdir()
+    (dev / "pilot").mkdir()
+    for name in promotion._STABLE_LAUNCHERS:
+        path = dev / name
+        path.write_text("# synthetic launcher only\n", encoding="utf-8")
     (release / "pilot").mkdir(parents=True)
     (release / "pilot" / "START_ELYSIA1.bat").write_text(
         "@echo off\nrem synthetic only\n", encoding="utf-8"
     )
+    # A genuine clean Git checkout under TEMP, never the user's Release.
+    subprocess.run(["git", "init", "-q"], cwd=release, check=True)
+    subprocess.run(["git", "config", "user.email", "synthetic@example.invalid"], cwd=release, check=True)
+    subprocess.run(["git", "config", "user.name", "Synthetic"], cwd=release, check=True)
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/MsElysia/Elysia.git"], cwd=release, check=True)
+    subprocess.run(["git", "add", "."], cwd=release, check=True)
+    subprocess.run(["git", "commit", "-qm", "synthetic release baseline"], cwd=release, check=True)
+    (tmp_path / "executing-source").mkdir()
+    monkeypatch.setattr(promotion, "_REPO", tmp_path / "executing-source")
     (tmp_path / "state").mkdir()
     for name in ("ops", "pilot", "pilot-data", "backups"):
         (tmp_path / name).mkdir()
@@ -41,7 +54,12 @@ def synthetic(monkeypatch, tmp_path):
     monkeypatch.setattr(promotion, "PRESERVED_PILOT_DATA", tmp_path / "pilot-data")
     monkeypatch.setattr(promotion, "dev_root", lambda: dev)
     monkeypatch.setattr(promotion, "release_root", lambda: release)
-    monkeypatch.setattr(promotion, "state_root", lambda: tmp_path / "state")
+    # Any preflight denial must never even enter the state writer.
+    state_calls = []
+    def forbidden_state_root():
+        state_calls.append("state_root")
+        return tmp_path / "state"
+    monkeypatch.setattr(promotion, "state_root", forbidden_state_root)
 
     state = {
         "head": GOOD,
@@ -55,7 +73,12 @@ def synthetic(monkeypatch, tmp_path):
     }
     commands = []
 
+    real_git = promotion._git_preflight
     def fake_git(repo, *args):
+        if repo == release:
+            # Verify actual Git worktree/head/dirty/remote, not just mocked
+            # release metadata. Git subprocess operates in disposable TEMP.
+            return real_git(repo, *args)
         assert repo == dev
         args = tuple(args)
         commands.append(args)
@@ -112,7 +135,8 @@ def synthetic(monkeypatch, tmp_path):
     monkeypatch.setattr(promotion, "_append_log", marker("log", None))
     return SimpleNamespace(
         dev=dev, release=release, base=tmp_path, state=state,
-        calls=calls, commands=commands, monkeypatch=monkeypatch,
+        calls=calls, commands=commands, state_calls=state_calls,
+        monkeypatch=monkeypatch,
     )
 
 
@@ -126,6 +150,7 @@ def denied(synthetic, **kwargs):
     assert result["ok"] is False, result
     assert result.get("error"), result
     assert synthetic.calls == [], "Unsafe preflight performed a write/test/backup: " + repr(synthetic.calls)
+    assert synthetic.state_calls == [], "Unsafe preflight reached state_root"
     assert (synthetic.release / "pilot" / "START_ELYSIA1.bat").read_bytes() == existing_launcher
     return result
 
@@ -241,6 +266,7 @@ def test_clean_pinned_preflight_preserves_existing_eligibility_without_promotion
     )
     assert (dev, release, sha) == (synthetic.dev, synthetic.release, GOOD)
     assert synthetic.calls == []
+    assert synthetic.state_calls == []
     assert any(args[0] == "ls-remote" for args in synthetic.commands)
     assert len([args for args in synthetic.commands if args[0] == "ls-tree"]) == 3
 
@@ -287,3 +313,102 @@ def test_git_preflight_does_not_inherit_forged_git_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.worktree")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(a))
     assert promotion._git_preflight(b, "rev-parse", "--verify", "HEAD") == real_b
+
+
+def test_existing_dirty_release_is_blocked_before_any_backup_or_test(synthetic):
+    """Actual disposable Git status: tracked changes must block in preflight."""
+    original = synthetic.release / "pilot" / "START_ELYSIA1.bat"
+    original.write_text("@echo off\nrem UNSAVED synthetic local edit\n", encoding="utf-8")
+    result = denied(synthetic)
+    assert "release" in result["error"].lower()
+    assert "dirty" in result["error"].lower() or "modified" in result["error"].lower()
+
+
+def test_existing_release_untracked_file_blocks_before_any_mutation(synthetic):
+    (synthetic.release / "synthetic-untracked.txt").write_text("untracked", encoding="utf-8")
+    denied(synthetic)
+
+
+def test_existing_release_unidentified_git_tree_blocks(synthetic):
+    # Existing directory is not a valid release Git checkout. No fake/mocked
+    # release state can bypass an actual Git subprocess failure.
+    import shutil
+    shutil.rmtree(synthetic.release / ".git")
+    denied(synthetic)
+
+
+def test_existing_release_with_wrong_origin_blocks(synthetic):
+    subprocess.run(
+        ["git", "remote", "set-url", "origin", "https://github.com/other/forged.git"],
+        cwd=synthetic.release, check=True,
+    )
+    denied(synthetic)
+
+
+def test_clean_absent_release_preflight_remains_eligible(synthetic):
+    """A previously absent Release may be added later after separate authority."""
+    import shutil
+    shutil.rmtree(synthetic.release)
+    dev, release, sha = promotion._release_preflight(
+        expected_sha=GOOD, skip_tests=False, allow_dirty_dev=False,
+    )
+    assert dev == synthetic.dev and release == synthetic.release and sha == GOOD
+    assert synthetic.calls == [] and synthetic.state_calls == []
+    assert not synthetic.release.exists()
+
+
+@pytest.mark.parametrize("shape", ["equal", "child", "parent"])
+def test_release_overlapping_executing_repo_is_blocked(synthetic, shape):
+    # Deliberately leave Dev in a separate temp worktree, so checking Dev
+    # alone cannot protect the currently executing Python source tree.
+    repo = promotion._REPO
+    if shape == "equal":
+        path = repo
+    elif shape == "child":
+        path = repo / "fake-release"
+        path.mkdir()
+    else:
+        path = repo.parent
+    synthetic.monkeypatch.setenv("ELYSIA_RELEASE_ROOT", str(path))
+    synthetic.monkeypatch.setattr(promotion, "release_root", lambda: path)
+    denied(synthetic)
+
+
+@pytest.mark.parametrize("name", [
+    "pilot/START_ELYSIA1.bat",
+    "pilot/START_ELYSIA_VERIFIED_PILOT.bat",
+    "pilot/launch_verified_pilot.py",
+])
+def test_missing_on_disk_launcher_blocks_despite_forged_clean_git_index(synthetic, name):
+    # The fake Git layer insists status clean and launcher tracked, yet
+    # real on-disk file is absent. Mirrors skip-worktree/sparse checkout.
+    (synthetic.dev / name).unlink()
+    denied(synthetic)
+    assert synthetic.state["missing_launcher"] is None
+
+
+def test_symlinked_on_disk_launcher_blocks_despite_clean_git_index(synthetic):
+    src = synthetic.dev / "pilot" / "START_ELYSIA1.bat"
+    src.unlink()
+    target = synthetic.base / "external-launcher.txt"
+    target.write_text("synthetic only", encoding="utf-8")
+    try:
+        src.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Real file symlink unsupported: {type(exc).__name__}")
+    denied(synthetic)
+    assert target.read_text(encoding="utf-8") == "synthetic only"
+
+
+def test_pilot_symlinked_parent_blocks_despite_tracked_launcher(synthetic):
+    import shutil
+    shutil.rmtree(synthetic.dev / "pilot")
+    external = synthetic.base / "other-pilot"
+    external.mkdir()
+    for name in promotion._STABLE_LAUNCHERS:
+        (external / Path(name).name).write_text("synthetic", encoding="utf-8")
+    try:
+        (synthetic.dev / "pilot").symlink_to(external, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Real directory symlink unsupported: {type(exc).__name__}")
+    denied(synthetic)

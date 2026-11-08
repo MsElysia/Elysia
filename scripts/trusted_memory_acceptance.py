@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,42 @@ RELEASE_DIRS = {
     "elysia-windows-release", "elysia-windows-integration-data",
     "elysia-verified-pilot", "elysia-verified-pilot-data",
 }
+
+
+def _checked_receipt_destination(requested):
+    """Restrict ALL receipts to non-redirected ROOT/REPORTS/trusted-memory/*.json.
+
+    Refuse links, junctions, reparse points and traversal before any write.
+    Recheck immediately before exclusive create to catch ordinary changes.
+    Concurrent hostile admin path-swapping is outside the declared threat model.
+    """
+    allowed = ROOT / "REPORTS" / "trusted-memory"
+    requested = Path(requested)
+    if ".." in requested.parts:
+        raise RuntimeError("Unsafe receipt path traversal refused")
+    dest = requested if requested.is_absolute() else ROOT / requested
+    if dest.parent != allowed or dest.suffix.lower() != ".json":
+        raise RuntimeError("Receipt destination outside permitted REPORTS/trusted-memory directory")
+    for node in (ROOT, ROOT / "REPORTS", allowed, dest):
+        if node.is_symlink():
+            raise RuntimeError("Receipt path symlink/referral refused")
+        if os.name == "nt":
+            junction = getattr(node, "is_junction", None)
+            if junction is None:
+                raise RuntimeError("Windows receipt junction detection unavailable")
+            if junction():
+                raise RuntimeError("Receipt path Windows junction refused")
+            try:
+                attrs = node.lstat().st_file_attributes
+            except FileNotFoundError:
+                continue
+            if attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise RuntimeError("Receipt path reparse point refused")
+    # Resolve only after checking each node so symlink escapes cannot quietly
+    # become a different allowed directory. This also covers path aliases.
+    if allowed.resolve(strict=False) != allowed or dest.resolve(strict=False) != dest:
+        raise RuntimeError("Receipt destination resolves through an unsafe path alias")
+    return dest
 
 
 def _git_env():
@@ -205,9 +242,15 @@ def main():
               "installed_release_tested": False,
               "native_windows_directory_acl_tested": False,
               "operational_data_used": False, "errors": []}
-    # An installed source path is refused before any evidence/file write.
+    # An installed source path or redirected report directory is refused
+    # BEFORE running tests or creating any file. Unsafe output has no receipt.
     if any(p.lower() in RELEASE_DIRS for p in ROOT.parts):
         print("REFUSED: installed or operational Elysia source path", file=sys.stderr)
+        return 1
+    try:
+        evidence = _checked_receipt_destination(evidence)
+    except (OSError, RuntimeError) as exc:
+        print(f"REFUSED unsafe receipt destination: {exc}", file=sys.stderr)
         return 1
     try:
         _validate_repo(sha)
@@ -224,11 +267,13 @@ def main():
             zipfile.BadZipFile, ET.ParseError, UnicodeError) as exc:
         report["errors"].append(f"{type(exc).__name__}: {str(exc)[:150]}")
     try:
+        evidence = _checked_receipt_destination(evidence)
         evidence.parent.mkdir(parents=True, exist_ok=True)
+        evidence = _checked_receipt_destination(evidence)
         with evidence.open("x", encoding="utf-8") as stream:
             json.dump(report, stream, indent=2, sort_keys=True)
-    except OSError as exc:
-        print(f"Could not preserve acceptance evidence ({type(exc).__name__})", file=sys.stderr)
+    except (OSError, RuntimeError) as exc:
+        print(f"Could not preserve safe acceptance receipt ({type(exc).__name__}): {exc}", file=sys.stderr)
         return 1
     for reason in report["errors"]:
         print("TRUSTED MEMORY REJECTED: " + reason, file=sys.stderr)

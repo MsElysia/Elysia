@@ -149,6 +149,10 @@ def preflight_release(
         raise RuntimeError("expected SHA must be a supplied exact 40-hex approved revision")
     if skip_tests or allow_dirty_dev:
         raise RuntimeError("promotion bypass flags not permitted: skip-tests/allow-dirty-dev")
+    # Existing Git wrappers inherit process environment. Reject Git context
+    # overrides rather than certify A while operating on a different B.
+    if any(key.upper().startswith("GIT_") for key in os.environ):
+        raise RuntimeError("inherited GIT_* environment refused for promotion preflight")
     _validate_release_destination(release_requested, protected_roots)
 
     wt = gitutil.worktree_state(dev)

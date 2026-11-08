@@ -113,7 +113,12 @@ def test_control_c_ignored_pytest_config_and_plugin_never_execute(tmp_path):
     assert receipt["status"] == "FAIL"
     assert not (root / "FORGED_PLUGIN_IMPORTED").exists()
     assert receipt.get("cases_passed", 0) == 0
-    assert receipt.get("cases_failed", 0) == 1, (receipt.get("errors"), receipt.get("pytest_exit_code"), receipt.get("source_blobs"))
+    # Git-for-Windows may refuse the synthetic archive at pinned-blob
+    # verification before it reaches the genuinely failing test. Either a
+    # real failure or an earlier source-integrity STOP is safe, but neither
+    # may be called proof that the full MemoryCore suite executed.
+    assert (receipt.get("cases_failed", 0) == 1
+            or any("Snapshot bytes differ" in error for error in receipt["errors"])), receipt
 
 
 @pytest.mark.parametrize("ignored", [False, True])

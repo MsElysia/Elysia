@@ -140,6 +140,7 @@ def _safe_release_destination(dev: Path) -> Path:
         raise RuntimeError("release destination changed while validating")
     protected = (
         dev,
+        _REPO,
         OPERATIONAL_DATA_ROOT,
         PRESERVED_PILOT_ROOT,
         PRESERVED_PILOT_DATA,
@@ -168,6 +169,59 @@ def _canonical_origin(url: str) -> bool:
     return url.strip().rstrip("/").lower() in allowed
 
 
+def _check_existing_release(release: Path) -> None:
+    """Refuse dirty/unidentified Release BEFORE tests, manifests or backups.
+
+    Absent Release is permitted for a separately authorized first promotion.
+    All existing Git checks use the same sanitized read-only helper as Dev.
+    """
+    if not release.exists():
+        return
+    if not release.is_dir():
+        raise RuntimeError("existing Release is not a directory")
+    top = _git_preflight(release, "rev-parse", "--show-toplevel")
+    if Path(top).resolve(strict=False) != release:
+        raise RuntimeError("Release is not the root of its Git worktree")
+    sha = _git_preflight(release, "rev-parse", "--verify", "HEAD")
+    if not _PINNED_SHA.fullmatch(sha):
+        raise RuntimeError("Release has no valid committed HEAD")
+    if not _canonical_origin(_git_preflight(release, "remote", "get-url", "origin")):
+        raise RuntimeError("existing Release Git origin is not trusted")
+    if _git_preflight(release, "status", "--porcelain=v1", "-z", "--untracked-files=all"):
+        raise RuntimeError("existing Release checkout dirty; refusing to create backups or mutate")
+
+
+def _check_disk_launchers(dev: Path) -> None:
+    """Tracked blobs alone do not prove launch files exist in a sparse checkout.
+
+    Inspect metadata only. Dev root itself may be an authorized Windows junction,
+    but pilot/ and the three launcher files may not redirect elsewhere.
+    """
+    pilot = dev / "pilot"
+    for entry in (pilot, *(dev / name for name in _STABLE_LAUNCHERS)):
+        if entry.is_symlink():
+            raise RuntimeError("launcher file or pilot directory is a symlink")
+        if os.name == "nt":
+            junction = getattr(entry, "is_junction", None)
+            if not callable(junction):
+                raise RuntimeError("cannot verify Windows launcher junction safety")
+            if junction():
+                raise RuntimeError("launcher path is a Windows junction")
+        try:
+            metadata = entry.lstat()
+        except FileNotFoundError as exc:
+            raise RuntimeError("required launcher or pilot directory absent on disk") from exc
+        if os.name == "nt" and (
+            metadata.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            raise RuntimeError("launcher path contains a Windows reparse point")
+        required_mode = stat.S_ISDIR if entry == pilot else stat.S_ISREG
+        if not required_mode(metadata.st_mode):
+            raise RuntimeError("required launcher or pilot directory has unsafe file type")
+        if entry.resolve(strict=False) != entry:
+            raise RuntimeError("launcher resolves through an unexpected file alias")
+
+
 def _release_preflight(
     *, expected_sha: str | None, skip_tests: bool, allow_dirty_dev: bool
 ) -> tuple[Path, Path, str]:
@@ -178,6 +232,7 @@ def _release_preflight(
         raise RuntimeError("explicit pinned 40-hex --expected-sha required")
     dev = dev_root()
     release = _safe_release_destination(dev)
+    _check_existing_release(release)
     if _git_preflight(dev, "rev-parse", "--verify", "HEAD") != expected_sha:
         raise RuntimeError("Dev HEAD differs from independently approved SHA")
     if _git_preflight(dev, "symbolic-ref", "--quiet", "--short", "HEAD") != CANONICAL_BRANCH:
@@ -198,6 +253,7 @@ def _release_preflight(
         line = _git_preflight(dev, "ls-tree", "--full-tree", expected_sha, "--", path)
         if not re.fullmatch(r"100644 blob [0-9a-f]{40}\t" + re.escape(path), line):
             raise RuntimeError("required tracked stable launcher/dependency absent: " + path)
+    _check_disk_launchers(dev)
     return dev, release, expected_sha
 
 

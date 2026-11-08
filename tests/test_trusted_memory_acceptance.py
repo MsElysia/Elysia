@@ -27,6 +27,10 @@ def _repo(base, *, ignore=""):
     base.mkdir(parents=True, exist_ok=True)
     (base / "scripts").mkdir()
     (base / "tests").mkdir()
+    (base / "project_guardian").mkdir()
+    (base / "project_guardian" / "memory.py").write_text(
+        "# Synthetic memory placeholder for negative controls only.\n",
+        encoding="utf-8")
     shutil.copy2(RUNNER, base / "scripts" / RUNNER.name)
     (base / "tests" / "test_memory_integrity_windows.py").write_text(
         "def test_real_failure():\n"
@@ -95,6 +99,7 @@ def test_control_c_ignored_pytest_config_and_plugin_never_execute(tmp_path):
     assert receipt["status"] == "FAIL"
     assert not (root / "FORGED_PLUGIN_IMPORTED").exists()
     assert receipt.get("cases_passed", 0) == 0
+    assert receipt.get("cases_failed", 0) == 1, receipt
 
 
 @pytest.mark.parametrize("ignored", [False, True])

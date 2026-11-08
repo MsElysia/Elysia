@@ -53,7 +53,11 @@ def _git_env():
 
 
 def _git(*args, binary=False):
-    result = subprocess.run(["git", "-C", str(ROOT), *args], env=_git_env(),
+    # Git archive (unlike cat-file) can apply core.autocrlf during export.
+    # Disable that conversion ONLY for archive to preserve exact Git blob
+    # bytes; status must keep the worktree's normal Windows eol rules.
+    options = ["-c", "core.autocrlf=false"] if args and args[0] == "archive" else []
+    result = subprocess.run(["git", *options, "-C", str(ROOT), *args], env=_git_env(),
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             check=True, timeout=45)
     return result.stdout if binary else result.stdout.decode("utf-8").strip()

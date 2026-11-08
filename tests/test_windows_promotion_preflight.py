@@ -7,6 +7,8 @@ the existing promotable entrypoint to refuse those paths before any writes.
 """
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -115,6 +117,7 @@ def synthetic(monkeypatch, tmp_path):
 
 
 def denied(synthetic, **kwargs):
+    existing_launcher = (synthetic.release / "pilot" / "START_ELYSIA1.bat").read_bytes()
     result = promotion.promote(
         expected_sha=kwargs.pop("expected_sha", GOOD),
         skip_tests=kwargs.pop("skip_tests", False),
@@ -123,6 +126,7 @@ def denied(synthetic, **kwargs):
     assert result["ok"] is False, result
     assert result.get("error"), result
     assert synthetic.calls == [], "Unsafe preflight performed a write/test/backup: " + repr(synthetic.calls)
+    assert (synthetic.release / "pilot" / "START_ELYSIA1.bat").read_bytes() == existing_launcher
     return result
 
 
@@ -239,3 +243,47 @@ def test_clean_pinned_preflight_preserves_existing_eligibility_without_promotion
     assert synthetic.calls == []
     assert any(args[0] == "ls-remote" for args in synthetic.commands)
     assert len([args for args in synthetic.commands if args[0] == "ls-tree"]) == 3
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Actual Windows junction test")
+def test_release_native_windows_junction_is_refused_when_available(synthetic):
+    external = synthetic.base / "windows-junction-target"
+    external.mkdir()
+    link = synthetic.base / "windows-junction"
+    create = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(external)],
+        capture_output=True, text=True, timeout=10,
+    )
+    if create.returncode:
+        pytest.skip("No unprivileged junction creation on this Windows runner")
+    assert link.is_junction()
+    synthetic.monkeypatch.setenv("ELYSIA_RELEASE_ROOT", str(link))
+    synthetic.monkeypatch.setattr(promotion, "release_root", lambda: link.resolve())
+    denied(synthetic)
+    assert list(external.iterdir()) == []
+
+
+def test_git_preflight_does_not_inherit_forged_git_dir(tmp_path, monkeypatch):
+    """Actual disposable Git: -C must not be displaced by GIT_DIR variables."""
+    a, b = tmp_path / "repo-a", tmp_path / "repo-b"
+    for dest, label in ((a, "A"), (b, "B")):
+        dest.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=dest, check=True)
+        subprocess.run(["git", "config", "user.email", "synthetic@example.invalid"],
+                       cwd=dest, check=True)
+        subprocess.run(["git", "config", "user.name", "Synthetic"],
+                       cwd=dest, check=True)
+        (dest / "synthetic.txt").write_text(label, encoding="utf-8")
+        subprocess.run(["git", "add", "synthetic.txt"], cwd=dest, check=True)
+        subprocess.run(["git", "commit", "-qm", "synthetic"],
+                       cwd=dest, check=True)
+    real_b = promotion._git_preflight(b, "rev-parse", "--verify", "HEAD")
+    real_a = promotion._git_preflight(a, "rev-parse", "--verify", "HEAD")
+    assert real_a != real_b
+    monkeypatch.setenv("GIT_DIR", str(a / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(a))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(a / ".git" / "index"))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.worktree")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(a))
+    assert promotion._git_preflight(b, "rev-parse", "--verify", "HEAD") == real_b

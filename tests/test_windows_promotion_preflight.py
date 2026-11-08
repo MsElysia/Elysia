@@ -5,6 +5,7 @@ These tests deliberately never invoke a successful promote() mutating path.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,10 @@ REQUIRED_LAUNCHERS = (
 
 @pytest.fixture
 def accepted(tmp_path, monkeypatch):
+    # A clean test process never inherits Git environment aliases.
+    for key in list(os.environ):
+        if key.upper().startswith("GIT_"):
+            monkeypatch.delenv(key)
     dev = tmp_path / "dev"
     release = tmp_path / "release"
     protected = tmp_path / "protected"
@@ -242,3 +247,54 @@ def test_promotion_missing_pin_and_bypass_flags_no_side_effects(accepted, monkey
         assert result["ok"] is False
         assert result["error"]
     assert not kwargs["release_requested"].exists()
+
+
+@pytest.mark.parametrize("name", [
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+    "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_COMMON_DIR",
+])
+def test_inherited_git_context_spoof_denied_before_git(accepted, monkeypatch, name):
+    _, kwargs = accepted
+    monkeypatch.setenv(name, "synthetic-untrusted-git-context")
+    with pytest.raises(RuntimeError, match="GIT_"):
+        promotion.preflight_release(**kwargs)
+    assert not kwargs["release_requested"].exists()
+
+
+def test_existing_release_dirty_rejected_before_any_backup(accepted, monkeypatch):
+    state, kwargs = accepted
+    release = kwargs["release_requested"]
+    release.mkdir()
+    def fake_worktree(path):
+        if path == release:
+            return SimpleNamespace(head=WRONG, branch=None, dirty=True)
+        return SimpleNamespace(
+            head=state["head"], branch=state["branch"], dirty=state["dirty"])
+    monkeypatch.setattr(promotion.gitutil, "worktree_state", fake_worktree)
+    with pytest.raises(RuntimeError, match="release worktree dirty"):
+        promotion.preflight_release(**kwargs)
+
+
+def test_missing_live_remote_output_refused_even_when_cached_ref_matches(accepted, monkeypatch):
+    _, kwargs = accepted
+    orig = promotion.gitutil.run_git
+    def fake(repo, args, **kw):
+        if args and args[0] == "ls-remote":
+            return subprocess.CompletedProcess(["git"], 0, "", "")
+        return orig(repo, args, **kw)
+    monkeypatch.setattr(promotion.gitutil, "run_git", fake)
+    with pytest.raises(RuntimeError, match="live origin"):
+        promotion.preflight_release(**kwargs)
+
+
+def test_promotion_cli_missing_approval_cannot_call_backups(accepted, monkeypatch):
+    _, kwargs = accepted
+    monkeypatch.setattr(promotion, "dev_root", lambda: kwargs["dev"])
+    monkeypatch.setattr(promotion, "_configured_release_path",
+                        lambda: kwargs["release_requested"])
+    def must_not_run(*_args, **_kw):
+        raise AssertionError("unauthorized preflight called mutation")
+    for key in ("_append_log", "backup_operational_data_manifest",
+                "backup_previous_release", "ensure_release_checkout", "save_json"):
+        monkeypatch.setattr(promotion, key, must_not_run)
+    assert promotion.main(["--json"]) == 2

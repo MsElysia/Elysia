@@ -361,7 +361,9 @@ def test_clean_absent_release_preflight_remains_eligible(synthetic):
 def test_release_overlapping_executing_repo_is_blocked(synthetic, shape):
     # Deliberately leave Dev in a separate temp worktree, so checking Dev
     # alone cannot protect the currently executing Python source tree.
-    repo = promotion._REPO
+    repo = synthetic.base / "isolated-execution-root" / "source"
+    repo.mkdir(parents=True)
+    synthetic.monkeypatch.setattr(promotion, "_REPO", repo)
     if shape == "equal":
         path = repo
     elif shape == "child":

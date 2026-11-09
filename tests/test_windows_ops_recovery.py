@@ -327,13 +327,18 @@ def test_restore_hashing_never_materializes_complete_file(isolated, monkeypatch)
     """Real restore must stream payload digest; old target.read_bytes fails here."""
     make_snapshot(isolated)
     original_read = Path.read_bytes
+    calls = []
     def forbid_restored_read_bytes(path):
-        if path == isolated["restored"] or isolated["restored"] in path.parents:
-            raise AssertionError("unbounded restored-file read_bytes forbidden")
+        # restore_isolated hashes files under a private staging root BEFORE
+        # atomic publication, not under the final target directory.
+        if any(part.startswith(".elysia-restore-stage-") for part in path.parts):
+            calls.append(path.name)
+            raise AssertionError("unbounded staged-restored file read_bytes forbidden")
         return original_read(path)
     monkeypatch.setattr(Path, "read_bytes", forbid_restored_read_bytes)
     result = ops.restore_isolated(isolated["snapshot"], isolated["restored"])
     assert result["status"] == "RESTORED_TO_ISOLATED_ROOT"
+    assert calls == []
     with (isolated["restored"] / "memory" / "guardian_memory.json").open("rb") as handle:
         assert handle.read() == b'[{"thought":"synthetic amber-91"}]'
 

@@ -332,8 +332,9 @@ def test_existing_release_untracked_file_blocks_before_any_mutation(synthetic):
 def test_existing_release_unidentified_git_tree_blocks(synthetic):
     # Existing directory is not a valid release Git checkout. No fake/mocked
     # release state can bypass an actual Git subprocess failure.
-    import shutil
-    shutil.rmtree(synthetic.release / ".git")
+    # Rename disposable Git metadata: Windows Git objects may be read-only.
+    (synthetic.release / ".git").rename(synthetic.base / "displaced-synthetic-git")
+    assert not (synthetic.release / ".git").exists()
     denied(synthetic)
 
 
@@ -347,8 +348,8 @@ def test_existing_release_with_wrong_origin_blocks(synthetic):
 
 def test_clean_absent_release_preflight_remains_eligible(synthetic):
     """A previously absent Release may be added later after separate authority."""
-    import shutil
-    shutil.rmtree(synthetic.release)
+    # Keep disposable Git objects intact while simulating an absent Release.
+    synthetic.release.rename(synthetic.base / "displaced-synthetic-release")
     dev, release, sha = promotion._release_preflight(
         expected_sha=GOOD, skip_tests=False, allow_dirty_dev=False,
     )

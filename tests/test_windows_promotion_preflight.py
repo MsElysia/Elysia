@@ -469,8 +469,8 @@ def isolated_git_pair(tmp_path):
     git(b, "commit", "-am", "synthetic B divergent commit")
     b_head = git(b, "rev-parse", "HEAD")
     assert len({common, a_head, b_head}) == 3
-    assert git(b, "remote", "get-url", "origin") == str(bare)
-    assert git(a, "remote", "get-url", "origin") == str(bare)
+    assert Path(git(b, "remote", "get-url", "origin")).resolve() == bare.resolve()
+    assert Path(git(a, "remote", "get-url", "origin")).resolve() == bare.resolve()
     return SimpleNamespace(
         root=root, bare=bare, a=a, b=b, common=common,
         a_head=a_head, b_head=b_head, git=git, clean_env=clean_env,
@@ -536,7 +536,7 @@ def test_actual_worktree_creation_ignores_inherited_git_identity(isolated_git_pa
     promotion.ensure_release_checkout(pair.b, new_release, pair.common)
     assert new_release.is_dir()
     assert pair.git(new_release, "rev-parse", "HEAD") == pair.common
-    assert pair.git(new_release, "rev-parse", "--show-toplevel") == str(new_release)
+    assert Path(pair.git(new_release, "rev-parse", "--show-toplevel")).resolve() == new_release.resolve()
     assert pair.git(pair.a, "worktree", "list", "--porcelain") == before_a_worktrees
     _assert_a_unchanged(pair)
     assert pair.git(pair.b, "rev-parse", "HEAD") == pair.b_head

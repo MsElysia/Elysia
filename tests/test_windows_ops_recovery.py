@@ -284,3 +284,38 @@ def test_snapshot_refuses_missing_primary_memory(isolated):
     with pytest.raises(ops.RecoveryBlocked, match="authoritative contained MemoryCore"):
         make_snapshot(isolated)
     assert not isolated["snapshot"].exists()
+
+
+
+@pytest.mark.parametrize("entry", ["payload", "manifest.json"])
+def test_snapshot_linked_container_refuses_outside_read(isolated, entry):
+    make_snapshot(isolated)
+    snap = isolated["snapshot"]
+    external = isolated["tmp"] / "external-sentinel"
+    if entry == "payload":
+        external.mkdir()
+        target = snap / "payload"
+        target.rename(snap / "payload-displaced")
+    else:
+        external.write_text("external sensitive sentinel", encoding="utf-8")
+        target = snap / "manifest.json"
+        target.rename(snap / "manifest-displaced")
+    try:
+        target.symlink_to(external, target_is_directory=(entry == "payload"))
+    except (OSError, NotImplementedError):
+        pytest.skip("unprivileged symlink unavailable")
+    with pytest.raises(ops.RecoveryBlocked):
+        ops.restore_isolated(snap, isolated["restored"])
+    assert not isolated["restored"].exists()
+    if entry == "manifest.json":
+        assert external.read_text(encoding="utf-8") == "external sensitive sentinel"
+
+
+def test_snapshot_rejects_malformed_manifest_and_unexpected_file_type(isolated):
+    make_snapshot(isolated)
+    manifest = isolated["snapshot"] / "manifest.json"
+    obj = json.loads(manifest.read_text(encoding="utf-8"))
+    obj["files"][0]["sha256"] = "q" * 64
+    manifest.write_text(json.dumps(obj), encoding="utf-8")
+    with pytest.raises(ops.RecoveryBlocked, match="invalid snapshot hash"):
+        ops.verify_snapshot(isolated["snapshot"])

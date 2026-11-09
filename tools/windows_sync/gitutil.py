@@ -1,6 +1,7 @@
 """Safe git helpers — never force-reset, never discard uncommitted work."""
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,17 +12,31 @@ class GitError(RuntimeError):
     pass
 
 
+def isolated_git_environment() -> dict[str, str]:
+    """Use Git -C target without ambient GIT_DIR/WORK_TREE/CONFIG overrides.
+
+    Git must retain its usual file locking for fetch/checkout/worktree writes,
+    so do NOT set GIT_OPTIONAL_LOCKS=0 for this environment.
+    """
+    env = {key: value for key, value in os.environ.items()
+           if not key.upper().startswith("GIT_")}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
 def run_git(
     repo: Path,
     args: Sequence[str],
     *,
     check: bool = True,
     timeout: float = 120.0,
+    isolated_env: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     cmd = ["git", "-C", str(repo), *args]
     try:
         proc = subprocess.run(
             cmd,
+            env=isolated_git_environment() if isolated_env else None,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -38,8 +53,8 @@ def run_git(
     return proc
 
 
-def rev_parse(repo: Path, ref: str = "HEAD") -> str:
-    out = run_git(repo, ["rev-parse", ref]).stdout.strip()
+def rev_parse(repo: Path, ref: str = "HEAD", *, isolated_env: bool = False) -> str:
+    out = run_git(repo, ["rev-parse", ref], isolated_env=isolated_env).stdout.strip()
     if len(out) != 40:
         raise GitError(f"unexpected rev-parse output for {ref!r}: {out!r}")
     return out
@@ -65,11 +80,13 @@ class WorktreeState:
     porcelain: str
 
 
-def worktree_state(repo: Path) -> WorktreeState:
-    head = rev_parse(repo, "HEAD")
-    branch_proc = run_git(repo, ["branch", "--show-current"], check=False)
+def worktree_state(repo: Path, *, isolated_env: bool = False) -> WorktreeState:
+    head = rev_parse(repo, "HEAD", isolated_env=isolated_env)
+    branch_proc = run_git(repo, ["branch", "--show-current"], check=False,
+                          isolated_env=isolated_env)
     branch = (branch_proc.stdout or "").strip() or None
-    porcelain = run_git(repo, ["status", "--porcelain=v1"]).stdout
+    porcelain = run_git(repo, ["status", "--porcelain=v1"],
+                        isolated_env=isolated_env).stdout
     lines = [ln for ln in porcelain.splitlines() if ln.strip()]
     staged = any(not ln.startswith("?") and ln[:1] not in (" ", "?") for ln in lines) or any(
         len(ln) >= 2 and ln[0] not in (" ", "?") for ln in lines

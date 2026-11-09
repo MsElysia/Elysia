@@ -426,3 +426,127 @@ def test_pilot_symlinked_parent_blocks_despite_tracked_launcher(synthetic):
     except (OSError, NotImplementedError) as exc:
         pytest.skip(f"Real directory symlink unsupported: {type(exc).__name__}")
     denied(synthetic)
+
+
+# Task 008: real disposable two-repository Git regression, NOT a mock of checkout.
+# Preflight already strips GIT_*, but the subsequent gitutil write path did not.
+@pytest.fixture
+def isolated_git_pair(tmp_path):
+    root = tmp_path / "git-env-008"
+    root.mkdir()
+    bare, a, b = (root / "origin.git", root / "repo-a", root / "repo-b")
+    clean_env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    clean_env["GIT_TERMINAL_PROMPT"] = "0"
+
+    def git(directory, *args, check=True):
+        result = subprocess.run(
+            ["git", "-C", str(directory), *args],
+            env=clean_env, text=True, capture_output=True, timeout=20,
+        )
+        if check:
+            assert result.returncode == 0, (
+                f"synthetic git {args[0]} failed: {result.stderr}"
+            )
+        return result.stdout.strip()
+
+    git(root, "init", "--bare", str(bare))
+    git(root, "clone", str(bare), str(b))
+    git(b, "config", "user.name", "Synthetic Tester")
+    git(b, "config", "user.email", "synthetic@example.invalid")
+    tracked = "synthetic-checkout.txt"
+    (b / tracked).write_text("BASE\n", encoding="utf-8")
+    git(b, "add", tracked)
+    git(b, "commit", "-m", "synthetic shared base")
+    common = git(b, "rev-parse", "HEAD")
+    git(b, "push", "origin", "HEAD:refs/heads/integration/windows-canonical")
+    git(root, "clone", "--branch", "integration/windows-canonical", str(bare), str(a))
+    git(a, "config", "user.name", "Synthetic Tester")
+    git(a, "config", "user.email", "synthetic@example.invalid")
+    (a / tracked).write_text("REPOSITORY A: MUST NOT CHANGE\n", encoding="utf-8")
+    git(a, "commit", "-am", "synthetic A divergent commit")
+    a_head = git(a, "rev-parse", "HEAD")
+    (b / tracked).write_text("REPOSITORY B: MUST TARGET B\n", encoding="utf-8")
+    git(b, "commit", "-am", "synthetic B divergent commit")
+    b_head = git(b, "rev-parse", "HEAD")
+    assert len({common, a_head, b_head}) == 3
+    assert git(b, "remote", "get-url", "origin") == str(bare)
+    assert git(a, "remote", "get-url", "origin") == str(bare)
+    return SimpleNamespace(
+        root=root, bare=bare, a=a, b=b, common=common,
+        a_head=a_head, b_head=b_head, git=git, clean_env=clean_env,
+        a_contents=(a / tracked).read_bytes(),
+        b_contents=(b / tracked).read_bytes(),
+        tracked=tracked,
+    )
+
+
+def _poison_git_environment(monkeypatch, pair):
+    # In an UNSANITIZED subprocess, Git -C B follows A's Git metadata.
+    monkeypatch.setenv("GIT_DIR", str(pair.a / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(pair.a))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(pair.a / ".git" / "index"))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.worktree")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(pair.a))
+
+
+def _assert_a_unchanged(pair):
+    assert pair.git(pair.a, "rev-parse", "HEAD") == pair.a_head
+    assert (pair.a / pair.tracked).read_bytes() == pair.a_contents
+    assert pair.git(pair.a, "status", "--porcelain=v1") == ""
+
+
+def test_actual_post_preflight_checkout_ignores_inherited_git_identity(isolated_git_pair, monkeypatch):
+    """A and B share a reachable base commit; baseline can wrongly checkout A.
+
+    A generic GitError or missing object cannot satisfy this test: checked-out
+    B HEAD MUST change to the pinned base, while A HEAD and bytes cannot change.
+    """
+    pair = isolated_git_pair
+    _poison_git_environment(monkeypatch, pair)
+    raw = subprocess.run(
+        ["git", "-C", str(pair.b), "rev-parse", "HEAD"],
+        capture_output=True, text=True, timeout=20,
+    )
+    assert raw.returncode == 0
+    assert raw.stdout.strip() == pair.a_head != pair.b_head, (
+        "Negative control must prove raw Git -C B is redirected to A"
+    )
+    # The function makes real subprocess Git status/fetch/checkout calls.
+    # Its origin is a local disposable bare repository, never public network.
+    promotion.ensure_release_checkout(pair.b, pair.b, pair.common)
+    assert pair.git(pair.b, "rev-parse", "HEAD") == pair.common
+    assert (pair.b / pair.tracked).read_text(encoding="utf-8") == "BASE\n"
+    _assert_a_unchanged(pair)
+
+
+def test_actual_post_preflight_checkout_without_poison_still_works(isolated_git_pair):
+    pair = isolated_git_pair
+    promotion.ensure_release_checkout(pair.b, pair.b, pair.common)
+    assert pair.git(pair.b, "rev-parse", "HEAD") == pair.common
+    _assert_a_unchanged(pair)
+
+
+def test_actual_worktree_creation_ignores_inherited_git_identity(isolated_git_pair, monkeypatch):
+    pair = isolated_git_pair
+    new_release = pair.root / "new-release"
+    assert not new_release.exists()
+    before_a_worktrees = pair.git(pair.a, "worktree", "list", "--porcelain")
+    _poison_git_environment(monkeypatch, pair)
+    promotion.ensure_release_checkout(pair.b, new_release, pair.common)
+    assert new_release.is_dir()
+    assert pair.git(new_release, "rev-parse", "HEAD") == pair.common
+    assert pair.git(new_release, "rev-parse", "--show-toplevel") == str(new_release)
+    assert pair.git(pair.a, "worktree", "list", "--porcelain") == before_a_worktrees
+    _assert_a_unchanged(pair)
+    assert pair.git(pair.b, "rev-parse", "HEAD") == pair.b_head
+
+
+def test_bad_pinned_checkout_does_not_touch_other_repository(isolated_git_pair, monkeypatch):
+    pair = isolated_git_pair
+    _poison_git_environment(monkeypatch, pair)
+    with pytest.raises(gitutil.GitError):
+        promotion.ensure_release_checkout(pair.b, pair.b, "f" * 40)
+    assert pair.git(pair.b, "rev-parse", "HEAD") == pair.b_head
+    assert (pair.b / pair.tracked).read_bytes() == pair.b_contents
+    _assert_a_unchanged(pair)

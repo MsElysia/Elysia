@@ -65,7 +65,8 @@ def make_snapshot(item):
 def test_complete_snapshot_verified_and_restored_into_new_root(isolated):
     before = source_bytes(isolated["root"])
     result = make_snapshot(isolated)
-    assert result["status"] == "VERIFIED_OFFLINE_SNAPSHOT"
+    assert result["status"] == "SNAPSHOT_CREATED_OFFLINE"
+    assert result["verified"] == "VERIFIED_OFFLINE_SNAPSHOT"
     assert result["files"] == len(before)
     assert result["dirs"] >= 4
     assert ops.verify_snapshot(isolated["snapshot"])["files"] == len(before)
@@ -182,7 +183,7 @@ def test_source_change_during_copy_blocks_publication(isolated, monkeypatch):
     assert not isolated["snapshot"].exists()
 
 
-@pytest.mark.parametrize("mutation", ["corrupt", "missing", "extra", "path_escape", "hash_tamper"])
+@pytest.mark.parametrize("mutation", ["corrupt", "missing", "extra", "top_extra", "path_escape", "hash_tamper"])
 def test_corrupt_or_tampered_snapshot_cannot_restore(isolated, mutation):
     make_snapshot(isolated)
     snap = isolated["snapshot"]
@@ -195,6 +196,8 @@ def test_corrupt_or_tampered_snapshot_cannot_restore(isolated, mutation):
         memory.unlink()
     elif mutation == "extra":
         (snap / "payload" / "extra.txt").write_text("surprise", encoding="utf-8")
+    elif mutation == "top_extra":
+        (snap / "stray-snapshot-file.txt").write_text("surprise", encoding="utf-8")
     elif mutation == "path_escape":
         contents["files"][0]["path"] = "../outside.txt"
         manifest.write_text(json.dumps(contents), encoding="utf-8")
@@ -251,3 +254,33 @@ def test_sqlite_corruption_is_refused_even_if_manifest_hash_updated(isolated):
     manifest.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ops.RecoveryBlocked, match="SQLite"):
         ops.verify_snapshot(snap)
+
+
+
+def test_snapshot_existing_destination_never_overwritten(isolated):
+    isolated["snapshot"].mkdir()
+    marker = isolated["snapshot"] / "marker"
+    marker.write_text("preserve this", encoding="utf-8")
+    with pytest.raises(ops.RecoveryBlocked, match="must not exist"):
+        make_snapshot(isolated)
+    assert marker.read_text(encoding="utf-8") == "preserve this"
+
+
+def test_snapshot_publish_race_preserves_new_competing_target(isolated, monkeypatch):
+    original = ops._publish
+    def competing_writer(stage, dest):
+        dest.mkdir()
+        (dest / "competing.txt").write_text("do not replace", encoding="utf-8")
+        original(stage, dest)
+    monkeypatch.setattr(ops, "_publish", competing_writer)
+    with pytest.raises(ops.RecoveryBlocked, match="destination changed"):
+        make_snapshot(isolated)
+    assert (isolated["snapshot"] / "competing.txt").read_text(encoding="utf-8") == "do not replace"
+    assert not list(isolated["tmp"].glob(".elysia-ops-stage-*"))
+
+
+def test_snapshot_refuses_missing_primary_memory(isolated):
+    isolated["memory"].unlink()
+    with pytest.raises(ops.RecoveryBlocked, match="authoritative contained MemoryCore"):
+        make_snapshot(isolated)
+    assert not isolated["snapshot"].exists()

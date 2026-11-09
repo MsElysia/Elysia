@@ -550,3 +550,32 @@ def test_bad_pinned_checkout_does_not_touch_other_repository(isolated_git_pair, 
     assert pair.git(pair.b, "rev-parse", "HEAD") == pair.b_head
     assert (pair.b / pair.tracked).read_bytes() == pair.b_contents
     _assert_a_unchanged(pair)
+
+
+
+def test_promotion_rejects_ambient_git_overrides_before_side_effects(
+    synthetic, isolated_git_pair, monkeypatch
+):
+    """Preflight must refuse contaminated Git env before logs/backups/tests.
+
+    The real post-preflight checkout helper is independently tested above
+    to operate safely with the same poisoned variables when called directly.
+    """
+    pair = isolated_git_pair
+    _poison_git_environment(monkeypatch, pair)
+    result = denied(synthetic)
+    assert "inherited Git override environment" in result["error"]
+    _assert_a_unchanged(pair)
+    assert pair.git(pair.b, "rev-parse", "HEAD") == pair.b_head
+
+
+def test_scoped_gitutil_isolation_ignores_config_and_index_overrides(
+    isolated_git_pair, monkeypatch
+):
+    """Check the helper used by EVERY promoted fetch/checkout/status call."""
+    pair = isolated_git_pair
+    _poison_git_environment(monkeypatch, pair)
+    assert gitutil.rev_parse(pair.b, "HEAD", isolated_env=True) == pair.b_head
+    assert gitutil.worktree_state(pair.b, isolated_env=True).head == pair.b_head
+    assert gitutil.worktree_state(pair.b, isolated_env=True).dirty is False
+    _assert_a_unchanged(pair)

@@ -62,6 +62,7 @@ def run_intel_tests(repo: Path) -> tuple[bool, str]:
     proc = subprocess.run(
         [str(py), str(script)],
         cwd=str(repo),
+        env=gitutil.isolated_git_environment(),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -86,8 +87,8 @@ def _git_preflight(repo: Path, *args: str) -> str:
     Do not call fetch/checkout or update Git references as part of preflight.
     A failed/offline remote check is a hard release stop, not cached success.
     """
-    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
-    env.update({"GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"})
+    env = gitutil.isolated_git_environment()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), *args],
@@ -226,6 +227,16 @@ def _release_preflight(
     *, expected_sha: str | None, skip_tests: bool, allow_dirty_dev: bool
 ) -> tuple[Path, Path, str]:
     """Pure validation: no local writes, backup, fetch, checkout or test launch."""
+    # Other post-checkout helpers (such as sync status) still use legacy Git
+    # calls. Never let their result certify a Release under ambient Git routing
+    # overrides; direct ensure_release_checkout() isolates all its own calls.
+    ambient_git_overrides = [
+        key for key in os.environ
+        if key.upper().startswith("GIT_")
+        and key.upper() not in {"GIT_OPTIONAL_LOCKS", "GIT_TERMINAL_PROMPT"}
+    ]
+    if ambient_git_overrides:
+        raise RuntimeError("inherited Git override environment: release promotion refused")
     if skip_tests or allow_dirty_dev:
         raise RuntimeError("deprecated unsafe --skip-tests/--allow-dirty-dev flag refused")
     if not isinstance(expected_sha, str) or not _PINNED_SHA.fullmatch(expected_sha):
@@ -310,18 +321,20 @@ def ensure_release_checkout(dev: Path, release: Path, sha: str) -> None:
             dev,
             ["worktree", "add", "--detach", str(release), sha],
             timeout=180.0,
+            isolated_env=True,
         )
         return
     # Existing release: fetch objects via shared repo if worktree, else reset --hard ONLY
     # inside the release path after confirming no local uncommitted release edits we need.
-    wt = gitutil.worktree_state(release)
+    wt = gitutil.worktree_state(release, isolated_env=True)
     if wt.dirty:
         raise gitutil.GitError(
             "release worktree dirty; refusing promote (clean or backup manually)"
         )
     # Detached exact SHA update — release is not a development branch.
-    gitutil.run_git(release, ["fetch", "origin", CANONICAL_BRANCH], check=False, timeout=180.0)
-    gitutil.run_git(release, ["checkout", "--detach", sha])
+    gitutil.run_git(release, ["fetch", "origin", CANONICAL_BRANCH], check=False,
+                    timeout=180.0, isolated_env=True)
+    gitutil.run_git(release, ["checkout", "--detach", sha], isolated_env=True)
 
 
 def promote(*, expected_sha: str | None = None, skip_tests: bool, allow_dirty_dev: bool) -> dict:
@@ -369,7 +382,7 @@ def promote(*, expected_sha: str | None = None, skip_tests: bool, allow_dirty_de
     prev_sha = None
     if release.is_dir():
         try:
-            prev_sha = gitutil.rev_parse(release, "HEAD")
+            prev_sha = gitutil.rev_parse(release, "HEAD", isolated_env=True)
         except gitutil.GitError:
             prev_sha = None
         try:

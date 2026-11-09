@@ -8,6 +8,7 @@ external paths used by other Guardian modes are deliberately NOT certified.
 from __future__ import annotations
 
 import argparse
+import ctypes
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -19,7 +20,6 @@ import sqlite3
 import stat
 import sys
 import tempfile
-from urllib.parse import quote
 
 _REPO = Path(__file__).resolve().parents[2]
 _SCHEMA = "elysia.stopped_pilot_snapshot.v1"
@@ -52,7 +52,19 @@ def _safe_path(value: Path | str) -> Path:
                 raise RecoveryBlocked("junction in path or junction check unavailable")
             if getattr(meta, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
                 raise RecoveryBlocked("Windows reparse point in path")
-    return path.resolve(strict=False)
+    resolved = path.resolve(strict=False)
+    if os.name == "nt":
+        # No mapped network/UNC/removable volume: this is LOCAL-only recovery.
+        root = Path(resolved.anchor)
+        if not root.anchor:
+            raise RecoveryBlocked("unknown local volume")
+        try:
+            drive_type = ctypes.windll.kernel32.GetDriveTypeW(str(root))
+        except (AttributeError, OSError) as exc:
+            raise RecoveryBlocked("cannot establish local fixed disk") from exc
+        if drive_type != 3:  # DRIVE_FIXED
+            raise RecoveryBlocked("network/removable/unknown volume refused")
+    return resolved
 
 
 def _overlaps(a: Path, b: Path) -> bool:
@@ -111,6 +123,8 @@ def _tree(root: Path) -> tuple[list[str], list[dict]]:
                 raise RecoveryBlocked("non-regular operational entry")
             if len(dirs) + len(files) > 100000:
                 raise RecoveryBlocked("inventory size cap exceeded")
+    if sum(row["size"] for row in files) > 10 * 1024**3:
+        raise RecoveryBlocked("operational snapshot exceeds 10 GiB safety budget")
     return sorted(dirs), sorted(files, key=lambda r: r["path"])
 
 
@@ -146,7 +160,7 @@ def _copy_verified(src: Path, dst: Path, identity: dict) -> dict:
 
 
 def _check_sqlite(db: Path) -> None:
-    uri = "file:" + quote(str(db), safe="/:\\") + "?mode=ro&immutable=1"
+    uri = db.resolve(strict=True).as_uri() + "?mode=ro&immutable=1"
     try:
         connection = sqlite3.connect(uri, uri=True, timeout=1.0)
         try:
@@ -203,11 +217,15 @@ def _validate_manifest(snapshot: Path) -> tuple[list[str], list[dict]]:
         raise RecoveryBlocked("invalid snapshot manifest") from exc
     if not isinstance(info, dict) or info.get("schema") != _SCHEMA:
         raise RecoveryBlocked("unknown snapshot schema")
+    if set(info) != {"schema", "created_utc", "directories", "files", "runtime"}:
+        raise RecoveryBlocked("unexpected snapshot manifest keys")
     dirs, files = info.get("directories"), info.get("files")
     if not isinstance(dirs, list) or not isinstance(files, list):
         raise RecoveryBlocked("invalid snapshot inventory")
-    names = dirs + [r.get("path") for r in files if isinstance(r, dict)]
-    if len(names) != len(dirs) + len(files) or len(set(names)) != len(names):
+    if not all(isinstance(name, str) for name in dirs) or not all(isinstance(row, dict) for row in files):
+        raise RecoveryBlocked("malformed snapshot inventory")
+    names = dirs + [row.get("path") for row in files]
+    if not all(isinstance(name, str) for name in names) or len(set(names)) != len(names):
         raise RecoveryBlocked("snapshot inventory incomplete or duplicate")
     for name in names:
         if not isinstance(name, str) or not name or "\\" in name:
@@ -222,6 +240,8 @@ def _validate_manifest(snapshot: Path) -> tuple[list[str], list[dict]]:
             raise RecoveryBlocked("invalid snapshot file size")
         if not isinstance(row["sha256"], str) or len(row["sha256"]) != 64:
             raise RecoveryBlocked("invalid snapshot hash")
+    if {entry.name for entry in root.iterdir()} != {"payload", "manifest.json"}:
+        raise RecoveryBlocked("unexpected snapshot top-level entry")
     payload = root / "payload"
     real_dirs, real_files = _tree(payload)
     if real_dirs != sorted(dirs) or [f["path"] for f in real_files] != sorted(r["path"] for r in files):
@@ -231,10 +251,13 @@ def _validate_manifest(snapshot: Path) -> tuple[list[str], list[dict]]:
         actual = payload / row["path"]
         if row["size"] != by_path[row["path"]]["size"]:
             raise RecoveryBlocked("snapshot file size mismatch")
-        hashval = hashlib.file_digest(actual.open("rb"), "sha256").hexdigest()
+        with actual.open("rb") as fh:
+            signature = fh.read(16)
+            fh.seek(0)
+            hashval = hashlib.file_digest(fh, "sha256").hexdigest()
         if hashval != by_path[row["path"]]["sha256"]:
             raise RecoveryBlocked("snapshot file hash mismatch")
-        if actual.suffix.lower() in _SQLITE_EXTS:
+        if signature == _DB_HEADER or actual.suffix.lower() in _SQLITE_EXTS:
             _check_sqlite(actual)
     return dirs, files
 
@@ -245,9 +268,30 @@ def verify_snapshot(snapshot: Path | str) -> dict:
 
 
 def _publish(stage: Path, dest: Path) -> None:
+    """Commit only if the destination is ABSENT, including at rename time.
+
+    Windows os.rename refuses existing targets. Linux renameat2 with
+    RENAME_NOREPLACE avoids overwriting an empty directory raced into place.
+    Other platforms fail closed instead of risking an implicit replacement.
+    """
     if dest.exists() or dest.is_symlink():
         raise RecoveryBlocked("destination changed before commit")
-    os.rename(stage, dest)
+    if os.name == "nt":
+        os.rename(stage, dest)
+        return
+    if not sys.platform.startswith("linux"):
+        raise RecoveryBlocked("atomic no-replace rename unavailable")
+    libc = ctypes.CDLL(None, use_errno=True)
+    operation = getattr(libc, "renameat2", None)
+    if operation is None:
+        raise RecoveryBlocked("atomic no-replace rename unavailable")
+    operation.argtypes = [
+        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
+    ]
+    operation.restype = ctypes.c_int
+    rc = operation(-100, os.fsencode(stage), -100, os.fsencode(dest), 1)
+    if rc != 0:
+        raise RecoveryBlocked("atomic snapshot destination publish refused")
 
 
 def create_snapshot(source: Path | str, destination: Path | str, *, acknowledge_stopped: bool = False) -> dict:
@@ -255,6 +299,8 @@ def create_snapshot(source: Path | str, destination: Path | str, *, acknowledge_
     if not acknowledge_stopped:
         raise RecoveryBlocked("explicit stopped-runtime acknowledgement required")
     root = _safe_path(source)
+    if _overlaps(root, _REPO):
+        raise RecoveryBlocked("operational root overlaps executing source")
     if root != _expected_root():
         raise RecoveryBlocked("only configured contained pilot root is supported")
     dest = _new_destination(destination, protected=(root, _expected_root()))
@@ -288,7 +334,9 @@ def create_snapshot(source: Path | str, destination: Path | str, *, acknowledge_
         finally:
             if stage is not None and stage.exists():
                 shutil.rmtree(stage)
-    return {"status": "SNAPSHOT_CREATED_OFFLINE", **verify_snapshot(dest)}
+    verification = verify_snapshot(dest)
+    return {"status": "SNAPSHOT_CREATED_OFFLINE", "verified": verification["status"],
+            "files": verification["files"], "dirs": verification["dirs"]}
 
 
 def restore_isolated(snapshot: Path | str, destination: Path | str) -> dict:
@@ -310,8 +358,13 @@ def restore_isolated(snapshot: Path | str, destination: Path | str) -> dict:
                 raise RecoveryBlocked("restored file integrity mismatch")
         # Re-check backup bytes and tree before publishing, fail closed if changed.
         _validate_manifest(snap)
-        if [r["path"] for r in _tree(stage)[1]] != sorted(r["path"] for r in files):
+        restored_dirs, restored_files = _tree(stage)
+        if restored_dirs != sorted(dirs) or [r["path"] for r in restored_files] != sorted(r["path"] for r in files):
             raise RecoveryBlocked("restored tree incomplete")
+        for row in files:
+            restored_path = stage / row["path"]
+            if restored_path.suffix.lower() in _SQLITE_EXTS:
+                _check_sqlite(restored_path)
         _publish(stage, dest)
         stage = None
     finally:

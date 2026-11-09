@@ -155,9 +155,11 @@ def invoke(repo: Path, env: dict[str, str], *args: str) -> tuple[int, dict | Non
         raise Stop("NATIVE_COMMAND_UNAVAILABLE_OR_TIMED_OUT") from exc
     if p.returncode == 0:
         try:
-            return 0, json.loads(p.stdout)
+            payload = json.loads(p.stdout)
         except json.JSONDecodeError as exc:
             raise Stop("INVALID_SUCCESS_RECEIPT") from exc
+        demand(isinstance(payload, dict), "INVALID_SUCCESS_RECEIPT")
+        return 0, payload
     if p.returncode == 2 and p.stderr.startswith("BLOCKED: "):
         return 2, None
     raise Stop("UNEXPECTED_NATIVE_COMMAND_RESULT")
@@ -270,7 +272,8 @@ def run_synthetic(repo: Path, parent: Path) -> int:
         sentinel.write_text("synthetic sentinel", encoding="ascii")
         blocked(repo, env, occupied, "--restore-from", str(snapshot),
                 "--to", str(occupied), require_absent=False)
-        demand(sentinel.read_text(encoding="ascii") == "synthetic sentinel",
+        demand(sentinel.read_text(encoding="ascii") == "synthetic sentinel"
+               and {p.name for p in occupied.iterdir()} == {"DO_NOT_OVERWRITE.txt"},
                "EXISTING_TARGET_CHANGED")
         results.append("PASS_EXISTING_TARGET_UNTOUCHED")
         corrupt = run / "corrupt-copy"
@@ -289,6 +292,13 @@ def run_synthetic(repo: Path, parent: Path) -> int:
         results.append("PASS_SQLITE_WAL_REFUSED")
         no_leftover_staging(run)
         results.append("PASS_NO_STAGE_RESIDUE")
+        demand(git(repo, "rev-parse", "HEAD") == PINNED_CANONICAL
+               and not git(repo, "status", "--porcelain=v1", "--untracked-files=all"),
+               "SOURCE_CHANGED_DURING_TEST")
+        for path, expected in PINNED_BLOBS.items():
+            demand(git(repo, "hash-object", path) == expected,
+                   "SOURCE_BLOB_CHANGED_DURING_TEST")
+        results.append("PASS_SOURCE_GIT_IDENTITY_PRESERVED")
         receipt["status"] = "PASS_SYNTHETIC_NATIVE_SNAPSHOT_RESTORE_ONLY"
         return 0
     except (Stop, OSError, ValueError, sqlite3.Error, KeyError, TypeError) as exc:

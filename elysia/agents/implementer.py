@@ -374,6 +374,21 @@ class ImplementerAgent:
             logger.exception(f"Error executing step {step.step_number}: {e}")
             return {"success": False, "error": str(e), "step_type": step.step_type}
 
+    def _contained_repo_file(self, file_path_str: str) -> Optional[Path]:
+        """Return a file path inside repo_root, or None when it would escape."""
+        raw = Path(file_path_str)
+        if raw.is_absolute():
+            return None
+        root = self.repo_root.resolve()
+        candidate = (root / raw).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None
+        if candidate == root:
+            return None
+        return candidate
+
     def _execute_create_file(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:
         """Execute a create_file step."""
         # Extract file path from step content
@@ -383,7 +398,15 @@ class ImplementerAgent:
             return {"success": False, "error": "Could not extract file path from step"}
 
         file_path_str = file_pattern.group(1)
-        file_path = self.repo_root / file_path_str
+        file_path = self._contained_repo_file(file_path_str)
+        if file_path is None:
+            return {
+                "success": False,
+                "error": "File path is outside the repository",
+                "created": False,
+                "file_path": file_path_str,
+                "step_type": "create_file",
+            }
 
         # Check if file already exists
         if file_path.exists():

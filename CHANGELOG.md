@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — outside create path is not success
+
+- `POST /api/proposals/<id>/implement` no longer reports success when a create-file step, or an add-tests step that uses that create path, resolves outside the repository working directory.
+- An absolute path, a path the extractor turns into an absolute path, or a symlink that leaves the directory returns `success: false` with `File path is outside the repository` and does not create the file.
+- The stored proposal status is `implementation_failed`. A relative path inside the directory is still created.

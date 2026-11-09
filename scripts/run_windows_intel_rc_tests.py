@@ -34,6 +34,7 @@ RC_REQUIRED = [
     "tests/test_restricted_runtime_adapter.py",
     "tests/test_control_panel_restricted_runtime.py",
     "tests/test_dashboard_plan_progress.py",
+    "tests/test_windows_promotion_preflight.py",
 ]
 
 

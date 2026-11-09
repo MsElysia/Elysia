@@ -3,12 +3,16 @@
 
 Never copies operational memory/credentials. Backs up the previous release tree
 (source only) before updating. Requires a clean, exact-verified delivery tip and
-passing intel-slice tests unless --skip-tests (emergency only).
+passing intel-slice tests. An explicit verified --expected-sha is mandatory.
+This preflight is NOT a restorable backup or installed-runtime certification.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import stat
 import shutil
 import subprocess
 import sys
@@ -23,6 +27,10 @@ if str(_REPO) not in sys.path:
 from tools.windows_sync import gitutil
 from tools.windows_sync.paths import (
     CANONICAL_BRANCH,
+    DEFAULT_RELEASE_ROOT,
+    DEFAULT_RELEASE_BACKUP_ROOT,
+    DEFAULT_STATE_ROOT,
+    GITHUB_REPO,
     OPERATIONAL_DATA_ROOT,
     PRESERVED_PILOT_DATA,
     PRESERVED_PILOT_ROOT,
@@ -62,6 +70,191 @@ def run_intel_tests(repo: Path) -> tuple[bool, str]:
     )
     out = (proc.stdout or "") + "\n" + (proc.stderr or "")
     return proc.returncode == 0, out[-8000:]
+
+
+_PINNED_SHA = re.compile(r"[0-9a-f]{40}\Z")
+_STABLE_LAUNCHERS = (
+    "pilot/START_ELYSIA1.bat",
+    "pilot/START_ELYSIA_VERIFIED_PILOT.bat",
+    "pilot/launch_verified_pilot.py",
+)
+
+
+def _git_preflight(repo: Path, *args: str) -> str:
+    """Bounded read-only Git query immune to inherited GIT_DIR/WORK_TREE/etc.
+
+    Do not call fetch/checkout or update Git references as part of preflight.
+    A failed/offline remote check is a hard release stop, not cached success.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env.update({"GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"})
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=25,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise gitutil.GitError("canonical Git preflight unavailable") from exc
+    if result.returncode != 0:
+        # Never echo remote URLs, credential helpers or environment values.
+        raise gitutil.GitError(f"canonical Git preflight failed: {args[0]}")
+    return result.stdout.strip()
+
+
+def _raw_release_destination() -> Path:
+    raw = (os.environ.get("ELYSIA_RELEASE_ROOT") or str(DEFAULT_RELEASE_ROOT)).strip()
+    path = Path(raw).expanduser()
+    if not path.is_absolute() or ".." in path.parts:
+        raise RuntimeError("unsafe release destination: absolute unaliased path required")
+    # release_root() resolves reparse points, so inspect the raw path FIRST.
+    for node in (path, *path.parents):
+        if node.is_symlink():
+            raise RuntimeError("unsafe release destination: symlink ancestor")
+        if os.name == "nt":
+            junction = getattr(node, "is_junction", None)
+            if not callable(junction):
+                raise RuntimeError("cannot verify Windows junction safety")
+            if junction():
+                raise RuntimeError("unsafe release destination: junction ancestor")
+            try:
+                attributes = node.lstat().st_file_attributes
+            except FileNotFoundError:
+                continue
+            if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise RuntimeError("unsafe release destination: reparse ancestor")
+    return path.resolve(strict=False)
+
+
+def _protected_path(key: str, default: Path) -> Path:
+    raw = (os.environ.get(key) or str(default)).strip()
+    path = Path(raw).expanduser()
+    if not path.is_absolute() or ".." in path.parts:
+        raise RuntimeError("unsafe protected destination configuration")
+    return path.resolve(strict=False)
+
+
+def _safe_release_destination(dev: Path) -> Path:
+    dest = _raw_release_destination()
+    if dest != release_root():
+        raise RuntimeError("release destination changed while validating")
+    protected = (
+        dev,
+        _REPO,
+        OPERATIONAL_DATA_ROOT,
+        PRESERVED_PILOT_ROOT,
+        PRESERVED_PILOT_DATA,
+        _protected_path("ELYSIA_SYNC_STATE_ROOT", DEFAULT_STATE_ROOT),
+        _protected_path("ELYSIA_RELEASE_BACKUP_ROOT", DEFAULT_RELEASE_BACKUP_ROOT),
+    )
+    for root in protected:
+        candidate = root.resolve(strict=False)
+        # Reject either containment direction, including an ancestor that
+        # would capture data, pilot, Dev, sync state or backup destinations.
+        if dest == candidate or candidate in dest.parents or dest in candidate.parents:
+            raise RuntimeError("release destination overlaps protected source/data/storage")
+    return dest
+
+
+def _canonical_origin(url: str) -> bool:
+    expected = GITHUB_REPO.lower()
+    allowed = {
+        f"https://github.com/{expected}",
+        f"https://github.com/{expected}.git",
+        f"git@github.com:{expected}.git",
+        f"git@github.com:{expected}",
+        f"ssh://git@github.com/{expected}.git",
+        f"ssh://git@github.com/{expected}",
+    }
+    return url.strip().rstrip("/").lower() in allowed
+
+
+def _check_existing_release(release: Path) -> None:
+    """Refuse dirty/unidentified Release BEFORE tests, manifests or backups.
+
+    Absent Release is permitted for a separately authorized first promotion.
+    All existing Git checks use the same sanitized read-only helper as Dev.
+    """
+    if not release.exists():
+        return
+    if not release.is_dir():
+        raise RuntimeError("existing Release is not a directory")
+    top = _git_preflight(release, "rev-parse", "--show-toplevel")
+    if Path(top).resolve(strict=False) != release:
+        raise RuntimeError("Release is not the root of its Git worktree")
+    sha = _git_preflight(release, "rev-parse", "--verify", "HEAD")
+    if not _PINNED_SHA.fullmatch(sha):
+        raise RuntimeError("Release has no valid committed HEAD")
+    if not _canonical_origin(_git_preflight(release, "remote", "get-url", "origin")):
+        raise RuntimeError("existing Release Git origin is not trusted")
+    if _git_preflight(release, "status", "--porcelain=v1", "-z", "--untracked-files=all"):
+        raise RuntimeError("existing Release checkout dirty; refusing to create backups or mutate")
+
+
+def _check_disk_launchers(dev: Path) -> None:
+    """Tracked blobs alone do not prove launch files exist in a sparse checkout.
+
+    Inspect metadata only. Dev root itself may be an authorized Windows junction,
+    but pilot/ and the three launcher files may not redirect elsewhere.
+    """
+    pilot = dev / "pilot"
+    for entry in (pilot, *(dev / name for name in _STABLE_LAUNCHERS)):
+        if entry.is_symlink():
+            raise RuntimeError("launcher file or pilot directory is a symlink")
+        if os.name == "nt":
+            junction = getattr(entry, "is_junction", None)
+            if not callable(junction):
+                raise RuntimeError("cannot verify Windows launcher junction safety")
+            if junction():
+                raise RuntimeError("launcher path is a Windows junction")
+        try:
+            metadata = entry.lstat()
+        except FileNotFoundError as exc:
+            raise RuntimeError("required launcher or pilot directory absent on disk") from exc
+        if os.name == "nt" and (
+            metadata.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            raise RuntimeError("launcher path contains a Windows reparse point")
+        required_mode = stat.S_ISDIR if entry == pilot else stat.S_ISREG
+        if not required_mode(metadata.st_mode):
+            raise RuntimeError("required launcher or pilot directory has unsafe file type")
+        if entry.resolve(strict=False) != entry:
+            raise RuntimeError("launcher resolves through an unexpected file alias")
+
+
+def _release_preflight(
+    *, expected_sha: str | None, skip_tests: bool, allow_dirty_dev: bool
+) -> tuple[Path, Path, str]:
+    """Pure validation: no local writes, backup, fetch, checkout or test launch."""
+    if skip_tests or allow_dirty_dev:
+        raise RuntimeError("deprecated unsafe --skip-tests/--allow-dirty-dev flag refused")
+    if not isinstance(expected_sha, str) or not _PINNED_SHA.fullmatch(expected_sha):
+        raise RuntimeError("explicit pinned 40-hex --expected-sha required")
+    dev = dev_root()
+    release = _safe_release_destination(dev)
+    _check_existing_release(release)
+    if _git_preflight(dev, "rev-parse", "--verify", "HEAD") != expected_sha:
+        raise RuntimeError("Dev HEAD differs from independently approved SHA")
+    if _git_preflight(dev, "symbolic-ref", "--quiet", "--short", "HEAD") != CANONICAL_BRANCH:
+        raise RuntimeError("Dev is detached or not on canonical branch")
+    if _git_preflight(dev, "status", "--porcelain=v1", "-z", "--untracked-files=all"):
+        raise RuntimeError("Dev worktree dirty; refusing promotion")
+    if not _canonical_origin(_git_preflight(dev, "remote", "get-url", "origin")):
+        raise RuntimeError("origin does not identify the authoritative GitHub repository")
+    tracking = f"refs/remotes/origin/{CANONICAL_BRANCH}"
+    if _git_preflight(dev, "rev-parse", "--verify", tracking) != expected_sha:
+        raise RuntimeError("locally tracked canonical target differs from approved SHA")
+    # Read-only LIVE remote query; stale tracking refs are not release evidence.
+    remote_branch = f"refs/heads/{CANONICAL_BRANCH}"
+    live = _git_preflight(dev, "ls-remote", "--exit-code", "origin", remote_branch)
+    if live.split() != [expected_sha, remote_branch]:
+        raise RuntimeError("live authoritative canonical branch differs or is unverified")
+    for path in _STABLE_LAUNCHERS:
+        line = _git_preflight(dev, "ls-tree", "--full-tree", expected_sha, "--", path)
+        if not re.fullmatch(r"100644 blob [0-9a-f]{40}\t" + re.escape(path), line):
+            raise RuntimeError("required tracked stable launcher/dependency absent: " + path)
+    _check_disk_launchers(dev)
+    return dev, release, expected_sha
 
 
 def backup_operational_data_manifest() -> Path | None:
@@ -131,7 +324,7 @@ def ensure_release_checkout(dev: Path, release: Path, sha: str) -> None:
     gitutil.run_git(release, ["checkout", "--detach", sha])
 
 
-def promote(*, skip_tests: bool, allow_dirty_dev: bool) -> dict:
+def promote(*, expected_sha: str | None = None, skip_tests: bool, allow_dirty_dev: bool) -> dict:
     result: dict = {
         "ok": False,
         "at_utc": utc_now(),
@@ -142,30 +335,19 @@ def promote(*, skip_tests: bool, allow_dirty_dev: bool) -> dict:
         "tests_ok": None,
         "error": None,
     }
-    # Hard guards: never write into pilot / ops memory trees as source destinations
-    for protected in (PRESERVED_PILOT_ROOT, PRESERVED_PILOT_DATA, OPERATIONAL_DATA_ROOT):
-        if release_root().resolve() == protected.resolve():
-            result["error"] = f"refusing: release_root collides with protected path {protected}"
-            _append_log(result)
-            return result
-
-    dev = dev_root()
+    # Fail closed BEFORE tests, backup/manifests, state logs or any checkout.
+    # No implicit local fetch: the live remote must validate the pinned tip.
     try:
-        wt = gitutil.worktree_state(dev)
-    except gitutil.GitError as exc:
-        result["error"] = str(exc)
-        _append_log(result)
+        dev, release, sha = _release_preflight(
+            expected_sha=expected_sha,
+            skip_tests=skip_tests,
+            allow_dirty_dev=allow_dirty_dev,
+        )
+    except (RuntimeError, OSError, gitutil.GitError) as exc:
+        result["error"] = f"release preflight BLOCKED: {exc}"
         return result
 
-    if wt.dirty and not allow_dirty_dev:
-        result["error"] = "dev dirty; commit first or pass --allow-dirty-dev (not recommended)"
-        _append_log(result)
-        return result
-    if wt.branch and wt.branch != CANONICAL_BRANCH:
-        result["error"] = f"dev not on {CANONICAL_BRANCH} (on {wt.branch})"
-        _append_log(result)
-        return result
-
+    result["sha"] = sha
     findings = scan_repo_changed(dev)
     if findings:
         result["error"] = "secrets_scan_failed"
@@ -173,26 +355,17 @@ def promote(*, skip_tests: bool, allow_dirty_dev: bool) -> dict:
         _append_log(result)
         return result
 
-    sha = wt.head
-    result["sha"] = sha
-
-    if not skip_tests:
-        ok, log = run_intel_tests(dev)
-        result["tests_ok"] = ok
-        result["test_log_tail"] = log[-4000:]
-        evidence = state_root() / f"promote-tests-{sha[:12]}.txt"
-        evidence.write_text(log, encoding="utf-8")
-        result["test_evidence"] = str(evidence)
-        if not ok:
-            result["error"] = "intel slice tests failed — release not updated"
-            _append_log(result)
-            return result
-    else:
-        result["tests_ok"] = None
-        result["notes"] = ["tests skipped by operator flag"]
-
+    ok, log = run_intel_tests(dev)
+    result["tests_ok"] = ok
+    result["test_log_tail"] = log[-4000:]
+    evidence = state_root() / f"promote-tests-{sha[:12]}.txt"
+    evidence.write_text(log, encoding="utf-8")
+    result["test_evidence"] = str(evidence)
+    if not ok:
+        result["error"] = "intel slice tests failed — release not updated"
+        _append_log(result)
+        return result
     result["ops_manifest"] = str(backup_operational_data_manifest() or "")
-    release = release_root()
     prev_sha = None
     if release.is_dir():
         try:
@@ -248,11 +421,12 @@ def promote(*, skip_tests: bool, allow_dirty_dev: bool) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Promote tested Dev SHA to Elysia-Windows-Release")
-    parser.add_argument("--skip-tests", action="store_true")
-    parser.add_argument("--allow-dirty-dev", action="store_true")
+    parser.add_argument("--expected-sha", help="explicit approved canonical 40-hex commit (required for promotion)")
+    parser.add_argument("--skip-tests", action="store_true", help="deprecated: always refused")
+    parser.add_argument("--allow-dirty-dev", action="store_true", help="deprecated: always refused")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    result = promote(skip_tests=args.skip_tests, allow_dirty_dev=args.allow_dirty_dev)
+    result = promote(expected_sha=args.expected_sha, skip_tests=args.skip_tests, allow_dirty_dev=args.allow_dirty_dev)
     if args.json:
         print(json.dumps(result, indent=2))
     else:

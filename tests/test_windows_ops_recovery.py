@@ -16,6 +16,8 @@ import pytest
 from tools.windows_sync import ops_recovery as ops
 
 
+_REAL_STOPPED_GUARD = ops._hold_stopped
+
 @pytest.fixture
 def isolated(monkeypatch, tmp_path):
     root = tmp_path / "pilot-data"
@@ -319,3 +321,119 @@ def test_snapshot_rejects_malformed_manifest_and_unexpected_file_type(isolated):
     manifest.write_text(json.dumps(obj), encoding="utf-8")
     with pytest.raises(ops.RecoveryBlocked, match="invalid snapshot hash"):
         ops.verify_snapshot(isolated["snapshot"])
+
+
+def test_restore_hashing_never_materializes_complete_file(isolated, monkeypatch):
+    """Real restore must stream payload digest; old target.read_bytes fails here."""
+    make_snapshot(isolated)
+    original_read = Path.read_bytes
+    def forbid_restored_read_bytes(path):
+        if path == isolated["restored"] or isolated["restored"] in path.parents:
+            raise AssertionError("unbounded restored-file read_bytes forbidden")
+        return original_read(path)
+    monkeypatch.setattr(Path, "read_bytes", forbid_restored_read_bytes)
+    result = ops.restore_isolated(isolated["snapshot"], isolated["restored"])
+    assert result["status"] == "RESTORED_TO_ISOLATED_ROOT"
+    with (isolated["restored"] / "memory" / "guardian_memory.json").open("rb") as handle:
+        assert handle.read() == b'[{"thought":"synthetic amber-91"}]'
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="actual Windows pilot_exclusion API")
+@pytest.mark.parametrize("outcome", ["nonzero", "timeout", "suppressed_error", "malformed"])
+def test_real_listener_guard_blocks_failed_probe_releases_mutex_and_creates_no_backup(
+    isolated, monkeypatch, outcome
+):
+    """Uses ACTUAL _hold_stopped + writer_exclusion_status + listener parser.
+
+    Only Windows API acquisition and PowerShell subprocess response are faked.
+    No success-mocking of the production stopped-writer guard is allowed.
+    """
+    import os
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+    pilot_dir = str(Path(ops.__file__).resolve().parents[2] / "pilot")
+    if pilot_dir not in sys.path:
+        sys.path.insert(0, pilot_dir)
+    import pilot_exclusion
+    # Fixture's permissive guard is intentionally replaced with the real guard.
+    monkeypatch.setattr(ops, "_hold_stopped", _REAL_STOPPED_GUARD)
+    hold = SimpleNamespace(released=False)
+    def release():
+        hold.released = True
+    hold.release = release
+    monkeypatch.setattr(pilot_exclusion, "launch_claim_is_held", lambda root: False)
+    monkeypatch.setattr(pilot_exclusion, "try_acquire_exclusion",
+                        lambda **kwargs: (hold, "acquired"))
+    # Fail before reaching pid/OS handle, by supplying no actual PID file.
+    assert not (isolated["root"] / "runtime" / "pilot.pid").exists()
+    probes = []
+    def simulated_probe(cmd, **kwargs):
+        probes.append((cmd, kwargs))
+        assert 0 < kwargs["timeout"] <= 15
+        script = cmd[-1]
+        assert "$ErrorActionPreference = 'Stop'" in script
+        assert "-ErrorAction Stop" in script
+        assert "SilentlyContinue" not in script
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        if outcome == "nonzero":
+            return SimpleNamespace(returncode=1, stdout="", stderr="query failed")
+        if outcome == "suppressed_error":
+            return SimpleNamespace(returncode=0, stdout="", stderr="nonterminating error")
+        return SimpleNamespace(returncode=0, stdout="{not-json", stderr="")
+    monkeypatch.setattr(pilot_exclusion.subprocess, "run", simulated_probe)
+    with pytest.raises(ops.RecoveryBlocked, match="exclusion"):
+        make_snapshot(isolated)
+    assert len(probes) == 1
+    assert hold.released is True
+    assert not isolated["snapshot"].exists()
+    assert not list(isolated["tmp"].glob(".elysia-ops-stage-*"))
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="actual Windows pilot_exclusion API")
+def test_real_listener_guard_successful_empty_probe_allows_stopped_snapshot(isolated, monkeypatch):
+    """No matching listeners is permitted only after a successful strict inquiry."""
+    import sys
+    from types import SimpleNamespace
+    pilot_dir = str(Path(ops.__file__).resolve().parents[2] / "pilot")
+    if pilot_dir not in sys.path:
+        sys.path.insert(0, pilot_dir)
+    import pilot_exclusion
+    monkeypatch.setattr(ops, "_hold_stopped", _REAL_STOPPED_GUARD)
+    hold = SimpleNamespace(released=False)
+    hold.release = lambda: setattr(hold, "released", True)
+    monkeypatch.setattr(pilot_exclusion, "launch_claim_is_held", lambda root: False)
+    monkeypatch.setattr(pilot_exclusion, "try_acquire_exclusion",
+                        lambda **kwargs: (hold, "acquired"))
+    monkeypatch.setattr(
+        pilot_exclusion.subprocess, "run",
+        lambda cmd, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    result = make_snapshot(isolated)
+    assert result["status"] == "SNAPSHOT_CREATED_OFFLINE"
+    assert hold.released is True
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="actual Windows pilot_exclusion API")
+def test_writer_exclusion_releases_mutex_if_listener_parser_raises(isolated, monkeypatch):
+    """Unexpected parser failures must never leak the acquired mutex or pass."""
+    import sys
+    from types import SimpleNamespace
+    pilot_dir = str(Path(ops.__file__).resolve().parents[2] / "pilot")
+    if pilot_dir not in sys.path:
+        sys.path.insert(0, pilot_dir)
+    import pilot_exclusion
+    monkeypatch.setattr(ops, "_hold_stopped", _REAL_STOPPED_GUARD)
+    hold = SimpleNamespace(released=False)
+    hold.release = lambda: setattr(hold, "released", True)
+    monkeypatch.setattr(pilot_exclusion, "launch_claim_is_held", lambda root: False)
+    monkeypatch.setattr(pilot_exclusion, "try_acquire_exclusion",
+                        lambda **kwargs: (hold, "acquired"))
+    def raise_parser(*args, **kwargs):
+        raise RuntimeError("synthetic parser exception")
+    monkeypatch.setattr(pilot_exclusion, "find_conflicting_listener", raise_parser)
+    with pytest.raises(ops.RecoveryBlocked, match="exclusion"):
+        make_snapshot(isolated)
+    assert hold.released is True
+    assert not isolated["snapshot"].exists()

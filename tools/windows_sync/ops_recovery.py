@@ -211,6 +211,11 @@ def _validate_manifest(snapshot: Path) -> tuple[list[str], list[dict]]:
     path = root / "manifest.json"
     if not path.is_file():
         raise RecoveryBlocked("missing snapshot manifest")
+    if _safe_path(path) != path or _safe_path(root / "payload") != root / "payload":
+        raise RecoveryBlocked("snapshot manifest/payload path alias")
+    meta = path.lstat()
+    if not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1 or meta.st_size > 8 * 1024 * 1024:
+        raise RecoveryBlocked("unsafe snapshot manifest")
     try:
         info = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -222,6 +227,8 @@ def _validate_manifest(snapshot: Path) -> tuple[list[str], list[dict]]:
     dirs, files = info.get("directories"), info.get("files")
     if not isinstance(dirs, list) or not isinstance(files, list):
         raise RecoveryBlocked("invalid snapshot inventory")
+    if len(dirs) + len(files) > 100000:
+        raise RecoveryBlocked("snapshot inventory size cap exceeded")
     if not all(isinstance(name, str) for name in dirs) or not all(isinstance(row, dict) for row in files):
         raise RecoveryBlocked("malformed snapshot inventory")
     names = dirs + [row.get("path") for row in files]
@@ -238,7 +245,8 @@ def _validate_manifest(snapshot: Path) -> tuple[list[str], list[dict]]:
             raise RecoveryBlocked("invalid snapshot file row")
         if type(row["size"]) is not int or row["size"] < 0:
             raise RecoveryBlocked("invalid snapshot file size")
-        if not isinstance(row["sha256"], str) or len(row["sha256"]) != 64:
+        if (not isinstance(row["sha256"], str) or len(row["sha256"]) != 64
+                or any(char not in "0123456789abcdef" for char in row["sha256"])):
             raise RecoveryBlocked("invalid snapshot hash")
     if {entry.name for entry in root.iterdir()} != {"payload", "manifest.json"}:
         raise RecoveryBlocked("unexpected snapshot top-level entry")

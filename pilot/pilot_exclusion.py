@@ -245,7 +245,13 @@ def find_conflicting_listener(
     data_root: Path,
     host: str = PREFERRED_UI_HOST,
 ) -> Optional[Dict[str, Any]]:
-    """Return info if a loopback listener looks like this pilot's contained entry."""
+    """None ONLY after an unambiguous successful Windows listener inventory.
+
+    PowerShell cmdlet/CIM failures, suppressed errors, timeouts, missing
+    process identities and malformed output are uncertain, never "no listener".
+    No command lines or stderr details are returned on an uncertain result.
+    """
+    uncertain = {"uncertain": True, "reason": "listener_query_unverified"}
     try:
         out = subprocess.run(
             [
@@ -253,43 +259,57 @@ def find_conflicting_listener(
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                f"$conns = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | "
-                f"Where-Object {{ $_.LocalAddress -in @('127.0.0.1','::1') -and "
-                f"$_.LocalPort -ge {PREFERRED_UI_PORT} -and $_.LocalPort -le {PORT_SCAN_END} }}; "
+                "$ErrorActionPreference = 'Stop'; "
+                "$conns = @(Get-NetTCPConnection -State Listen -ErrorAction Stop | "
+                "Where-Object { $_.LocalAddress -in @('127.0.0.1','::1') -and "
+                f"$_.LocalPort -ge {PREFERRED_UI_PORT} -and $_.LocalPort -le {PORT_SCAN_END} }}); "
                 "foreach ($c in $conns) { "
                 "$p = Get-CimInstance Win32_Process -Filter \"ProcessId=$($c.OwningProcess)\" "
-                "-ErrorAction SilentlyContinue; "
-                "if ($p) { [pscustomobject]@{Pid=$p.ProcessId;Port=$c.LocalPort;"
-                "CommandLine=$p.CommandLine;Name=$p.Name} | ConvertTo-Json -Compress } }",
+                "-ErrorAction Stop; "
+                "if ($null -eq $p) { throw 'listener_process_identity_unavailable' }; "
+                "[pscustomobject]@{Pid=$p.ProcessId;Port=$c.LocalPort;"
+                "CommandLine=$p.CommandLine;Name=$p.Name} | "
+                "ConvertTo-Json -Compress -ErrorAction Stop }",
             ],
             capture_output=True,
             text=True,
             check=False,
+            timeout=12,
         )
-    except OSError:
-        return {"uncertain": True, "reason": "listener_query_failed"}
+    except (OSError, subprocess.TimeoutExpired):
+        return uncertain
+    if out.returncode != 0 or (out.stderr or "").strip():
+        return uncertain
     raw = (out.stdout or "").strip()
     if not raw:
         return None
-    # May be multiple JSON objects newline-separated
+    # A successful command with unexpected output is UNKNOWN, not a negative
+    # match. Every loopback listener must have an inspectable process identity.
     for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
         try:
             obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        cl = str(obj.get("CommandLine") or "")
+            if not isinstance(obj, dict):
+                return uncertain
+            pid = obj.get("Pid")
+            port = obj.get("Port")
+            cl = obj.get("CommandLine")
+            if (not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0
+                    or not isinstance(port, int) or isinstance(port, bool)
+                    or port <= 0 or not isinstance(cl, str) or not cl.strip()):
+                return uncertain
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return uncertain
         if _cmdline_matches_pilot(cl, entry=entry, data_root=data_root):
             return {
-                "pid": int(obj["Pid"]),
-                "port": int(obj["Port"]),
+                "pid": pid,
+                "port": port,
                 "command_line": cl,
                 "name": obj.get("Name"),
             }
     return None
-
 
 def writer_exclusion_status(
     *,
@@ -336,7 +356,15 @@ def writer_exclusion_status(
     # We hold the mutex for the check window; caller must release via returned hold
     result["hold"] = hold
 
-    listener = find_conflicting_listener(entry=entry, data_root=data_root)
+    try:
+        listener = find_conflicting_listener(entry=entry, data_root=data_root)
+    except Exception:
+        # Unexpected parser/probe errors must never leave a held mutex or
+        # certify that the pilot is stopped. Do not echo sensitive details.
+        hold.release()
+        result.pop("hold", None)
+        result["reason"] = "listener_query_uncertain"
+        return result
     result["listener"] = listener
     if listener and listener.get("uncertain"):
         hold.release()

@@ -30,7 +30,7 @@ The packet hard-pins `f2867227...` as the **existing source checkout** and check
 2. A clean, existing local checkout at exactly `f286722736c58b8d626f07e841b29e800efe2d8b` is available, with Git and Python **3.12 or later**. No `git fetch`, `checkout`, `reset`, installs or repairs are allowed by this packet. If local source is not at the pinned SHA, **STOP and report**; do not alter it.
 3. The operator creates an **empty** dedicated local fixed-disk folder whose final name is exactly `Elysia-Task010-Disposable`, with no junction, symlink or reparse-point ancestry, and not overlapping source, release, operational memory or preserved pilot roots. Example: `C:\Elysia-Task010-Disposable`. Creation itself is deferred pending approval.
 4. The packet Python file is separately staged OUTSIDE that empty scratch folder and OUTSIDE the canonical Git worktree, e.g. `C:\Elysia-Task010-Packet\task010_native_acceptance.py`. This preserves the source checksum/cleanliness gate. Stage only after approval; do not browse or alter personal files.
-5. Use non-elevated Windows execution unless the operator explicitly approves otherwise. No administrator/UAC bypass, firewall edits, antivirus exemptions, credentials, cloud providers or connectivity checks. The packet is Python stdlib-only, and no pip command is included.
+5. The packet **refuses elevated execution**. Use a non-elevated Windows user token. Do not request UAC or bypass this check. If elevation seems necessary, STOP and seek a redesigned packet plus separate authority. No firewall edits, antivirus exemptions, credentials, cloud providers or connectivity checks. The packet is Python stdlib-only, and no pip command is included.
 
 ## Future exact commands (DO NOT RUN YET)
 
@@ -55,7 +55,7 @@ py -3.12 -B $Packet --source-root $Repo --scratch-parent $Scratch --execute-synt
 
 | Gate | Real operation or fault | PASS required |
 | --- | --- | --- |
-| P00 | Read-only source/SHA/Git blob, Windows Python, dedicated empty fixed-disk scratch preflight | `PASS_READ_ONLY_PREFLIGHT` before any write |
+| P00 | Read-only exact source/SHA/Git blob, Python 3.12+, non-elevated Windows token and empty fixed-disk scratch preflight | `PASS_READ_ONLY_PREFLIGHT` before any write |
 | P01 | Call real snapshot CLI without `--ack-stopped` | Fails closed, no snapshot created |
 | P02 | Try snapshot from a root different from the temporary `ELYSIA_PILOT_DATA_ROOT` | Fails closed, no snapshot created |
 | P03 | Child process acquires actual Windows named mutex for synthetic root, parent tries snapshot while held, releases holder | Snapshot rejected; holder remains alive during check and releases cleanly |

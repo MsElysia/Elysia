@@ -3577,3 +3577,50 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — outside create path is not success
+
+**Status:** COMPLETED on this branch. Not on `main`. No PR.
+
+**Implementation commit:** `23b96c1bfb7556a124e0965d6a429db0dba3e83e`
+
+**Base:** `722d8e4` (`main`). Not based on the events-limit, implement-status, research-status, chat-status, decision-status, implementation-result, approved-batch, status-availability, unreadable-proposal, dry_run type-check, dry-run lifecycle, unexecuted-step, or existing-file branches.
+
+**Files:**
+- `elysia/agents/implementer.py`
+- `tests/test_runtime_api_implement_outside_path.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Behavior:**
+- `POST /api/proposals/<id>/implement` with a create-file step, or an add-tests step that uses the same create path, no longer returns `success: true` when the extracted path resolves outside the repository working directory.
+- An absolute path, a `../` path the extractor turns into an absolute path, or a relative path through a symlink that leaves the directory returns `success: false`, `created: false`, and error `File path is outside the repository`.
+- The aggregate error is `Step 1 failed: File path is outside the repository`.
+- The stored proposal status is `implementation_failed` and `implementation_status` is `failed`. History does not say `Implementation completed`.
+- No file is created outside the directory. A relative path inside the directory is still created and stored as `implemented`.
+
+**Evidence:**
+- Before, Flask HTTP 200 for fictional proposal `fictional-outside-file` was `success: true`, stored status `implemented` / `completed`, and wrote `should-not-write` to `/tmp/elysia-before-35krclc1/outside/fictional-escape.txt` while the working directory was `/tmp/elysia-before-35krclc1/cwd`.
+- After: `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_runtime_api_implement_outside_path.py -v --tb=short` — 2 passed. Flask test client and live Werkzeug HTTP. Real `ProposalSystem` and `ImplementerAgent`, watcher off, fictional proposals, temporary working directory, no external services.
+- Flask HTTP after the change: HTTP 200 `success: false`, error `Step 1 failed: File path is outside the repository`, `created: false`, stored status `implementation_failed`, outside file absent.
+- `tests/test_implementer_agent.py` still fails only on the pre-existing assertion text `test_implementer_rejects_non_accepted_proposal`. It was not changed.
+
+**Remaining limitations:**
+- Unsuccessful implement results on this branch still return HTTP 200. That mapping stays on `origin/cursor/elysia-product-workflow-process-9429`.
+- A create step that finds the target already present still reports success on this branch. That fix stays on `origin/cursor/product-workflow-engineering-process-36a9` (`c7d2d29`, handoff `2cd4db0`).
+- A generic step and a modify or config step that does not change a file still report success on this branch. Modify of an existing path outside the directory still reports success without writing. That fix stays on `origin/cursor/elysia-product-workflow-gaps-0e04` (`f08b7ff`, handoff `8a459a0`).
+- Boolean `dry_run: true` still stores `implemented` on this branch. That fix stays on `origin/cursor/product-workflow-engineering-process-b494` (`07e1de0`, handoff `867b211`).
+- A non-boolean `dry_run` is still not rejected here. That check stays on `origin/cursor/elysia-product-workflow-6a1b` (`4ed3b33`, handoff `d4900c7`).
+- The route still builds `ImplementerAgent` with `repo_root=Path(".")`.
+- An add-tests step reports `step_type: create_file` because it delegates to the create-file executor.
+
+**Ownership left untouched:**
+- Did not edit `elysia/core/proposal_system.py` or `elysia/runtime.py`.
+- Runtime integrity today is `8fab527` on `origin/cursor/elysia-runtime-integrity-2a02` (`bc-49663f48`). Its diff against `main` for this lane's files is `elysia/core/proposal_system.py` only (FIFO metadata leaves).
+- Application runtime safety remains `2f8ce84` on `origin/cursor/application-runtime-safety-bf3f`. No newer application-runtime-safety branch was present.
+- Did not edit `project_guardian/ui_control_panel.py`. Dashboard drafts #147, #148, #149, #153, and #156 remain open.
+- `CURRENT_TASK: NONE` on `main` and on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`). `TASK-0053` remains OPEN review-only. Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb`. Do not implement live memory or vector writes. Leave open memory drafts through PR #214 to their owners.
+
+A branch commit is not integrated product readiness. Next product run should pick a different unclaimed API or dashboard error path and should re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`.

@@ -62,11 +62,22 @@ def demand(ok: bool, code: str) -> None:
         raise Stop(code)
 
 
+def _without_inherited_git_overrides() -> dict[str, str]:
+    """Pre-trust environment built only from stdlib, never unverified source."""
+    env = {key: value for key, value in os.environ.items()
+           if not key.upper().startswith("GIT_")}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
 def git(repo: Path, *args: str) -> str:
+    # These commands only read identity, worktree state and file blob hashes.
+    env = _without_inherited_git_overrides()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         p = subprocess.run(
             ["git", "-C", str(repo), *args], capture_output=True,
-            text=True, timeout=15, check=False,
+            env=env, text=True, timeout=15, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Stop("GIT_PRECHECK_UNAVAILABLE") from exc
@@ -86,6 +97,22 @@ def preflight(repo: Path, parent: Path) -> None:
     demand(parent.is_absolute() and parent.name.lower() == SCRATCH_NAME,
            "DEDICATED_SCRATCH_NAME_REQUIRED")
     demand(parent.is_dir(), "CREATE_EMPTY_SCRATCH_PARENT_SEPARATELY")
+    # Check the actual worktree root before trusting Git HEAD or importing any
+    # code from --source-root. A Git worktree's .git FILE is valid; unrelated
+    # GIT_DIR/GIT_WORK_TREE/CONFIG routing and source-path aliases are not.
+    try:
+        resolved_source = repo.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise Stop("SOURCE_ROOT_UNRESOLVED") from exc
+    demand(repo == resolved_source, "SOURCE_PATH_ALIAS")
+    toplevel = git(repo, "rev-parse", "--show-toplevel")
+    demand(bool(toplevel) and Path(toplevel).is_absolute(),
+           "GIT_TOPLEVEL_UNVERIFIED")
+    try:
+        resolved_top = Path(toplevel).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise Stop("GIT_TOPLEVEL_UNVERIFIED") from exc
+    demand(resolved_top == resolved_source, "GIT_TOPLEVEL_DIFFERS_FROM_SOURCE")
     demand(git(repo, "rev-parse", "HEAD") == PINNED_CANONICAL,
            "SOURCE_SHA_NOT_PINNED")
     demand(not git(repo, "status", "--porcelain=v1", "--untracked-files=all"),
@@ -237,7 +264,10 @@ def run_synthetic(repo: Path, parent: Path) -> int:
         names = fixture(root)
         temp = run / "temp"
         temp.mkdir()
-        env = os.environ.copy()
+        # Child acceptance processes also must not inherit Git routing that
+        # could override later identity checks or accidentally target another
+        # local repository. Keep normal Git locking semantics for children.
+        env = _without_inherited_git_overrides()
         env["ELYSIA_PILOT_DATA_ROOT"] = str(root)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["PYTHONNOUSERSITE"] = "1"

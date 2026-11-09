@@ -15,6 +15,19 @@ from ..events import EventBus
 logger = logging.getLogger(__name__)
 
 
+def _is_openable_metadata(metadata_file: Path) -> bool:
+    """True when metadata.json can be opened without blocking on a special file.
+
+    Planted FIFO, socket, or device leaves make Path.exists() true while open()
+    blocks, which stalls watcher validation, list/get, heartbeat, and authorized
+    load/save. Symlink leaves are not classified here.
+    """
+    try:
+        return metadata_file.is_file()
+    except OSError:
+        return False
+
+
 class ProposalValidator:
     """Validates proposal structure and metadata schema."""
 
@@ -29,6 +42,8 @@ class ProposalValidator:
         metadata_file = proposal_path / "metadata.json"
         if not metadata_file.exists():
             return False, "metadata.json missing"
+        if not _is_openable_metadata(metadata_file):
+            return False, "metadata.json is not a regular file"
 
         return True, None
 
@@ -88,7 +103,7 @@ class ProposalLifecycleManager:
         """Load metadata for a proposal."""
         proposal_path = self.proposals_root / proposal_id
         metadata_file = proposal_path / "metadata.json"
-        if not metadata_file.exists():
+        if not _is_openable_metadata(metadata_file):
             return None
 
         try:
@@ -102,6 +117,13 @@ class ProposalLifecycleManager:
         proposal_path = self.proposals_root / proposal_id
         proposal_path.mkdir(parents=True, exist_ok=True)
         metadata_file = proposal_path / "metadata.json"
+        try:
+            if metadata_file.exists() and not _is_openable_metadata(metadata_file):
+                logger.error("Refusing to write non-regular metadata for %s", proposal_id)
+                return False
+        except OSError as e:
+            logger.error("Failed to inspect metadata for %s: %s", proposal_id, e)
+            return False
 
         try:
             metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -232,7 +254,9 @@ class ProposalWatcher:
             return
 
         current_proposals = {
-            p.name for p in self.proposals_root.iterdir() if p.is_dir() and (p / "metadata.json").exists()
+            p.name
+            for p in self.proposals_root.iterdir()
+            if p.is_dir() and _is_openable_metadata(p / "metadata.json")
         }
 
         # Detect new proposals
@@ -319,7 +343,7 @@ class ProposalSystem:
                 continue
 
             metadata_file = proposal_dir / "metadata.json"
-            if not metadata_file.exists():
+            if not _is_openable_metadata(metadata_file):
                 continue
 
             try:
@@ -340,7 +364,7 @@ class ProposalSystem:
         proposal_path = self.proposals_root / proposal_id
         metadata_file = proposal_path / "metadata.json"
 
-        if not metadata_file.exists():
+        if not _is_openable_metadata(metadata_file):
             return None
 
         try:

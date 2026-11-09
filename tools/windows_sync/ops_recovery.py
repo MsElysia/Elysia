@@ -362,7 +362,11 @@ def restore_isolated(snapshot: Path | str, destination: Path | str) -> dict:
             target.parent.mkdir(parents=True, exist_ok=True)
             source = snap / "payload" / row["path"]
             shutil.copyfile(source, target, follow_symlinks=False)
-            if hashlib.sha256(target.read_bytes()).hexdigest() != row["sha256"]:
+            # Stream a bounded buffer instead of materializing a potentially
+            # 10 GiB payload into RAM. The outer finally owns stage cleanup.
+            with target.open("rb") as restored_file:
+                actual_hash = hashlib.file_digest(restored_file, "sha256").hexdigest()
+            if actual_hash != row["sha256"]:
                 raise RecoveryBlocked("restored file integrity mismatch")
         # Re-check backup bytes and tree before publishing, fail closed if changed.
         _validate_manifest(snap)

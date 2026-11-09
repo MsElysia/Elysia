@@ -374,23 +374,37 @@ def test_real_listener_guard_blocks_failed_probe_releases_mutex_and_creates_no_b
     assert not (isolated["root"] / "runtime" / "pilot.pid").exists()
     probes = []
     def simulated_probe(cmd, **kwargs):
+        # This callback must NOT assert the security contract. The production
+        # writer guard catches arbitrary Exception and could turn a mock
+        # AssertionError/KeyError into a false-green blocked-backup result.
         probes.append((cmd, kwargs))
-        assert 0 < kwargs["timeout"] <= 15
-        script = cmd[-1]
-        assert "$ErrorActionPreference = 'Stop'" in script
-        assert "-ErrorAction Stop" in script
-        assert "SilentlyContinue" not in script
         if outcome == "timeout":
-            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+            # Fixed synthetic duration: missing production timeout keyword
+            # must be detected by the independent assertions BELOW.
+            raise subprocess.TimeoutExpired(cmd, 12)
         if outcome == "nonzero":
-            return SimpleNamespace(returncode=1, stdout="", stderr="query failed")
+            # The original flaw was nonzero with EMPTY output; stderr must
+            # not independently force a block and hide missing returncode guard.
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
         if outcome == "suppressed_error":
             return SimpleNamespace(returncode=0, stdout="", stderr="nonterminating error")
         return SimpleNamespace(returncode=0, stdout="{not-json", stderr="")
     monkeypatch.setattr(pilot_exclusion.subprocess, "run", simulated_probe)
     with pytest.raises(ops.RecoveryBlocked, match="exclusion"):
         make_snapshot(isolated)
+    # Every meaningful probe assertion is OUTSIDE the production catch-all.
+    # Removing timeout/strict PowerShell safeguards must FAIL this test.
     assert len(probes) == 1
+    cmd, kwargs = probes[0]
+    assert isinstance(cmd, (list, tuple)) and cmd[-2] == "-Command"
+    assert "timeout" in kwargs, "missing bounded PowerShell subprocess timeout"
+    assert isinstance(kwargs["timeout"], (int, float))
+    assert 0 < kwargs["timeout"] <= 15
+    script = cmd[-1]
+    assert "$ErrorActionPreference = 'Stop'" in script
+    assert "Get-NetTCPConnection" in script and "Get-CimInstance" in script
+    assert script.count("-ErrorAction Stop") >= 2
+    assert "SilentlyContinue" not in script
     assert hold.released is True
     assert not isolated["snapshot"].exists()
     assert not list(isolated["tmp"].glob(".elysia-ops-stage-*"))

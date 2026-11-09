@@ -67,6 +67,7 @@ py -3.12 -B $Packet --source-root $Repo --scratch-parent $Scratch --execute-synt
 | P09 | Introduce synthetic SQLite `-wal` file and attempt snapshot | Blocked; no inconsistent snapshot published; test-created WAL removed |
 | P10 | Inspect own transient staging names under new run root | No leftover `.elysia-ops-stage-*` or `.elysia-restore-stage-*` |
 | P11 | Confirm original synthetic source bytes remain unchanged | SHA-256 equality; no real data consulted |
+| P12 | Recheck Git HEAD, clean worktree and pinned recovery-module blobs after the test | Source still exactly pinned; no repository changes |
 
 On all successful steps the script writes `TASK010_RESULT.json` with `status=PASS_SYNTHETIC_NATIVE_SNAPSHOT_RESTORE_ONLY`, source SHA, named checks and `synthetic_only=true`. The JSON explicitly has `operational_runtime_tested=false` and `cleanup_performed=false`. The other marker, `TASK010_SYNTHETIC_ONLY.json`, identifies the disposable run.
 

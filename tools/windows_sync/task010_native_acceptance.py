@@ -163,10 +163,12 @@ def invoke(repo: Path, env: dict[str, str], *args: str) -> tuple[int, dict | Non
     raise Stop("UNEXPECTED_NATIVE_COMMAND_RESULT")
 
 
-def blocked(repo: Path, env: dict[str, str], dest: Path, *args: str) -> None:
+def blocked(repo: Path, env: dict[str, str], dest: Path, *args: str,
+            require_absent: bool = True) -> None:
     code, receipt = invoke(repo, env, *args)
     demand(code == 2 and receipt is None, "UNSAFE_COMMAND_WAS_NOT_BLOCKED")
-    demand(not dest.exists(), "BLOCKED_COMMAND_CREATED_DESTINATION")
+    if require_absent:
+        demand(not dest.exists(), "BLOCKED_COMMAND_CREATED_DESTINATION")
 
 
 def native_mutex_refusal(repo: Path, env: dict[str, str], run: Path, root: Path) -> None:
@@ -266,7 +268,8 @@ def run_synthetic(repo: Path, parent: Path) -> int:
         occupied.mkdir()
         sentinel = occupied / "DO_NOT_OVERWRITE.txt"
         sentinel.write_text("synthetic sentinel", encoding="ascii")
-        blocked(repo, env, occupied, "--restore-from", str(snapshot), "--to", str(occupied))
+        blocked(repo, env, occupied, "--restore-from", str(snapshot),
+                "--to", str(occupied), require_absent=False)
         demand(sentinel.read_text(encoding="ascii") == "synthetic sentinel",
                "EXISTING_TARGET_CHANGED")
         results.append("PASS_EXISTING_TARGET_UNTOUCHED")

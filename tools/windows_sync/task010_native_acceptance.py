@@ -144,6 +144,14 @@ def digest(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
+def check_synthetic_tree(root: Path, names: list[str]) -> None:
+    files = [p for p in root.rglob("*") if p.is_file()]
+    actual = {p.relative_to(root).as_posix() for p in files}
+    demand(actual == set(names), "UNEXPECTED_SYNTHETIC_SOURCE_FILE")
+    demand(sum(p.stat().st_size for p in files) < 1024 * 1024,
+           "SYNTHETIC_SOURCE_SIZE_LIMIT")
+
+
 def invoke(repo: Path, env: dict[str, str], *args: str) -> tuple[int, dict | None]:
     try:
         p = subprocess.run(
@@ -229,6 +237,7 @@ def run_synthetic(repo: Path, parent: Path) -> int:
         env["PYTHONNOUSERSITE"] = "1"
         env["TEMP"] = str(temp)
         env["TMP"] = str(temp)
+        check_synthetic_tree(root, names)
         before = {name: digest(root / name) for name in names}
         snapshot, restored = run / "verified-snapshot", run / "restored"
         blocked(repo, env, snapshot, "--snapshot-root", str(root), "--to", str(snapshot))
@@ -238,6 +247,7 @@ def run_synthetic(repo: Path, parent: Path) -> int:
         results.append("PASS_REFUSE_WRONG_SOURCE_ROOT")
         native_mutex_refusal(repo, env, run, root)
         results.append("PASS_REAL_WINDOWS_MUTEX_REFUSAL_AND_RELEASE")
+        check_synthetic_tree(root, names)
         code, info = invoke(repo, env, "--snapshot-root", str(root),
                             "--to", str(snapshot), "--ack-stopped")
         demand(code == 0 and info.get("status") == "SNAPSHOT_CREATED_OFFLINE",
@@ -292,6 +302,7 @@ def run_synthetic(repo: Path, parent: Path) -> int:
         results.append("PASS_SQLITE_WAL_REFUSED")
         no_leftover_staging(run)
         results.append("PASS_NO_STAGE_RESIDUE")
+        check_synthetic_tree(root, names)
         demand(git(repo, "rev-parse", "HEAD") == PINNED_CANONICAL
                and not git(repo, "status", "--porcelain=v1", "--untracked-files=all"),
                "SOURCE_CHANGED_DURING_TEST")

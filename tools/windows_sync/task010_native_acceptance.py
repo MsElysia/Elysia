@@ -8,6 +8,7 @@ Use from outside the source worktree and pin --source-root to the verified commi
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -76,6 +77,11 @@ def git(repo: Path, *args: str) -> str:
 def preflight(repo: Path, parent: Path) -> None:
     demand(os.name == "nt", "WINDOWS_REQUIRED")
     demand(sys.version_info >= (3, 12), "PYTHON_312_REQUIRED")
+    try:
+        elevated = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError) as exc:
+        raise Stop("CANNOT_VERIFY_NON_ELEVATED_TOKEN") from exc
+    demand(not elevated, "ELEVATED_SESSION_NOT_AUTHORIZED")
     demand(repo.is_absolute() and repo.is_dir(), "EXISTING_SOURCE_REQUIRED")
     demand(parent.is_absolute() and parent.name.lower() == SCRATCH_NAME,
            "DEDICATED_SCRATCH_NAME_REQUIRED")

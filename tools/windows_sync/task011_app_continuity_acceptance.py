@@ -100,6 +100,14 @@ def verify_source(repo: Path) -> None:
     require(git(repo, "rev-parse", "HEAD") == PINNED, "SOURCE_NOT_AT_PINNED_SHA")
     require(not git(repo, "status", "--porcelain=v1", "--untracked-files=all"),
             "SOURCE_WORKTREE_NOT_CLEAN")
+    # Ordinary porcelain status omits ignored runtime writes (*.log, *.db,
+    # caches, etc.). A clean tracked tree alone cannot certify containment.
+    # Insist on a genuinely empty ignored/untracked inventory both at initial
+    # preflight and after the last stopped synthetic child, without reading,
+    # printing, removing, or hashing private ignored files.
+    require(not git(repo, "status", "--porcelain=v1", "--ignored",
+                    "--untracked-files=all"),
+            "SOURCE_HAS_IGNORED_OR_UNTRACKED_FILES")
     for path, expected in SOURCE_BLOBS.items():
         require(git(repo, "hash-object", path) == expected,
                 "SOURCE_FILE_BLOB_MISMATCH")

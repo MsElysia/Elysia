@@ -41,6 +41,11 @@ REQUIRED = {
     "test_external_commit_during_temp_write_rechecked_before_replace": 1,
     "test_failed_write_restores_evicted_history_and_does_not_poison_retry": 1,
     "test_stale_rejection_never_publishes_vector_or_timeline": 1,
+    "test_acceptance_synthetic_snapshot_restore_and_sidecar_lifecycle": 1,
+    "test_acceptance_existing_sidecar_permission_denial_fails_closed": 1,
+    "test_acceptance_directory_permission_denial_fails_closed": 1,
+    "test_acceptance_independent_process_held_lock_fences_and_recovers": 1,
+    "test_acceptance_real_readonly_sidecar_file": 1,
 }
 RELEASE_DIRS = {
     "elysia-windows-release", "elysia-windows-integration-data",

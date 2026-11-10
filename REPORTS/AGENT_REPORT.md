@@ -3577,3 +3577,52 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — implement uses the proposal repository
+
+**Status:** COMPLETED on this branch. Not on `main`. No PR.
+
+**Implementation commit:** `64eb491c24b11df3a0a60967f49ed79c2dfda00a`
+
+**Base:** `722d8e4` (`main`). Not based on the events-limit, implement-status, research-status, chat-status, decision-status, implementation-result, approved-batch, status-availability, unreadable-proposal, dry_run type-check, dry-run lifecycle, unexecuted-step, existing-file, or outside-path branches.
+
+**Files:**
+- `elysia/api/server.py`
+- `tests/test_runtime_api_implement_repo_root.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Behavior:**
+- `POST /api/proposals/<id>/implement` no longer builds `ImplementerAgent` with `repo_root=Path(".")`.
+- When the server has no attached implementer, a create-file step is written under the parent of `proposal_system.proposals_root`, including when the process working directory is a different directory.
+- When the request body omits `dry_run` and the server was given an implementer, the route calls that implementer. Its repository and its dry-run flag are the ones that run.
+- When the request body includes `dry_run`, the route still builds a new `ImplementerAgent` for that flag. The repository is the attached implementer's repository when one is set, and otherwise the parent of the proposal store.
+
+**Evidence:**
+- Before, live HTTP 200 for fictional proposal `fictional-repo-root` was `success: true` with stored status `implemented` / `completed`. The server had an attached implementer with `dry_run=True` and `repo_root` set to a separate directory. The file `fictional-sentinel.txt` was still created in the unrelated working directory `/tmp/elysia-repro-afg69gs1/elsewhere` and was absent from the proposal repository and from the attached root.
+- After, the same live call returns HTTP 200 `success: true`, step `dry_run: true`, and creates no file in the working directory, the proposal repository, or the attached root. The stored status on this branch is still `implemented` / `completed`.
+- `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_runtime_api_implement_repo_root.py -v --tb=short` — 2 passed. Flask test client and live Werkzeug HTTP. Real `ProposalSystem` and `ImplementerAgent`, watcher off, fictional proposals, temporary directories, no external services.
+- That test also posts a create-file step with no attached implementer and checks the file is created beside the proposal store, not in the unrelated working directory. A second post with an attached non-dry-run implementer writes only in that implementer's repository. A third post sends `{"dry_run": false}` to a dry-run implementer and writes only in the attached repository.
+- `tests/test_implementer_agent.py` still fails only on the pre-existing assertion text `test_implementer_rejects_non_accepted_proposal`. It was not changed. The other nine tests in that file passed.
+
+**Remaining limitations:**
+- A boolean `dry_run: true` still stores `implemented` and `implementation_status: completed` on this branch. That lifecycle fix stays on `origin/cursor/product-workflow-engineering-process-b494` (`07e1de0`, handoff `867b211`).
+- Unsuccessful implement results on this branch still return HTTP 200. That mapping stays on `origin/cursor/elysia-product-workflow-process-9429`.
+- A create step that resolves outside the repository still reports success on this branch. That fix stays on `origin/cursor/elysia-product-workflow-7d5a` (`23b96c1`, handoff `8d6ae4a`).
+- A create step that finds the target already present still reports success on this branch. That fix stays on `origin/cursor/product-workflow-engineering-process-36a9` (`c7d2d29`, handoff `2cd4db0`).
+- A generic step and a modify or config step that does not change a file still report success on this branch. That fix stays on `origin/cursor/elysia-product-workflow-gaps-0e04` (`f08b7ff`, handoff `8a459a0`).
+- A non-boolean `dry_run` is still not rejected here. That check stays on `origin/cursor/elysia-product-workflow-6a1b` (`4ed3b33`, handoff `d4900c7`).
+- `ElysiaRuntime` still does not pass an implementer into `RuntimeAPIServer`. With no attached implementer, the write root is the parent of `proposals_root`. A proposal store that is not a child of the code tree receives the new file beside the store.
+- An explicit `dry_run` builds a new `ImplementerAgent`, so a subclass stored on the server is not the object that runs for that request.
+- An add-tests step reports `step_type: create_file` because it delegates to the create-file executor.
+
+**Ownership left untouched:**
+- Did not edit `elysia/core/proposal_system.py` or `elysia/runtime.py`.
+- Runtime integrity today is `8fab527` on `origin/cursor/elysia-runtime-integrity-2a02` (`bc-49663f48`). Its diff against `main` for this lane's files is `elysia/core/proposal_system.py` only (FIFO metadata leaves).
+- Application runtime safety today is `14cf184` on `origin/cursor/application-runtime-safety-f3b3` (`bc-27d117c2`). Its diff against `main` is the same proposal-system file. Did not edit it.
+- Did not edit `project_guardian/ui_control_panel.py`. Dashboard drafts #147, #148, #149, #153, and #156 remain open.
+- `CURRENT_TASK: NONE` on `main`. Do not implement live memory or vector writes. Leave open memory drafts to their owners.
+
+A branch commit is not integrated product readiness. Next product run should pick a different unclaimed API or dashboard error path and should re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`.

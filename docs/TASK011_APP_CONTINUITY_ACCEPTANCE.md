@@ -26,7 +26,7 @@ All operations are deferred until a separately authorized bounded owner-Windows 
 | A05 | Original owned child exits cleanly via its matching `runtime/shutdown.request` token/marker, without force kill or unrelated PID kill |
 | A06 | Restart a **new** real contained `GuardianCore` process against the SAME synthetic root; retrieve the same corrected fact, original history and checkpoint/next step; no authorization inherited |
 | A07 | Stop again cooperatively and prove test port is released before snapshot |
-| A08 | Existing `ops_recovery` makes, verifies and publishes an offline snapshot only with `--ack-stopped`; rejects unsafe stop state |
+| A08 | Existing `ops_recovery` makes, verifies and publishes an offline snapshot after the child is confirmed stopped and `--ack-stopped` is supplied; the writer fence must accept the truly stopped synthetic root |
 | A09 | Restore into a previously nonexistent second synthetic root, compare primary memory SHA-256 against the original and snapshot; do not overwrite live/real roots |
 | A10 | Start a **third** actual contained runtime using ONLY the restored root. HTTP chat, restricted history and conversation resume all retrieve the original corrected synthetic fact and next step, with fresh process-local auth |
 | A11 | Final cooperative stop succeeds, the original synthetic memory bytes are unchanged by recovery, and pinned source Git SHA/blobs/clean state survive |

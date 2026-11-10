@@ -479,7 +479,8 @@ def run_once(repo: Path, scratch: Path) -> int:
         require(restored.get("status") == "RESTORED_TO_ISOLATED_ROOT",
                 "ISOLATED_RECOVERY_NOT_PUBLISHED")
         primary_rel = Path("memory") / "guardian_memory.json"
-        require(sha256(active / primary_rel) == sha256(recovered / primary_rel)
+        source_memory_sha = sha256(active / primary_rel)
+        require(source_memory_sha == sha256(recovered / primary_rel)
                 and sha256(snapshot / "payload" / primary_rel) ==
                 sha256(recovered / primary_rel),
                 "RECOVERED_MEMORY_BYTES_DIFFER_FROM_SNAPSHOT")
@@ -493,6 +494,9 @@ def run_once(repo: Path, scratch: Path) -> int:
         cooperative_stop(current)
         current = None
         checks.append("PASS_COOPERATIVE_SHUTDOWN_RECOVERED_APP")
+        require(sha256(active / primary_rel) == source_memory_sha,
+                "RECOVERY_CHANGED_ORIGINAL_SYNTHETIC_MEMORY")
+        checks.append("PASS_ORIGINAL_SYNTHETIC_MEMORY_UNCHANGED_BY_RECOVERY")
 
         verify_source(repo)
         checks.append("PASS_PINNED_SOURCE_UNMODIFIED")

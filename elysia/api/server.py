@@ -50,6 +50,19 @@ class RuntimeAPIServer:
         self._running = False
         self._setup_routes()
 
+    def _implementation_repo_root(self):
+        """Directory a new implementer writes into.
+
+        An attached implementer names that directory. Otherwise steps are
+        rooted beside the proposal store, not in the process working directory.
+        """
+        from pathlib import Path
+
+        attached = self._implementer
+        if attached is not None and getattr(attached, "repo_root", None):
+            return Path(attached.repo_root)
+        return Path(self._proposal_system.proposals_root).resolve().parent
+
     def _setup_routes(self) -> None:
         @self._app.route("/api/status", methods=["GET"])
         def api_status():
@@ -214,20 +227,23 @@ class RuntimeAPIServer:
                 return jsonify({"error": "Proposal system not available"}), 503
 
             data = request.get_json(force=True, silent=True) or {}
-            dry_run = data.get("dry_run", False)
 
             try:
                 from ..agents.implementer import ImplementerAgent
-                from pathlib import Path
 
-                implementer = ImplementerAgent(
-                    repo_root=Path("."),
-                    proposal_system=self._proposal_system,
-                    event_bus=self._event_bus,
-                    dry_run=dry_run,
-                )
-
-                result = implementer.run_for_proposal(proposal_id)
+                # A request that does not choose dry_run uses the attached
+                # implementer, including its repository and dry-run flag.
+                if self._implementer is not None and "dry_run" not in data:
+                    result = self._implementer.run_for_proposal(proposal_id)
+                else:
+                    dry_run = data.get("dry_run", False)
+                    implementer = ImplementerAgent(
+                        repo_root=self._implementation_repo_root(),
+                        proposal_system=self._proposal_system,
+                        event_bus=self._event_bus,
+                        dry_run=dry_run,
+                    )
+                    result = implementer.run_for_proposal(proposal_id)
                 return jsonify(result)
             except ImportError:
                 return jsonify({"error": "Implementer agent not available"}), 503

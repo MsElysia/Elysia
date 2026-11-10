@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — implement uses the proposal repository
+
+- `POST /api/proposals/<id>/implement` writes a create-file step beside the proposal store when no implementer is attached, even if the process working directory is somewhere else.
+- A request that does not set `dry_run` uses the implementer attached to the API server, including that implementer's repository and dry-run flag.
+- A request that sets `dry_run` still builds an implementer for that flag, using the attached repository when one was given.

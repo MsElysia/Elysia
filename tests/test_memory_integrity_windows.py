@@ -670,7 +670,10 @@ from project_guardian.memory import MemoryCore
 holder = MemoryCore(filepath=sys.argv[1], enable_timeline_logging=False, enable_vector_search=False)
 assert not holder.persistence_blocked
 with holder._primary_process_lock():
-    Path(sys.argv[2]).write_text("SYNTHETIC_LOCK_HELD", encoding="utf-8")
+    ready = Path(sys.argv[2])
+    pending = ready.with_name(ready.name + ".pending")
+    pending.write_text("SYNTHETIC_LOCK_HELD", encoding="utf-8")
+    pending.replace(ready)  # Publish only fully written, closed READY bytes.
     sys.stdin.readline()
 """
     child = subprocess.Popen(

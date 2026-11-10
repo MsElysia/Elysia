@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import hashlib
-import http.client
+import http.client as http_client
 import json
 import os
 from pathlib import Path
@@ -210,7 +210,7 @@ def http(method: str, path: str, token: str, body: dict | None = None) -> tuple[
     if body is not None:
         payload = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    conn = http.client.HTTPConnection(HOST, PORT, timeout=4)
+    conn = http_client.HTTPConnection(HOST, PORT, timeout=4)
     try:
         conn.request(method, path, body=payload, headers=headers)
         response = conn.getresponse()
@@ -227,7 +227,7 @@ def checked_api(method: str, path: str, token: str, body: dict | None = None,
                 expected: int = 200) -> dict:
     try:
         code, data = http(method, path, token, body)
-    except (OSError, http.client.HTTPException, ValueError,
+    except (OSError, http_client.HTTPException, ValueError,
             UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise Stop("LOCAL_HTTP_FAILED") from exc
     require(code == expected and (data.get("ok") is True or data.get("success") is True),
@@ -275,7 +275,7 @@ def await_ready(session: Session) -> None:
                         (root / "memory" / "guardian_memory.json").resolve(strict=False),
                         "APPLICATION_MEMORY_ROOT_MISMATCH")
                 return
-        except (OSError, http.client.HTTPException, ValueError, UnicodeDecodeError,
+        except (OSError, http_client.HTTPException, ValueError, UnicodeDecodeError,
                 json.JSONDecodeError):
             pass
         time.sleep(0.5)
@@ -512,8 +512,12 @@ def run_once(repo: Path, scratch: Path) -> int:
         receipt["status"] = "PASS_SYNTHETIC_APPLICATION_RESTART_AND_RECOVERY"
         return 0
     except (Stop, OSError, ValueError, TypeError, KeyError,
-            http.client.HTTPException, json.JSONDecodeError) as exc:
+            http_client.HTTPException, json.JSONDecodeError) as exc:
         receipt["stop_code"] = str(exc) if isinstance(exc, Stop) else type(exc).__name__
+        return 2
+    except Exception as exc:
+        # Unexpected driver errors must still produce an honest STOP receipt.
+        receipt["stop_code"] = type(exc).__name__
         return 2
     finally:
         # One cooperative stop for a test-created child, never taskkill/force kill.

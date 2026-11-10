@@ -248,7 +248,11 @@ def start(repo: Path, root: Path, run: Path, phase: str) -> Session:
             )
         except OSError as exc:
             raise Stop("CONTAINED_APP_START_FAILED") from exc
-    session = Session(proc, root, token, marker, shutdown_token)
+    return Session(proc, root, token, marker, shutdown_token)
+
+
+def await_ready(session: Session) -> None:
+    proc, root, token = session.process, session.root, session.token
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         require(proc.poll() is None, "CONTAINED_APP_EXITED_BEFORE_READY")
@@ -262,7 +266,7 @@ def start(repo: Path, root: Path, run: Path, phase: str) -> Session:
                 require(reported.resolve(strict=False) ==
                         (root / "memory" / "guardian_memory.json").resolve(strict=False),
                         "APPLICATION_MEMORY_ROOT_MISMATCH")
-                return session
+                return
         except (OSError, http.client.HTTPException, ValueError, UnicodeDecodeError,
                 json.JSONDecodeError):
             pass
@@ -438,6 +442,7 @@ def run_once(repo: Path, scratch: Path) -> int:
         active = run / "active"
         active.mkdir()
         current = start(repo, active, run, "initial")
+        await_ready(current)
         checks.append("PASS_CONTAINED_APP_INITIAL_START_AND_STORE_IDENTITY")
         fact_id, conversation_id = teach_and_checkpoint(current.token)
         checks.append("PASS_APP_TEACH_CORRECT_CHAT_AND_CHECKPOINT")
@@ -445,6 +450,7 @@ def run_once(repo: Path, scratch: Path) -> int:
         current = None
         checks.append("PASS_COOPERATIVE_SHUTDOWN_ONE")
         current = start(repo, active, run, "normal-restart")
+        await_ready(current)
         recovered_application(current.token, fact_id, conversation_id)
         checks.append("PASS_SAME_ROOT_RESTART_FACT_AND_CONVERSATION_RECALL")
         cooperative_stop(current)
@@ -481,6 +487,7 @@ def run_once(repo: Path, scratch: Path) -> int:
 
         # This third process boots ONLY from restored files, not from active.
         current = start(repo, recovered, run, "recovered-start")
+        await_ready(current)
         recovered_application(current.token, fact_id, conversation_id)
         checks.append("PASS_APPLICATION_RECALL_FROM_ISOLATED_RESTORE")
         cooperative_stop(current)

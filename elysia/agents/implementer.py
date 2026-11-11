@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -454,34 +455,90 @@ class ImplementerAgent:
         return self._execute_create_file(step, proposal_id)
 
     def _execute_run_tests(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:
-        """Execute a run_tests step."""
-        # Extract test path from step content
-        test_pattern = re.search(r"tests?/([a-zA-Z0-9_/\\-]+\.py)", step.content)
-        if test_pattern:
-            test_path = test_pattern.group(0)
-        else:
-            # Default: run all tests
-            test_path = "tests"
-
-        try:
-            # Run pytest
-            cmd = ["pytest", test_path, "-v"]
-            result = subprocess.run(cmd, capture_output=True, text=True, cwd=self.repo_root, timeout=300)
-
-            success = result.returncode == 0
-
+        """Execute a run_tests step against one named file inside the repository."""
+        test_pattern = re.search(r"tests?[/\\][a-zA-Z0-9_/\\-]+\.py", step.content)
+        if not test_pattern:
             return {
-                "success": success,
-                "exit_code": result.returncode,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
+                "success": False,
+                "executed": False,
+                "error": "No test file named in the step",
+                "step_type": "run_tests",
+            }
+
+        test_path = test_pattern.group(0).replace("\\", "/")
+        if ".." in Path(test_path).parts:
+            return {
+                "success": False,
+                "executed": False,
+                "error": "Test path is outside the repository",
                 "test_path": test_path,
                 "step_type": "run_tests",
             }
+
+        try:
+            resolved = (self.repo_root / test_path).resolve()
+            resolved.relative_to(self.repo_root.resolve())
+        except (OSError, ValueError):
+            return {
+                "success": False,
+                "executed": False,
+                "error": "Test path is outside the repository",
+                "test_path": test_path,
+                "step_type": "run_tests",
+            }
+
+        if not resolved.is_file():
+            return {
+                "success": False,
+                "executed": False,
+                "error": "Test file does not exist",
+                "test_path": test_path,
+                "step_type": "run_tests",
+            }
+
+        env = os.environ.copy()
+        for key in list(env):
+            if key.startswith("PYTEST_"):
+                env.pop(key, None)
+
+        try:
+            result = subprocess.run(
+                ["pytest", test_path, "-v"],
+                capture_output=True,
+                text=True,
+                cwd=self.repo_root,
+                timeout=300,
+                env=env,
+            )
         except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Test execution timed out", "step_type": "run_tests"}
+            return {
+                "success": False,
+                "executed": True,
+                "error": "Test execution timed out",
+                "test_path": test_path,
+                "step_type": "run_tests",
+            }
         except Exception as e:
-            return {"success": False, "error": f"Failed to run tests: {e}", "step_type": "run_tests"}
+            return {
+                "success": False,
+                "executed": False,
+                "error": f"Failed to run tests: {e}",
+                "test_path": test_path,
+                "step_type": "run_tests",
+            }
+
+        payload = {
+            "success": result.returncode == 0,
+            "executed": True,
+            "exit_code": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "test_path": test_path,
+            "step_type": "run_tests",
+        }
+        if result.returncode != 0:
+            payload["error"] = f"Tests failed with exit code {result.returncode}"
+        return payload
 
     def _execute_update_config(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:
         """Execute an update_config step."""

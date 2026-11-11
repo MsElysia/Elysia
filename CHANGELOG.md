@@ -497,3 +497,10 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — run-tests names one in-repository file
+
+- `POST /api/proposals/<id>/implement` no longer reports success for a run-tests step by executing `pytest tests`.
+- A step that does not name a test file fails and does not start pytest.
+- A named file that is missing, or that resolves outside the repository, fails and does not start pytest.
+- A named file inside the repository is executed with pytest. A failing run reports the pytest exit code.

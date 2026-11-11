@@ -39,6 +39,8 @@ SOURCE_BLOBS = {
 SCRATCH_NAME = "elysia-task011-disposable"
 HOST = "127.0.0.1"
 PORT = 5078  # inside existing pilot's 5065–5085 listener-inventory window
+# Request metadata only: no tokens, authorization headers, or raw HTTP bodies.
+HTTP_EVENTS: list[dict[str, object]] = []
 OLDER = "The fictional Veridia-731 beacon is stored inside the silver tower."
 CORRECTED = "The fictional Veridia-731 beacon is stored inside the amber tower."
 QUERY = "fictional Veridia-731 beacon amber tower"
@@ -196,6 +198,8 @@ class Session:
     token: str
     marker: str
     shutdown_token: str
+    phase: str
+    run: Path
     stop_requested: bool = False
 
 
@@ -218,6 +222,7 @@ def http(method: str, path: str, token: str, body: dict | None = None) -> tuple[
         require(len(raw) <= 1024 * 1024, "HTTP_RESPONSE_SIZE_LIMIT")
         parsed = json.loads(raw) if raw else {}
         require(isinstance(parsed, dict), "HTTP_NONOBJECT_RESPONSE")
+        HTTP_EVENTS.append({"method": method, "path": path, "status": response.status})
         return response.status, parsed
     finally:
         conn.close()
@@ -256,7 +261,7 @@ def start(repo: Path, root: Path, run: Path, phase: str) -> Session:
             )
         except OSError as exc:
             raise Stop("CONTAINED_APP_START_FAILED") from exc
-    return Session(proc, root, token, marker, shutdown_token)
+    return Session(proc, root, token, marker, shutdown_token, phase, run)
 
 
 def await_ready(session: Session) -> None:
@@ -291,12 +296,21 @@ def cooperative_stop(session: Session) -> None:
     shutdown.write_text(json.dumps({
         "marker": session.marker, "shutdown_token": session.shutdown_token,
     }), encoding="utf-8")
+    request_sha = sha256(shutdown)
     try:
         code = session.process.wait(timeout=45)
     except subprocess.TimeoutExpired as exc:
         raise Stop("COOPERATIVE_SHUTDOWN_TIMED_OUT_CHILD_RETAINED") from exc
     require(code == 0, "COOPERATIVE_SHUTDOWN_NONZERO")
     require(port_available(), "TEST_PORT_STILL_LISTENING_AFTER_STOP")
+    # Each shutdown is retained separately. Never duplicate the secret token.
+    shutdown_evidence = {
+        "phase": session.phase, "child_pid": session.process.pid,
+        "shutdown_request_sha256": request_sha, "exit_code": code,
+        "port_released": True, "method": "cooperative_shutdown_request",
+    }
+    with (session.run / ("shutdown-" + session.phase + ".json")).open("x", encoding="utf-8") as fh:
+        json.dump(shutdown_evidence, fh, sort_keys=True)
 
 
 def fact_history(token: str, fact_id: str) -> None:
@@ -434,6 +448,7 @@ def sha256(path: Path) -> str:
 
 
 def run_once(repo: Path, scratch: Path) -> int:
+    HTTP_EVENTS.clear()
     run = Path(tempfile.mkdtemp(prefix="run-", dir=scratch))
     (run / "TASK011_SYNTHETIC_ONLY.json").write_text(json.dumps({
         "type": "task011.disposable.application-continuity",
@@ -488,10 +503,25 @@ def run_once(repo: Path, scratch: Path) -> int:
                 "ISOLATED_RECOVERY_NOT_PUBLISHED")
         primary_rel = Path("memory") / "guardian_memory.json"
         source_memory_sha = sha256(active / primary_rel)
-        require(source_memory_sha == sha256(recovered / primary_rel)
-                and sha256(snapshot / "payload" / primary_rel) ==
-                sha256(recovered / primary_rel),
+        snapshot_memory_sha = sha256(snapshot / "payload" / primary_rel)
+        restored_memory_sha = sha256(recovered / primary_rel)
+        # Preserve a byte-for-byte restore-time witness before the third app
+        # can legitimately change its restored memory during startup/recall.
+        preboot = run / "RESTORED_MEMORY_BEFORE_THIRD_START.json"
+        with preboot.open("xb") as out:
+            out.write((recovered / primary_rel).read_bytes())
+        preboot_memory_sha = sha256(preboot)
+        require(source_memory_sha == restored_memory_sha == snapshot_memory_sha
+                == preboot_memory_sha,
                 "RECOVERED_MEMORY_BYTES_DIFFER_FROM_SNAPSHOT")
+        receipt["restore_preboot"] = {
+            "evidence_file": preboot.name,
+            "sha256": preboot_memory_sha,
+            "size_bytes": preboot.stat().st_size,
+            "active_sha256": source_memory_sha,
+            "snapshot_sha256": snapshot_memory_sha,
+            "restored_before_start_sha256": restored_memory_sha,
+        }
         checks.append("PASS_SEPARATE_RESTORED_MEMORY_BYTE_IDENTITY")
 
         # This third process boots ONLY from restored files, not from active.
@@ -530,6 +560,7 @@ def run_once(repo: Path, scratch: Path) -> int:
             receipt["test_child_still_running"] = current.process.poll() is None
         else:
             receipt["test_child_still_running"] = False
+        receipt["http_evidence"] = list(HTTP_EVENTS)
         (run / "TASK011_RESULT.json").write_text(
             json.dumps(receipt, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

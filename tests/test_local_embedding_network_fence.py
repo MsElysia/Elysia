@@ -49,6 +49,9 @@ def test_inherited_openai_key_never_creates_cloud_client(tmp_path, monkeypatch, 
     if method == "generate":
         assert v.generate_embedding(TEXT) is None
     elif method == "add":
+        # Force the real add path through embedding generation even without FAISS.
+        v.index = SimpleNamespace(add=lambda *_a: (_ for _ in ()).throw(
+            AssertionError("untrusted vector must not be indexed")))
         assert v.add_memory(TEXT, priority=0.9) is None
     else:
         v.index = SimpleNamespace(search=lambda *_args: (_ for _ in ()).throw(
@@ -152,6 +155,21 @@ def test_authoritative_json_keyword_search_survives_embedding_outage(tmp_path, m
     memory.vector_memory = MissingVector()
     assert [row["thought"] for row in memory.search_memories("Cedar Pier", use_semantic=True)] == [TEXT]
     assert Path(memory.json_memory.filepath).exists()
+
+
+def test_memorycore_semantic_route_falls_back_to_authoritative_keyword(tmp_path):
+    from project_guardian.memory import MemoryCore
+    memory = MemoryCore(str(tmp_path / "primary.json"))
+    memory.remember(TEXT, category="synthetic")
+    class Degraded:
+        embedding_degraded = True
+        def search_similar(self, *_args, **_kwargs):
+            raise AssertionError("degraded vectors must not be queried")
+    memory.vector_search = Degraded()
+    memory._vector_index_built = False
+    rows = memory.search_semantic("Cedar Pier")
+    assert [row["thought"] for row in rows] == [TEXT]
+    assert all(row.get("search_method") != "semantic" for row in rows)
 
 
 def test_missing_policy_does_not_fall_back_to_untrusted_embedding(tmp_path, monkeypatch):

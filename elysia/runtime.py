@@ -22,6 +22,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_countable_metadata(metadata_file: Path) -> bool:
+    """True when metadata.json is a regular file for status counting.
+
+    get_status() previously treated FIFO, socket, or device leaves as
+    in-root proposals because Path.exists() is true for those special
+    files. Symlink leaves are not classified here.
+    """
+    try:
+        return metadata_file.is_file()
+    except OSError:
+        return False
+
+
 class ElysiaRuntime:
     """High-level orchestration layer for Architect-Core + agents + API."""
 
@@ -222,10 +235,11 @@ class ElysiaRuntime:
             try:
                 proposals_root = self.proposal_system.proposals_root
                 if proposals_root.exists():
-                    # Ultra-fast: just count directories with metadata.json
+                    # Count regular metadata leaves only; skip FIFO/socket/device.
                     proposal_count = sum(
-                        1 for p in proposals_root.iterdir()
-                        if p.is_dir() and (p / "metadata.json").exists()
+                        1
+                        for p in proposals_root.iterdir()
+                        if p.is_dir() and _is_countable_metadata(p / "metadata.json")
                     )
             except Exception as e:
                 logger.debug(f"Error counting proposals: {e}")

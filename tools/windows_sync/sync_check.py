@@ -70,6 +70,15 @@ def build_status(*, do_fetch: bool) -> dict:
         "pending_updates": False,
         "synchronization_status": "unknown",
         "release_verification_status": "unknown",
+        # This script inspects SHA identities ONLY. read_release_sha() may
+        # fall back to RELEASE_SHA.txt when the release is not a Git worktree.
+        # Neither source is evidence that an installed app actually runs.
+        "release_verification_scope": "git_head_or_release_marker_comparison_only",
+        "operational_verification": {
+            "installed_launcher_startup": "not_tested_by_this_check",
+            "application_restart_and_memory_recovery": "not_tested_by_this_check",
+            "restorable_operational_backup": "not_tested_by_this_check",
+        },
         "last_successful_check_utc": None,
         "notes": [],
         "errors": [],
@@ -178,7 +187,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"local_development_sha:  {status['local_development_sha']}")
         print(f"installed_runtime_sha:  {status['installed_runtime_sha']}")
         print(f"pending_updates:        {status['pending_updates']}")
-        print(f"release_verification:   {status['release_verification_status']}")
+        print(f"release_code_sha_status:{status['release_verification_status']}")
+        print(f"release_verification:   {status['release_verification_status']}")  # legacy key/label
+        print("release_check_scope:    Git SHA or release marker comparison only")
+        print("NOT TESTED HERE: installed app startup; application restart/memory recovery;")
+        print("                 restorable operational-data backup")
         print(f"last_successful_check:  {status['last_successful_check_utc']}")
         for note in status.get("notes") or []:
             print(f"note: {note}")

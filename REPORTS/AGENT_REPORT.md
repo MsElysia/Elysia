@@ -3577,3 +3577,51 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — run-tests names one in-repository file
+
+**Status:** COMPLETED on this branch. Not on `main`. No PR.
+
+**Implementation commit:** `9b5af04f7fa1d4f2165ed8be164c6a0393573601`
+
+**Base:** `722d8e4` (`main`). Not based on the events-limit, implement-status, research-status, chat-status, decision-status, implementation-result, approved-batch, status-availability, unreadable-proposal, dry_run type-check, dry-run lifecycle, unexecuted-step, existing-file, outside-path, or proposal-repository branches.
+
+**Files:**
+- `elysia/agents/implementer.py`
+- `tests/test_runtime_api_implement_run_tests.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Behavior:**
+- `POST /api/proposals/<id>/implement` no longer runs `pytest tests` when a run-tests step does not name a test file.
+- A missing file name returns `success: false`, `executed: false`, and `No test file named in the step`. Pytest is not started. The proposal is stored as `implementation_failed`.
+- A named `tests/*.py` or `test/*.py` path that resolves outside the repository, including a symlink to another directory, returns `Test path is outside the repository` and does not start pytest.
+- A named file that is not present returns `Test file does not exist` and does not start pytest.
+- A named file inside the repository is executed with `pytest <file> -v`. A failing run returns `Tests failed with exit code <n>` and stores `implementation_failed`. A passing run stores `implemented`.
+
+**Evidence:**
+- Before, live HTTP 200 for fictional proposal `fictional-unnamed` was `success: true`, `test_path: tests`, exit code 0, and stored `implemented` / `completed`. Pytest reported `3 passed`, including `tests/test_fictional_unrelated.py`, `tests/test_fictional_pass.py`, and the symlink `tests/test_fictional_escape.py`. The same happened for `fictional-prose`, whose plan only said the operator can run pytest later. `fictional-escape` returned `success: true` and pytest executed `tests/test_fictional_escape.py`, which resolves outside the working directory. Root used: `/tmp/elysia-before-z2_z26la`.
+- After: `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_runtime_api_implement_run_tests.py -v --tb=short` — 2 passed. Flask test client and live Werkzeug HTTP. Real `ProposalSystem` and `ImplementerAgent`, watcher off, fictional proposals, temporary directories, real pytest for the named pass and fail files, no external services.
+- The unnamed, prose, missing, and symlink cases return HTTP 200 `success: false` with `executed: false` and store `implementation_failed`. `unrelated-ran.txt`, `pass-ran.txt`, and the outside `escape-ran.txt` stay absent. The failing file returns exit code 1 and does not run the unrelated file. The passing file returns `1 passed`, writes only `pass-ran.txt`, and stores `implemented` / `completed`.
+- `tests/test_implementer_agent.py` still fails only on the pre-existing assertion text `test_implementer_rejects_non_accepted_proposal`. The other nine tests passed.
+
+**Remaining limitations:**
+- Unsuccessful implement results on this branch still return HTTP 200. That mapping stays on `origin/cursor/elysia-product-workflow-process-9429`.
+- A boolean `dry_run: true` still stores `implemented` on this branch. That lifecycle fix stays on `origin/cursor/product-workflow-engineering-process-b494` (`07e1de0`, handoff `867b211`).
+- A non-boolean `dry_run` is still not rejected here. That check stays on `origin/cursor/elysia-product-workflow-6a1b` (`4ed3b33`, handoff `d4900c7`).
+- The route still builds `ImplementerAgent` with `repo_root=Path(".")` on this branch. Using the proposal repository stays on `origin/cursor/product-workflow-engineering-process-94c4` (`64eb491`, handoff `07ddd67`).
+- A create step that resolves outside the repository still reports success on this branch. That fix stays on `origin/cursor/elysia-product-workflow-7d5a` (`23b96c1`, handoff `8d6ae4a`).
+- A create step that finds the target already present still reports success on this branch. That fix stays on `origin/cursor/product-workflow-engineering-process-36a9` (`c7d2d29`, handoff `2cd4db0`).
+- A generic step and a modify or config step that does not change a file still report success on this branch. That fix stays on `origin/cursor/elysia-product-workflow-gaps-0e04` (`f08b7ff`, handoff `8a459a0`).
+- A step whose body contains the word pytest and names no test file is still classified as run_tests, so it now fails instead of running the suite. Reclassifying that prose step is not part of this change.
+
+**Ownership left untouched:**
+- Did not edit `elysia/core/proposal_system.py` or `elysia/runtime.py`.
+- Runtime integrity today is `194ddd2` on `origin/cursor/elysia-runtime-integrity-710e` (`bc-6a46ce56`). Its diff against `main` is `elysia/runtime.py` and `tests/test_elysia_runtime_status_fifo_count.py` only.
+- Application runtime safety today is `14cf184` on `origin/cursor/application-runtime-safety-f3b3` (`bc-27d117c2`). Its diff against `main` is `elysia/core/proposal_system.py` and `tests/test_elysia_proposal_fifo_metadata.py` only.
+- Did not edit `project_guardian/ui_control_panel.py`. Dashboard drafts #147, #148, #149, #153, and #156 remain open.
+- `CURRENT_TASK: NONE` on `main`, on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`), and on `origin/codex/limited-live-activation-wrapper` (`3223ebb`). `TASK-0053` remains OPEN review-only. Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 remains the live-write design proposal. Do not implement live memory or vector writes. Leave open memory drafts through PR #214 to their owners.
+
+A branch commit is not integrated product readiness. Next product run should pick a different unclaimed API or dashboard error path and should re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`.

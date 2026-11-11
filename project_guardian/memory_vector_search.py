@@ -43,7 +43,7 @@ def _shared_sentence_transformer(model_name: str):
     with _ST_LOCK:
         if _ST_SHARED is not None and _ST_SHARED_NAME == model_name:
             return _ST_SHARED
-        inst = SentenceTransformer(model_name)
+        inst = SentenceTransformer(model_name, local_files_only=True, trust_remote_code=False)
         _ST_SHARED = inst
         _ST_SHARED_NAME = model_name
         logger.info("Loaded shared SentenceTransformer: %s", model_name)
@@ -152,13 +152,15 @@ class MemoryVectorSearch:
                 self.embedding_dimension = self.embedder.get_sentence_embedding_dimension()
                 logger.info(f"Using SentenceTransformer model: {model_name} (shared instance)")
             except Exception as e:
-                logger.warning(f"Failed to load SentenceTransformer: {e}, using fallback")
+                logger.warning("Cached SentenceTransformer unavailable; semantic search disabled")
                 self.embedder = SimpleEmbedder()
         else:
             self.embedder = SimpleEmbedder()
         
+        # A token/hash embedder is not a semantic model. Do not fabricate vector hits.
+        self.embedding_degraded = isinstance(self.embedder, SimpleEmbedder)
         # Vector storage
-        self.use_faiss = use_faiss if use_faiss is not None else HAS_FAISS
+        self.use_faiss = (use_faiss if use_faiss is not None else HAS_FAISS) and not self.embedding_degraded
         
         if self.use_faiss and HAS_FAISS and HAS_NUMPY:
             # Initialize FAISS index
@@ -198,9 +200,13 @@ class MemoryVectorSearch:
                 return
         except Exception:
             pass
+        # Keep lexical search in MemoryCore available, but never index pseudo vectors.
+        if self.embedding_degraded:
+            self.memory_texts[memory_id] = text
+            return
         # Generate embedding
         embedding = self._get_embedding(text)
-        
+
         if self.use_faiss and HAS_FAISS and HAS_NUMPY:
             # Add to FAISS index
             embedding_array = np.array([embedding], dtype=np.float32)
@@ -249,6 +255,9 @@ class MemoryVectorSearch:
         Returns:
             List of (memory_id, similarity_score, metadata) tuples
         """
+        # No verified local semantic model: no fake similarity scores.
+        if self.embedding_degraded:
+            return []
         # Get query embedding
         query_embedding = self._get_embedding(query)
         
@@ -328,6 +337,8 @@ class MemoryVectorSearch:
         Returns:
             Embedding vector
         """
+        if self.embedding_degraded:
+            raise RuntimeError("semantic embedding unavailable: cached local model missing")
         # Check cache
         text_hash = hashlib.md5(text.encode()).hexdigest()
         if text_hash in self.embedding_cache:
@@ -380,7 +391,8 @@ class MemoryVectorSearch:
             "embedding_dimension": self.embedding_dimension,
             "cache_size": len(self.embedding_cache),
             "using_faiss": self.use_faiss and HAS_FAISS,
-            "using_sentence_transformers": HAS_SENTENCE_TRANSFORMERS,
+            "using_sentence_transformers": not self.embedding_degraded,
+            "embedding_degraded": self.embedding_degraded,
             "has_numpy": HAS_NUMPY
         }
 

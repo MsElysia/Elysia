@@ -579,3 +579,174 @@ def test_scoped_gitutil_isolation_ignores_config_and_index_overrides(
     assert gitutil.worktree_state(pair.b, isolated_env=True).head == pair.b_head
     assert gitutil.worktree_state(pair.b, isolated_env=True).dirty is False
     _assert_a_unchanged(pair)
+
+
+# Task 015: source SHA matching is NOT operational release acceptance.
+# All "repos", marker bytes, state receipts and Git responses below are
+# synthetic tmp_path objects; no network, installed launcher or memory opened.
+@pytest.fixture
+def sync_evidence_sandbox(monkeypatch, tmp_path):
+    from tools.windows_sync import sync_check as check
+
+    dev = tmp_path / "dev"
+    release = tmp_path / "release"
+    dev.mkdir()
+    release.mkdir()
+    marker = release / "RELEASE_SHA.txt"
+    marker.write_text(GOOD, encoding="utf-8")
+    status_written = []
+    state = {
+        "dev": GOOD,
+        "remote": GOOD,
+        "ahead": 0,
+        "behind": 0,
+        "dirty": False,
+        "fetch_failed": False,
+        "fetch_calls": 0,
+    }
+    monkeypatch.setattr(check, "dev_root", lambda: dev)
+    monkeypatch.setattr(check, "release_root", lambda: release)
+    monkeypatch.setattr(check, "status_path", lambda: tmp_path / "sync-status.json")
+    monkeypatch.setattr(check, "load_json", lambda *_: {})
+    monkeypatch.setattr(check, "save_json", lambda path, obj: status_written.append((path, obj.copy())))
+    monkeypatch.setattr(check, "OPERATIONAL_DATA_ROOT", tmp_path / "synthetic-ops")
+    monkeypatch.setattr(check, "PRESERVED_PILOT_ROOT", tmp_path / "synthetic-pilot")
+    monkeypatch.setattr(check, "PRESERVED_PILOT_DATA", tmp_path / "synthetic-pilot-data")
+
+    monkeypatch.setattr(check.gitutil, "worktree_state", lambda _root: SimpleNamespace(
+        head=state["dev"], branch="integration/windows-canonical",
+        dirty=state["dirty"],
+    ))
+    monkeypatch.setattr(check.gitutil, "remote_ref_sha", lambda *_: state["remote"])
+    monkeypatch.setattr(check.gitutil, "ahead_behind",
+                        lambda *_: (state["ahead"], state["behind"]))
+    def marker_only_release(*_args, **_kwargs):
+        raise gitutil.GitError("synthetic release has no readable Git checkout")
+    monkeypatch.setattr(check.gitutil, "rev_parse", marker_only_release)
+
+    def fetch(*_args, **_kwargs):
+        state["fetch_calls"] += 1
+        if state["fetch_failed"]:
+            raise gitutil.GitError("synthetic offline fetch refused")
+    monkeypatch.setattr(check.gitutil, "fetch", fetch)
+    return SimpleNamespace(
+        build=lambda do_fetch=False: check.build_status(do_fetch=do_fetch),
+        check=check, dev=dev, release=release, marker=marker,
+        state=state, writes=status_written,
+    )
+
+
+def _assert_sync_does_not_certify_operational_runtime(status):
+    """The three unexecuted checks must never be green OR red."""
+    assert status["release_verification_scope"] == "git_head_or_release_marker_comparison_only"
+    assert status["operational_verification"] == {
+        "installed_launcher_startup": "not_tested_by_this_check",
+        "application_restart_and_memory_recovery": "not_tested_by_this_check",
+        "restorable_operational_backup": "not_tested_by_this_check",
+    }
+
+
+def test_sync_matching_marker_sha_cannot_be_operational_release_pass(sync_evidence_sandbox):
+    from tools.windows_sync.status_report import render_text
+    ctx = sync_evidence_sandbox
+    # Real synthetic marker fallback: matching Release/GitHub/Dev does NOT
+    # inspect an executable, app process, memory continuity or restorable backup.
+    status = ctx.build()
+    assert status["github_sha"] == GOOD
+    assert status["local_development_sha"] == GOOD
+    assert status["installed_runtime_sha"] == GOOD
+    assert status["release_verification_status"] == "matches_github_and_dev"
+    assert status["synchronization_status"] == "synchronized"
+    assert status["divergence"] == "identical"
+    assert status["pending_updates"] is False
+    assert status["fetch_ok"] is True
+    _assert_sync_does_not_certify_operational_runtime(status)
+    assert len(ctx.writes) == 1
+    assert ctx.writes[0][1]["operational_verification"] == status["operational_verification"]
+    report = render_text(status)
+    assert "Release verification   : matches_github_and_dev" in report
+    assert "Code SHA comparison ONLY" in report
+    assert "Git HEAD or release marker" in report
+    assert report.count("NOT TESTED BY THIS CHECK") == 3
+
+
+@pytest.mark.parametrize("release_sha,expected_status,expected_pending", [
+    (WRONG, "stale_or_mismatch", True),
+    (None, "not_installed", False),
+])
+def test_sync_mismatch_or_absent_release_preserves_existing_status(
+    sync_evidence_sandbox, release_sha, expected_status, expected_pending,
+):
+    ctx = sync_evidence_sandbox
+    if release_sha is None:
+        ctx.marker.unlink()
+        ctx.release.rmdir()
+    else:
+        ctx.marker.write_text(release_sha, encoding="utf-8")
+    status = ctx.build()
+    assert status["release_verification_status"] == expected_status
+    assert status["synchronization_status"] == "synchronized"
+    assert status["pending_updates"] is expected_pending
+    _assert_sync_does_not_certify_operational_runtime(status)
+
+
+def test_sync_remote_ahead_and_dirty_dev_keep_legacy_codes(sync_evidence_sandbox):
+    ctx = sync_evidence_sandbox
+    ctx.state.update(remote=WRONG, ahead=0, behind=1, dirty=True)
+    status = ctx.build()
+    assert status["github_sha"] == WRONG
+    assert status["local_development_sha"] == GOOD
+    assert status["installed_runtime_sha"] == GOOD
+    assert status["divergence"] == "remote_ahead"
+    assert status["synchronization_status"] == "updates_available"
+    assert status["release_verification_status"] == "matches_dev"
+    assert status["pending_updates"] is True
+    assert any("dirty/outdated" in n for n in status["notes"])
+    _assert_sync_does_not_certify_operational_runtime(status)
+
+
+def test_sync_offline_fetch_degradation_is_not_operational_failure(sync_evidence_sandbox):
+    ctx = sync_evidence_sandbox
+    ctx.state["fetch_failed"] = True
+    status = ctx.build(do_fetch=True)
+    assert ctx.state["fetch_calls"] == 1
+    assert status["fetch_attempted"] is True
+    assert status["fetch_ok"] is False
+    assert status["synchronization_status"] == "degraded"
+    assert status["release_verification_status"] == "unknown"
+    assert status["errors"]
+    _assert_sync_does_not_certify_operational_runtime(status)
+
+
+def test_sync_absent_dev_blocks_and_still_reports_unchecked_scope(sync_evidence_sandbox):
+    ctx = sync_evidence_sandbox
+    ctx.dev.rmdir()
+    status = ctx.build()
+    assert status["synchronization_status"] == "blocked"
+    assert status["release_verification_status"] == "unknown"
+    assert ctx.state["fetch_calls"] == 0
+    _assert_sync_does_not_certify_operational_runtime(status)
+
+
+def test_sync_human_cli_keeps_legacy_label_and_prints_scope(
+    sync_evidence_sandbox, capsys,
+):
+    ctx = sync_evidence_sandbox
+    assert ctx.check.main(["--no-fetch"]) == 0
+    output = capsys.readouterr().out
+    assert "release_verification:   matches_github_and_dev" in output
+    assert "release_check_scope:" in output
+    assert "NOT TESTED HERE: installed app startup" in output
+    assert "restorable operational-data backup" in output
+
+
+def test_sync_report_missing_new_fields_still_warns_operator():
+    from tools.windows_sync.status_report import render_text
+    # Old persisted v1 status dictionaries must not look fully verified.
+    report = render_text({
+        "release_verification_status": "matches_github_and_dev",
+        "synchronization_status": "synchronized",
+    })
+    assert "Release verification   : matches_github_and_dev" in report
+    assert "Code SHA comparison ONLY" in report
+    assert report.count("NOT TESTED BY THIS CHECK") == 3

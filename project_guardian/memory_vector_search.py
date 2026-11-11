@@ -31,8 +31,8 @@ except ImportError:
     HAS_SENTENCE_TRANSFORMERS = False
     SentenceTransformer = None  # type: ignore
     logger.warning(
-        "sentence-transformers not available, using fallback embedding. "
-        "For better embeddings: pip install -r requirements-optional.txt"
+        "sentence-transformers unavailable; semantic search disabled. "
+        "Authoritative keyword search remains available."
     )
 
 

@@ -456,10 +456,14 @@ class MemoryCore:
             List of memory entries with similarity scores
         """
         self.load_if_needed()
+        # Without a cached trusted embedding model, preserve truthful lexical recall.
+        # Do not build or search pseudo-vector indexes and label them semantic.
+        if self.vector_search and getattr(self.vector_search, "embedding_degraded", False):
+            return self.search_memories(query, limit=limit)
         # Lazy indexing: build index on first use if not already built
         if self.vector_search and not self._vector_index_built:
             self._build_vector_index()
-        
+
         if not self.vector_search:
             logger.warning("Vector search not enabled, falling back to keyword search")
             return self.search_memories(query, limit=limit)

@@ -22,6 +22,8 @@ def offline_synthetic_guards(monkeypatch):
         raise AssertionError("unexpected network attempt")
     monkeypatch.setattr(socket.socket, "connect", prohibited)
     monkeypatch.setattr(socket.socket, "connect_ex", prohibited)
+    monkeypatch.setattr(socket, "create_connection", prohibited)
+    monkeypatch.setattr(socket, "getaddrinfo", prohibited)
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-not-a-credential")
     monkeypatch.setattr(memory_noise, "is_embedding_entirely_skipped", lambda _t: False)
     monkeypatch.setattr(memory_noise, "is_low_value_memory_text", lambda *_a, **_k: False)
@@ -224,6 +226,9 @@ def fake_vector_storage(monkeypatch):
             self.dimension = dimension
             self.vectors = list(vectors or [])
         @property
+        def d(self):
+            return self.dimension
+        @property
         def ntotal(self):
             return len(self.vectors)
         def add(self, matrix):
@@ -239,10 +244,13 @@ def fake_vector_storage(monkeypatch):
     def read(filename):
         data = json.loads(Path(filename).read_text())
         return FakeIndex(data["dim"], data["vectors"])
+    def deserialize(buffer):
+        data = json.loads(bytes(buffer))
+        return FakeIndex(data["dim"], data["vectors"])
     monkeypatch.setattr(mv, "FAISS_AVAILABLE", True)
     monkeypatch.setattr(mv, "faiss", SimpleNamespace(
         IndexFlatL2=FakeIndex, clone_index=lambda idx: FakeIndex(idx.dimension, idx.vectors),
-        write_index=save, read_index=read), raising=False)
+        write_index=save, read_index=read, deserialize_index=deserialize), raising=False)
     monkeypatch.setattr(mv, "HAS_SENTENCE_TRANSFORMERS", True)
     monkeypatch.setattr(mv, "SentenceTransformer",
                         lambda *_a, **_kw: SimpleNamespace(
@@ -335,3 +343,126 @@ def test_failed_encoder_preserves_memorycore_keyword_recall(tmp_path, monkeypatc
     assert [row["thought"] for row in hits] == [TEXT]
     assert all(row.get("search_method") != "semantic" for row in hits)
     assert memory.vector_search.embedding_degraded is True
+
+
+
+OTHER = "Synthetic Birch Dock beacon is secured in the violet tower."
+
+
+def distinct_vector_storage(monkeypatch):
+    fake_vector_storage(monkeypatch)
+    monkeypatch.setattr(mv, "SentenceTransformer", lambda *_a, **_kw: SimpleNamespace(
+        encode=lambda text: np.ones(8, dtype=np.float32) if text == TEXT
+        else np.zeros(8, dtype=np.float32)))
+
+
+def vector_bytes(v):
+    return [Path(p).read_bytes() for p in
+            (v.index_path, v.metadata_path, v.generation_path)]
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_reader_overlap_never_associates_old_vector_with_new_record(tmp_path, monkeypatch, lazy):
+    distinct_vector_storage(monkeypatch)
+    writer = vector(tmp_path)
+    assert writer.add_memory(TEXT) == 0
+    reader = mv.VectorMemory(vector_dim=8, index_path=writer.index_path,
+                             metadata_path=writer.metadata_path, lazy=True) if lazy else None
+    switched = []
+    def overlap(original):
+        def read(*args):
+            index = original(*args)
+            if not switched:
+                switched.append(True)
+                assert writer.rebuild_from_memories([{"thought": OTHER}])["vector_rebuild_success"]
+            return index
+        return read
+    # Baseline loads a live file; repaired code deserializes a byte snapshot.
+    monkeypatch.setattr(mv.faiss, "read_index", overlap(mv.faiss.read_index))
+    monkeypatch.setattr(mv.faiss, "deserialize_index", overlap(mv.faiss.deserialize_index))
+    if lazy:
+        reader.load_if_needed()
+    else:
+        reader = vector(tmp_path)
+    assert switched == [True]
+    assert reader.search(TEXT, threshold=0.9) == []
+    assert reader.vector_pair_verified is False
+    fresh = vector(tmp_path)
+    assert fresh.search(TEXT, threshold=0.9) == []
+    assert [r["text"] for r in fresh.search(OTHER, threshold=0.9)] == [OTHER]
+
+
+@pytest.mark.parametrize("operation", ["add", "rebuild"])
+def test_stale_writer_cannot_replace_newer_same_row_generation(tmp_path, monkeypatch, operation):
+    distinct_vector_storage(monkeypatch)
+    writer = vector(tmp_path)
+    assert writer.add_memory(TEXT) == 0
+    stale = vector(tmp_path)
+    assert writer.rebuild_from_memories([{"thought": OTHER}])["vector_rebuild_success"]
+    before = vector_bytes(writer)
+    if operation == "add":
+        assert stale.add_memory(TEXT + " stale addition") is None
+    else:
+        assert stale.rebuild_from_memories([{"thought": TEXT}])["vector_rebuild_success"] is False
+    assert vector_bytes(writer) == before
+    assert stale.vector_pair_verified is False
+    restarted = vector(tmp_path)
+    assert [r["text"] for r in restarted.search(OTHER, threshold=0.9)] == [OTHER]
+
+
+def test_publication_lock_rejects_overlapping_second_writer(tmp_path, monkeypatch):
+    distinct_vector_storage(monkeypatch)
+    first = vector(tmp_path)
+    assert first.add_memory(TEXT) == 0
+    second = vector(tmp_path)
+    original = first._atomic_write_faiss
+    attempts = []
+    def overlap(path, index):
+        attempts.append(second.add_memory(OTHER))
+        return original(path, index)
+    monkeypatch.setattr(first, "_atomic_write_faiss", overlap)
+    assert first.add_memory(TEXT + " first addition") == 1
+    assert attempts == [None]
+    restarted = vector(tmp_path)
+    assert [r["text"] for r in restarted.metadata] == [TEXT, TEXT + " first addition"]
+    assert restarted.vector_pair_verified is True
+
+
+def test_empty_stale_instance_cannot_overwrite_first_publication(tmp_path, monkeypatch):
+    distinct_vector_storage(monkeypatch)
+    first, stale = vector(tmp_path), vector(tmp_path)
+    assert first.add_memory(TEXT) == 0
+    before = vector_bytes(first)
+    assert stale.add_memory(OTHER) is None
+    assert vector_bytes(first) == before
+
+
+@pytest.mark.parametrize("method", ["clear", "_save_metadata", "_save_index"])
+def test_compatibility_writes_reject_stale_generation(tmp_path, monkeypatch, method):
+    distinct_vector_storage(monkeypatch)
+    first = vector(tmp_path)
+    assert first.add_memory(TEXT) == 0
+    stale = vector(tmp_path)
+    assert first.rebuild_from_memories([{"thought": OTHER}])["vector_rebuild_success"]
+    before = vector_bytes(first)
+    rejected = False
+    try:
+        getattr(stale, method)()
+    except RuntimeError:
+        rejected = True
+    assert rejected
+    assert vector_bytes(first) == before
+
+
+def test_generation_rejection_keeps_authoritative_json_keyword_recall(tmp_path, monkeypatch):
+    distinct_vector_storage(monkeypatch)
+    memory = mv.EnhancedMemoryCore(json_filepath=str(tmp_path / "primary.json"), enable_vector=False)
+    memory.remember(TEXT, category="synthetic")
+    first = vector(tmp_path)
+    assert first.add_memory(TEXT) == 0
+    memory.vector_memory = vector(tmp_path)
+    assert first.rebuild_from_memories([{"thought": OTHER}])["vector_rebuild_success"]
+    assert [r["thought"] for r in memory.search_memories("Cedar Pier", use_semantic=True)] == [TEXT]
+    assert memory.vector_memory.vector_pair_verified is False
+    restarted = mv.EnhancedMemoryCore(json_filepath=str(tmp_path / "primary.json"), enable_vector=False)
+    assert [r["thought"] for r in restarted.search_memories("Cedar Pier")] == [TEXT]

@@ -881,8 +881,10 @@ class EnhancedMemoryCore:
             if load_if_needed:
                 self.vector_memory.load_if_needed()
             st["embedding_status"] = dict(self.vector_memory.embedding_status)
+            st["vector_pair_verified"] = bool(self.vector_memory.vector_pair_verified)
             st["vector_loaded"] = bool(self.vector_memory.loaded)
-            if self.vector_memory.loaded and self.vector_memory.index is not None:
+            if (self.vector_memory.loaded and self.vector_memory.index is not None
+                    and self.vector_memory.vector_pair_verified):
                 try:
                     st["vector_memory_count"] = int(self.vector_memory.index.ntotal)
                 except Exception:

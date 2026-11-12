@@ -108,6 +108,8 @@ class VectorMemory:
     def _verify_disk_pair(self) -> bool:
         """Legacy or interrupted generations have NO trusted semantic provenance."""
         paths = (self.index_path, self.metadata_path, self.generation_path)
+        if any(os.path.islink(p) for p in paths):
+            return False
         present = tuple(os.path.isfile(p) for p in paths)
         if not any(present):
             return True  # Empty new store, not historical semantic evidence.
@@ -153,6 +155,15 @@ class VectorMemory:
         if not self.vector_pair_verified or not self._verify_disk_pair():
             self._quarantine_pair("vector_pair_unverified_before_write")
             raise RuntimeError("unverified vector source; preserving original files")
+        if new_metadata and (
+            self.embedding_status.get("provider") != self._PROVIDER
+            or self.embedding_status.get("available") is not True
+        ):
+            raise RuntimeError("cannot certify vectors without trusted local embedding")
+        if int(new_index.ntotal) != len(new_metadata):
+            raise ValueError("candidate vector count disagrees with metadata")
+        if hasattr(new_index, "d") and int(new_index.d) != self.vector_dim:
+            raise ValueError("candidate vector dimension mismatch")
         staged = []
         publishing = False
         try:
@@ -708,7 +719,8 @@ class VectorMemory:
             pass
 
         self.load_if_needed()
-        if not self.vector_pair_verified or not self._verify_disk_pair():
+        if (not self.vector_pair_verified or not self._verify_disk_pair()
+                or (self.metadata and not os.path.isfile(self.generation_path))):
             self._quarantine_pair("vector_search_unverified_generation")
             return []
         if self.index is None or len(self.metadata) == 0:
@@ -771,6 +783,9 @@ class VectorMemory:
     def get_by_id(self, memory_id: int) -> Optional[Dict[str, Any]]:
         """Get memory by ID."""
         self.load_if_needed()
+        if not self.vector_pair_verified or not self._verify_disk_pair():
+            self._quarantine_pair("vector_get_by_id_unverified")
+            return None
         if 0 <= memory_id < len(self.metadata):
             return self.metadata[memory_id].copy()
         return None
@@ -817,9 +832,10 @@ class VectorMemory:
         if FAISS_AVAILABLE and self.index is not None:
             # Create new empty index
             self.index = faiss.IndexFlatL2(self.vector_dim)
+        # Preserve pair-level integrity even for explicit vector clearing.
+        # Never clobber an unverified legacy collection.
+        self._persist_verified_pair(self.index, [])
         self.metadata = []
-        self._save_metadata()
-        self._save_index()
         logger.info("Vector memory cleared")
 
 

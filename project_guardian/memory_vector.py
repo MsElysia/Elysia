@@ -244,6 +244,13 @@ class VectorMemory:
         """
         self.load_if_needed()
         metadata_before = len(self.metadata or [])
+        if not self.vector_pair_verified or not self._verify_disk_pair():
+            self._quarantine_pair("vector_rebuild_from_unverified_pair")
+            return {
+                "metadata_before": metadata_before, "metadata_after": metadata_before,
+                "vector_rebuild_status": "failed", "vector_rebuild_success": False,
+                "error": "Existing vector generation unverified; no automatic conversion",
+            }
         faiss_before = 0
         if self.index is not None and hasattr(self.index, "ntotal"):
             try:
@@ -321,10 +328,8 @@ class VectorMemory:
                 }
 
         try:
-            # Persist using fsync-backed atomic writes to reduce torn-file risk.
-            self._atomic_write_json(self.metadata_path, new_metadata)
-            if FAISS_AVAILABLE:
-                self._atomic_write_faiss(self.index_path, new_index)
+            # Only the sealed verified generation can be served after restart.
+            self._persist_verified_pair(new_index, new_metadata)
             self.index = new_index
             self.metadata = new_metadata
             self.degraded = False
@@ -348,7 +353,7 @@ class VectorMemory:
             }
         except Exception as e:
             self.degraded = True
-            self.rebuild_pending = False
+            self.rebuild_pending = True
 
             err_msg = str(e)[:200] if str(e) else "unknown"
             self._set_rebuild_status("failed", "persist failed", err_msg)
@@ -508,12 +513,10 @@ class VectorMemory:
                 logger.error(f"Failed to save FAISS index: {e}")
 
     def _persist_vector_state(self) -> None:
-        """Persist metadata + index atomically-per-file in stable order."""
-        # Write metadata first, then index. If index write fails, metadata remains authoritative
-        # and startup rebuild logic can recover from mismatch.
-        self._atomic_write_json(self.metadata_path, self.metadata)
-        if FAISS_AVAILABLE and self.index is not None:
-            self._atomic_write_faiss(self.index_path, self.index)
+        """Back-compatible entrypoint, now delegates to verified pair publication."""
+        if not FAISS_AVAILABLE or self.index is None:
+            raise RuntimeError("No FAISS index available")
+        self._persist_verified_pair(self.index, self.metadata)
                 
     def _embedding_unavailable(self, reason: str) -> None:
         """Record a truthful absence, never invent a semantic match."""
@@ -637,59 +640,46 @@ class VectorMemory:
             pass
 
         self.load_if_needed()
-        if self.index is None:
-            logger.warning("FAISS index not available")
+        if self.index is None or not self.vector_pair_verified or not self._verify_disk_pair():
+            self._quarantine_pair("vector_add_to_unverified_pair")
             return None
-            
-        # Generate embedding if not provided
-        if embedding is None:
-            embedding = self.generate_embedding(text)
-            if embedding is None:
-                try:
-                    from .memory_noise import is_embedding_entirely_skipped
+        # Caller-provided vectors lack model/provider provenance. Do not certify
+        # or mix them into a locally attested SentenceTransformer generation.
+        if embedding is not None:
+            self._embedding_unavailable("external_embedding_provenance_unverified")
+            return None
 
-                    if is_embedding_entirely_skipped(text):
-                        logger.debug("No vector row (embedding intentionally skipped for fragment)")
-                        return None
-                except Exception:
-                    pass
-                logger.warning("Failed to generate embedding, memory not stored")
-                return None
-                
-        # Ensure embedding is correct dimension
-        if embedding.shape[0] != self.vector_dim:
-            logger.error(f"Embedding dimension mismatch: {embedding.shape[0]} != {self.vector_dim}")
+        embedding = self.generate_embedding(text)
+        if embedding is None or embedding.shape != (self.vector_dim,) or not np.isfinite(embedding).all():
             return None
-            
-        # Reshape for FAISS (needs to be 2D)
-        embedding = embedding.reshape(1, -1)
-        
-        # Add to index
+
         try:
-            self.index.add(embedding)
+            # Work on a copy. The old in-memory index and disk pair survive
+            # failures while candidate files are staged or published.
+            working_index = faiss.clone_index(self.index)
+            working_index.add(embedding.reshape(1, -1))
             memory_id = len(self.metadata)
-            
-            # Store metadata
-            memory_entry = {
+            entry = {
                 "id": memory_id,
                 "text": text,
                 "category": category,
                 "priority": priority,
                 "timestamp": datetime.now().isoformat(),
-                "metadata": metadata or {}
+                "metadata": metadata or {},
             }
-            self.metadata.append(memory_entry)
-            
-            # Save (atomic writes to reduce startup corruption risk)
-            self._persist_vector_state()
-            
-            logger.debug(f"Added memory {memory_id} to vector store")
+            working_metadata = self.metadata + [entry]
+            self._persist_verified_pair(working_index, working_metadata)
+            self.index = working_index
+            self.metadata = working_metadata
+            logger.debug("Added verified local memory vector %s", memory_id)
             return memory_id
-            
-        except Exception as e:
-            logger.error(f"Failed to add memory to index: {e}")
+        except Exception:
+            self.degraded = True
+            self.rebuild_pending = True
+            self._set_rebuild_status("failed", "vector_add_persistence_failed")
+            logger.warning("Vector add unavailable; original data preserved or quarantined")
             return None
-            
+
     def search(
         self,
         query: str,
@@ -718,9 +708,19 @@ class VectorMemory:
             pass
 
         self.load_if_needed()
+        if not self.vector_pair_verified or not self._verify_disk_pair():
+            self._quarantine_pair("vector_search_unverified_generation")
+            return []
         if self.index is None or len(self.metadata) == 0:
             return []
-            
+        try:
+            if int(self.index.ntotal) != len(self.metadata):
+                self._quarantine_pair("vector_search_row_mismatch")
+                return []
+        except (AttributeError, ValueError, TypeError):
+            self._quarantine_pair("vector_search_index_unreadable")
+            return []
+
         # Generate query embedding
         query_embedding = self.generate_embedding(query)
         if query_embedding is None:
@@ -801,6 +801,7 @@ class VectorMemory:
             
         return {
             "embedding_status": dict(self.embedding_status),
+            "vector_pair_verified": self.vector_pair_verified,
             "vector_memory_enabled": True,
             "vector_loaded": True,
             "total_memories": len(self.metadata),

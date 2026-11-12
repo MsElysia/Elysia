@@ -770,6 +770,7 @@ class VectorMemory:
         if not self.loaded and FAISS_AVAILABLE and self._lazy:
             return {
                 "embedding_status": dict(self.embedding_status),
+                "vector_pair_verified": self.vector_pair_verified,
                 "vector_memory_enabled": True,
                 "vector_loaded": False,
                 "total_memories": 0,
@@ -778,6 +779,7 @@ class VectorMemory:
         if self.index is None:
             return {
                 "embedding_status": dict(self.embedding_status),
+                "vector_pair_verified": self.vector_pair_verified,
                 "vector_memory_enabled": False,
                 "vector_loaded": True,
                 "total_memories": 0,
@@ -804,12 +806,14 @@ class VectorMemory:
     def clear(self):
         """Clear all vector memories."""
         self.load_if_needed()
-        if FAISS_AVAILABLE and self.index is not None:
-            # Create new empty index
-            self.index = faiss.IndexFlatL2(self.vector_dim)
-        # Preserve pair-level integrity even for explicit vector clearing.
-        # Never clobber an unverified legacy collection.
-        self._persist_verified_pair(self.index, [])
+        if not FAISS_AVAILABLE or self.index is None:
+            self.metadata = []
+            return
+        # Keep the old index live until verified empty generation publication
+        # succeeds. Never overwrite unverified legacy data on disk.
+        empty_index = faiss.IndexFlatL2(self.vector_dim)
+        self._persist_verified_pair(empty_index, [])
+        self.index = empty_index
         self.metadata = []
         logger.info("Vector memory cleared")
 

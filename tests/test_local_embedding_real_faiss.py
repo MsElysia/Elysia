@@ -56,7 +56,7 @@ def real_faiss_isolated(monkeypatch):
     monkeypatch.setattr(mv, "HAS_SENTENCE_TRANSFORMERS", True)
     monkeypatch.setattr(
         mv, "SentenceTransformer",
-        lambda _name, **options: _require_offline_encoder(options, encode),
+        lambda _name, **options: _require_offline_encoder(options, encode), raising=False,
     )
 
     # If FAISS import or binding fails, this test MUST fail, not skip/degrade.

@@ -204,8 +204,12 @@ class MemoryVectorSearch:
         if self.embedding_degraded:
             self.memory_texts[memory_id] = text
             return
-        # Generate embedding
-        embedding = self._get_embedding(text)
+        # Failed local encoding leaves the semantic layer unavailable.
+        try:
+            embedding = self._get_embedding(text)
+        except Exception:
+            self.embedding_degraded = True
+            return
 
         if self.use_faiss and HAS_FAISS and HAS_NUMPY:
             # Add to FAISS index
@@ -255,11 +259,18 @@ class MemoryVectorSearch:
         Returns:
             List of (memory_id, similarity_score, metadata) tuples
         """
-        # No verified local semantic model: no fake similarity scores.
+        # Low-value queries have no trusted semantic score, even when a
+        # valid local model is loaded for other text.
         if self.embedding_degraded:
             return []
-        # Get query embedding
-        query_embedding = self._get_embedding(query)
+        try:
+            from .memory_noise import is_low_value_memory_text
+            if is_low_value_memory_text(query, min_chars_for_substantive=22):
+                return []
+            query_embedding = self._get_embedding(query)
+        except Exception:
+            self.embedding_degraded = True
+            return []
         
         if self.use_faiss and HAS_FAISS and HAS_NUMPY:
             # Search using FAISS
@@ -344,29 +355,26 @@ class MemoryVectorSearch:
         if text_hash in self.embedding_cache:
             return self.embedding_cache[text_hash]
 
-        try:
-            from .memory_noise import is_low_value_memory_text
-
-            if is_low_value_memory_text(text, min_chars_for_substantive=22):
-                embedding = SimpleEmbedder().embed(text, self.embedding_dimension)
-                if HAS_NUMPY and hasattr(embedding, "tolist"):
-                    embedding = embedding.tolist()
-                elif HAS_NUMPY:
-                    embedding = list(embedding)
-                self.embedding_cache[text_hash] = embedding
-                return embedding
-        except Exception:
-            pass
-
-        # Generate embedding
-        if HAS_SENTENCE_TRANSFORMERS and not isinstance(self.embedder, SimpleEmbedder):
-            embedding = self.embedder.encode(text).tolist()
+        # A real local model is the only provider of semantic vectors.
+        # Never mix pseudo/hash vectors with its indexed embeddings.
+        from .memory_noise import is_low_value_memory_text
+        if is_low_value_memory_text(text, min_chars_for_substantive=22):
+            raise ValueError("low-value text not semantic evidence")
+        if isinstance(self.embedder, SimpleEmbedder):
+            self.embedding_degraded = True
+            raise RuntimeError("cached semantic model unavailable")
+        embedding = self.embedder.encode(text)
+        if HAS_NUMPY:
+            embedding = np.asarray(embedding, dtype=np.float32)
+            if (embedding.ndim != 1 or embedding.size != self.embedding_dimension
+                    or not np.isfinite(embedding).all()):
+                raise ValueError("invalid local semantic embedding")
+            embedding = embedding.tolist()
         else:
-            if HAS_NUMPY:
-                embedding = self.embedder.embed(text, self.embedding_dimension).tolist()
-            else:
-                embedding = self.embedder.embed(text, self.embedding_dimension)
-        
+            embedding = list(embedding)
+            if len(embedding) != self.embedding_dimension:
+                raise ValueError("local semantic dimension mismatch")
+
         # Cache
         self.embedding_cache[text_hash] = embedding
         

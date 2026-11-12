@@ -15,6 +15,7 @@ RC_REQUIRED = [
     "tests/test_retrieval_evidence_ranking.py",
     "tests/test_memory_integrity_windows.py",
     "tests/test_local_embedding_network_fence.py",
+    "tests/test_local_embedding_real_faiss.py",
     "tests/test_memory_write_verification.py",
     "tests/test_conversation_memory_precedence.py",
     "tests/test_document_ingestion_workflow.py",

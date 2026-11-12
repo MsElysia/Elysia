@@ -182,3 +182,134 @@ def test_missing_policy_does_not_fall_back_to_untrusted_embedding(tmp_path, monk
     monkeypatch.setattr(startup_runtime_guard, "defer_sentence_transformers_for_embed", missing_guard)
     assert vector(tmp_path).generate_embedding(TEXT) is None
     assert attempted == []
+
+
+
+def test_low_value_query_never_uses_pseudo_semantic_vector(monkeypatch):
+    # Fixture defaults noise predicate to False; override it here deliberately.
+    monkeypatch.setattr(memory_noise, "is_low_value_memory_text",
+                        lambda text, **_kw: text == "tiny")
+    calls = []
+    monkeypatch.setattr(ms, "HAS_SENTENCE_TRANSFORMERS", True)
+    monkeypatch.setattr(ms, "_ST_SHARED", None)
+    monkeypatch.setattr(ms, "SentenceTransformer",
+                        lambda *_a, **_kw: SimpleNamespace(
+                            get_sentence_embedding_dimension=lambda: 8,
+                            encode=lambda _text: calls.append("encode") or np.ones(8)))
+    obj = ms.MemoryVectorSearch(use_faiss=False)
+    assert obj.embedding_degraded is False
+    obj.add_memory("synthetic", TEXT)
+    assert obj.search_similar("tiny") == []
+    assert calls == ["encode"], "low-value query must not receive hash or ST semantic scoring"
+
+
+def test_broken_cached_encoder_reports_unavailable_not_semantic(monkeypatch):
+    monkeypatch.setattr(ms, "HAS_SENTENCE_TRANSFORMERS", True)
+    monkeypatch.setattr(ms, "_ST_SHARED", None)
+    monkeypatch.setattr(ms, "SentenceTransformer",
+                        lambda *_a, **_kw: SimpleNamespace(
+                            get_sentence_embedding_dimension=lambda: 8,
+                            encode=lambda _text: (_ for _ in ()).throw(
+                                RuntimeError("synthetic cached encoder failure"))))
+    obj = ms.MemoryVectorSearch(use_faiss=False)
+    assert obj.search_similar(TEXT) == []
+    assert obj.embedding_degraded is True
+
+
+def fake_vector_storage(monkeypatch):
+    """Pure synthetic FAISS stand-in; no model, file download or socket."""
+    import json
+    class FakeIndex:
+        def __init__(self, dimension=8, vectors=None):
+            self.dimension = dimension
+            self.vectors = list(vectors or [])
+        @property
+        def ntotal(self):
+            return len(self.vectors)
+        def add(self, matrix):
+            self.vectors.extend(np.asarray(matrix).tolist())
+        def search(self, query, count):
+            distances = [float(np.sum((np.asarray(row) - query[0]) ** 2))
+                         for row in self.vectors]
+            chosen = sorted(range(len(distances)), key=distances.__getitem__)[:count]
+            return (np.array([[distances[i] for i in chosen]], dtype=np.float32),
+                    np.array([chosen], dtype=np.int64))
+    def save(idx, filename):
+        Path(filename).write_text(json.dumps({"dim": idx.dimension, "vectors": idx.vectors}))
+    def read(filename):
+        data = json.loads(Path(filename).read_text())
+        return FakeIndex(data["dim"], data["vectors"])
+    monkeypatch.setattr(mv, "FAISS_AVAILABLE", True)
+    monkeypatch.setattr(mv, "faiss", SimpleNamespace(
+        IndexFlatL2=FakeIndex, clone_index=lambda idx: FakeIndex(idx.dimension, idx.vectors),
+        write_index=save, read_index=read), raising=False)
+    monkeypatch.setattr(mv, "HAS_SENTENCE_TRANSFORMERS", True)
+    monkeypatch.setattr(mv, "SentenceTransformer",
+                        lambda *_a, **_kw: SimpleNamespace(
+                            encode=lambda _text: np.ones(8, dtype=np.float32)),
+                        raising=False)
+
+
+@pytest.mark.parametrize("operation", ["rebuild", "add"])
+def test_second_staging_write_failure_preserves_verified_pair(tmp_path, monkeypatch, operation):
+    fake_vector_storage(monkeypatch)
+    v = vector(tmp_path)
+    assert v.add_memory(TEXT) == 0
+    paths = [Path(v.index_path), Path(v.metadata_path), Path(v.metadata_path + ".generation.json")]
+    before = [p.read_bytes() for p in paths]
+    original = v._atomic_write_faiss
+    def fail_second(path, index):
+        raise OSError("synthetic second staged-file failure")
+    monkeypatch.setattr(v, "_atomic_write_faiss", fail_second)
+    if operation == "rebuild":
+        receipt = v.rebuild_from_memories([{"thought": TEXT}, {"thought": TEXT + " second"}])
+        assert receipt["vector_rebuild_success"] is False
+    else:
+        assert v.add_memory(TEXT + " second") is None
+    assert [p.read_bytes() for p in paths] == before
+    assert v.degraded is True and v.rebuild_pending is True
+    monkeypatch.setattr(v, "_atomic_write_faiss", original)
+    restarted = vector(tmp_path)
+    assert restarted.vector_pair_verified is True
+    assert restarted.index.ntotal == 1
+    assert [row["text"] for row in restarted.metadata] == [TEXT]
+
+
+def test_interrupted_pair_commit_quarantines_on_restart(tmp_path, monkeypatch):
+    fake_vector_storage(monkeypatch)
+    v = vector(tmp_path)
+    assert v.add_memory(TEXT) == 0
+    import os
+    original_replace = os.replace
+    def interrupt_index_commit(source, destination):
+        if str(destination) == str(v.index_path) and str(source).endswith(".pending"):
+            raise OSError("synthetic interrupted index publication")
+        return original_replace(source, destination)
+    monkeypatch.setattr(os, "replace", interrupt_index_commit)
+    result = v.rebuild_from_memories([{"thought": TEXT}, {"thought": TEXT + " revised"}])
+    assert result["vector_rebuild_status"] == "failed"
+    assert v.vector_pair_verified is False
+    assert v.degraded and v.rebuild_pending
+    monkeypatch.setattr(os, "replace", original_replace)
+    restarted = vector(tmp_path)
+    assert restarted.vector_pair_verified is False
+    assert restarted.degraded and restarted.rebuild_pending
+    assert restarted.search(TEXT) == []
+    assert Path(v.metadata_path + ".generation.json").exists()
+
+
+def test_unproven_legacy_provider_index_quarantined_without_mutation(tmp_path, monkeypatch):
+    fake_vector_storage(monkeypatch)
+    original_idx = tmp_path / "vec/index.faiss"
+    original_meta = tmp_path / "vec/metadata.json"
+    original_idx.parent.mkdir(parents=True)
+    mv.faiss.write_index(mv.faiss.IndexFlatL2(8), str(original_idx))
+    original_meta.write_text('[]')
+    before = (original_idx.read_bytes(), original_meta.read_bytes())
+    recovered = vector(tmp_path)
+    assert recovered.vector_pair_verified is False
+    assert recovered.degraded and recovered.rebuild_pending
+    assert recovered.search(TEXT) == []
+    assert recovered.add_memory(TEXT) is None
+    assert (original_idx.read_bytes(), original_meta.read_bytes()) == before
+    assert not Path(str(original_meta) + ".generation.json").exists()

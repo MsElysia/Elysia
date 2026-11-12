@@ -4,6 +4,7 @@
 
 import os
 import json
+import hashlib
 import logging
 import threading
 import tempfile
@@ -47,6 +48,7 @@ class VectorMemory:
         self.vector_dim = vector_dim
         self.index_path = index_path
         self.metadata_path = metadata_path
+        self.generation_path = metadata_path + ".generation.json"
         self.embedding_model = embedding_model
         self.embedding_status = {"available": False, "provider": None, "reason": "not_attempted"}
         self._sentence_transformer_model = None  # Lazy-loaded for sentence-transformers
@@ -66,9 +68,12 @@ class VectorMemory:
         self._vector_load_lock = threading.Lock()
         self._metadata_io_lock = threading.Lock()
         
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(index_path), exist_ok=True)
-        
+        # Existing bytes with no trusted local-model provenance must remain untouched.
+        os.makedirs(os.path.dirname(index_path) or ".", exist_ok=True)
+        self.vector_pair_verified = self._verify_disk_pair()
+        if not self.vector_pair_verified:
+            self._quarantine_pair("unverified_legacy_or_incomplete_vector_pair")
+
         if FAISS_AVAILABLE:
             if lazy:
                 self.index = None
@@ -76,15 +81,121 @@ class VectorMemory:
                 self.loaded = False
                 logger.info("[Startup] VectorMemory FAISS/metadata load deferred (lazy=True)")
             else:
-                self.index = self._init_index()
+                self.index = self._init_index() if self.vector_pair_verified else faiss.IndexFlatL2(self.vector_dim)
                 self.metadata = []
-                self._load_metadata()
+                if self.vector_pair_verified:
+                    self._load_metadata()
+                    self._verify_loaded_pair()
                 self.loaded = True
         else:
             self.index = None
             self.metadata = []
             self.loaded = True
             logger.warning("Vector memory initialized without FAISS - semantic search disabled")
+
+    _PROVIDER = "sentence_transformers"
+    _MODEL = "all-MiniLM-L6-v2"
+    _SCHEMA = "elysia.offline_vector_pair.v1"
+
+    @staticmethod
+    def _file_sha256(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _verify_disk_pair(self) -> bool:
+        """Legacy or interrupted generations have NO trusted semantic provenance."""
+        paths = (self.index_path, self.metadata_path, self.generation_path)
+        present = tuple(os.path.isfile(p) for p in paths)
+        if not any(present):
+            return True  # Empty new store, not historical semantic evidence.
+        if not all(present):
+            return False
+        try:
+            with open(self.generation_path, "r", encoding="utf-8") as source:
+                receipt = json.load(source)
+            return (
+                isinstance(receipt, dict)
+                and receipt.get("schema") == self._SCHEMA
+                and receipt.get("provider") == self._PROVIDER
+                and receipt.get("model") == self._MODEL
+                and receipt.get("vector_dim") == self.vector_dim
+                and receipt.get("index_sha256") == self._file_sha256(self.index_path)
+                and receipt.get("metadata_sha256") == self._file_sha256(self.metadata_path)
+            )
+        except (OSError, ValueError, TypeError):
+            return False
+
+    def _quarantine_pair(self, reason: str) -> None:
+        self.vector_pair_verified = False
+        self.degraded = True
+        self.rebuild_pending = True
+        self._embedding_unavailable(reason)
+        self._set_rebuild_status("failed", reason)
+
+    def _verify_loaded_pair(self) -> None:
+        if not self._verify_disk_pair():
+            self._quarantine_pair("vector_generation_hash_mismatch")
+        elif self.index is not None and (
+            int(self.index.ntotal) != len(self.metadata)
+            or (hasattr(self.index, "d") and int(self.index.d) != self.vector_dim)
+        ):
+            self._quarantine_pair("vector_generation_row_or_dimension_mismatch")
+
+    def _persist_verified_pair(self, new_index, new_metadata) -> None:
+        """Stage both files first; manifest seals the published pair LAST.
+
+        Two filesystem renames are not a transaction. An interrupted publication
+        is rejected on the next read/restart by exact hashes in the old manifest.
+        """
+        if not self.vector_pair_verified or not self._verify_disk_pair():
+            self._quarantine_pair("vector_pair_unverified_before_write")
+            raise RuntimeError("unverified vector source; preserving original files")
+        staged = []
+        publishing = False
+        try:
+            for directory, prefix in (
+                (os.path.dirname(self.metadata_path) or ".", "vector-meta-"),
+                (os.path.dirname(self.index_path) or ".", "vector-index-"),
+                (os.path.dirname(self.generation_path) or ".", "vector-proof-"),
+            ):
+                fd, name = tempfile.mkstemp(prefix=prefix, suffix=".pending", dir=directory)
+                os.close(fd)
+                staged.append(name)
+            meta_stage, index_stage, proof_stage = staged
+            self._atomic_write_json(meta_stage, new_metadata)
+            self._atomic_write_faiss(index_stage, new_index)
+            manifest = {
+                "schema": self._SCHEMA, "provider": self._PROVIDER,
+                "model": self._MODEL, "vector_dim": self.vector_dim,
+                "index_sha256": self._file_sha256(index_stage),
+                "metadata_sha256": self._file_sha256(meta_stage),
+            }
+            self._atomic_write_json(proof_stage, manifest)
+            # Any failure from this point may leave a partially published pair.
+            publishing = True
+            self.vector_pair_verified = False
+            os.replace(meta_stage, self.metadata_path)
+            os.replace(index_stage, self.index_path)
+            os.replace(proof_stage, self.generation_path)
+            if not self._verify_disk_pair():
+                raise RuntimeError("published vector pair failed integrity readback")
+            self.vector_pair_verified = True
+        except Exception:
+            if publishing:
+                self._quarantine_pair("vector_pair_partial_publication")
+            else:
+                self._quarantine_pair("vector_pair_staging_failed")
+            raise
+        finally:
+            for name in staged:
+                try:
+                    if os.path.exists(name):
+                        os.remove(name)  # Only our own uncommitted scratch files.
+                except OSError:
+                    pass
 
     def _set_rebuild_status(
         self,
@@ -115,9 +226,11 @@ class VectorMemory:
             if self.loaded:
                 return
             logger.info("[Startup] VectorMemory: loading FAISS index and metadata (deferred)")
-            self.index = self._init_index()
+            self.index = self._init_index() if self.vector_pair_verified else faiss.IndexFlatL2(self.vector_dim)
             self.metadata = []
-            self._load_metadata()
+            if self.vector_pair_verified:
+                self._load_metadata()
+                self._verify_loaded_pair()
             self.loaded = True
 
     def _reconcile_with_memories(

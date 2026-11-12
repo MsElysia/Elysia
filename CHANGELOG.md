@@ -497,3 +497,10 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — create step needs file content
+
+- `POST /api/proposals/<id>/implement` no longer reports success when a create-file or add-tests step has no fenced file content.
+- The step returns `success: false` and `File content was not provided`. No placeholder file or parent directory is created, and the proposal is stored as `implementation_failed`.
+- A fenced block is written as given, including a language tag other than python, yaml, or json. The filename may be in the step body or only in the step title.
+- Contract: `tests/test_runtime_api_implement_create_content.py`.

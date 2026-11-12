@@ -456,6 +456,14 @@ class MemoryCore:
             List of memory entries with similarity scores
         """
         self.load_if_needed()
+        # A tiny query may be suitable for literal recall, but not for a
+        # pseudo-vector similarity score.
+        try:
+            from .memory_noise import is_low_value_memory_text
+            if is_low_value_memory_text(query, min_chars_for_substantive=22):
+                return self.search_memories(query, limit=limit)
+        except Exception:
+            pass
         # Without a cached trusted embedding model, preserve truthful lexical recall.
         # Do not build or search pseudo-vector indexes and label them semantic.
         if self.vector_search and getattr(self.vector_search, "embedding_degraded", False):

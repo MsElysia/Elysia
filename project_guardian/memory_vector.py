@@ -397,21 +397,10 @@ class VectorMemory:
                 index = faiss.read_index(self.index_path)
                 logger.info(f"Loaded existing FAISS index from {self.index_path}")
                 return index
-            except Exception as e:
-                try:
-                    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                    corrupt_copy = f"{self.index_path}.corrupt.{stamp}"
-                    os.replace(self.index_path, corrupt_copy)
-                    logger.warning(
-                        "Failed to load FAISS index: %s; moved corrupt index to %s. Creating new index.",
-                        e,
-                        corrupt_copy,
-                    )
-                except Exception:
-                    logger.warning(f"Failed to load FAISS index: {e}. Creating new index.")
-                self.degraded = True
-                self.rebuild_pending = True
-                self._set_rebuild_status("failed", "faiss_index_corrupt_or_unreadable", str(e))
+            except Exception:
+                # Never rename or overwrite potentially unique historical bytes.
+                logger.warning("FAISS index unreadable; original bytes retained, vector search unavailable")
+                self._quarantine_pair("faiss_index_corrupt_or_unreadable")
                 
         # Create new index
         if FAISS_AVAILABLE:
@@ -430,25 +419,11 @@ class VectorMemory:
                 if not isinstance(self.metadata, list):
                     raise ValueError(f"metadata payload must be a list, got {type(self.metadata).__name__}")
                 logger.info(f"Loaded {len(self.metadata)} metadata entries")
-            except Exception as e:
-                # Preserve the corrupt file for forensics, then continue with clean metadata.
-                try:
-                    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                    corrupt_copy = f"{self.metadata_path}.corrupt.{stamp}"
-                    os.replace(self.metadata_path, corrupt_copy)
-                    logger.warning(
-                        "Failed to load metadata: %s; moved corrupt file to %s",
-                        e,
-                        corrupt_copy,
-                    )
-                except Exception:
-                    logger.warning(f"Failed to load metadata: {e}")
+            except Exception:
+                # A torn metadata file is evidence, not permission to erase it.
+                logger.warning("Vector metadata unreadable; original bytes retained")
                 self.metadata = []
-                self.degraded = True
-                self.rebuild_pending = True
-                self._set_rebuild_status("failed", "metadata_corrupt_or_unreadable", str(e))
-                # Persist an empty metadata list so next startup can proceed cleanly.
-                self._save_metadata()
+                self._quarantine_pair("metadata_corrupt_or_unreadable")
         else:
             self.metadata = []
 

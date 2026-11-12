@@ -475,6 +475,10 @@ class MemoryCore:
                 limit=limit,
                 threshold=threshold
             )
+            # A cached model can fail during encoding. Never return pseudo or
+            # empty 'semantic' evidence instead of available JSON keyword facts.
+            if getattr(self.vector_search, "embedding_degraded", False):
+                return self.search_memories(query, limit=limit)
             
             # Convert to memory format
             results = []

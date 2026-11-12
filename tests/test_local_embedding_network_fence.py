@@ -273,6 +273,7 @@ def test_second_staging_write_failure_preserves_verified_pair(tmp_path, monkeypa
     assert restarted.vector_pair_verified is True
     assert restarted.index.ntotal == 1
     assert [row["text"] for row in restarted.metadata] == [TEXT]
+    assert [row["text"] for row in restarted.search(TEXT, threshold=0.0)] == [TEXT]
 
 
 def test_interrupted_pair_commit_quarantines_on_restart(tmp_path, monkeypatch):
@@ -303,8 +304,10 @@ def test_unproven_legacy_provider_index_quarantined_without_mutation(tmp_path, m
     original_idx = tmp_path / "vec/index.faiss"
     original_meta = tmp_path / "vec/metadata.json"
     original_idx.parent.mkdir(parents=True)
-    mv.faiss.write_index(mv.faiss.IndexFlatL2(8), str(original_idx))
-    original_meta.write_text('[]')
+    legacy_idx = mv.faiss.IndexFlatL2(8)
+    legacy_idx.add(np.ones((1, 8), dtype=np.float32))
+    mv.faiss.write_index(legacy_idx, str(original_idx))
+    original_meta.write_text('[{"id":0,"text":"Synthetic unproven legacy provider vector"}]')
     before = (original_idx.read_bytes(), original_meta.read_bytes())
     recovered = vector(tmp_path)
     assert recovered.vector_pair_verified is False
@@ -313,3 +316,22 @@ def test_unproven_legacy_provider_index_quarantined_without_mutation(tmp_path, m
     assert recovered.add_memory(TEXT) is None
     assert (original_idx.read_bytes(), original_meta.read_bytes()) == before
     assert not Path(str(original_meta) + ".generation.json").exists()
+
+
+def test_failed_encoder_preserves_memorycore_keyword_recall(tmp_path, monkeypatch):
+    from project_guardian.memory import MemoryCore
+    monkeypatch.setattr(ms, "HAS_SENTENCE_TRANSFORMERS", True)
+    monkeypatch.setattr(ms, "_ST_SHARED", None)
+    monkeypatch.setattr(ms, "SentenceTransformer",
+                        lambda *_a, **_kw: SimpleNamespace(
+                            get_sentence_embedding_dimension=lambda: 8,
+                            encode=lambda _text: (_ for _ in ()).throw(
+                                OSError("synthetic cache decode failure"))))
+    memory = MemoryCore(str(tmp_path / "authoritative.json"))
+    memory.remember(TEXT, category="synthetic")
+    memory.vector_search = ms.MemoryVectorSearch(use_faiss=False)
+    memory._vector_index_built = True
+    hits = memory.search_semantic("Cedar Pier")
+    assert [row["thought"] for row in hits] == [TEXT]
+    assert all(row.get("search_method") != "semantic" for row in hits)
+    assert memory.vector_search.embedding_degraded is True

@@ -188,6 +188,15 @@ def coerce_tool_registry_name_list(tr: Any, max_names: int = 40) -> Tuple[List[s
         return [], type(e).__name__
 
 
+def _is_catalog_only_stub(registry: Any, name: str) -> bool:
+    """Identify boot placeholders with no generic registry execution path."""
+    if callable(getattr(registry, "call_tool", None)):
+        return False
+    get_tool = getattr(registry, "get_tool", None)
+    metadata = get_tool(name) if callable(get_tool) else None
+    return isinstance(metadata, dict) and metadata.get("builtin_stub") is True
+
+
 # Map plugin/module names to autonomy actions (when applicable)
 _PLUGIN_SUGGESTED_ACTION: Dict[str, str] = {
     "longterm_planner": "work_on_objective",
@@ -555,18 +564,22 @@ class CapabilityRegistry:
                             health = "no_key"
                 tid = f"tool:{tn}"
                 st = stats.get(tid) or {}
+                catalog_only = _is_catalog_only_stub(tr, tn)
                 entries.append(
                     {
                         "name": tn,
                         "type": "tool",
                         "description": (desc or "")[:300],
-                        "interface": f"tool_registry.call_tool('{tn}', ...)",
-                        "health": health,
+                        "interface": "tool_registry.get_tool" if catalog_only else f"tool_registry.call_tool('{tn}', ...)",
+                        "health": "unavailable" if catalog_only else health,
                         "last_used": st.get("last_used"),
                         "success_rate": float(st.get("success_rate", 0.5) or 0.5),
                         "suggested_action": "tool_registry_pulse",
-                        "callable": "capability_execution.execute_capability_kind",
-                        "input_schema": {"method": "str", "kwargs": "object", "name_format": f"tool:{tn}"},
+                        "callable": None if catalog_only else "capability_execution.execute_capability_kind",
+                        "input_schema": None if catalog_only else {
+                            "method": "str", "kwargs": "object", "name_format": f"tool:{tn}",
+                        },
+                        **({"executable": False} if catalog_only else {}),
                     }
                 )
 
@@ -605,7 +618,10 @@ class CapabilityRegistry:
         text = (task_description or "").lower()
         tokens = {t for t in "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in text).split() if len(t) > 2}
 
-        entries = [e for e in self._build_capability_entries(guardian, snap) if e.get("type") != "api"]
+        entries = [
+            e for e in self._build_capability_entries(guardian, snap)
+            if e.get("type") != "api" and e.get("executable") is not False
+        ]
         stats = self._load_usage_stats()
         intent_map = _capability_intent_bonuses(text)
         ranked: List[Dict[str, Any]] = []
@@ -711,7 +727,11 @@ class CapabilityRegistry:
         if a == "execute_self_task":
             return True
         if a.startswith("use_capability/tool/"):
-            return bool(mods.get("tool_registry"))
+            from .capability_execution import resolve_tool_name
+
+            registry = mods.get("tool_registry")
+            name = resolve_tool_name(guardian, a.split("/", 2)[-1])
+            return bool(registry) and not _is_catalog_only_stub(registry, name)
         if a.startswith("use_capability/module/"):
             sub = a.split("/", 2)[-1] if a.count("/") >= 2 else ""
             return bool(sub) and sub in mods
@@ -726,6 +746,8 @@ class CapabilityRegistry:
             return ""
         mods = getattr(guardian, "_modules", None) or {}
         if t == "tool":
+            if entry.get("executable") is False:
+                return ""
             return capability_action_string("tool", nm)
         if t == "module" and nm in mods:
             return capability_action_string("module", nm)

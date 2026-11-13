@@ -19,6 +19,7 @@ RC_REQUIRED = [
     "tests/test_document_ingestion_workflow.py",
     "tests/test_local_memory_chat_pilot.py",
     "tests/test_capability_awareness.py",
+    "tests/test_boot_tool_stub_alignment.py",
     "tests/test_capability_composition.py",
     "tests/test_local_documents_search.py",
     "tests/test_structured_field_extraction.py",

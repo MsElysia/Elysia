@@ -121,12 +121,50 @@ class ImplementerAgent:
 
         logger.info(f"Parsed {len(steps)} implementation steps")
 
-        # 4. Transition to in_implementation
-        success, error = self.proposal_system.transition_status(
-            proposal_id, "in_implementation", actor="Elysia-Implementer"
-        )
-        if not success:
-            logger.warning(f"Failed to transition status: {error}")
+        # 4. A real run must enter in_implementation before any step runs.
+        # A dry run still previews the plan when that transition is refused.
+        if not self.dry_run:
+            entered, enter_error = self.proposal_system.transition_status(
+                proposal_id, "in_implementation", actor="Elysia-Implementer"
+            )
+            if not entered:
+                message = enter_error or "Failed to enter in_implementation"
+                logger.error(message)
+                self._update_implementation_status(proposal_id, "failed", last_result=message)
+                self._add_history_entry(
+                    proposal_id,
+                    "Elysia-Implementer",
+                    f"Implementation failed: {message}",
+                    {
+                        "steps_completed": 0,
+                        "steps_failed": 0,
+                        "steps_total": len(steps),
+                    },
+                )
+                if self.event_bus:
+                    self.event_bus.emit(
+                        "implementer",
+                        "failed",
+                        {
+                            "proposal_id": proposal_id,
+                            "steps_completed": 0,
+                            "steps_total": len(steps),
+                            "error": message,
+                        },
+                    )
+                return {
+                    "success": False,
+                    "error": message,
+                    "steps_completed": 0,
+                    "steps_total": len(steps),
+                    "step_results": [],
+                }
+        else:
+            success, error = self.proposal_system.transition_status(
+                proposal_id, "in_implementation", actor="Elysia-Implementer"
+            )
+            if not success:
+                logger.warning(f"Failed to transition status: {error}")
 
         # Update implementation_status
         self._update_implementation_status(proposal_id, "in_progress")
@@ -196,9 +234,41 @@ class ImplementerAgent:
         if steps_failed == 0 and steps_completed == len(steps):
             # All steps succeeded
             self._update_implementation_status(proposal_id, "completed")
-            success_transition, _ = self.proposal_system.transition_status(
+            success_transition, transition_error = self.proposal_system.transition_status(
                 proposal_id, "implemented", actor="Elysia-Implementer"
             )
+            if not success_transition and not self.dry_run:
+                message = transition_error or "Failed to transition to 'implemented' status"
+                logger.error(message)
+                self._update_implementation_status(proposal_id, "failed", last_result=message)
+                self._add_history_entry(
+                    proposal_id,
+                    "Elysia-Implementer",
+                    f"Implementation failed: {message}",
+                    {
+                        "steps_completed": steps_completed,
+                        "steps_failed": steps_failed,
+                        "steps_total": len(steps),
+                    },
+                )
+                if self.event_bus:
+                    self.event_bus.emit(
+                        "implementer",
+                        "failed",
+                        {
+                            "proposal_id": proposal_id,
+                            "steps_completed": steps_completed,
+                            "steps_total": len(steps),
+                            "error": message,
+                        },
+                    )
+                return {
+                    "success": False,
+                    "error": message,
+                    "steps_completed": steps_completed,
+                    "steps_total": len(steps),
+                    "step_results": step_results,
+                }
             if not success_transition:
                 logger.warning("Failed to transition to 'implemented' status")
 

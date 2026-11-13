@@ -497,3 +497,10 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — accepted status cannot be stored as implemented
+
+- `POST /api/proposals/<id>/implement` no longer reports success for a real run when the stored lifecycle cannot enter `in_implementation`.
+- A proposal whose status is `accepted` stays `accepted`, is stored as `implementation_status: failed`, and does not get a step file written.
+- A proposal whose status is `approved` still runs the plan and is stored as `implemented`.
+- Contract: `tests/test_runtime_api_implement_lifecycle.py`.

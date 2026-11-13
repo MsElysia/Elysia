@@ -223,6 +223,7 @@ class ProposalWatcher:
         self.event_bus = event_bus
         self.check_interval = check_interval
         self._running = False
+        self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._known_proposals: set[str] = set()
 
@@ -257,16 +258,22 @@ class ProposalWatcher:
         if self._running:
             return
 
+        self._stop.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
+
         self._running = True
+        self._stop.clear()
         self._known_proposals = set()
 
         def _watch_loop():
-            while self._running:
+            while not self._stop.is_set():
                 try:
                     self._scan_proposals()
                 except Exception as e:
                     logger.exception(f"Error scanning proposals: {e}")
-                time.sleep(self.check_interval)
+                if self._stop.wait(timeout=self.check_interval):
+                    break
 
         self._thread = threading.Thread(target=_watch_loop, daemon=True)
         self._thread.start()
@@ -275,6 +282,7 @@ class ProposalWatcher:
     def stop(self):
         """Stop watching for proposals."""
         self._running = False
+        self._stop.set()
         if self._thread:
             self._thread.join(timeout=2)
 

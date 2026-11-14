@@ -48,6 +48,10 @@ class ContainedHttpProbeGuard:
         self._lock = threading.Lock()
         self._patches: list[tuple[object, str, object]] = []
         self._authorized: ContextVar[int] = ContextVar("elysia_guard_authorized", default=0)
+        # Windows asyncio creates its self-wakeup IPC via stdlib socketpair(),
+        # which internally uses a temporary IPv4 loopback TCP connection.
+        # Permit ONLY that immediate stdlib call, never arbitrary loopback.
+        self._socketpair_ipc: ContextVar[int] = ContextVar("elysia_guard_socketpair", default=0)
         self._active = False
 
     def _record(self, *, reason: str, method: str = "UNKNOWN", path: str = "") -> None:
@@ -105,8 +109,10 @@ class ContainedHttpProbeGuard:
         return (
             host in ("127.0.0.1", b"127.0.0.1")
             and type(port) is int
-            and port == self.app_port
-            and self._authorized.get() > 0
+            and (
+                (port == self.app_port and self._authorized.get() > 0)
+                or self._socketpair_ipc.get() > 0
+            )
         )
 
     def _patch(self, obj: object, name: str, replacement: object) -> None:
@@ -134,6 +140,7 @@ class ContainedHttpProbeGuard:
             orig_connect_ex = socket.socket.connect_ex
             orig_getaddrinfo = socket.getaddrinfo
             orig_sendto = socket.socket.sendto
+            orig_socketpair = socket.socketpair
 
             def requests_request(session, method, url, *args, **kwargs):
                 with self._admit_http(method, url):
@@ -214,6 +221,16 @@ class ContainedHttpProbeGuard:
                     raise ProbeBlocked("contained guard rejected datagram sendto")
                 return orig_sendto(sock, data, *args, **kwargs)
 
+            def guarded_socketpair(*args, **kwargs):
+                # Windows implementation creates a one-off local TCP pair.
+                # Keep permission scoped to this stdlib operation and restore
+                # it before any caller can use the returned socket handles.
+                token = self._socketpair_ipc.set(self._socketpair_ipc.get() + 1)
+                try:
+                    return orig_socketpair(*args, **kwargs)
+                finally:
+                    self._socketpair_ipc.reset(token)
+
             self._patch(requests.sessions.Session, "request", requests_request)
             self._patch(httpx.Client, "request", httpx_request)
             self._patch(httpx.AsyncClient, "request", httpx_async_request)
@@ -225,6 +242,7 @@ class ContainedHttpProbeGuard:
             self._patch(socket.socket, "connect_ex", guarded_connect_ex)
             self._patch(socket.socket, "sendto", guarded_sendto)
             self._patch(socket, "getaddrinfo", guarded_getaddrinfo)
+            self._patch(socket, "socketpair", guarded_socketpair)
             return self
         except BaseException:
             self.__exit__(None, None, None)

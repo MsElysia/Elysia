@@ -136,7 +136,12 @@ def test_actual_elysia_panel_loopback_listener_still_works(tmp_path, monkeypatch
                 d.read()
             finally:
                 conn.close()
-            assert a.status_code == b.status_code == status_c == status_d == 200
+            async def guarded_async_status():
+                async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
+                    return await client.get(base + "/api/status")
+
+            status_async = asyncio.run(guarded_async_status()).status_code
+            assert a.status_code == b.status_code == status_c == status_d == status_async == 200
             assert a.json()["system"] is not None
             assert guard.receipt()["blocked_count"] == 0
             assert guard.receipt()["allowed_http_calls"] >= 4
@@ -206,3 +211,31 @@ def test_exception_cleanup_restores_every_transport_patch():
     assert urllib_request.urlopen is old_urllib
     assert LocalOllama._request is old_ollama
     assert guard.receipt()["blocked_count"] == 0
+
+
+def test_socketpair_ipc_is_scoped_and_raw_loopback_still_denied():
+    hits = []
+    with _listener(_witness(hits)) as witness_port:
+        with ContainedHttpProbeGuard(
+            witness_port, allowed_routes={("GET", "/api/status")}
+        ) as guard:
+            left, right = socket.socketpair()
+            try:
+                left.sendall(b"synthetic-IPC")
+                assert right.recv(64) == b"synthetic-IPC"
+            finally:
+                left.close()
+                right.close()
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                with pytest.raises(ProbeBlocked):
+                    sock.connect(("127.0.0.1", witness_port))
+            finally:
+                sock.close()
+        receipt = guard.receipt()
+    assert hits == []
+    assert receipt["attempts"] == [{
+        "reason": "unclassified_socket_connect",
+        "method": "UNKNOWN",
+        "path": "<unclassified>",
+    }]

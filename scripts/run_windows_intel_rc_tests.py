@@ -32,6 +32,7 @@ RC_REQUIRED = [
     "tests/test_task_step_completion.py",
     "tests/test_document_task_execution.py",
     "tests/test_contained_startup.py",
+    "tests/test_contained_http_probe_guard.py",
     "tests/test_restricted_runtime_adapter.py",
     "tests/test_control_panel_restricted_runtime.py",
     "tests/test_dashboard_plan_progress.py",

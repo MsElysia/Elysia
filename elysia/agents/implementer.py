@@ -15,6 +15,12 @@ from ..events import EventBus
 
 logger = logging.getLogger(__name__)
 
+# A relative file named in a step title is the create target. A path that
+# appears only in the prose must not win over that title.
+_NAMED_FILE_PATH = re.compile(
+    r"([a-zA-Z0-9_/\\-]+\.(?:py|yaml|yml|json|md|txt))"
+)
+
 
 class ImplementationStep:
     """Represents a single step in an implementation plan."""
@@ -374,15 +380,18 @@ class ImplementerAgent:
             logger.exception(f"Error executing step {step.step_number}: {e}")
             return {"success": False, "error": str(e), "step_type": step.step_type}
 
+    def _named_file_path(self, text: str) -> Optional[str]:
+        """Return the first relative file path named in text, if any."""
+        match = _NAMED_FILE_PATH.search(text or "")
+        return match.group(1) if match else None
+
     def _execute_create_file(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:
         """Execute a create_file step."""
-        # Extract file path from step content
-        # Look for patterns like "elysia/agents/foo.py" or "config/foo.yaml"
-        file_pattern = re.search(r"([a-zA-Z0-9_/\\-]+\.(py|yaml|yml|json|md|txt))", step.content)
-        if not file_pattern:
+        # The step title is the operator's target. A path mentioned in the
+        # body is used only when the title does not name a file.
+        file_path_str = self._named_file_path(step.title) or self._named_file_path(step.content)
+        if not file_path_str:
             return {"success": False, "error": "Could not extract file path from step"}
-
-        file_path_str = file_pattern.group(1)
         file_path = self.repo_root / file_path_str
 
         # Check if file already exists

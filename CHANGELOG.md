@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — create step uses the file named in the step title
+
+- `POST /api/proposals/<id>/implement` writes a create-file or add-tests step to the file named in the step title.
+- A path mentioned earlier in the step body is not the target when the title already names a file.
+- A step title that does not name a file still uses the first path in the body.

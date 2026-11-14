@@ -3577,3 +3577,52 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+
+## Product workflow — create step uses the file named in the step title
+
+**Status:** COMPLETED on this branch. Not on `main`. No PR.
+
+**Implementation commit:** `88e2460ccd2b1dcb89070eee8eda8c62aaaf13b3`
+
+**Base:** `722d8e4` (`main`). Not based on the events-limit, implement-status, research-status, chat-status, decision-status, implementation-result, approved-batch, status-availability, unreadable-proposal, dry_run type-check, dry-run lifecycle, unexecuted-step, existing-file, outside-path, proposal-repository, run-tests, create-content, or accepted-lifecycle branches.
+
+**Files:**
+- `elysia/agents/implementer.py`
+- `tests/test_runtime_api_implement_title_path.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Behavior:**
+- `POST /api/proposals/<id>/implement` writes a create-file step, and an add-tests step that uses that create path, to the file named in the step title.
+- For fictional proposal `fictional-title-target`, the step title is `Create file fictional_widget.py` and the body mentions `docs/notes.md` before a fenced `print('fictional-widget')`. The response is `success: true`, the written file is `fictional_widget.py`, and `docs/notes.md` is not created.
+- A step title that does not name a file still uses the first path in the body. Fictional proposal `fictional-body-target` still writes `fictional_body_target.py`.
+- An add-tests step titled `Add tests tests/test_fictional_widget.py` writes that test file and does not create `docs/notes.md`.
+
+**Evidence:**
+- Before, live HTTP 200 for `fictional-wrong-target` was `success: true`, stored status `implemented`, `implementation_status: completed`, `step_results[0].file_path` ended in `docs/notes.md`, that file contained `print('fictional-widget')`, and `fictional_widget.py` was absent. Working directory `/tmp/elysia-before-8rskevf0/cwd`.
+- After: `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_runtime_api_implement_title_path.py tests/test_implementer_agent.py -v --tb=short` — title-path contract 2 passed (Flask test client and live Werkzeug HTTP). Real `ProposalSystem` and `ImplementerAgent`, watcher off, fictional proposals, temporary working directory, no external services.
+- Live HTTP after the change for `fictional-title-target` at `/tmp/elysia-after-486d1n7w/cwd`: HTTP 200 `success: true`, file `fictional_widget.py` contains `print('fictional-widget')`, stored `implemented` / `completed`, `docs/notes.md` absent.
+- `tests/test_implementer_agent.py` still fails only on the pre-existing assertion text `test_implementer_rejects_non_accepted_proposal`. It was not changed.
+
+**Remaining limitations:**
+- A step title that does not name a file still writes the first path in the body. A prose mention of `docs/notes.md` before the intended filename still becomes the target.
+- A create step with no fenced content still writes a placeholder. That fix stays on `origin/cursor/product-workflow-engineering-8bee` (`99a3ed5`, handoff `f4acbba`).
+- An existing target is still reported as success. That fix stays on `origin/cursor/product-workflow-engineering-process-36a9` (`c7d2d29`, handoff `2cd4db0`).
+- A create path that resolves outside the working directory can still be written. That fix stays on `origin/cursor/elysia-product-workflow-7d5a` (`23b96c1`, handoff `8d6ae4a`).
+- Unsuccessful implement results on this branch still return HTTP 200. That mapping stays on `origin/cursor/elysia-product-workflow-process-9429`.
+- Boolean `dry_run: true` still stores an approved proposal as `implemented`. That fix stays on `origin/cursor/product-workflow-engineering-process-b494` (`07e1de0`, handoff `867b211`).
+- A non-boolean `dry_run` is still not rejected here. That check stays on `origin/cursor/elysia-product-workflow-6a1b` (`4ed3b33`, handoff `d4900c7`).
+- A generic step and a modify or config step that does not change a file still report success. Modify still uses the first path in the body. That fix stays on `origin/cursor/elysia-product-workflow-gaps-0e04` (`f08b7ff`, handoff `8a459a0`).
+- The route still builds `ImplementerAgent` with `repo_root=Path(".")`. That fix stays on `origin/cursor/product-workflow-engineering-process-94c4` (`64eb491`, handoff `07ddd67`).
+- A run-tests step with no named in-repository file still runs `pytest tests` on this branch. That fix stays on `origin/cursor/product-workflow-engineering-process-1bef` (`9b5af04`, handoff `824169c`).
+- A live run whose lifecycle cannot enter `in_implementation` still continues on this branch. That fix stays on `origin/cursor/product-workflow-gaps-bdad` (`2878069`, handoff `36ca37a`). `accepted` is still not a lifecycle status. This branch does not edit `elysia/core/proposal_system.py`.
+
+**Ownership left untouched:**
+- Did not edit `elysia/core/proposal_system.py` or `elysia/runtime.py`.
+- Runtime integrity today is `36b1166` on `origin/cursor/elysia-runtime-integrity-2984` (`bc-e672da03`, `elysia/runtime.py` and `tests/test_elysia_runtime_heartbeat_truth.py` only). It is idle.
+- The previous runtime-integrity push is `dd26d3a` on `origin/cursor/elysia-runtime-integrity-03c2`. Application runtime safety remains `397264a` on `origin/cursor/application-runtime-safety-2d97`.
+- Did not edit `project_guardian/ui_control_panel.py`. Dashboard drafts #147, #148, #149, #153, and #156 remain open and still include that file.
+- `CURRENT_TASK: NONE` on `main` and on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`). `TASK-0053` remains OPEN review-only on the brain-bridge line. Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb` on `origin/codex/limited-live-activation-wrapper`. Do not implement live memory or vector writes. Leave open memory drafts through PR #224 to their owners.
+
+A branch commit is not integrated product readiness. Next product run should pick a different unclaimed API or dashboard error path. One remaining path is a title-less create step whose first prose path is not the intended file. Re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`.

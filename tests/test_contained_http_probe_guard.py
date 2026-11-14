@@ -50,6 +50,19 @@ def _witness(hits):
     return wsgi
 
 
+def _redirect_witness(hits):
+    def wsgi(environ, start_response):
+        method = environ.get("REQUEST_METHOD")
+        path = environ.get("PATH_INFO")
+        hits.append((method, path))
+        if path == "/api/status":
+            start_response("302 Found", [("Location", "/api/tags")])
+            return [b"synthetic-redirect"]
+        start_response("200 OK", [("Content-Type", "text/plain")])
+        return [b"forbidden-route-reached"]
+    return wsgi
+
+
 def _attempt(transport, method, url, path):
     if transport == "requests":
         return requests.request(method, url, timeout=2)
@@ -106,6 +119,40 @@ def test_forbidden_probe_blocked_before_local_witness_connect(transport, method,
     assert receipt["unclassified_count"] == 0
     assert receipt["attempts"] == [{
         "reason": "unapproved_loopback_http", "method": method, "path": path
+    }]
+
+
+@pytest.mark.parametrize("transport", [
+    "requests", "httpx", "httpx_async", "urllib"
+])
+def test_redirect_hop_denied_before_forbidden_route_receives_request(transport):
+    hits = []
+    with _listener(_redirect_witness(hits)) as app_port:
+        url = f"http://127.0.0.1:{app_port}/api/status"
+        with ContainedHttpProbeGuard(
+            app_port, allowed_routes={("GET", "/api/status")}
+        ) as guard:
+            with pytest.raises(ProbeBlocked):
+                if transport == "requests":
+                    requests.get(url, timeout=3)  # follows redirects by default
+                elif transport == "httpx":
+                    httpx.get(url, timeout=3, trust_env=False, follow_redirects=True)
+                elif transport == "httpx_async":
+                    async def follow_redirect():
+                        async with httpx.AsyncClient(
+                            timeout=3, trust_env=False, follow_redirects=True
+                        ) as client:
+                            await client.get(url)
+                    asyncio.run(follow_redirect())
+                else:
+                    with urllib_request.urlopen(url, timeout=3):
+                        pass  # urllib follows HTTP 302 by default
+        receipt = guard.receipt()
+    assert hits == [("GET", "/api/status")], "forbidden redirect reached listener"
+    assert receipt["blocked_count"] == 1
+    assert receipt["unclassified_count"] == 0
+    assert receipt["attempts"] == [{
+        "reason": "unapproved_loopback_http", "method": "GET", "path": "/api/tags"
     }]
 
 
@@ -196,6 +243,9 @@ def test_exception_cleanup_restores_every_transport_patch():
     old_connect = socket.socket.connect
     old_dns = socket.getaddrinfo
     old_session = requests.sessions.Session.request
+    old_session_send = requests.sessions.Session.send
+    old_httpx_hop = httpx.Client._send_single_request
+    old_async_hop = httpx.AsyncClient._send_single_request
     old_httpx = httpx.Client.request
     old_urllib = urllib_request.urlopen
     old_ollama = LocalOllama._request
@@ -207,6 +257,9 @@ def test_exception_cleanup_restores_every_transport_patch():
     assert socket.socket.connect is old_connect
     assert socket.getaddrinfo is old_dns
     assert requests.sessions.Session.request is old_session
+    assert requests.sessions.Session.send is old_session_send
+    assert httpx.Client._send_single_request is old_httpx_hop
+    assert httpx.AsyncClient._send_single_request is old_async_hop
     assert httpx.Client.request is old_httpx
     assert urllib_request.urlopen is old_urllib
     assert LocalOllama._request is old_ollama

@@ -130,8 +130,11 @@ class ContainedHttpProbeGuard:
             from project_guardian.local_memory_chat import LocalOllama
 
             orig_session = requests.sessions.Session.request
+            orig_session_send = requests.sessions.Session.send
             orig_httpx = httpx.Client.request
             orig_async = httpx.AsyncClient.request
+            orig_httpx_hop = httpx.Client._send_single_request
+            orig_async_hop = httpx.AsyncClient._send_single_request
             orig_http_request = http.client.HTTPConnection.request
             orig_urlopen = urllib_request.urlopen
             orig_opener = urllib_request.OpenerDirector.open
@@ -146,6 +149,12 @@ class ContainedHttpProbeGuard:
                 with self._admit_http(method, url):
                     return orig_session(session, method, url, *args, **kwargs)
 
+            def requests_send(session, request, *args, **kwargs):
+                # Requests redirects call Session.send, bypassing Session.request.
+                # Inspect every prepared request before transport can run.
+                with self._admit_http(request.method, request.url):
+                    return orig_session_send(session, request, *args, **kwargs)
+
             def httpx_request(client, method, url, *args, **kwargs):
                 address = str(url)
                 if not urlsplit(address).scheme:
@@ -159,6 +168,16 @@ class ContainedHttpProbeGuard:
                     address = str(client.base_url.join(address))
                 with self._admit_http(method, address):
                     return await orig_async(client, method, url, *args, **kwargs)
+
+            def httpx_send_hop(client, request, *args, **kwargs):
+                # HTTPX redirects call _send_single_request for every hop,
+                # without reentering Client.request or Client.send.
+                with self._admit_http(request.method, str(request.url)):
+                    return orig_httpx_hop(client, request, *args, **kwargs)
+
+            async def httpx_async_send_hop(client, request, *args, **kwargs):
+                with self._admit_http(request.method, str(request.url)):
+                    return await orig_async_hop(client, request, *args, **kwargs)
 
             def http_request(connection, method, url, *args, **kwargs):
                 # Direct http.client is used by LocalOllama. Its _request method
@@ -232,8 +251,11 @@ class ContainedHttpProbeGuard:
                     self._socketpair_ipc.reset(token)
 
             self._patch(requests.sessions.Session, "request", requests_request)
+            self._patch(requests.sessions.Session, "send", requests_send)
             self._patch(httpx.Client, "request", httpx_request)
             self._patch(httpx.AsyncClient, "request", httpx_async_request)
+            self._patch(httpx.Client, "_send_single_request", httpx_send_hop)
+            self._patch(httpx.AsyncClient, "_send_single_request", httpx_async_send_hop)
             self._patch(http.client.HTTPConnection, "request", http_request)
             self._patch(urllib_request, "urlopen", urlopen)
             self._patch(urllib_request.OpenerDirector, "open", opener_open)

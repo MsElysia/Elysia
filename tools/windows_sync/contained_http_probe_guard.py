@@ -67,23 +67,25 @@ class ContainedHttpProbeGuard:
         try:
             parsed = urlsplit(str(url))
             port = parsed.port
+            hostname = parsed.hostname
+            username, password = parsed.username, parsed.password
         except (ValueError, TypeError):
-            parsed, port = None, None
+            parsed, port, hostname, username, password = None, None, None, None, None
         m = str(method).upper()
-        p = parsed.path or "/" if parsed is not None else ""
+        p = (parsed.path or "/") if parsed is not None else ""
         ok = (
             parsed is not None
             and parsed.scheme == "http"
-            and parsed.hostname == "127.0.0.1"
-            and parsed.username is None
-            and parsed.password is None
+            and hostname == "127.0.0.1"
+            and username is None
+            and password is None
             and port == self.app_port
             and (m, p) in self.allowed_routes
         )
         if not ok:
             reason = (
                 "unapproved_loopback_http"
-                if parsed is not None and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+                if hostname in {"127.0.0.1", "::1", "localhost"}
                 else "non_loopback_http"
             )
             self._record(reason=reason, method=m, path=p)
@@ -101,7 +103,7 @@ class ContainedHttpProbeGuard:
             return False
         host, port = destination[:2]
         return (
-            host == "127.0.0.1"
+            host in ("127.0.0.1", b"127.0.0.1")
             and type(port) is int
             and port == self.app_port
             and self._authorized.get() > 0
@@ -200,7 +202,7 @@ class ContainedHttpProbeGuard:
                 return orig_connect_ex(sock, destination)
 
             def guarded_getaddrinfo(host, port, *args, **kwargs):
-                if host != "127.0.0.1":
+                if host not in ("127.0.0.1", b"127.0.0.1"):
                     self._record(reason="non_loopback_dns")
                     raise ProbeBlocked("contained guard rejected DNS target")
                 return orig_getaddrinfo(host, port, *args, **kwargs)

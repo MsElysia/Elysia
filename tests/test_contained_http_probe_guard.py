@@ -160,18 +160,31 @@ def test_direct_unknown_socket_and_external_dns_are_fail_closed():
                     sock.connect(("127.0.0.1", witness_port))
             finally:
                 sock.close()
+            sock_ex = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                with pytest.raises(ProbeBlocked):
+                    sock_ex.connect_ex(("127.0.0.1", witness_port))
+            finally:
+                sock_ex.close()
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                with pytest.raises(ProbeBlocked):
+                    udp.sendto(b"synthetic-only", ("127.0.0.1", witness_port))
+            finally:
+                udp.close()
             with pytest.raises(ProbeBlocked):
                 socket.getaddrinfo("example.invalid", 80)
             with pytest.raises(ProbeBlocked):
                 requests.get("http://192.0.2.44/api/tags", timeout=2)
         receipt = guard.receipt()
     assert hits == []
-    assert receipt["blocked_count"] == 3
-    assert receipt["unclassified_count"] == 2
+    assert receipt["blocked_count"] == 5
+    assert receipt["unclassified_count"] == 4
     assert [e["reason"] for e in receipt["attempts"]] == [
-        "unclassified_socket_connect", "non_loopback_dns", "non_loopback_http"
+        "unclassified_socket_connect", "unclassified_socket_connect",
+        "unclassified_socket_sendto", "non_loopback_dns", "non_loopback_http"
     ]
-    assert receipt["attempts"][2]["path"] == "/api/tags"
+    assert receipt["attempts"][-1]["path"] == "/api/tags"
 
 
 def test_exception_cleanup_restores_every_transport_patch():

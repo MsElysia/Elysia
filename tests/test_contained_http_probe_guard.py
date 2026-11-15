@@ -7,6 +7,7 @@ request counter must remain at zero. Guard wrappers are removed after each run.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import http.client
 import socket
 import threading
@@ -153,6 +154,97 @@ def test_redirect_hop_denied_before_forbidden_route_receives_request(transport):
     assert receipt["unclassified_count"] == 0
     assert receipt["attempts"] == [{
         "reason": "unapproved_loopback_http", "method": "GET", "path": "/api/tags"
+    }]
+
+
+@pytest.mark.parametrize("import_target", [
+    "requests", "httpx", "project_guardian.local_memory_chat",
+])
+def test_import_time_socket_probe_blocked_before_client_or_project_import(
+    import_target, monkeypatch,
+):
+    hits = []
+    with _listener(_witness(hits)) as witness_port:
+        original_import = builtins.__import__
+        original_connect = socket.socket.connect
+        original_dns = socket.getaddrinfo
+        triggered = []
+
+        def import_with_synthetic_probe(name, *args, **kwargs):
+            if name == import_target and not triggered:
+                triggered.append((
+                    name,
+                    socket.socket.connect is not original_connect,
+                    socket.getaddrinfo is not original_dns,
+                ))
+                # Import-hook injection: baseline reaches witness, while the
+                # repaired guard must block before this local request can send.
+                with socket.create_connection(("127.0.0.1", witness_port), timeout=2) as sock:
+                    sock.sendall(
+                        b"GET /api/tags HTTP/1.1\r\n"
+                        b"Host: 127.0.0.1\r\nConnection: close\r\n\r\n"
+                    )
+                    sock.recv(256)
+            return original_import(name, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(builtins, "__import__", import_with_synthetic_probe)
+            guard = ContainedHttpProbeGuard(
+                witness_port, allowed_routes={("GET", "/api/status")}
+            )
+            with pytest.raises(ProbeBlocked):
+                with guard:
+                    pass
+        receipt = guard.receipt()
+    assert triggered == [(import_target, True, True)]
+    assert hits == [], "import-time outbound traffic reached witness"
+    assert receipt["allowed_http_calls"] == 0
+    assert receipt["blocked_count"] == receipt["unclassified_count"] == 1
+    assert receipt["attempts"] == [{
+        "reason": "unclassified_socket_connect",
+        "method": "UNKNOWN",
+        "path": "<unclassified>",
+    }]
+    assert socket.socket.connect is original_connect
+    assert socket.getaddrinfo is original_dns
+
+
+def test_import_time_dns_probe_denied_before_real_resolver(monkeypatch):
+    original_import = builtins.__import__
+    original_dns = socket.getaddrinfo
+    resolver_calls = []
+    observed = []
+
+    def witness_resolver(*args, **kwargs):
+        resolver_calls.append("reached")
+        return []
+
+    with monkeypatch.context() as patch:
+        patch.setattr(socket, "getaddrinfo", witness_resolver)
+
+        def import_with_dns_probe(name, *args, **kwargs):
+            if name == "project_guardian.local_memory_chat" and not observed:
+                observed.append(socket.getaddrinfo is not witness_resolver)
+                socket.getaddrinfo("example.invalid", 443)
+            return original_import(name, *args, **kwargs)
+
+        patch.setattr(builtins, "__import__", import_with_dns_probe)
+        guard = ContainedHttpProbeGuard(
+            5078, allowed_routes={("GET", "/api/status")}
+        )
+        with pytest.raises(ProbeBlocked):
+            with guard:
+                pass
+        assert socket.getaddrinfo is witness_resolver
+    receipt = guard.receipt()
+    assert observed == [True]
+    assert resolver_calls == []
+    assert socket.getaddrinfo is original_dns
+    assert receipt["blocked_count"] == receipt["unclassified_count"] == 1
+    assert receipt["attempts"] == [{
+        "reason": "non_loopback_dns",
+        "method": "UNKNOWN",
+        "path": "<unclassified>",
     }]
 
 

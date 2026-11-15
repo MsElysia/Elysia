@@ -125,6 +125,60 @@ class ContainedHttpProbeGuard:
             raise RuntimeError("guard already installed")
         self._active = True
         try:
+            # Patch raw sockets and DNS BEFORE importing third-party HTTP
+            # clients or project code. An import-time network attempt must
+            # fail closed and leave an unclassified STOP receipt.
+            orig_connect = socket.socket.connect
+            orig_connect_ex = socket.socket.connect_ex
+            orig_getaddrinfo = socket.getaddrinfo
+            orig_sendto = socket.socket.sendto
+            orig_socketpair = socket.socketpair
+
+            def guarded_connect(sock, destination):
+                if sock.family not in {socket.AF_INET, socket.AF_INET6}:
+                    return orig_connect(sock, destination)  # local IPC, not TCP/UDP
+                if not self._is_authorized_connect(destination):
+                    self._record(reason="unclassified_socket_connect")
+                    raise ProbeBlocked("contained guard rejected unknown socket connect")
+                return orig_connect(sock, destination)
+
+            def guarded_connect_ex(sock, destination):
+                if sock.family not in {socket.AF_INET, socket.AF_INET6}:
+                    return orig_connect_ex(sock, destination)
+                if not self._is_authorized_connect(destination):
+                    self._record(reason="unclassified_socket_connect")
+                    raise ProbeBlocked("contained guard rejected unknown socket connect_ex")
+                return orig_connect_ex(sock, destination)
+
+            def guarded_getaddrinfo(host, port, *args, **kwargs):
+                if host not in ("127.0.0.1", b"127.0.0.1"):
+                    self._record(reason="non_loopback_dns")
+                    raise ProbeBlocked("contained guard rejected DNS target")
+                return orig_getaddrinfo(host, port, *args, **kwargs)
+
+            def guarded_sendto(sock, data, *args, **kwargs):
+                address = args[-1] if args and isinstance(args[-1], tuple) else kwargs.get("address")
+                if sock.family in {socket.AF_INET, socket.AF_INET6} and not self._is_authorized_connect(address):
+                    self._record(reason="unclassified_socket_sendto")
+                    raise ProbeBlocked("contained guard rejected datagram sendto")
+                return orig_sendto(sock, data, *args, **kwargs)
+
+            def guarded_socketpair(*args, **kwargs):
+                # Windows implementation creates a one-off local TCP pair.
+                # Keep permission scoped to this stdlib operation and restore
+                # it before any caller can use the returned socket handles.
+                token = self._socketpair_ipc.set(self._socketpair_ipc.get() + 1)
+                try:
+                    return orig_socketpair(*args, **kwargs)
+                finally:
+                    self._socketpair_ipc.reset(token)
+
+            self._patch(socket.socket, "connect", guarded_connect)
+            self._patch(socket.socket, "connect_ex", guarded_connect_ex)
+            self._patch(socket.socket, "sendto", guarded_sendto)
+            self._patch(socket, "getaddrinfo", guarded_getaddrinfo)
+            self._patch(socket, "socketpair", guarded_socketpair)
+
             import requests
             import httpx
             from project_guardian.local_memory_chat import LocalOllama
@@ -139,12 +193,6 @@ class ContainedHttpProbeGuard:
             orig_urlopen = urllib_request.urlopen
             orig_opener = urllib_request.OpenerDirector.open
             orig_local_ollama = LocalOllama._request
-            orig_connect = socket.socket.connect
-            orig_connect_ex = socket.socket.connect_ex
-            orig_getaddrinfo = socket.getaddrinfo
-            orig_sendto = socket.socket.sendto
-            orig_socketpair = socket.socketpair
-
             def requests_request(session, method, url, *args, **kwargs):
                 with self._admit_http(method, url):
                     return orig_session(session, method, url, *args, **kwargs)
@@ -211,45 +259,6 @@ class ContainedHttpProbeGuard:
                 with self._admit_http(method, address):
                     return orig_local_ollama(model, method, path, *args, **kwargs)
 
-            def guarded_connect(sock, destination):
-                if sock.family not in {socket.AF_INET, socket.AF_INET6}:
-                    return orig_connect(sock, destination)  # local IPC, not TCP/UDP
-                if not self._is_authorized_connect(destination):
-                    self._record(reason="unclassified_socket_connect")
-                    raise ProbeBlocked("contained guard rejected unknown socket connect")
-                return orig_connect(sock, destination)
-
-            def guarded_connect_ex(sock, destination):
-                if sock.family not in {socket.AF_INET, socket.AF_INET6}:
-                    return orig_connect_ex(sock, destination)
-                if not self._is_authorized_connect(destination):
-                    self._record(reason="unclassified_socket_connect")
-                    raise ProbeBlocked("contained guard rejected unknown socket connect_ex")
-                return orig_connect_ex(sock, destination)
-
-            def guarded_getaddrinfo(host, port, *args, **kwargs):
-                if host not in ("127.0.0.1", b"127.0.0.1"):
-                    self._record(reason="non_loopback_dns")
-                    raise ProbeBlocked("contained guard rejected DNS target")
-                return orig_getaddrinfo(host, port, *args, **kwargs)
-
-            def guarded_sendto(sock, data, *args, **kwargs):
-                address = args[-1] if args and isinstance(args[-1], tuple) else kwargs.get("address")
-                if sock.family in {socket.AF_INET, socket.AF_INET6} and not self._is_authorized_connect(address):
-                    self._record(reason="unclassified_socket_sendto")
-                    raise ProbeBlocked("contained guard rejected datagram sendto")
-                return orig_sendto(sock, data, *args, **kwargs)
-
-            def guarded_socketpair(*args, **kwargs):
-                # Windows implementation creates a one-off local TCP pair.
-                # Keep permission scoped to this stdlib operation and restore
-                # it before any caller can use the returned socket handles.
-                token = self._socketpair_ipc.set(self._socketpair_ipc.get() + 1)
-                try:
-                    return orig_socketpair(*args, **kwargs)
-                finally:
-                    self._socketpair_ipc.reset(token)
-
             self._patch(requests.sessions.Session, "request", requests_request)
             self._patch(requests.sessions.Session, "send", requests_send)
             self._patch(httpx.Client, "request", httpx_request)
@@ -260,11 +269,6 @@ class ContainedHttpProbeGuard:
             self._patch(urllib_request, "urlopen", urlopen)
             self._patch(urllib_request.OpenerDirector, "open", opener_open)
             self._patch(LocalOllama, "_request", local_ollama_request)
-            self._patch(socket.socket, "connect", guarded_connect)
-            self._patch(socket.socket, "connect_ex", guarded_connect_ex)
-            self._patch(socket.socket, "sendto", guarded_sendto)
-            self._patch(socket, "getaddrinfo", guarded_getaddrinfo)
-            self._patch(socket, "socketpair", guarded_socketpair)
             return self
         except BaseException:
             self.__exit__(None, None, None)

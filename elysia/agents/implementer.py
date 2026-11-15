@@ -15,6 +15,13 @@ from ..events import EventBus
 
 logger = logging.getLogger(__name__)
 
+# A title-less create step writes the file named immediately before the
+# fenced content. An earlier prose path is context, not the target.
+_NAMED_FILE_PATH = re.compile(
+    r"([a-zA-Z0-9_/\\-]+\.(?:py|yaml|yml|json|md|txt))"
+)
+_CODE_FENCE = re.compile(r"```")
+
 
 class ImplementationStep:
     """Represents a single step in an implementation plan."""
@@ -374,15 +381,33 @@ class ImplementerAgent:
             logger.exception(f"Error executing step {step.step_number}: {e}")
             return {"success": False, "error": str(e), "step_type": step.step_type}
 
+    def _body_create_target(self, content: str) -> Optional[str]:
+        """Return the file a title-less create step should write.
+
+        The fenced content belongs to the last path named before that fence.
+        A reference path earlier in the prose is not the target. When the
+        step has no fence, the first path in the body remains the target.
+        """
+        text = content or ""
+        fence = _CODE_FENCE.search(text)
+        if fence:
+            before = [
+                match.group(1)
+                for match in _NAMED_FILE_PATH.finditer(text[: fence.start()])
+            ]
+            if before:
+                return before[-1]
+        match = _NAMED_FILE_PATH.search(text)
+        return match.group(1) if match else None
+
     def _execute_create_file(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:
         """Execute a create_file step."""
-        # Extract file path from step content
-        # Look for patterns like "elysia/agents/foo.py" or "config/foo.yaml"
-        file_pattern = re.search(r"([a-zA-Z0-9_/\\-]+\.(py|yaml|yml|json|md|txt))", step.content)
-        if not file_pattern:
+        # The title does not name a file on this path. Use the path that
+        # sits with the fenced content, not the first path in the prose.
+        file_path_str = self._body_create_target(step.content)
+        if not file_path_str:
             return {"success": False, "error": "Could not extract file path from step"}
 
-        file_path_str = file_pattern.group(1)
         file_path = self.repo_root / file_path_str
 
         # Check if file already exists

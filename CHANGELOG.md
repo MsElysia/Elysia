@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — title-less create step uses the path beside the fence
+
+- `POST /api/proposals/<id>/implement` writes a create-file or add-tests step whose title does not name a file to the last path before the fenced content.
+- A reference path mentioned earlier in the step body is not the file that receives that content.
+- A step with no fenced content still uses the first path in the body.

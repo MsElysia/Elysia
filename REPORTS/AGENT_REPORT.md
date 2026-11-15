@@ -3577,3 +3577,55 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+
+## Product workflow — title-less create step uses the path beside the fence
+
+**Status:** COMPLETED on this branch. Not on `main`. No PR.
+
+**Implementation commit:** `2f9e69b8823399e2edc7be0ba1ad5e45e19d4e59`
+
+**Base:** `722d8e4` (`main`). Not based on the events-limit, implement-status, research-status, chat-status, decision-status, implementation-result, approved-batch, status-availability, unreadable-proposal, dry_run type-check, dry-run lifecycle, unexecuted-step, existing-file, outside-path, proposal-repository, run-tests, create-content, accepted-lifecycle, or title-path branches.
+
+**Files:**
+- `elysia/agents/implementer.py`
+- `tests/test_runtime_api_implement_prose_path.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Behavior:**
+- `POST /api/proposals/<id>/implement` writes a create-file step, and an add-tests step, whose title does not name a file to the last path named before the fenced content.
+- For fictional proposal `fictional-prose-target`, the title is `Create file`. The body mentions `docs/notes.md`, then `fictional_widget.py`, then a fence that contains `helper_other.py` and `print('fictional-widget')`. The response is `success: true`, the written file is `fictional_widget.py`, and neither `docs/notes.md` nor `helper_other.py` is created.
+- A title-less step whose only path before the fence is `fictional_only_target.py` still writes that file.
+- An add-tests step titled `Add tests` writes `tests/test_fictional_widget.py` and does not create `docs/notes.md`.
+
+**Evidence:**
+- Before, live HTTP 200 for `fictional-prose-target` was `success: true`, stored status `implemented`, `implementation_status: completed`, `step_results[0].file_path` ended in `docs/notes.md`, that file contained `print('fictional-widget')`, and `fictional_widget.py` was absent. Working directory `/tmp/elysia-before-owe0fg72/cwd`.
+- After: `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_runtime_api_implement_prose_path.py tests/test_implementer_agent.py -v --tb=short` — prose-path contract 2 passed (Flask test client and live Werkzeug HTTP). Real `ProposalSystem` and `ImplementerAgent`, watcher off, fictional proposals, temporary working directory, no external services. Re-run of the contract file alone: 2 passed.
+- `tests/test_implementer_agent.py` still fails only on the pre-existing assertion text `test_implementer_rejects_non_accepted_proposal`. It was not changed. 9 other tests in that file passed.
+- Live HTTP after the change for `fictional-prose-target` at `/tmp/elysia-after-dt50n670/cwd`: HTTP 200 `success: true`, file `fictional_widget.py` contains `# helper lives in helper_other.py` and `print('fictional-widget')`, stored `implemented` / `completed`, `docs/notes.md` and `helper_other.py` absent.
+
+**Remaining limitations:**
+- A step title that names the file is still ignored on this branch. That fix stays on `origin/cursor/product-workflow-engineering-process-48b6` (`88e2460`, handoff `5764df0`).
+- A reference path that appears after the intended filename and before the fence still becomes the target. A path that appears only inside the fence is not chosen when any path appears before the fence.
+- A create step with no fenced content still writes a placeholder to the first path in the body. That fix stays on `origin/cursor/product-workflow-engineering-8bee` (`99a3ed5`, handoff `f4acbba`).
+- An existing target is still reported as success. That fix stays on `origin/cursor/product-workflow-engineering-process-36a9` (`c7d2d29`, handoff `2cd4db0`).
+- A create path that resolves outside the working directory can still be written. That fix stays on `origin/cursor/elysia-product-workflow-7d5a` (`23b96c1`, handoff `8d6ae4a`).
+- Unsuccessful implement results on this branch still return HTTP 200. That mapping stays on `origin/cursor/elysia-product-workflow-process-9429`.
+- Boolean `dry_run: true` still stores an approved proposal as `implemented`. That fix stays on `origin/cursor/product-workflow-engineering-process-b494` (`07e1de0`, handoff `867b211`).
+- A non-boolean `dry_run` is still not rejected here. That check stays on `origin/cursor/elysia-product-workflow-6a1b` (`4ed3b33`, handoff `d4900c7`).
+- A generic step and a modify or config step that does not change a file still report success. Modify still uses the first path in the body. That fix stays on `origin/cursor/elysia-product-workflow-gaps-0e04` (`f08b7ff`, handoff `8a459a0`).
+- The route still builds `ImplementerAgent` with `repo_root=Path(".")`. That fix stays on `origin/cursor/product-workflow-engineering-process-94c4` (`64eb491`, handoff `07ddd67`).
+- A run-tests step with no named in-repository file still runs `pytest tests` on this branch. That fix stays on `origin/cursor/product-workflow-engineering-process-1bef` (`9b5af04`, handoff `824169c`).
+- A live run whose lifecycle cannot enter `in_implementation` still continues on this branch. That fix stays on `origin/cursor/product-workflow-gaps-bdad` (`2878069`, handoff `36ca37a`). `accepted` is still not a lifecycle status. This branch does not edit `elysia/core/proposal_system.py`.
+- `GET /api/proposals/<id>/implementation` on this branch still leaves `last_implementation_result` unset. That fix stays on `origin/cursor/product-workflow-engineering-583c` (`f2f0ed9`, handoff `3ca6a2f`).
+- `run_batch` still lists only lifecycle status `accepted`, so an approved proposal is skipped. `project_guardian.module_activity` is still absent, so the proposals CLI that calls `run_batch` still cannot be imported.
+
+**Ownership left untouched:**
+- Did not edit `elysia/core/proposal_system.py`, `elysia/runtime.py`, or `project_guardian/ui_control_panel.py`.
+- Runtime integrity today is `36b1166` on `origin/cursor/elysia-runtime-integrity-2984` (`elysia/runtime.py` and `tests/test_elysia_runtime_heartbeat_truth.py` only). It is idle.
+- Application runtime safety remains `397264a` on `origin/cursor/application-runtime-safety-2d97`.
+- Dashboard drafts #147, #148, #149, and #153 remain open. #156 remains open and is not a draft. They still own the dashboard files.
+- `CURRENT_TASK: NONE` on `main` and on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`). `TASK-0053` remains OPEN review-only on the brain-bridge line. Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb` on `origin/codex/limited-live-activation-wrapper`. Do not implement live memory or vector writes. Leave open memory drafts through PR #224 to their owners.
+
+A branch commit is not integrated product readiness. Next product run should pick a different unclaimed API or dashboard error path. Do not take another pass at create-path selection. Re-check `origin/cursor/elysia-product-workflow-gaps-0e04` before editing modify or generic step reporting, and re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`. The approved-batch CLI path stays blocked while `project_guardian.module_activity` is missing.

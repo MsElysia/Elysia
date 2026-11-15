@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import http.client
 import socket
+import sys
 import threading
 from typing import Iterable
 from urllib import request as urllib_request
@@ -45,6 +46,9 @@ class ContainedHttpProbeGuard:
             raise ValueError("Explicit safe method/path pairs are required")
         self.events: list[dict[str, str]] = []
         self.allowed_http_count = 0
+        self.dashboard_probes: list[dict[str, str]] = []
+        self._dashboard_panel_type = None
+        self._dashboard_check_codes = {}
         self._lock = threading.Lock()
         self._patches: list[tuple[object, str, object]] = []
         self._authorized: ContextVar[int] = ContextVar("elysia_guard_authorized", default=0)
@@ -146,8 +150,42 @@ class ContainedHttpProbeGuard:
                 if sock.family not in {socket.AF_INET, socket.AF_INET6}:
                     return orig_connect_ex(sock, destination)
                 if not self._is_authorized_connect(destination):
-                    self._record(reason="unclassified_socket_connect")
-                    raise ProbeBlocked("contained guard rejected unknown socket connect_ex")
+                    # Recognize ONLY the two reviewed dashboard source methods,
+                    # not arbitrary raw connect_ex in a loosely scoped context.
+                    # Caller code and panel instance must match the real class.
+                    operation = None
+                    if (
+                        sock.family == socket.AF_INET
+                        and sock.type == socket.SOCK_STREAM
+                        and isinstance(destination, tuple)
+                        and len(destination) == 2
+                        and destination[0] == "127.0.0.1"
+                        and type(destination[1]) is int
+                        and destination[1] == self.app_port
+                    ):
+                        caller = sys._getframe(1)
+                        candidate = self._dashboard_check_codes.get(caller.f_code)
+                        panel = caller.f_locals.get("self")
+                        if type(panel) is self._dashboard_panel_type:
+                            if (
+                                candidate == "port_availability"
+                                and caller.f_locals.get("host") == "127.0.0.1"
+                                and caller.f_locals.get("port") == self.app_port
+                                and panel.host == "127.0.0.1"
+                                and panel.port == self.app_port
+                            ):
+                                operation = candidate
+                            elif (
+                                candidate == "server_readiness"
+                                and panel.host == "127.0.0.1"
+                                and (panel._actual_port or panel.port) == self.app_port
+                            ):
+                                operation = candidate
+                    if operation is None:
+                        self._record(reason="unclassified_socket_connect")
+                        raise ProbeBlocked("contained guard rejected unknown socket connect_ex")
+                    with self._lock:
+                        self.dashboard_probes.append({"operation": operation})
                 return orig_connect_ex(sock, destination)
 
             def guarded_getaddrinfo(host, port, *args, **kwargs):
@@ -182,6 +220,15 @@ class ContainedHttpProbeGuard:
             import requests
             import httpx
             from project_guardian.local_memory_chat import LocalOllama
+            from project_guardian.ui_control_panel import UIControlPanel
+
+            # Source-identity checks avoid granting raw socket access to
+            # any caller merely holding an HTTP or dashboard context.
+            self._dashboard_panel_type = UIControlPanel
+            self._dashboard_check_codes = {
+                UIControlPanel._check_port_available.__code__: "port_availability",
+                UIControlPanel._wait_for_server_ready.__code__: "server_readiness",
+            }
 
             orig_session = requests.sessions.Session.request
             orig_session_send = requests.sessions.Session.send
@@ -278,6 +325,8 @@ class ContainedHttpProbeGuard:
         for obj, name, original in reversed(self._patches):
             setattr(obj, name, original)
         self._patches.clear()
+        self._dashboard_check_codes.clear()
+        self._dashboard_panel_type = None
         self._active = False
 
     def receipt(self) -> dict:
@@ -285,8 +334,11 @@ class ContainedHttpProbeGuard:
         with self._lock:
             blocked = list(self.events)
             allowed = self.allowed_http_count
+            local_probes = list(self.dashboard_probes)
         return {
             "allowed_http_calls": allowed,
+            "dashboard_probe_count": len(local_probes),
+            "dashboard_probes": local_probes,
             "blocked_count": len(blocked),
             "unclassified_count": sum(
                 x["reason"].startswith("unclassified") or x["reason"] == "non_loopback_dns"

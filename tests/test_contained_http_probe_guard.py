@@ -292,6 +292,99 @@ def test_actual_elysia_panel_loopback_listener_still_works(tmp_path, monkeypatch
             }]
 
 
+
+def _synthetic_dashboard_panel(tmp_path, port):
+    memory = MemoryCore(
+        filepath=str(tmp_path / "dashboard_probe_memory.json"),
+        enable_timeline_logging=False,
+        enable_vector_search=False,
+    )
+    return UIControlPanel(
+        orchestrator=SimpleNamespace(memory=memory, config={}),
+        host="127.0.0.1", port=port,
+    )
+
+
+def test_actual_dashboard_availability_and_readiness_are_classified(tmp_path):
+    hits = []
+    with _listener(_witness(hits)) as app_port:
+        panel = _synthetic_dashboard_panel(tmp_path, app_port)
+        panel._actual_port = app_port
+        panel._server_error = None
+        with ContainedHttpProbeGuard(
+            app_port, allowed_routes={("GET", "/api/status")}
+        ) as guard:
+            assert panel._check_port_available("127.0.0.1", app_port) is False
+            assert panel._wait_for_server_ready(timeout=0.75) is True
+        receipt = guard.receipt()
+    assert hits == [], "raw dashboard TCP check must not send HTTP"
+    assert receipt["blocked_count"] == receipt["unclassified_count"] == 0
+    assert receipt["dashboard_probe_count"] == 2
+    assert receipt["dashboard_probes"] == [
+        {"operation": "port_availability"},
+        {"operation": "server_readiness"},
+    ]
+
+
+def test_dashboard_port_availability_when_not_listening(tmp_path):
+    # Bind without listen() to reserve a known unused local listener port.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        app_port = reserved.getsockname()[1]
+        panel = _synthetic_dashboard_panel(tmp_path, app_port)
+        with ContainedHttpProbeGuard(
+            app_port, allowed_routes={("GET", "/api/status")}
+        ) as guard:
+            assert panel._check_port_available("127.0.0.1", app_port) is True
+        receipt = guard.receipt()
+    assert receipt["dashboard_probes"] == [{"operation": "port_availability"}]
+    assert receipt["dashboard_probe_count"] == 1
+    assert receipt["blocked_count"] == receipt["unclassified_count"] == 0
+
+
+@pytest.mark.parametrize("attempt", [
+    "raw_connect_ex", "raw_connect", "wrong_port", "wrong_host",
+    "wrong_panel_port", "readiness_wrong_port",
+])
+def test_dashboard_probe_exemption_never_admits_other_sockets(
+    attempt, tmp_path,
+):
+    hits = []
+    with _listener(_witness(hits)) as app_port:
+        panel = _synthetic_dashboard_panel(tmp_path, app_port)
+        wrong_port = app_port + 1 if app_port < 65535 else app_port - 1
+        with ContainedHttpProbeGuard(
+            app_port, allowed_routes={("GET", "/api/status")}
+        ) as guard:
+            if attempt in {"raw_connect_ex", "raw_connect"}:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    with pytest.raises(ProbeBlocked):
+                        if attempt == "raw_connect_ex":
+                            sock.connect_ex(("127.0.0.1", app_port))
+                        else:
+                            sock.connect(("127.0.0.1", app_port))
+            elif attempt == "wrong_port":
+                assert panel._check_port_available("127.0.0.1", wrong_port) is False
+            elif attempt == "wrong_host":
+                assert panel._check_port_available("127.0.0.2", app_port) is False
+            elif attempt == "wrong_panel_port":
+                panel.port = wrong_port
+                assert panel._check_port_available("127.0.0.1", app_port) is False
+            else:
+                panel._actual_port = wrong_port
+                panel._server_error = None
+                assert panel._wait_for_server_ready(timeout=0.02) is False
+        receipt = guard.receipt()
+    assert hits == []
+    assert receipt["dashboard_probe_count"] == 0
+    assert receipt["blocked_count"] >= 1
+    assert receipt["unclassified_count"] == receipt["blocked_count"]
+    assert all(
+        item["reason"] == "unclassified_socket_connect"
+        for item in receipt["attempts"]
+    )
+
+
 def test_direct_unknown_socket_and_external_dns_are_fail_closed():
     hits = []
     with _listener(_witness(hits)) as witness_port:
@@ -333,6 +426,7 @@ def test_direct_unknown_socket_and_external_dns_are_fail_closed():
 
 def test_exception_cleanup_restores_every_transport_patch():
     old_connect = socket.socket.connect
+    old_connect_ex = socket.socket.connect_ex
     old_dns = socket.getaddrinfo
     old_session = requests.sessions.Session.request
     old_session_send = requests.sessions.Session.send
@@ -347,7 +441,10 @@ def test_exception_cleanup_restores_every_transport_patch():
             assert socket.socket.connect is not old_connect
             raise RuntimeError("synthetic failure")
     assert socket.socket.connect is old_connect
+    assert socket.socket.connect_ex is old_connect_ex
     assert socket.getaddrinfo is old_dns
+    assert guard._dashboard_panel_type is None
+    assert guard._dashboard_check_codes == {}
     assert requests.sessions.Session.request is old_session
     assert requests.sessions.Session.send is old_session_send
     assert httpx.Client._send_single_request is old_httpx_hop

@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — modify step applies the fenced replacement
+
+- `POST /api/proposals/<id>/implement` writes a modify or add-config step's fenced replacement onto the existing in-repository file named by the step.
+- A title that names one file is the target. A title that names no file uses the last path before the fence. A title that names two files does not write.
+- The call reports success only when that file's bytes change. An unchanged file, a missing fence, an outside path, and a symlink that resolves outside leave the bytes unchanged and store `implementation_failed`.

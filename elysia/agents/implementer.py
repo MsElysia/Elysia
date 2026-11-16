@@ -15,6 +15,9 @@ from ..events import EventBus
 
 logger = logging.getLogger(__name__)
 
+_FILE_PATH_RE = re.compile(r"([a-zA-Z0-9_/\\-]+\.(?:py|yaml|yml|json|md|txt))")
+_FENCE_RE = re.compile(r"```[^\n`]*\n(.*?)```", re.DOTALL)
+
 
 class ImplementationStep:
     """Represents a single step in an implementation plan."""
@@ -423,29 +426,98 @@ class ImplementerAgent:
         except Exception as e:
             return {"success": False, "error": f"Failed to create file: {e}", "step_type": "create_file"}
 
+    def _named_file_paths(self, text: str) -> List[str]:
+        """Return unique file paths named in text, in order."""
+        found: List[str] = []
+        for match in _FILE_PATH_RE.finditer(text):
+            path = match.group(1).replace("\\", "/")
+            if path not in found:
+                found.append(path)
+        return found
+
+    def _modify_target_name(self, step: ImplementationStep) -> Tuple[Optional[str], Optional[str]]:
+        """Choose the existing file a modify step is allowed to replace."""
+        title_paths = self._named_file_paths(step.title)
+        if len(title_paths) > 1:
+            return None, "File path is ambiguous"
+        if title_paths:
+            return title_paths[0], None
+        fence_at = step.content.find("```")
+        body = step.content if fence_at < 0 else step.content[:fence_at]
+        body_paths = self._named_file_paths(body)
+        if not body_paths:
+            return None, "File modification was not applied"
+        return body_paths[-1], None
+
+    def _existing_file_inside_repo(self, raw: str) -> Tuple[Optional[Path], Optional[str]]:
+        """Resolve raw to an existing file inside the repository."""
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = self.repo_root / candidate
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(self.repo_root)
+        except (OSError, ValueError):
+            return None, "File path is outside the repository"
+        if resolved == self.repo_root or not resolved.is_file():
+            if not resolved.exists():
+                return None, f"File does not exist: {resolved}"
+            return None, "File modification was not applied"
+        return resolved, None
+
     def _execute_modify_file(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:
-        """Execute a modify_file step."""
-        # Similar to create_file but modify existing file
-        file_pattern = re.search(r"([a-zA-Z0-9_/\\-]+\.(py|yaml|yml|json|md|txt))", step.content)
-        if not file_pattern:
-            return {"success": False, "error": "Could not extract file path from step"}
+        """Replace an existing in-repository file with the fenced step content."""
 
-        file_path_str = file_pattern.group(1)
-        file_path = self.repo_root / file_path_str
+        def fail(error: str, file_path: Optional[str] = None) -> Dict[str, Any]:
+            result: Dict[str, Any] = {
+                "success": False,
+                "error": error,
+                "executed": False,
+                "applied": False,
+                "step_type": step.step_type,
+            }
+            if file_path is not None:
+                result["file_path"] = file_path
+            return result
 
-        if not file_path.exists():
-            return {"success": False, "error": f"File does not exist: {file_path}"}
+        raw, error = self._modify_target_name(step)
+        if raw is None:
+            return fail(error or "File modification was not applied")
 
-        # For now, log the modification intent
-        # In a full implementation, this would parse the step content to determine
-        # what changes to make and apply them as a diff
-        logger.info(f"Would modify file: {file_path} (modification logic not fully implemented)")
+        file_path, error = self._existing_file_inside_repo(raw)
+        if file_path is None:
+            return fail(error or "File modification was not applied", raw)
 
+        fence = _FENCE_RE.search(step.content)
+        if fence is None or fence.group(1) == "":
+            logger.info("File modification was not applied: %s", file_path)
+            return fail("File content was not provided", str(file_path))
+
+        content = fence.group(1)
+        try:
+            existing = file_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return fail(f"File modification was not applied: {exc}", str(file_path))
+        if existing == content:
+            logger.info("File modification was not applied: %s", file_path)
+            return fail("File modification was not applied", str(file_path))
+
+        try:
+            file_path.write_text(content, encoding="utf-8")
+            written = file_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return fail(f"File modification was not applied: {exc}", str(file_path))
+        if written != content:
+            return fail("File modification was not applied", str(file_path))
+
+        logger.info("Applied file modification for %s: %s", proposal_id, file_path)
         return {
             "success": True,
-            "message": "File modification logged (not fully implemented)",
+            "applied": True,
+            "executed": True,
             "file_path": str(file_path),
-            "step_type": "modify_file",
+            "step_type": step.step_type,
+            "diff": f"replaced {raw}",
         }
 
     def _execute_add_tests(self, step: ImplementationStep, proposal_id: str) -> Dict[str, Any]:

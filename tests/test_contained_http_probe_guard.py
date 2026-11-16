@@ -481,3 +481,150 @@ def test_socketpair_ipc_is_scoped_and_raw_loopback_still_denied():
         "method": "UNKNOWN",
         "path": "<unclassified>",
     }]
+
+
+def _synthetic_child_command(root, app_port):
+    from pathlib import Path
+    import sys
+    helper = Path(__file__).resolve().parents[1] / "tools" / "windows_sync" / "contained_http_probe_guard.py"
+    return [
+        sys.executable, "-B", str(helper),
+        "--mode", "synthetic", "--disposable-root", str(root),
+        "--app-port", str(app_port), "--route", "GET:/api/status",
+    ]
+
+
+def _synthetic_root(tmp_path, fixture_source):
+    from tools.windows_sync.contained_http_probe_guard import (
+        _GUARDED_ROOT_MARKER, _GUARDED_ROOT_CONTENT,
+    )
+    root = tmp_path / "isolated-synthetic-child"
+    root.mkdir()
+    (root / _GUARDED_ROOT_MARKER).write_text(
+        _GUARDED_ROOT_CONTENT, encoding="utf-8"
+    )
+    (root / "synthetic_fixture.py").write_text(fixture_source, encoding="utf-8")
+    return root
+
+
+def _unused_local_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_guarded_child_executable_scrubs_only_child_environment(tmp_path, monkeypatch):
+    import json
+    import os
+    import subprocess
+    root = _synthetic_root(tmp_path, """
+import os
+from pathlib import Path
+assert "ELYSIA_LOCAL_MODEL" not in os.environ
+assert "OPENAI_API_KEY" not in os.environ
+def main():
+    Path(__file__).with_name("fixture-complete").write_text("done", encoding="utf-8")
+    return 0
+""")
+    monkeypatch.setenv("ELYSIA_LOCAL_MODEL", "SYNTHETIC_SENTINEL_MODEL")
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_SENTINEL_KEY")
+    child = subprocess.run(
+        _synthetic_child_command(root, _unused_local_port()),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=40,
+    )
+    receipt = json.loads((root / "guarded-child-receipt.json").read_text(encoding="utf-8"))
+    assert child.returncode == 0, "test-only child failed"
+    assert receipt["status"] == "COMPLETE_TEST_HARNESS_ONLY"
+    assert receipt["blocked_count"] == receipt["unclassified_count"] == 0
+    assert (root / "fixture-complete").read_text(encoding="utf-8") == "done"
+    assert os.environ["ELYSIA_LOCAL_MODEL"] == "SYNTHETIC_SENTINEL_MODEL"
+    assert os.environ["OPENAI_API_KEY"] == "SYNTHETIC_SENTINEL_KEY"
+    assert "SYNTHETIC_SENTINEL" not in str(receipt) + child.stdout + child.stderr
+
+
+def test_guarded_child_import_time_raw_connection_records_stop(tmp_path):
+    import json
+    import subprocess
+    hits = []
+    with _listener(_witness(hits)) as witness_port:
+        root = _synthetic_root(tmp_path, f"""
+import socket
+with socket.create_connection(("127.0.0.1", {witness_port}), timeout=2):
+    pass
+def main():
+    return 0
+""")
+        child = subprocess.run(
+            _synthetic_child_command(root, _unused_local_port()),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=40,
+        )
+        receipt = json.loads(
+            (root / "guarded-child-receipt.json").read_text(encoding="utf-8")
+        )
+    assert child.returncode != 0
+    assert hits == [], "forbidden import-time connection reached witness"
+    assert receipt["status"] == "STOP_PROHIBITED_NETWORK"
+    assert receipt["blocked_count"] == receipt["unclassified_count"] == 1
+    assert receipt["attempts"] == [{
+        "reason": "unclassified_socket_connect",
+        "method": "UNKNOWN", "path": "<unclassified>",
+    }]
+
+
+def test_guarded_child_exception_receipt_never_exposes_error_details(tmp_path):
+    import json
+    import subprocess
+    root = _synthetic_root(
+        tmp_path, 'raise RuntimeError("SYNTHETIC_SECRET_MUST_NOT_LEAK")\n'
+    )
+    child = subprocess.run(
+        _synthetic_child_command(root, _unused_local_port()),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=40,
+    )
+    receipt = json.loads((root / "guarded-child-receipt.json").read_text(encoding="utf-8"))
+    assert child.returncode != 0
+    assert receipt["status"] == "STOP_EXCEPTION"
+    assert receipt["blocked_count"] == 0
+    assert "SYNTHETIC_SECRET_MUST_NOT_LEAK" not in (
+        str(receipt) + child.stdout + child.stderr
+    )
+
+
+def test_guarded_child_rejects_missing_marker_or_unsafe_route_before_launch(tmp_path):
+    import subprocess
+    root = _synthetic_root(
+        tmp_path, 'raise RuntimeError("fixture must not execute")\n'
+    )
+    (root / ".elysia-guarded-synthetic-root").unlink()
+    child = subprocess.run(
+        _synthetic_child_command(root, _unused_local_port()),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=40,
+    )
+    assert child.returncode == 2
+    assert "STOP_PREFLIGHT" in child.stderr
+    assert not (root / "guarded-child-receipt.json").exists()
+    (root / ".elysia-guarded-synthetic-root").write_text(
+        "ELYSIA_SYNTHETIC_ACCEPTANCE_V1\n", encoding="utf-8"
+    )
+    bad_route = _synthetic_child_command(root, _unused_local_port())
+    bad_route[-1] = "GET:/api/tags"
+    child = subprocess.run(
+        bad_route, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=40,
+    )
+    assert child.returncode == 2
+    assert not (root / "guarded-child-receipt.json").exists()
+    # A contained Guardian startup cannot happen by merely switching modes.
+    (root / "synthetic_fixture.py").unlink()
+    contained = _synthetic_child_command(root, _unused_local_port())
+    contained[contained.index("synthetic")] = "contained"
+    child = subprocess.run(
+        contained, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=40,
+    )
+    assert child.returncode == 2
+    assert not (root / "guarded-child-receipt.json").exists()

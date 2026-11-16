@@ -16,12 +16,10 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-import http.client
 import socket
 import sys
 import threading
 from typing import Iterable
-from urllib import request as urllib_request
 from urllib.parse import urlsplit
 
 
@@ -217,6 +215,8 @@ class ContainedHttpProbeGuard:
             self._patch(socket, "getaddrinfo", guarded_getaddrinfo)
             self._patch(socket, "socketpair", guarded_socketpair)
 
+            import http.client
+            from urllib import request as urllib_request
             import requests
             import httpx
             from project_guardian.local_memory_chat import LocalOllama
@@ -346,3 +346,151 @@ class ContainedHttpProbeGuard:
             ),
             "attempts": blocked,
         }
+
+
+# This CLI is an explicit test-child entrypoint, not the Windows release launcher.
+# Its input fixture is synthetic test code, not user or operational data.
+_GUARDED_ROOT_MARKER = ".elysia-guarded-synthetic-root"
+_GUARDED_ROOT_CONTENT = "ELYSIA_SYNTHETIC_ACCEPTANCE_V1\n"
+_CHILD_SCRUB_NAMES = (
+    "ELYSIA_LOCAL_MODEL", "ELYSIA_THUMB_DRIVE", "ELYSIA_THUMB_DRIVE_SECONDARY",
+    "OPENAI_API_KEY", "OPENROUTER_API_KEY", "COHERE_API_KEY",
+    "HUGGINGFACE_API_KEY", "REPLICATE_API_KEY", "ALPHA_VANTAGE_API_KEY",
+    "BRAVE_SEARCH_API_KEY", "GUMROAD_ACCESS_TOKEN", "STRIPE_SECRET_KEY",
+    "STRIPE_PUBLISHABLE_KEY", "ANTHROPIC_API_KEY", "SMTP_PASSWORD",
+    "ELYSIA_SMTP_PASSWORD",
+)
+
+
+def _guarded_root(raw: str, mode: str):
+    """Refuse pre-existing data, symlinks, and non-temporary acceptance roots."""
+    import tempfile
+    from pathlib import Path
+
+    candidate = Path(raw)
+    if not candidate.is_absolute() or ".." in candidate.parts or candidate.is_symlink():
+        raise ValueError("unsafe disposable root")
+    root = candidate.resolve(strict=True)
+    temp = Path(tempfile.gettempdir()).resolve(strict=True)
+    if temp not in root.parents or not root.is_dir():
+        raise ValueError("root must be an existing temporary subdirectory")
+    marker = root / _GUARDED_ROOT_MARKER
+    if marker.is_symlink() or not marker.is_file():
+        raise ValueError("synthetic root marker missing")
+    if marker.read_text(encoding="utf-8") != _GUARDED_ROOT_CONTENT:
+        raise ValueError("synthetic root marker invalid")
+    expected = {_GUARDED_ROOT_MARKER}
+    if mode == "synthetic":
+        fixture = root / "synthetic_fixture.py"
+        if fixture.is_symlink() or not fixture.is_file():
+            raise ValueError("synthetic fixture missing")
+        expected.add("synthetic_fixture.py")
+    if {item.name for item in root.iterdir()} != expected:
+        raise ValueError("synthetic root must be fresh and contain only reviewed inputs")
+    return root
+
+
+def _guarded_child_main(argv=None) -> int:
+    import argparse
+    import json
+    import os
+    from pathlib import Path
+    import socket
+    import sys
+
+    parser = argparse.ArgumentParser(description="Synthetic, test-only Elysia child guard")
+    parser.add_argument("--mode", choices=("synthetic", "contained"), required=True)
+    parser.add_argument("--disposable-root", required=True)
+    parser.add_argument("--app-port", required=True, type=int)
+    parser.add_argument("--route", required=True, action="append")
+    parser.add_argument("--allow-contained-start", action="store_true")
+    args = parser.parse_args(argv)
+
+    # Preflight runs before importing ANY project or HTTP client. An invalid
+    # root never receives writes, including a receipt.
+    try:
+        root = _guarded_root(args.disposable_root, args.mode)
+        if args.mode == "contained" and not args.allow_contained_start:
+            raise ValueError("contained runtime must be explicitly requested")
+        if not (1 <= args.app_port <= 65535):
+            raise ValueError("invalid port")
+        # Only the one independently reviewed startup HTTP route is known.
+        if args.route != ["GET:/api/status"]:
+            raise ValueError("unreviewed or wildcard HTTP route")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener_check:
+            listener_check.bind(("127.0.0.1", args.app_port))
+    except (OSError, ValueError):
+        print("STOP_PREFLIGHT", file=sys.stderr)
+        return 2
+
+    # This function is run in the disposable CHILD, never in the parent.
+    # Discard values without logging, printing, or caching them.
+    for name in _CHILD_SCRUB_NAMES:
+        os.environ.pop(name, None)
+    os.environ["ELYSIA_DISPOSABLE_ROOT"] = str(root)
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    sys.dont_write_bytecode = True
+    # Running as a file still needs the canonical source root for imports.
+    repo_root = str(Path(__file__).resolve().parents[2])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+
+    guard = ContainedHttpProbeGuard(
+        args.app_port, allowed_routes={("GET", "/api/status")}
+    )
+    status = "STOP_EXCEPTION"
+    result = 1
+    try:
+        with guard:
+            if args.mode == "synthetic":
+                import runpy
+                module = runpy.run_path(
+                    str(root / "synthetic_fixture.py"),
+                    run_name="__guarded_synthetic_fixture__",
+                )
+                main = module.get("main")
+                if not callable(main):
+                    raise ValueError("missing synthetic callable")
+                result = main()
+            else:
+                # Imports the EXISTING contained startup, only after guard
+                # setup. Not a permission to execute it on the owner's PC.
+                from scripts.start_contained_browser_memory import main
+                result = main([
+                    "--disposable-root", str(root), "--auto-start-ui",
+                    "--ui-host", "127.0.0.1",
+                    "--ui-port", str(args.app_port), "--json-status",
+                ])
+        status = "COMPLETE_TEST_HARNESS_ONLY" if type(result) is int and result == 0 else "STOP_CHILD"
+    except BaseException:
+        # No exception text or traceback: these may contain environment values.
+        status = "STOP_EXCEPTION"
+    report = guard.receipt()
+    if report["blocked_count"] or report["unclassified_count"]:
+        status = "STOP_PROHIBITED_NETWORK"
+    receipt = {
+        "status": status,
+        "scope": "synthetic_child_only_not_os_containment",
+        "mode": args.mode,
+        "allowed_http_calls": report["allowed_http_calls"],
+        "dashboard_probe_count": report["dashboard_probe_count"],
+        "dashboard_probes": report["dashboard_probes"],
+        "blocked_count": report["blocked_count"],
+        "unclassified_count": report["unclassified_count"],
+        "attempts": report["attempts"],
+    }
+    try:
+        receipt_path = root / "guarded-child-receipt.json"
+        with receipt_path.open("x", encoding="utf-8") as out:
+            json.dump(receipt, out, sort_keys=True)
+            out.write("\n")
+    except OSError:
+        print("STOP_RECEIPT", file=sys.stderr)
+        return 2
+    # A test-harness PASS is not proof of native/subprocess/owner-PC safety.
+    print(status)
+    return 0 if status == "COMPLETE_TEST_HARNESS_ONLY" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_guarded_child_main())

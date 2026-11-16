@@ -73,8 +73,14 @@ class ElysiaRuntime:
             return
 
         self._start_time = datetime.now(timezone.utc)
+        self._heartbeat_stop.set()
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            self._heartbeat_thread.join(timeout=2)
         self._heartbeat_stop.clear()
         self._start_heartbeat()
+
+        if self.proposal_system and getattr(self.proposal_system, "watcher", None):
+            self.proposal_system.watcher.start()
 
         if self.api_server:
             self.api_server.start()
@@ -90,17 +96,25 @@ class ElysiaRuntime:
         # Callers embedding the runtime can ignore this and manage their own loop.
 
     def stop(self) -> None:
-        if not self._running:
+        # init() starts the proposal watcher before start() sets _running.
+        # Interrupt or stop() during bring-up must still join background work.
+        if not self._running and not self._initialized:
             return
 
         logger.info("Stopping ElysiaRuntime...")
         self._running = False
 
         if self.webscout:
-            self.webscout.stop()
+            try:
+                self.webscout.stop()
+            except Exception:
+                logger.exception("Failed to stop WebScout")
 
         if self.api_server:
-            self.api_server.stop()
+            try:
+                self.api_server.stop()
+            except Exception:
+                logger.exception("Failed to stop API server")
 
         if self.proposal_system:
             try:

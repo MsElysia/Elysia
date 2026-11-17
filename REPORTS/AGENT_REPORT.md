@@ -3577,3 +3577,54 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+
+## Product workflow — prose headings are not implementation steps
+
+**Status:** COMPLETED on this branch. Not on `main`. No PR.
+
+**Implementation commit:** `3d4dd25b5e16f4dec4ac385e0439899adc99c22d`
+
+**Base:** `722d8e4` (`main`). Not based on the events-limit, implement-status, research-status, chat-status, decision-status, implementation-result, approved-batch, status-availability, unreadable-proposal, dry_run type-check, dry-run lifecycle, unexecuted-step, existing-file, outside-path, proposal-repository, run-tests, create-content, accepted-lifecycle, title-path, title-less create-path, or modify-apply branches.
+
+**Files:**
+- `elysia/agents/implementer.py`
+- `tests/test_runtime_api_implement_plan_headings.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Behavior:**
+- `POST /api/proposals/<id>/implement` parses only `## Step N: Title`, `### Step N: Title`, `## N. Title`, and `### N. Title` as steps.
+- Prose headings are not steps. Fictional `fictional-prose-plan` has `implementation_plan.md` headings `## Overview` and `## Components`. The response is HTTP 200 `success: false`, `steps_total: 0`, error `No implementation steps found in implementation_plan.md for fictional-prose-plan`. Stored status stays `approved`. `implementation_status` is not written. History stays empty.
+- An architecture fallback with an unnumbered heading is the same. Fictional `fictional-arch-heading` has only `architecture.md` headed `## Create file fictional_widget.txt`. The response names `architecture.md`, no file is created, and the stored status stays `approved`.
+- A numbered create step still runs. `## Step 1: Create file fictional_kept.txt` writes `fictional-kept` and stores `implemented` / `completed`. `## 1. Create file fictional_numbered.txt` does the same for `fictional_numbered.txt`.
+- The documented architecture fallback still runs when that file contains a numbered step. `## Step 1: Create file fictional_arch_step.txt` in `architecture.md` writes `fictional-arch-step` and stores `implemented`.
+- `integration.md` alone is still not a plan. The error stays `Implementation plan not found for fictional-integration-only` and no file is written.
+
+**Evidence:**
+- Before, Flask HTTP 200 for `fictional-prose-plan` was `success: true`, two generic results `Step logged but not executed`, stored `implemented` / `completed`. Working directory `/tmp/elysia-before-zc8u2fpp/cwd`. The unnumbered architecture heading `## Create file fictional_widget.txt` was parsed as one step, returned `Step 1 failed: Could not extract file path from step`, and stored `implementation_failed`.
+- After: `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_runtime_api_implement_plan_headings.py -v --tb=short` — 2 passed in 0.66s. Flask test client and live Werkzeug HTTP. Real `ProposalSystem` and `ImplementerAgent`, watcher off, fictional proposals, temporary working directory, no external services.
+- `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_runtime_api_implement_plan_headings.py tests/test_implementer_agent.py -v --tb=short` — plan-heading contract 2 passed. `tests/test_implementer_agent.py` still fails only on the pre-existing assertion text `test_implementer_rejects_non_accepted_proposal`. It was not changed. 9 other tests in that file passed.
+- Live HTTP after the change at `/tmp/elysia-after-3djtqzu3/cwd`: `fictional-prose-plan` is HTTP 200 `success: false`, stored `approved`. `fictional-numbered-step` is HTTP 200 `success: true`, `create_file`, `fictional_kept.txt` is `fictional-kept`, stored `implemented` / `completed`.
+
+**Remaining limitations:**
+- A numbered step whose title does not match create, modify, tests, or config still returns success with `Step logged but not executed` and stores `implemented`. That fail-closed reporting stays on `origin/cursor/elysia-product-workflow-gaps-0e04` (`f08b7ff`, handoff `8a459a0`). This branch does not take another pass at that reporting.
+- Unsuccessful implement results on this branch still return HTTP 200. That mapping stays on `origin/cursor/elysia-product-workflow-process-9429`.
+- Boolean `dry_run: true` still stores an approved proposal as `implemented`. That fix stays on `origin/cursor/product-workflow-engineering-process-b494` (`07e1de0`, handoff `867b211`).
+- A non-boolean `dry_run` is still not rejected here. That check stays on `origin/cursor/elysia-product-workflow-6a1b` (`4ed3b33`, handoff `d4900c7`).
+- The route still builds `ImplementerAgent` with `repo_root=Path(".")`. That fix stays on `origin/cursor/product-workflow-engineering-process-94c4` (`64eb491`, handoff `07ddd67`).
+- Create-file path selection, missing fence content, an existing target, and an outside create path stay on their earlier branches: `48b6` (`88e2460`), `b4ab` (`2f9e69b`), `8bee` (`99a3ed5`), `36a9` (`c7d2d29`), and `7d5a` (`23b96c1`).
+- Modify and add-config replacement stays on `origin/cursor/product-workflow-engineering-process-6964` (`c336528`, handoff `fd091f4`). This branch does not take another pass at that replacement.
+- A run-tests step with no named in-repository file still runs `pytest tests` on this branch. That fix stays on `origin/cursor/product-workflow-engineering-process-1bef` (`9b5af04`, handoff `824169c`).
+- A live run whose lifecycle cannot enter `in_implementation` still continues on this branch. That fix stays on `origin/cursor/product-workflow-gaps-bdad` (`2878069`, handoff `36ca37a`). This branch does not edit `elysia/core/proposal_system.py`.
+- `GET /api/proposals/<id>/implementation` on this branch still leaves `last_implementation_result` unset. That fix stays on `origin/cursor/product-workflow-engineering-583c` (`f2f0ed9`, handoff `3ca6a2f`).
+- `run_batch` still lists only lifecycle status `accepted`, so an approved proposal is skipped. `project_guardian.module_activity` is still absent, so the proposals CLI that calls `run_batch` still cannot be imported.
+
+**Ownership left untouched:**
+- Did not edit `elysia/core/proposal_system.py`, `elysia/runtime.py`, `elysia/cli.py`, or `project_guardian/ui_control_panel.py`.
+- Runtime integrity remains `69c78b9` on `origin/cursor/elysia-runtime-integrity-38ca` (`bc-f36e7f03`). No newer runtime-integrity branch was fetched today.
+- Application runtime safety today is `28ab304` on `origin/cursor/application-runtime-safety-d83e` (`elysia/runtime.py` and `tests/test_elysia_runtime_heartbeat_truth.py` only).
+- Dashboard drafts #147, #148, #149, and #153 remain open. #156 remains open and is not a draft. They still own the dashboard files.
+- `CURRENT_TASK: NONE` on `main` and on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`). `TASK-0053` remains OPEN review-only on the brain-bridge line. Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb` on `origin/codex/limited-live-activation-wrapper`. Do not implement live memory or vector writes. Leave open memory drafts through PR #225, including today's retrieval draft #225 and HTTP-probe draft #224, to their owners.
+
+A branch commit is not integrated product readiness. Next product run should pick a different unclaimed API or dashboard error path. Do not take another pass at plan-heading selection. Re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`. The approved-batch CLI path stays blocked while `project_guardian.module_activity` is missing.

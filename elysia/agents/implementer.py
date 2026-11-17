@@ -97,7 +97,7 @@ class ImplementerAgent:
         plan_path = proposal_path / "design" / "implementation_plan.md"
 
         if not plan_path.exists():
-            # Fallback: try to extract steps from architecture.md or integration.md
+            # Fallback: architecture.md only. integration.md is not an implementation plan.
             plan_path = proposal_path / "design" / "architecture.md"
             if not plan_path.exists():
                 error = f"Implementation plan not found for {proposal_id}"
@@ -115,7 +115,9 @@ class ImplementerAgent:
         # 3. Parse plan into steps
         steps = self._parse_implementation_plan(plan_content)
         if not steps:
-            error = f"No implementation steps found in plan for {proposal_id}"
+            error = (
+                f"No implementation steps found in {plan_path.name} for {proposal_id}"
+            )
             logger.error(error)
             return {"success": False, "error": error, "steps_completed": 0, "steps_total": 0}
 
@@ -303,12 +305,8 @@ class ImplementerAgent:
         """
         Parse implementation plan markdown into structured steps.
 
-        Looks for patterns like:
-        ## Step 1: Title
-        ## Step 2: Title
-        or
-        ### Step 1: Title
-        ### Step 2: Title
+        A step is ``## Step N: Title``, ``### Step N: Title``, ``## N. Title``,
+        or ``### N. Title``. Prose headings such as ``## Overview`` are not steps.
         """
         steps = []
 
@@ -317,22 +315,11 @@ class ImplementerAgent:
 
         matches = list(step_pattern.finditer(plan_content))
         if not matches:
-            # Try alternative pattern: just numbered headings
+            # Alternative numbered headings: ## 1. Title or ### 1. Title
             step_pattern = re.compile(r"^#{2,3}\s+(\d+)\.\s*(.+)$", re.MULTILINE)
             matches = list(step_pattern.finditer(plan_content))
 
         if not matches:
-            # Last resort: split by major headings and number them
-            heading_pattern = re.compile(r"^#{2}\s+(.+)$", re.MULTILINE)
-            heading_matches = list(heading_pattern.finditer(plan_content))
-            if heading_matches:
-                for idx, match in enumerate(heading_matches, 1):
-                    title = match.group(1)
-                    start_pos = match.end()
-                    end_pos = heading_matches[idx].start() if idx < len(heading_matches) else len(plan_content)
-                    content = plan_content[start_pos:end_pos].strip()
-                    steps.append(ImplementationStep(idx, title, content))
-                return steps
             return []
 
         # Extract steps with their content

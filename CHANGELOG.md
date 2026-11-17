@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — prose headings are not implementation steps
+
+- `POST /api/proposals/<id>/implement` treats only `## Step N: Title` and `## N. Title` headings (level 2 or 3) as steps.
+- A design document whose headings are prose, including an architecture fallback with no numbered steps, is not implemented. The stored lifecycle status stays unchanged.
+- A numbered step in `implementation_plan.md`, and a numbered step in the architecture fallback, still runs.

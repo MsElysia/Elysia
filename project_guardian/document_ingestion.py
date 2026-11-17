@@ -306,6 +306,24 @@ def worker_memory_limit():
     globals()['_worker_job'] = handle
 
 
+def is_context_document(row):
+    """Eligibility for chat evidence, before the bounded candidate selection."""
+    if not isinstance(row, dict):
+        return False
+    trust, collection = row.get("trust"), row.get("collection")
+    if ((trust is not None and not isinstance(trust, str))
+            or (collection is not None and not isinstance(collection, str))):
+        return False
+    trust_label = re.sub(r"[\s-]+", "_", trust.strip().casefold()) if isinstance(trust, str) else ""
+    collection_label = re.sub(r"[\s-]+", "_", collection.strip().casefold()) if isinstance(collection, str) else ""
+    if trust_label in {"diagnostic", "diagnostic_log"} or collection_label.startswith("diagnostic"):
+        return False
+    return (isinstance(row.get("text"), str)
+            and all(isinstance(row.get(k), str) for k in
+                    ("source_id", "chunk_id", "content_sha256", "filename"))
+            and "page" in row)
+
+
 class DocumentLibrary:
     def __init__(self, memory):
         self.memory = memory
@@ -531,21 +549,42 @@ class DocumentLibrary:
             finally:
                 _ACTIVE_SOURCES.discard(source)
 
-    def search(self, query, limit=6):
+    def search(self, query, limit=6, *, context_distinct=False):
+        """Default search keeps source matches; chat can request distinct text."""
         tokens = set(re.findall(r'\w{3,}', query.casefold())) - {'the', 'what', 'which', 'does', 'and', 'from', 'with'}
         if not tokens:
             return []
         completed = {r['source_id'] for r in self.receipts() if r['status'] == 'completed'}
         found = []
         for entry in self.memory.memory_log:
+            if context_distinct and not isinstance(entry, dict):
+                continue
             meta = entry.get('metadata', {})
+            if context_distinct and (
+                    not isinstance(meta, dict) or not isinstance(meta.get('source_id'), str)):
+                continue
             if entry.get('category') != 'document_chunk' or meta.get('source_id') not in completed:
                 continue
-            text = entry['thought']
+            text = entry.get('thought') if context_distinct else entry['thought']
+            if context_distinct and not is_context_document(dict(meta, text=text)):
+                continue
             overlap = tokens & set(re.findall(r'\w{3,}', text.casefold()))
             if overlap:
                 found.append(dict(meta, text=text, score=len(overlap) / len(tokens)))
-        matches = sorted(found, key=lambda x: (-x['score'], x['chunk_id']))[:limit]
+        if context_distinct:
+            ranked = sorted(found, key=lambda x: (-x['score'], x['source_id'], x['chunk_id']))
+            # Group only exact original text, not token sets, normalized
+            # paraphrases, or untrusted source hash metadata.
+            seen = set()
+            distinct = []
+            for row in ranked:
+                if row['text'] not in seen:
+                    seen.add(row['text'])
+                    distinct.append(row)
+            ranked = distinct
+        else:
+            ranked = sorted(found, key=lambda x: (-x['score'], x['chunk_id']))
+        matches = ranked[:limit]
         if matches:
             from project_guardian.runtime_activity import record
             record('Document evidence retrieved')

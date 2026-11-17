@@ -215,3 +215,96 @@ def test_failed_history_write_cannot_report_success(tmp_path, monkeypatch):
     assert response.status_code == 503
     assert response.get_json()['success'] is False
     assert response.get_json()['conversation_saved'] is False
+
+
+def test_real_document_duplicates_do_not_hide_conflicting_source_after_restart(tmp_path):
+    """Distinct source bytes can decode to identical chunks (line endings)."""
+    from itertools import product
+    from project_guardian.local_memory_chat import canonical, EVIDENCE_BYTE_CAP
+
+    def variants(location):
+        lines = [
+            f"Zircon beacon location {location}.", "Survey notes.",
+            "Equipment inventory.", "Archive copy.", "End of record.",
+        ]
+        for separators in product(("\n", "\r\n"), repeat=4):
+            text = "".join(line + separator for line, separator in zip(lines, separators)) + lines[-1]
+            yield text.encode("utf-8")
+
+    # Fix the stable source-ID tie break so canonical's first six matches
+    # really are all duplicate text, rather than relying on import order.
+    digest_key = lambda raw: hashlib.sha256(raw).hexdigest()
+    duplicate_bytes = sorted(variants("Cedar Pier"), key=digest_key)[:8]
+    conflict_bytes = max(variants("Basalt Point"), key=digest_key)
+    assert max(map(digest_key, duplicate_bytes)) < digest_key(conflict_bytes)
+    query = "Zircon beacon location"
+    path = tmp_path / "memory.json"
+    library = DocumentLibrary(_memory(path))
+    receipts = [
+        library.import_bytes(f"copy-{i}.txt", raw)
+        for i, raw in enumerate(duplicate_bytes)
+    ]
+    conflict = library.import_bytes("different-survey.txt", conflict_bytes)
+    assert all(row["status"] == "completed" and not row["duplicate"]
+               for row in receipts + [conflict])
+    all_ids = {row["source_id"] for row in receipts + [conflict]}
+    assert len(all_ids) == 9
+
+    restored = DocumentLibrary(_memory(path))
+    assert {row["source_id"] for row in restored.receipts()} == all_ids
+    panel = _panel(restored.memory, config={"contained_startup": True})
+    before = path.read_bytes()
+    ordinary = restored.search(query)
+    assert len(ordinary) == 6
+    assert len({row["text"] for row in ordinary}) == 1
+    assert conflict["source_id"] not in {row["source_id"] for row in ordinary}
+    distinct = restored.search(query, context_distinct=True)
+    assert len(distinct) == 2
+    assert distinct[0]["source_id"] == receipts[0]["source_id"]
+    assert distinct[1]["source_id"] == conflict["source_id"]
+    adapter = panel._restricted_adapter()
+    bundle = build_context_from_adapter(adapter, query, {})
+    evidence = bundle["evidence"]
+    assert [row["source_id"] for row in evidence] == [
+        receipts[0]["source_id"], conflict["source_id"],
+    ]
+    assert "Cedar Pier" in evidence[0]["highlights"][0]["text"]
+    assert "Basalt Point" in evidence[1]["highlights"][0]["text"]
+    assert [row["source_sha256"] for row in evidence] == [
+        row["content_sha256"] for row in distinct
+    ]
+    assert [row["chunk_id"] for row in evidence] == [row["chunk_id"] for row in distinct]
+    assert all(row["trust"] == "untrusted_document" and row["revision"] == 1
+               for row in evidence)
+    assert len(canonical(evidence).encode("utf-8")) <= EVIDENCE_BYTE_CAP
+    assert build_context_from_adapter(adapter, query, {}) == bundle
+    assert path.read_bytes() == before
+    for receipt, raw in zip(receipts + [conflict], duplicate_bytes + [conflict_bytes]):
+        assert (restored.root / receipt["managed_copy"]).read_bytes() == raw
+
+
+
+def test_context_document_candidates_filter_bad_metadata_before_cap(tmp_path):
+    library = DocumentLibrary(_memory(tmp_path / "memory.json"))
+    text = "Veridia beacon location is Cedar Pier."
+    legitimate = library.import_bytes("survey.txt", text.encode("utf-8"))
+    # Synthetic completed records with diagnostic/malformed metadata are
+    # present in the same store, not just a patched search return.
+    for i in range(7):
+        source = f"aaa_diagnostic_{i}"
+        library._save("document_source", "Synthetic completed receipt", {
+            "source_id": source, "status": "completed",
+        })
+        library._save("document_chunk", text, {
+            "source_id": source, "chunk_id": source + ":1",
+            "content_sha256": hashlib.sha256(text.encode()).hexdigest(),
+            "filename": "diagnostic.txt", "page": 1,
+            "collection": " Diagnostic-Logs " if i % 2 else ["diagnostic_logs"],
+        })
+    library._save("document_chunk", text, {
+        "source_id": ["malformed"], "chunk_id": "aaa_invalid",
+        "content_sha256": hashlib.sha256(text.encode()).hexdigest(),
+        "filename": "malformed.txt", "page": 1,
+    })
+    matches = library.search("Veridia beacon location", context_distinct=True)
+    assert [row["source_id"] for row in matches] == [legitimate["source_id"]]

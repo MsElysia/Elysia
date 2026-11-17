@@ -363,35 +363,13 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         }
         candidates.append(("fact", fact_tokens, item))
 
-    from project_guardian.document_ingestion import DocumentLibrary
+    from project_guardian.document_ingestion import DocumentLibrary, is_context_document
     if hasattr(adapter, "memory"):
-        for row in DocumentLibrary(adapter.memory).search(question):
-            if not isinstance(row, dict):
+        for row in DocumentLibrary(adapter.memory).search(question, context_distinct=True):
+            # Also check at the final boundary: upstream candidates are untrusted.
+            if not is_context_document(row):
                 continue
-            # Diagnostic metadata is untrusted imported text; normalize only
-            # the labels used to classify it, never the original source.
-            trust, collection = row.get("trust"), row.get("collection")
-            if (
-                (trust is not None and not isinstance(trust, str))
-                or (collection is not None and not isinstance(collection, str))
-            ):
-                continue
-            trust_label = (
-                re.sub(r"[\s-]+", "_", trust.strip().casefold())
-                if isinstance(trust, str) else ""
-            )
-            collection_label = (
-                re.sub(r"[\s-]+", "_", collection.strip().casefold())
-                if isinstance(collection, str) else ""
-            )
-            if (
-                trust_label in {"diagnostic", "diagnostic_log"}
-                or collection_label.startswith("diagnostic")
-            ):
-                continue
-            content = row.get("text")
-            if not isinstance(content, str):
-                continue
+            content = row["text"]
             doc_tokens = set(_context_tokens(content))
             overlap = query_set & doc_tokens
             if not overlap:
@@ -415,22 +393,32 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
                 continue
             candidates.append(("document", doc_tokens, item))
 
+    # Exact text duplicates provide no additional evidence or term-frequency
+    # votes. Keep the same deterministic fact-first/source-ID tie break.
+    # Group only full original text (never excerpts or unordered token sets).
+    distinct = {}
+    for kind, tokens, item in sorted(
+        candidates, key=lambda row: (row[0] != "fact", row[2]["source_id"], row[2]["chunk_id"])
+    ):
+        distinct.setdefault(item["highlights"][0]["text"], (kind, tokens, item))
+    candidates = list(distinct.values())
+
     # Query-term rarity among retrieved candidates separates specific answers
     # from generic repeated words. No embeddings, cloud calls, or learned model.
     total = len(candidates)
     frequencies = {
         term: sum(term in tokens for _, tokens, _ in candidates)
-        for term in query_set
+        for term in sorted(query_set)
     }
     term_weight = {
         term: 1.0 + math.log((total + 1) / (frequencies[term] + 1))
-        for term in query_set
+        for term in sorted(query_set)
     }
     denominator = sum(term_weight.values())
     ranked = []
     for kind, tokens, item in candidates:
         overlap = query_set & tokens
-        score = sum(term_weight[t] for t in overlap) / denominator
+        score = sum(term_weight[t] for t in sorted(overlap)) / denominator
         # Require more than a generic single-word hit unless the long term
         # itself is sufficiently distinctive. Preserve the existing threshold.
         if len(overlap) < 2 and not any(len(t) >= 6 for t in overlap):
@@ -441,18 +429,43 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         # Current durable facts win a genuinely equal relevance score, but
         # cannot monopolize slots when documents are demonstrably stronger.
         ranked.append((score, kind != "fact", str(item["source_id"]),
-                       str(item["chunk_id"]), item))
+                       str(item["chunk_id"]), item, tokens))
     ranked.sort(key=lambda row: (-row[0], row[1], row[2], row[3]))
 
+    # Protect half of the bounded context for the strongest distinct fitted
+    # evidence by relevance. Similar wording can contain a different claim.
+    # Spend the remaining slots on the prior #203 redundancy penalty so
+    # repeated question echoes cannot crowd out a less lexical answer.
+    # Similarity affects ordering only, never source identity or truth.
     selected = []
-    for _, _, _, _, item in ranked:
-        if len(selected) >= EVIDENCE_ITEM_CAP:
+    selected_tokens = []
+    remaining = list(enumerate(ranked))
+
+    def effective(row):
+        tokens = row[5]
+        redundancy = max(
+            (len(tokens & prior) / len(tokens | prior)
+             for prior in selected_tokens if tokens or prior),
+            default=0.0,
+        )
+        return row[0] - 0.65 * redundancy
+
+    while remaining and len(selected) < EVIDENCE_ITEM_CAP:
+        # The first two successful fits keep raw rank; failed fits consume
+        # no slot. Thereafter preserve original rank on diversity-score ties.
+        # An item that cannot fit now cannot fit a smaller remaining budget.
+        if len(selected) >= EVIDENCE_ITEM_CAP // 2:
+            remaining.sort(key=lambda pair: (-effective(pair[1]), pair[0]))
+        for pos, (_, row) in enumerate(remaining):
+            _, _, _, _, item, tokens = row
+            fitted = _fit_evidence_item(selected, item, query_set)
+            if fitted is not None:
+                selected.append(fitted)
+                selected_tokens.append(tokens)
+                remaining = remaining[pos + 1:]
+                break
+        else:
             break
-        fitted = _fit_evidence_item(selected, item, query_set)
-        if fitted is None:
-            # Still refuse to let one unreclaimable blob hide later smaller hits.
-            continue
-        selected.append(fitted)
     store = {}
     if hasattr(adapter, "store_identity"):
         try:

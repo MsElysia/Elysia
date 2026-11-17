@@ -28,10 +28,12 @@ class ProbeBlocked(OSError):
 
 
 class ContainedHttpProbeGuard:
-    def __init__(self, app_port: int, *, allowed_routes: Iterable[tuple[str, str]]):
+    def __init__(self, app_port: int, *, allowed_routes: Iterable[tuple[str, str]],
+                 _synthetic_only: bool = False):
         if not isinstance(app_port, int) or not 1 <= app_port <= 65535:
             raise ValueError("A concrete Elysia loopback listener port is required")
         self.app_port = app_port
+        self._synthetic_only = _synthetic_only
         self.allowed_routes = frozenset(
             (method.upper(), path)
             for method, path in allowed_routes
@@ -219,16 +221,18 @@ class ContainedHttpProbeGuard:
             from urllib import request as urllib_request
             import requests
             import httpx
-            from project_guardian.local_memory_chat import LocalOllama
-            from project_guardian.ui_control_panel import UIControlPanel
+            # Ordinary guard users retain the existing project-specific hooks.
+            # The disposable synthetic CLI does NOT import or start Guardian,
+            # so it has no business loading project/native voice components.
+            if not self._synthetic_only:
+                from project_guardian.local_memory_chat import LocalOllama
+                from project_guardian.ui_control_panel import UIControlPanel
 
-            # Source-identity checks avoid granting raw socket access to
-            # any caller merely holding an HTTP or dashboard context.
-            self._dashboard_panel_type = UIControlPanel
-            self._dashboard_check_codes = {
-                UIControlPanel._check_port_available.__code__: "port_availability",
-                UIControlPanel._wait_for_server_ready.__code__: "server_readiness",
-            }
+                self._dashboard_panel_type = UIControlPanel
+                self._dashboard_check_codes = {
+                    UIControlPanel._check_port_available.__code__: "port_availability",
+                    UIControlPanel._wait_for_server_ready.__code__: "server_readiness",
+                }
 
             orig_session = requests.sessions.Session.request
             orig_session_send = requests.sessions.Session.send
@@ -239,7 +243,8 @@ class ContainedHttpProbeGuard:
             orig_http_request = http.client.HTTPConnection.request
             orig_urlopen = urllib_request.urlopen
             orig_opener = urllib_request.OpenerDirector.open
-            orig_local_ollama = LocalOllama._request
+            if not self._synthetic_only:
+                orig_local_ollama = LocalOllama._request
             def requests_request(session, method, url, *args, **kwargs):
                 with self._admit_http(method, url):
                     return orig_session(session, method, url, *args, **kwargs)
@@ -315,10 +320,15 @@ class ContainedHttpProbeGuard:
             self._patch(http.client.HTTPConnection, "request", http_request)
             self._patch(urllib_request, "urlopen", urlopen)
             self._patch(urllib_request.OpenerDirector, "open", opener_open)
-            self._patch(LocalOllama, "_request", local_ollama_request)
+            if not self._synthetic_only:
+                self._patch(LocalOllama, "_request", local_ollama_request)
             return self
         except BaseException:
-            self.__exit__(None, None, None)
+            # A disposable supported CLI never resumes normal execution on
+            # setup failure; retain any installed hooks through process exit.
+            # Ordinary context-manager use must remain fully reversible.
+            if not self._synthetic_only:
+                self.__exit__(None, None, None)
             raise
 
     def __exit__(self, exc_type, exc, tb):
@@ -348,8 +358,8 @@ class ContainedHttpProbeGuard:
         }
 
 
-# This CLI is an explicit test-child entrypoint, not the Windows release launcher.
-# Its input fixture is synthetic test code, not user or operational data.
+# Supported CLI: trusted, single-threaded synthetic fixtures only. This
+# is not a general Python sandbox or an actual Guardian startup launcher.
 _GUARDED_ROOT_MARKER = ".elysia-guarded-synthetic-root"
 _GUARDED_ROOT_CONTENT = "ELYSIA_SYNTHETIC_ACCEPTANCE_V1\n"
 _CHILD_SCRUB_NAMES = (
@@ -360,136 +370,350 @@ _CHILD_SCRUB_NAMES = (
     "STRIPE_PUBLISHABLE_KEY", "ANTHROPIC_API_KEY", "SMTP_PASSWORD",
     "ELYSIA_SMTP_PASSWORD",
 )
+_RECEIPT_NAME = "guarded-child-receipt.json"
+_COMPLETE = "COMPLETE_TEST_HARNESS_ONLY"
+_SCOPE = "synthetic_child_only_not_os_containment"
+_LIFECYCLE = "managed_atexit_single_thread"
+_CHILD_STATUSES = {
+    _COMPLETE, "STOP_EXCEPTION", "STOP_CHILD", "STOP_PROHIBITED_NETWORK",
+    "STOP_UNSUPPORTED_LIFECYCLE",
+}
 
 
-def _guarded_root(raw: str, mode: str):
-    """Refuse pre-existing data, symlinks, and non-temporary acceptance roots."""
+def _plain_path(path, *, directory=False):
+    """Local identity checks, not protection against concurrent replacement."""
+    import os
+    import stat
+    info = os.lstat(path)
+    if (stat.S_ISLNK(info.st_mode) or
+            getattr(info, "st_file_attributes", 0) &
+            getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+        raise ValueError("aliased acceptance path")
+    if directory:
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError("not a directory")
+    elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ValueError("not an independent regular file")
+    return info
+
+
+def _guarded_root(raw):
+    """Require a fresh root below the interpreter's trusted temp anchor."""
     import tempfile
     from pathlib import Path
-
     candidate = Path(raw)
-    if not candidate.is_absolute() or ".." in candidate.parts or candidate.is_symlink():
-        raise ValueError("unsafe disposable root")
-    root = candidate.resolve(strict=True)
     temp = Path(tempfile.gettempdir()).resolve(strict=True)
-    if temp not in root.parents or not root.is_dir():
-        raise ValueError("root must be an existing temporary subdirectory")
-    marker = root / _GUARDED_ROOT_MARKER
-    if marker.is_symlink() or not marker.is_file():
-        raise ValueError("synthetic root marker missing")
+    if (not candidate.is_absolute() or ".." in candidate.parts or
+            temp not in candidate.parents):
+        raise ValueError("unsafe disposable root")
+    current = candidate
+    while current != temp:
+        _plain_path(current, directory=True)
+        current = current.parent
+    if candidate.resolve(strict=True) != candidate:
+        raise ValueError("aliased disposable root")
+    marker = candidate / _GUARDED_ROOT_MARKER
+    if _plain_path(marker).st_size > 128:
+        raise ValueError("invalid marker")
     if marker.read_text(encoding="utf-8") != _GUARDED_ROOT_CONTENT:
         raise ValueError("synthetic root marker invalid")
-    expected = {_GUARDED_ROOT_MARKER}
-    if mode == "synthetic":
-        fixture = root / "synthetic_fixture.py"
-        if fixture.is_symlink() or not fixture.is_file():
-            raise ValueError("synthetic fixture missing")
-        expected.add("synthetic_fixture.py")
-    if {item.name for item in root.iterdir()} != expected:
-        raise ValueError("synthetic root must be fresh and contain only reviewed inputs")
-    return root
+    _plain_path(candidate / "synthetic_fixture.py")
+    if {item.name for item in candidate.iterdir()} != {
+        _GUARDED_ROOT_MARKER, "synthetic_fixture.py",
+    }:
+        raise ValueError("synthetic root must be fresh")
+    return candidate
 
 
-def _guarded_child_main(argv=None) -> int:
+def _synthetic_child_launch(root, app_port):
+    """Build the only supported child invocation and an allowlisted env."""
+    import os
+    from pathlib import Path
+    import sysconfig
+    # No wholesale parent environment copy, no credential values read.
+    env = {
+        name: os.environ[name]
+        for name in ("SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "TMPDIR",
+                     "LANG", "LC_ALL")
+        if name in os.environ
+    }
+    # -I -S disables environment/site startup hooks. Add only this trusted
+    # test interpreter's installed package directories, not .pth processing.
+    dirs = sorted({
+        str(Path(sysconfig.get_path(kind)).resolve(strict=True))
+        for kind in ("purelib", "platlib")
+    })
+    cmd = [
+        sys.executable, "-I", "-S", "-B", str(Path(__file__).resolve()),
+        "--isolated-worker", "--mode", "synthetic",
+        "--disposable-root", str(root), "--app-port", str(app_port),
+        "--route", "GET:/api/status",
+    ]
+    for directory in dirs:
+        cmd.extend(("--dependency-dir", directory))
+    return cmd, env
+
+
+def _valid_final_receipt(report):
+    """A green exit alone or an incomplete/provisional receipt is never PASS."""
+    if not isinstance(report, dict) or set(report) != {
+        "status", "scope", "mode", "lifecycle", "finalized",
+        "workers_quiescent", "callbacks_completed", "cleanup_errors",
+        "allowed_http_calls", "dashboard_probe_count", "dashboard_probes",
+        "blocked_count", "unclassified_count", "attempts",
+    }:
+        return False
+    if (report["status"] not in _CHILD_STATUSES or
+            report["scope"] != _SCOPE or report["mode"] != "synthetic" or
+            report["lifecycle"] != _LIFECYCLE or report["finalized"] is not True or
+            type(report["workers_quiescent"]) is not bool):
+        return False
+    counts = ("callbacks_completed", "cleanup_errors", "allowed_http_calls",
+              "dashboard_probe_count", "blocked_count", "unclassified_count")
+    if any(type(report[k]) is not int or report[k] < 0 for k in counts):
+        return False
+    if (not isinstance(report["attempts"], list) or
+            not isinstance(report["dashboard_probes"], list) or
+            len(report["attempts"]) != report["blocked_count"] or
+            len(report["dashboard_probes"]) != report["dashboard_probe_count"] or
+            report["unclassified_count"] > report["blocked_count"]):
+        return False
+    if report["status"] == _COMPLETE and (
+            report["blocked_count"] or report["unclassified_count"] or
+            report["cleanup_errors"] or not report["workers_quiescent"]):
+        return False
+    return True
+
+
+def run_guarded_synthetic_child(root, app_port):
+    """Supervise one trusted synthetic subprocess; never run Guardian."""
+    import json
+    import subprocess
+    result = {"returncode": 2, "child_returncode": None, "status": "STOP_PREFLIGHT"}
+    try:
+        root = _guarded_root(root)
+        cmd, env = _synthetic_child_launch(root, app_port)
+    except (OSError, ValueError, TypeError):
+        return result
+    try:
+        # Child output is not a trusted receipt. Do not forward it or secrets.
+        child = subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=40)
+    except (OSError, subprocess.TimeoutExpired):
+        result["status"] = "STOP_CHILD_PROCESS"
+        return result
+    result["child_returncode"] = child.returncode
+    result["status"] = "STOP_RECEIPT_OR_EXIT"
+    try:
+        path = root / _RECEIPT_NAME
+        if _plain_path(path).st_size > 262144:
+            return result
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if not _valid_final_receipt(report):
+            return result
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return result
+    if child.returncode == 0 and report["status"] == _COMPLETE:
+        result.update(returncode=0, status=_COMPLETE)
+    elif child.returncode != 0 and report["status"] != _COMPLETE:
+        result.update(returncode=1, status=report["status"])
+    # A finalizer failure after a nominal return, or any exit/receipt
+    # disagreement, is STOP as well. Only the supervisor declares completion.
+    return result
+
+
+def _guarded_child_main(argv=None):
     import argparse
+    import atexit
+    import _thread
     import json
     import os
     from pathlib import Path
-    import socket
-    import sys
 
-    parser = argparse.ArgumentParser(description="Synthetic, test-only Elysia child guard")
+    parser = argparse.ArgumentParser(description="Isolated synthetic child only")
+    parser.add_argument("--isolated-worker", action="store_true")
     parser.add_argument("--mode", choices=("synthetic", "contained"), required=True)
     parser.add_argument("--disposable-root", required=True)
     parser.add_argument("--app-port", required=True, type=int)
     parser.add_argument("--route", required=True, action="append")
+    parser.add_argument("--dependency-dir", action="append", default=[])
     parser.add_argument("--allow-contained-start", action="store_true")
     args = parser.parse_args(argv)
-
-    # Preflight runs before importing ANY project or HTTP client. An invalid
-    # root never receives writes, including a receipt.
     try:
-        root = _guarded_root(args.disposable_root, args.mode)
-        if args.mode == "contained" and not args.allow_contained_start:
-            raise ValueError("contained runtime must be explicitly requested")
-        if not (1 <= args.app_port <= 65535):
-            raise ValueError("invalid port")
-        # Only the one independently reviewed startup HTTP route is known.
-        if args.route != ["GET:/api/status"]:
-            raise ValueError("unreviewed or wildcard HTTP route")
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener_check:
-            listener_check.bind(("127.0.0.1", args.app_port))
-    except (OSError, ValueError):
-        print("STOP_PREFLIGHT", file=sys.stderr)
+        if (not args.isolated_worker or not sys.flags.isolated or
+                not sys.flags.no_site or not sys.flags.dont_write_bytecode or
+                "site" in sys.modules or args.mode != "synthetic" or
+                args.allow_contained_start):
+            raise ValueError("unsupported bootstrap or runtime mode")
+        if any(name in os.environ for name in _CHILD_SCRUB_NAMES):
+            raise ValueError("unscrubbed bootstrap environment")
+        if any(name == prefix or name.startswith(prefix + ".")
+               for name in sys.modules
+               for prefix in ("requests", "httpx", "http.client", "urllib.request",
+                              "project_guardian", "elysia_sub_guardian")):
+            raise ValueError("HTTP or project modules already loaded")
+        root = _guarded_root(args.disposable_root)
+        if not (1 <= args.app_port <= 65535) or args.route != ["GET:/api/status"]:
+            raise ValueError("unreviewed port or route")
+        if not args.dependency_dir:
+            raise ValueError("missing isolated dependency search path")
+        for directory in args.dependency_dir:
+            path = Path(directory)
+            if not path.is_absolute() or not path.is_dir():
+                raise ValueError("invalid dependency directory")
+            if str(path) not in sys.path:
+                sys.path.append(str(path))
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as check:
+            check.bind(("127.0.0.1", args.app_port))
+    except (OSError, ValueError, TypeError):
         return 2
 
-    # This function is run in the disposable CHILD, never in the parent.
-    # Discard values without logging, printing, or caching them.
-    for name in _CHILD_SCRUB_NAMES:
-        os.environ.pop(name, None)
     os.environ["ELYSIA_DISPOSABLE_ROOT"] = str(root)
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
-    sys.dont_write_bytecode = True
-    # Running as a file still needs the canonical source root for imports.
-    repo_root = str(Path(__file__).resolve().parents[2])
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-
     guard = ContainedHttpProbeGuard(
-        args.app_port, allowed_routes={("GET", "/api/status")}
+        args.app_port, allowed_routes={("GET", "/api/status")}, _synthetic_only=True,
     )
     status = "STOP_EXCEPTION"
-    result = 1
-    try:
-        with guard:
-            if args.mode == "synthetic":
-                import runpy
-                module = runpy.run_path(
-                    str(root / "synthetic_fixture.py"),
-                    run_name="__guarded_synthetic_fixture__",
-                )
-                main = module.get("main")
-                if not callable(main):
-                    raise ValueError("missing synthetic callable")
-                result = main()
-            else:
-                # Imports the EXISTING contained startup, only after guard
-                # setup. Not a permission to execute it on the owner's PC.
-                from scripts.start_contained_browser_memory import main
-                result = main([
-                    "--disposable-root", str(root), "--auto-start-ui",
-                    "--ui-host", "127.0.0.1",
-                    "--ui-port", str(args.app_port), "--json-status",
-                ])
-        status = "COMPLETE_TEST_HARNESS_ONLY" if type(result) is int and result == 0 else "STOP_CHILD"
-    except BaseException:
-        # No exception text or traceback: these may contain environment values.
-        status = "STOP_EXCEPTION"
-    report = guard.receipt()
-    if report["blocked_count"] or report["unclassified_count"]:
-        status = "STOP_PROHIBITED_NETWORK"
-    receipt = {
-        "status": status,
-        "scope": "synthetic_child_only_not_os_containment",
-        "mode": args.mode,
-        "allowed_http_calls": report["allowed_http_calls"],
-        "dashboard_probe_count": report["dashboard_probe_count"],
-        "dashboard_probes": report["dashboard_probes"],
-        "blocked_count": report["blocked_count"],
-        "unclassified_count": report["unclassified_count"],
-        "attempts": report["attempts"],
-    }
-    try:
-        receipt_path = root / "guarded-child-receipt.json"
-        with receipt_path.open("x", encoding="utf-8") as out:
-            json.dump(receipt, out, sort_keys=True)
+    out = None
+    pending = root / ".guarded-child-receipt.pending"
+    final_path = root / _RECEIPT_NAME
+    callbacks = []
+    callbacks_completed = cleanup_errors = 0
+    draining = unsupported = False
+    ready = False
+    saved_register = atexit.register
+
+    def quiescent():
+        return (not unsupported and
+                threading.enumerate() == [threading.main_thread()])
+
+    def final_status():
+        if guard.receipt()["blocked_count"]:
+            return "STOP_PROHIBITED_NETWORK"
+        if not quiescent():
+            return "STOP_UNSUPPORTED_LIFECYCLE"
+        if cleanup_errors:
+            return "STOP_EXCEPTION"
+        return status
+
+    def finalize():
+        # Native interpreter atexit callback, registered before loading any
+        # dependency or fixture. Managed callbacks already ran under the
+        # guards; instrumentation is still installed during interpreter exit.
+        if out is None:
+            return
+        try:
+            report = guard.receipt()
+            report.update(
+                status=final_status(), scope=_SCOPE, mode="synthetic",
+                lifecycle=_LIFECYCLE, finalized=True,
+                workers_quiescent=quiescent(),
+                callbacks_completed=callbacks_completed,
+                cleanup_errors=cleanup_errors,
+            )
+            json.dump(report, out, sort_keys=True)
             out.write("\n")
-    except OSError:
-        print("STOP_RECEIPT", file=sys.stderr)
-        return 2
-    # A test-harness PASS is not proof of native/subprocess/owner-PC safety.
-    print(status)
-    return 0 if status == "COMPLETE_TEST_HARNESS_ONLY" else 1
+            out.flush()
+            os.fsync(out.fileno())
+            out.close()
+            # Publish only AFTER a complete successful write/close. Link is
+            # exclusive (cannot overwrite an existing receipt). The supervisor
+            # also rejects any final file whose link count is not exactly one.
+            os.link(pending, final_path)
+            pending.unlink()
+        except BaseException:
+            # No plaintext exception details, no provisional success file.
+            # A missing/invalid receipt or exit disagreement is STOP.
+            try:
+                out.close()
+            except BaseException:
+                pass
+
+    def reject_lifecycle():
+        nonlocal unsupported
+        unsupported = True
+        raise RuntimeError("unsupported synthetic lifecycle")
+
+    def register(callback, *a, **kw):
+        if draining or len(callbacks) >= 128:
+            reject_lifecycle()
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        callbacks.append((callback, a, kw))
+        return callback
+
+    def unregister(callback):
+        if draining:
+            reject_lifecycle()
+        callbacks[:] = [item for item in callbacks if item[0] != callback]
+
+    def deny_worker(*a, **kw):
+        reject_lifecycle()
+
+    def audit_lifecycle(event, _args):
+        # A tracked Python process-creation attempt is an unsupported
+        # lifecycle even if the fixture catches the exception. This is not
+        # native/OS subprocess containment or a general security sandbox.
+        if event in {"subprocess.Popen", "os.system", "os.spawn", "os.exec",
+                     "os.fork", "os.forkpty", "os.posix_spawn", "os.startfile",
+                     "os.startfile/2"}:
+            reject_lifecycle()
+
+    # Use public registration, not private interpreter exit-function APIs.
+    # The supported single-thread fixture uses ordinary atexit.register /
+    # unregister, with LIFO callbacks executed exactly once as controlled
+    # teardown before main returns its final exit code. Native/destructor,
+    # child-process, arbitrary threading, and untrusted code are NOT covered.
+    saved_register(finalize)
+    atexit.register = register
+    atexit.unregister = unregister
+    threading.Thread.start = deny_worker
+    _thread.start_new_thread = deny_worker
+    sys.addaudithook(audit_lifecycle)
+    try:
+        guard.__enter__()  # Intentionally lifetime-scoped in this child ONLY.
+        ready = True
+        import runpy
+        fixture = runpy.run_path(str(root / "synthetic_fixture.py"),
+                                 run_name="__guarded_synthetic_fixture__")
+        main = fixture.get("main")
+        if not callable(main):
+            raise ValueError("missing synthetic callable")
+        result = main()
+        status = _COMPLETE if type(result) is int and result == 0 else "STOP_CHILD"
+    except BaseException:
+        status = "STOP_EXCEPTION"
+    finally:
+        if ready:
+            draining = True
+            for callback, a, kw in reversed(callbacks):
+                try:
+                    callback(*a, **kw)
+                except BaseException:
+                    cleanup_errors += 1
+                finally:
+                    callbacks_completed += 1
+            callbacks.clear()
+        elif callbacks:
+            # Failed guard initialization: running callbacks without the
+            # complete guard is unsupported and cannot be a success.
+            unsupported = True
+        if (atexit.register is not register or atexit.unregister is not unregister
+                or threading.Thread.start is not deny_worker
+                or _thread.start_new_thread is not deny_worker):
+            unsupported = True
+        # Reserve exclusively after controlled cleanup. No provisional
+        # green receipt: the real interpreter-exit finalizer writes it.
+        try:
+            if os.path.lexists(final_path):
+                return 2
+            out = pending.open("x", encoding="utf-8")
+        except OSError:
+            return 2
+
+    # Normal Python interpreter exit, no forced exit and no restoration
+    # before cleanup. Non-CLI guard context managers still restore patches.
+    return 0 if final_status() == _COMPLETE else 1
 
 
 if __name__ == "__main__":

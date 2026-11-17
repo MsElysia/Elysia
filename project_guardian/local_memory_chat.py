@@ -432,8 +432,10 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
                        str(item["chunk_id"]), item, tokens))
     ranked.sort(key=lambda row: (-row[0], row[1], row[2], row[3]))
 
-    # Adapt the prior #203 deterministic redundancy penalty. Preserve the
-    # strongest first hit; prefer distinct supporting evidence thereafter.
+    # Protect half of the bounded context for the strongest distinct fitted
+    # evidence by relevance. Similar wording can contain a different claim.
+    # Spend the remaining slots on the prior #203 redundancy penalty so
+    # repeated question echoes cannot crowd out a less lexical answer.
     # Similarity affects ordering only, never source identity or truth.
     selected = []
     selected_tokens = []
@@ -449,9 +451,11 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         return row[0] - 0.65 * redundancy
 
     while remaining and len(selected) < EVIDENCE_ITEM_CAP:
-        # Preserve the original rank on ties. At most four ranking passes;
-        # an item that cannot fit now cannot fit a smaller remaining budget.
-        remaining.sort(key=lambda pair: (-effective(pair[1]), pair[0]))
+        # The first two successful fits keep raw rank; failed fits consume
+        # no slot. Thereafter preserve original rank on diversity-score ties.
+        # An item that cannot fit now cannot fit a smaller remaining budget.
+        if len(selected) >= EVIDENCE_ITEM_CAP // 2:
+            remaining.sort(key=lambda pair: (-effective(pair[1]), pair[0]))
         for pos, (_, row) in enumerate(remaining):
             _, _, _, _, item, tokens = row
             fitted = _fit_evidence_item(selected, item, query_set)

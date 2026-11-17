@@ -228,3 +228,55 @@ def test_question_validation_preserved():
         _context([], [], "and the please")
     with pytest.raises(ChatBoundaryError):
         _context([], [], "x" * 801)
+
+
+@pytest.mark.parametrize("subject", ["Nahlia beacon", "Torvyn telescope", "Veridia atlas"])
+def test_repeated_question_only_memories_cannot_crowd_out_document_answer(subject):
+    """Four question echoes are not four independent answers to a location query."""
+    question = f"Where is the {subject} stored?"
+    facts = [
+        _fact(f"fact_pending_{i}",
+              f"Where is the {subject} stored? Answer still pending confirmation, note {i}.")
+        for i in range(5)
+    ]
+    document = _doc("located", f"The {subject} is located at Cedar Pier.")
+    first = _context(facts, [document], question)
+    second = _context(facts, [document], question)
+    assert "doc_located" in [e["source_id"] for e in first["evidence"]]
+    assert len(first["evidence"]) <= EVIDENCE_ITEM_CAP
+    assert first["evidence"] == second["evidence"]
+
+
+def test_distinct_conflicting_facts_are_not_deduplicated_by_similarity():
+    facts = [
+        _fact("fact_east", "The Nahlia beacon is located at Cedar Pier."),
+        _fact("fact_west", "The Nahlia beacon is located at Willow Cove."),
+    ]
+    result = _context(facts, [], "Where is the Nahlia beacon located?")
+    ids = {item["source_id"] for item in result["evidence"]}
+    assert {"fact_east", "fact_west"}.issubset(ids)
+
+
+def test_distinct_content_rarity_and_best_source_are_stable_under_exact_repetition():
+    """Copies do not change relevance scores or displace the strongest original."""
+    fact = _fact("fact_current", "The Veridia beacon location is Cedar Pier.", 4)
+    doc = _doc("other", "Veridia beacon location is Basalt Point.")
+    extra = _doc("weak", "The Veridia equipment inventory is available.")
+    query = "Veridia beacon location equipment"
+    ordinary = _context([fact], [doc, extra], query)
+    copies = [_doc("copy_" + str(i), fact["statement"]) for i in range(12)]
+    repeated = _context([fact], [doc, extra] + copies, query)
+    assert repeated == ordinary
+    hit = next(e for e in repeated["evidence"] if e["source_id"] == "fact_current")
+    assert hit["revision"] == 4 and hit["highlights"][0]["text"] == fact["statement"]
+
+
+def test_word_order_and_punctuation_are_not_content_identity():
+    # Equal token sets are NOT proof of equal meaning.
+    facts = [
+        _fact("a", "The Veridia north reservoir supplies the south reservoir."),
+        _fact("b", "The Veridia south reservoir supplies the north reservoir."),
+        _fact("c", "The Veridia north reservoir supplies the south reservoir?"),
+    ]
+    result = _context(facts, [], "Veridia north south reservoir supplies")
+    assert {e["source_id"] for e in result["evidence"]} == {"a", "b", "c"}

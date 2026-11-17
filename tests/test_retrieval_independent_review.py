@@ -56,12 +56,14 @@ def test_unsupported_question():
                     "When did Maribel purchase a kayak?")["no_memory_support"]
 
 
-@pytest.mark.xfail(strict=True, reason="Existing selector does not collapse identical evidence from distinct sources")
-def test_duplicate_pressure_records_existing_limitation():
+def test_duplicate_pressure_preserves_distinct_evidence():
     docs = [_doc(str(i), "Zircon beacon location Cedar Pier") for i in range(8)]
     docs.append(_doc("z_conflict", "Zircon beacon location Basalt Point"))
     result = _context([], docs, "Zircon beacon location")
-    assert any(e["source_id"] == "doc_z_conflict" for e in result["evidence"])
+    assert [e["source_id"] for e in result["evidence"]] == ["doc_0", "doc_z_conflict"]
+    assert [e["highlights"][0]["text"] for e in result["evidence"]] == [
+        "Zircon beacon location Cedar Pier", "Zircon beacon location Basalt Point",
+    ]
 
 
 @pytest.mark.xfail(strict=True, reason="Existing lexical retrieval has no semantic synonym matching")
@@ -70,3 +72,21 @@ def test_semantic_paraphrase_records_lexical_limitation():
                       "When does the doctor visit start?")
     assert any(e["source_id"] == "doc_medical" for e in result["evidence"])
 
+
+def test_long_near_identical_conflict_retains_source_and_exact_text():
+    common = "Zircon beacon maintenance survey certified equipment " * 45
+    a = _doc("a", common + "Zircon beacon is at Cedar Pier.")
+    a["content_sha256"] = hashlib.sha256(a["text"].encode()).hexdigest()
+    docs = [dict(a, source_id=f"doc_{i}", chunk_id=f"chunk_{i}") for i in range(8)]
+    b = _doc("z_conflict", common + "Zircon beacon is NOT at Cedar Pier; it is at Basalt Point.")
+    b["content_sha256"] = hashlib.sha256(b["text"].encode()).hexdigest()
+    docs.append(b)
+    before = canonical(docs)
+    result = _context([], docs, "Zircon beacon maintenance location")
+    evidence = result["evidence"]
+    assert [e["source_id"] for e in evidence] == ["doc_0", "doc_z_conflict"]
+    assert evidence[0]["highlights"][0]["text"] == a["text"]
+    assert evidence[1]["highlights"][0]["text"] == b["text"]
+    assert evidence[1]["source_sha256"] == b["content_sha256"]
+    assert canonical(docs) == before
+    assert len(canonical(evidence).encode()) <= EVIDENCE_BYTE_CAP

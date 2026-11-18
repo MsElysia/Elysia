@@ -39,6 +39,15 @@ class StaleTaskEditError(ContinuityError):
     """Competing edit: expected checkpoint revision no longer matches."""
 
 
+class RecoveryRequiredError(ContinuityError):
+    """Durable conversation/checkpoint revisions disagree; fail closed.
+
+    Both on-disk artifacts are preserved. Mutation and execution must not admit
+    the stale conversation revision as current. Automatic reconstruction from the
+    lossy checkpoint projection is out of scope for this fence.
+    """
+
+
 NO_OUTSTANDING_STEPS = "No outstanding steps"
 
 
@@ -749,18 +758,13 @@ class ConversationStore:
 
     def get(self, conversation_id: str) -> Dict[str, Any]:
         with self._lock:
-            path = self._conv_path(conversation_id)
-            if not path.is_file():
-                raise ContinuityError("conversation not found")
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or data.get("schema") != SCHEMA_CONVERSATION:
-                raise ContinuityError("malformed conversation record")
-            if data.get("conversation_id") != conversation_id:
-                raise ContinuityError("conversation identity mismatch")
-            return data
+            return self._load_unlocked(conversation_id)
 
     def get_checkpoint(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
+            # Enforce revision match against the conversation before exposing a
+            # checkpoint as authoritative current state.
+            self._load_unlocked(conversation_id)
             path = self._checkpoint_path(conversation_id)
             if not path.is_file():
                 return None
@@ -869,13 +873,7 @@ class ConversationStore:
         with self._lock:
             record = self._load_unlocked(conversation_id)
             current_rev = int(record.get("checkpoint_revision") or 0)
-            existing = None
-            cpath = self._checkpoint_path(conversation_id)
-            if cpath.is_file():
-                try:
-                    existing = json.loads(cpath.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    existing = None
+            existing = self._read_checkpoint_unlocked(conversation_id)
 
             # Idempotent retry after a successful commit whose response was lost:
             # current is already expected_revision+1 with matching operator content.
@@ -1024,13 +1022,7 @@ class ConversationStore:
         with self._lock:
             record = self._load_unlocked(conversation_id)
             current_rev = int(record.get("checkpoint_revision") or 0)
-            existing = None
-            cpath = self._checkpoint_path(conversation_id)
-            if cpath.is_file():
-                try:
-                    existing = json.loads(cpath.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    existing = None
+            existing = self._read_checkpoint_unlocked(conversation_id)
 
             if current_rev == expected_revision + 1 and isinstance(existing, dict):
                 if (
@@ -1198,13 +1190,7 @@ class ConversationStore:
         with self._lock:
             record = self._load_unlocked(conversation_id)
             current_rev = int(record.get("checkpoint_revision") or 0)
-            existing = None
-            cpath = self._checkpoint_path(conversation_id)
-            if cpath.is_file():
-                try:
-                    existing = json.loads(cpath.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    existing = None
+            existing = self._read_checkpoint_unlocked(conversation_id)
 
             # Idempotent retry: same step already completed at expected_revision+1.
             if current_rev == expected_revision + 1 and isinstance(existing, dict):
@@ -3117,15 +3103,10 @@ class ConversationStore:
         idempotent_reason: str,
         idempotent_match,
     ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]], int]:
+        # _load_unlocked fails closed on split/mismatched durable revisions.
         record = self._load_unlocked(conversation_id)
         current_rev = int(record.get("checkpoint_revision") or 0)
-        existing = None
-        cpath = self._checkpoint_path(conversation_id)
-        if cpath.is_file():
-            try:
-                existing = json.loads(cpath.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                existing = None
+        existing = self._read_checkpoint_unlocked(conversation_id)
         if current_rev == expected_revision + 1 and isinstance(existing, dict):
             if (
                 int(existing.get("revision") or 0) == expected_revision + 1
@@ -3325,10 +3306,36 @@ class ConversationStore:
         record["updated_utc"] = _utc_now()
         try:
             _atomic_write_json(self._conv_path(conversation_id), record)
+        except Exception:
+            # Prefer restoring the prior matched pair when possible. If restore
+            # fails, leave both files and require explicit recovery — never admit
+            # the stale conversation revision as current.
+            if previous is not None:
+                try:
+                    _atomic_write_json(cpath, previous)
+                except Exception:
+                    raise RecoveryRequiredError(
+                        "checkpoint saved but conversation record write failed; "
+                        "durable revision mismatch requires recovery "
+                        f"(conversation revision behind checkpoint); "
+                        "both files preserved; do not retry uncertain actions"
+                    )
+                raise ContinuityError(
+                    "checkpoint saved but conversation record write failed; "
+                    "previous matched checkpoint restored; retry with same edit"
+                )
+            raise RecoveryRequiredError(
+                "checkpoint saved but conversation record write failed; "
+                "durable revision mismatch requires recovery; both files preserved; "
+                "do not retry uncertain actions"
+            )
+        try:
             self._upsert_index(record)
         except Exception:
+            # Distinct post-commit case: conversation and checkpoint already match.
             raise ContinuityError(
-                "checkpoint saved but conversation record write failed; retry with same edit"
+                "conversation and checkpoint committed but index write failed; "
+                "revisions match; refresh index without re-executing"
             )
         return {
             "conversation": record,
@@ -3434,8 +3441,34 @@ class ConversationStore:
             record["updated_utc"] = _utc_now()
             if reason == "rollover":
                 record["last_rollover_utc"] = record["updated_utc"]
-            _atomic_write_json(self._conv_path(conversation_id), record)
-            self._upsert_index(record)
+            try:
+                _atomic_write_json(self._conv_path(conversation_id), record)
+            except Exception:
+                if previous is not None:
+                    try:
+                        _atomic_write_json(cpath, previous)
+                    except Exception:
+                        raise RecoveryRequiredError(
+                            "checkpoint saved but conversation record write failed; "
+                            "durable revision mismatch requires recovery; "
+                            "both files preserved; do not retry uncertain actions"
+                        )
+                    raise ContinuityError(
+                        "checkpoint saved but conversation record write failed; "
+                        "previous matched checkpoint restored; retry with same edit"
+                    )
+                raise RecoveryRequiredError(
+                    "checkpoint saved but conversation record write failed; "
+                    "durable revision mismatch requires recovery; both files preserved; "
+                    "do not retry uncertain actions"
+                )
+            try:
+                self._upsert_index(record)
+            except Exception:
+                raise ContinuityError(
+                    "conversation and checkpoint committed but index write failed; "
+                    "revisions match; refresh index without re-executing"
+                )
             return checkpoint
 
     def assemble_model_context(
@@ -3639,6 +3672,47 @@ class ConversationStore:
             total += estimate_tokens(str(msg.get("content") or "")) + 4
         return total
 
+    def _read_checkpoint_unlocked(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        path = self._checkpoint_path(conversation_id)
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RecoveryRequiredError(
+                f"recovery required: checkpoint unreadable ({exc}); files preserved; "
+                "do not admit mutation or execution"
+            )
+        if not isinstance(data, dict) or data.get("schema") != SCHEMA_CHECKPOINT:
+            raise ContinuityError("malformed checkpoint")
+        if data.get("conversation_id") != conversation_id:
+            raise ContinuityError("checkpoint identity mismatch")
+        return data
+
+    def _require_matched_revisions_unlocked(
+        self,
+        conversation_id: str,
+        record: Mapping[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Fail closed when conversation and checkpoint durable revisions disagree."""
+        current_rev = int(record.get("checkpoint_revision") or 0)
+        existing = self._read_checkpoint_unlocked(conversation_id)
+        if existing is None:
+            if current_rev == 0:
+                return None
+            raise RecoveryRequiredError(
+                f"recovery required: conversation revision {current_rev} but checkpoint "
+                "missing; files preserved; do not admit mutation or execution"
+            )
+        ckpt_rev = int(existing.get("revision") or 0)
+        if ckpt_rev != current_rev:
+            raise RecoveryRequiredError(
+                f"recovery required: conversation revision {current_rev} != checkpoint "
+                f"revision {ckpt_rev}; interrupted durable commit; both files preserved; "
+                "no mutation/execution until recovery"
+            )
+        return existing
+
     def _load_unlocked(self, conversation_id: str) -> Dict[str, Any]:
         path = self._conv_path(conversation_id)
         if not path.is_file():
@@ -3646,6 +3720,9 @@ class ConversationStore:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or data.get("schema") != SCHEMA_CONVERSATION:
             raise ContinuityError("malformed conversation record")
+        if data.get("conversation_id") != conversation_id:
+            raise ContinuityError("conversation identity mismatch")
+        self._require_matched_revisions_unlocked(conversation_id, data)
         return data
 
     def _upsert_index(self, record: Mapping[str, Any]) -> None:

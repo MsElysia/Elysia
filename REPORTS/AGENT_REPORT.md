@@ -3577,3 +3577,46 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+## Product workflow — OpenAI chat failures are not completions
+
+**Status:** COMPLETED on this branch. Not on `main`. No PR.
+
+**Implementation commit:** `77d6acaa4979c5e64c564bd8a75deaac2ecf943d`
+
+**Base:** `722d8e4` (`main`). Not based on the events-limit, implement-status, research-status, chat-status, decision-status, implementation-result, approved-batch, status-availability, unreadable-proposal, dry_run type-check, dry-run lifecycle, unexecuted-step, existing-file, outside-path, proposal-repository, run-tests, create-content, accepted-lifecycle, title-path, title-less create-path, modify-apply, or prose-heading branches.
+
+**Files:**
+- `elysia.py`
+- `tests/test_status_openai_chat.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Behavior:**
+- `POST /v1/chat/completions` on the unified status server returns HTTP 200 with `choices` only when `chat_with_llm` returns a non-empty string reply and an empty error string.
+- A model error returns HTTP 502 `{"error": {"message": "<error>", "type": "chat_failed"}}` and does not include `choices`. The error text is not an assistant message.
+- A reply paired with an error returns that same HTTP 502. An exception returns HTTP 500 `server_error`. A result that is not a pair of strings returns HTTP 500 `Chat returned an invalid result`.
+- Invalid JSON, a non-object body, a missing or non-list `messages`, a non-object message, a non-string role, non-string user content, a non-integer `Content-Length`, and an empty user message return HTTP 400 `invalid_request_error`. Those requests do not call `chat_with_llm`.
+- No status system returns HTTP 503 `System not initialized` and does not call chat.
+- A configured bearer token is still required. A missing or wrong token returns HTTP 401 and does not call chat.
+- A real reply is unchanged: HTTP 200, `object: chat.completion`, `finish_reason: stop`, and the reply text. User text is still joined and stripped before the call. A system message is not sent as the user text.
+- `POST /chat` is unchanged. The desktop client still receives HTTP 200 and reads `error` from the body.
+
+**Evidence:**
+- Before, live HTTP for fictional `fictional-ping` with stub result `("", "fictional-model-down")` was HTTP 200 `finish_reason: stop` and assistant content `fictional-model-down`. An empty user message was HTTP 200 assistant content `No response` with no chat call. `{not-json` was HTTP 200 `{"error": {"message": "Expecting property name..."}}`. No status system was HTTP 200 assistant content `System not initialized`.
+- After: `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_status_openai_chat.py -v --tb=short` — 5 passed in 0.58s. The tests load `elysia.py`, serve the real `StatusHandler` on loopback, and post with urllib. `chat_with_llm` is a local stub. No model and no external service is called.
+- Failure is HTTP 502 without `choices`, and the stub was called once with `fictional-ping`. A reply `fictional-reply` is HTTP 200 with that content. The stub received `alpha   beta` from the two padded user messages.
+
+**Remaining limitations:**
+- `POST /chat` still returns HTTP 200 when chat fails, including a bad body and a missing status system. `elysia_interface.py` reads that error only from a successful response, so this branch does not change that route.
+- `GET /status` still returns HTTP 200 when `get_status` throws. The body is `{"error": "...", "status": "degraded"}`.
+- A successful completion still reports token usage as zeros. This branch does not call a provider and does not add a chat runtime.
+- The runtime API `POST /api/chat` echo remains on this branch. Honest general-chat reporting stays on `origin/cursor/product-workflow-engineering-process-afb7` (`715e51c`, handoff `9e6d0be`).
+
+**Ownership left untouched:**
+- Did not edit `elysia/api/server.py`, `elysia/agents/implementer.py`, `elysia/core/proposal_system.py`, `elysia/runtime.py`, `elysia/cli.py`, or `project_guardian/ui_control_panel.py`.
+- Application runtime safety today is `bc-9ee02ae5` on `origin/cursor/application-runtime-safety-5ad0`. Its diff is `elysia/cli.py`, `elysia/core/proposal_system.py`, `elysia/runtime.py`, and `tests/test_elysia_runtime_lifecycle.py`.
+- Dashboard drafts #147, #148, #149, and #153 remain open. #156 remains open and is not a draft. They still own the dashboard files. `GET /api/status` on the panel was left with them.
+- `CURRENT_TASK: NONE` on `main` and on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`). `TASK-0053` remains OPEN review-only on that line. Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb` on `origin/codex/limited-live-activation-wrapper`. Do not implement live memory or vector writes. Leave open drafts through PR #228, including today's #227 and #228 and the HTTP-probe draft #224, to their owners.
+
+A branch commit is not integrated product readiness. Next product run should pick a different unclaimed API or dashboard error path. Do not take another pass at this OpenAI completion mapping. `POST /chat` can return an error status only together with a desktop client that reads the error body. Re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`.

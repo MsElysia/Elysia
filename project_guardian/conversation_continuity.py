@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 SCHEMA_CONVERSATION = "elysia.conversation.v1"
 SCHEMA_CHECKPOINT = "elysia.continuity-checkpoint.v1"
+SCHEMA_EXECUTION_PENDING = "elysia.execution-pending.v1"
 DEFAULT_CONTEXT_BUDGET_TOKENS = 1800  # conservative usable budget for small local models
 DEFAULT_RESPONSE_RESERVE = 512
 DEFAULT_SYSTEM_RESERVE = 400
@@ -2856,11 +2857,27 @@ class ConversationStore:
             record["updated_utc"] = now
 
             pending_path = self._conv_dir(conversation_id) / f"{execution_id}.pending.json"
+            # Never overwrite unresolved pending evidence from a prior interrupted commit.
+            if pending_path.is_file():
+                raise RecoveryRequiredError(
+                    f"recovery required: pending execution evidence already exists for "
+                    f"{execution_id}; refuse overwrite; do not re-execute"
+                )
+            other_pending = [
+                pid
+                for pid in self._unresolved_pending_execution_ids_unlocked(conversation_id)
+                if pid != execution_id
+            ]
+            if other_pending:
+                raise RecoveryRequiredError(
+                    "recovery required: unresolved pending execution evidence "
+                    f"({', '.join(other_pending)}); refuse new execution; files preserved"
+                )
             try:
                 _atomic_write_json(
                     pending_path,
                     {
-                        "schema": "elysia.execution-pending.v1",
+                        "schema": SCHEMA_EXECUTION_PENDING,
                         "receipt": receipt,
                         "step_id": step_id,
                         "expected_revision": expected_revision,
@@ -2889,6 +2906,12 @@ class ConversationStore:
                         "advancement_needs_review": needs_review,
                     },
                 )
+            except RecoveryRequiredError as exc:
+                # Preserve recovery-required identity; do not invite unsafe retry.
+                raise RecoveryRequiredError(
+                    f"{persist_failure_prefix}: {exc}; "
+                    f"pending execution_id={execution_id}; do not re-execute"
+                ) from exc
             except ContinuityError as exc:
                 raise ContinuityError(
                     f"{persist_failure_prefix}: {exc}; "
@@ -3304,9 +3327,37 @@ class ConversationStore:
 
         record["checkpoint_revision"] = checkpoint["revision"]
         record["updated_utc"] = _utc_now()
+        conv_path = self._conv_path(conversation_id)
         try:
-            _atomic_write_json(self._conv_path(conversation_id), record)
+            _atomic_write_json(conv_path, record)
         except Exception:
+            # If conversation already advanced (replace succeeded, later verify failed),
+            # do not roll the checkpoint back into a false matched-old state.
+            conversation_advanced = False
+            try:
+                if conv_path.is_file():
+                    loaded_conv = json.loads(conv_path.read_text(encoding="utf-8"))
+                    if (
+                        isinstance(loaded_conv, dict)
+                        and int(loaded_conv.get("checkpoint_revision") or 0)
+                        == int(checkpoint.get("revision") or 0)
+                    ):
+                        conversation_advanced = True
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                conversation_advanced = False
+            if conversation_advanced:
+                try:
+                    self._upsert_index(record)
+                except Exception:
+                    raise ContinuityError(
+                        "conversation and checkpoint committed but index write failed; "
+                        "revisions match; refresh index without re-executing"
+                    )
+                raise ContinuityError(
+                    "conversation and checkpoint committed but post-write verification "
+                    "failed; revisions match; do not restore prior checkpoint or re-execute"
+                )
+            pending_ids = self._unresolved_pending_execution_ids_unlocked(conversation_id)
             # Prefer restoring the prior matched pair when possible. If restore
             # fails, leave both files and require explicit recovery — never admit
             # the stale conversation revision as current.
@@ -3319,6 +3370,14 @@ class ConversationStore:
                         "durable revision mismatch requires recovery "
                         f"(conversation revision behind checkpoint); "
                         "both files preserved; do not retry uncertain actions"
+                    )
+                if pending_ids:
+                    # Execution already occurred; matched old revisions must not reopen it.
+                    raise RecoveryRequiredError(
+                        "checkpoint saved but conversation record write failed; "
+                        "previous matched checkpoint restored with unresolved pending "
+                        f"execution evidence ({', '.join(pending_ids)}); "
+                        "do not retry or re-execute; recovery required"
                     )
                 raise ContinuityError(
                     "checkpoint saved but conversation record write failed; "
@@ -3441,9 +3500,37 @@ class ConversationStore:
             record["updated_utc"] = _utc_now()
             if reason == "rollover":
                 record["last_rollover_utc"] = record["updated_utc"]
+            conv_path = self._conv_path(conversation_id)
             try:
-                _atomic_write_json(self._conv_path(conversation_id), record)
+                _atomic_write_json(conv_path, record)
             except Exception:
+                conversation_advanced = False
+                try:
+                    if conv_path.is_file():
+                        loaded_conv = json.loads(conv_path.read_text(encoding="utf-8"))
+                        if (
+                            isinstance(loaded_conv, dict)
+                            and int(loaded_conv.get("checkpoint_revision") or 0)
+                            == int(checkpoint.get("revision") or 0)
+                        ):
+                            conversation_advanced = True
+                except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                    conversation_advanced = False
+                if conversation_advanced:
+                    try:
+                        self._upsert_index(record)
+                    except Exception:
+                        raise ContinuityError(
+                            "conversation and checkpoint committed but index write failed; "
+                            "revisions match; refresh index without re-executing"
+                        )
+                    raise ContinuityError(
+                        "conversation and checkpoint committed but post-write verification "
+                        "failed; revisions match; do not restore prior checkpoint or re-execute"
+                    )
+                pending_ids = self._unresolved_pending_execution_ids_unlocked(
+                    conversation_id
+                )
                 if previous is not None:
                     try:
                         _atomic_write_json(cpath, previous)
@@ -3452,6 +3539,13 @@ class ConversationStore:
                             "checkpoint saved but conversation record write failed; "
                             "durable revision mismatch requires recovery; "
                             "both files preserved; do not retry uncertain actions"
+                        )
+                    if pending_ids:
+                        raise RecoveryRequiredError(
+                            "checkpoint saved but conversation record write failed; "
+                            "previous matched checkpoint restored with unresolved pending "
+                            f"execution evidence ({', '.join(pending_ids)}); "
+                            "do not retry or re-execute; recovery required"
                         )
                     raise ContinuityError(
                         "checkpoint saved but conversation record write failed; "
@@ -3689,6 +3783,36 @@ class ConversationStore:
             raise ContinuityError("checkpoint identity mismatch")
         return data
 
+    def _unresolved_pending_execution_ids_unlocked(
+        self, conversation_id: str
+    ) -> List[str]:
+        """Return execution_ids with on-disk pending receipts (uncertain commit)."""
+        folder = self._conv_dir(conversation_id)
+        if not folder.is_dir():
+            return []
+        found: List[str] = []
+        for path in sorted(folder.glob("exec_*.pending.json")):
+            name = path.name
+            if not name.endswith(".pending.json"):
+                continue
+            execution_id = name[: -len(".pending.json")]
+            if not re.fullmatch(r"exec_[a-f0-9]{16}", execution_id):
+                continue
+            found.append(execution_id)
+        return found
+
+    def _require_no_unresolved_pending_execution_unlocked(
+        self, conversation_id: str
+    ) -> None:
+        pending_ids = self._unresolved_pending_execution_ids_unlocked(conversation_id)
+        if not pending_ids:
+            return
+        raise RecoveryRequiredError(
+            "recovery required: unresolved pending execution evidence "
+            f"({', '.join(pending_ids)}); matched revisions alone do not authorize "
+            "mutation or execution; files preserved; do not retry uncertain actions"
+        )
+
     def _require_matched_revisions_unlocked(
         self,
         conversation_id: str,
@@ -3699,6 +3823,8 @@ class ConversationStore:
         existing = self._read_checkpoint_unlocked(conversation_id)
         if existing is None:
             if current_rev == 0:
+                # Still refuse admission when pending execution evidence exists.
+                self._require_no_unresolved_pending_execution_unlocked(conversation_id)
                 return None
             raise RecoveryRequiredError(
                 f"recovery required: conversation revision {current_rev} but checkpoint "
@@ -3711,6 +3837,8 @@ class ConversationStore:
                 f"revision {ckpt_rev}; interrupted durable commit; both files preserved; "
                 "no mutation/execution until recovery"
             )
+        # Matched revisions after an executed-but-uncommitted capability must not reopen.
+        self._require_no_unresolved_pending_execution_unlocked(conversation_id)
         return existing
 
     def _load_unlocked(self, conversation_id: str) -> Dict[str, Any]:

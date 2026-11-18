@@ -4,6 +4,7 @@ All data fictional. No model, personal memory, files, provider or network needed
 """
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -100,6 +101,7 @@ def test_oversized_best_source_keeps_bounded_excerpt_instead_of_silent_loss():
     needle = "The Nahlia chronometer serial NX-441 is sealed in the east annex vault."
     padding = ("background inventory filler note " * 400)
     docs = [_doc("huge", padding + needle + " " + padding)]
+    docs[0]["content_sha256"] = hashlib.sha256(docs[0]["text"].encode("utf-8")).hexdigest()
     result = _context([], docs, "Where is the Nahlia chronometer serial NX-441 sealed?")
     assert result["evidence"], "oversized best source must not disappear"
     hit = result["evidence"][0]
@@ -108,6 +110,8 @@ def test_oversized_best_source_keeps_bounded_excerpt_instead_of_silent_loss():
     assert "NX-441" in text and "east annex" in text
     assert hit["highlights"][0].get("excerpted") is True
     assert len(text) < len(docs[0]["text"])
+    assert hit["source_sha256"] == docs[0]["content_sha256"]
+    assert hit["highlights"][0]["excerpt_sha256"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert len(canonical(result["evidence"]).encode("utf-8")) <= EVIDENCE_BYTE_CAP
 
 
@@ -280,3 +284,84 @@ def test_word_order_and_punctuation_are_not_content_identity():
     ]
     result = _context(facts, [], "Veridia north south reservoir supplies")
     assert {e["source_id"] for e in result["evidence"]} == {"a", "b", "c"}
+
+def _assert_bundle_digest(bundle):
+    payload = {key: value for key, value in bundle.items() if key != "bundle_sha256"}
+    assert bundle["bundle_sha256"] == hashlib.sha256(canonical(payload).encode("utf-8")).hexdigest()
+
+
+@pytest.mark.parametrize("long_fact", [False, True], ids=["full", "excerpted"])
+def test_fact_context_preserves_original_revision_and_digest(long_fact):
+    original = ("routine " * 1600 if long_fact else "") + "Zircon beacon location: Cedar Pier."
+    fact = _fact("fact_beacon", original, revision=4)
+    before = canonical(fact)
+    query = "Zircon beacon location"
+    bundle = _context([fact], [], query)
+    assert len(bundle["evidence"]) == 1
+    hit = bundle["evidence"][0]
+    highlight = hit["highlights"][0]
+    assert (hit["source_id"], hit["chunk_id"], hit["revision"]) == ("fact_beacon", "fact_beacon", 4)
+    assert hit["source_sha256"] == hashlib.sha256(original.encode("utf-8")).hexdigest()
+    assert highlight["highlight_id"] == "fact_beacon:r4"
+    assert "Cedar Pier" in highlight["text"]
+    if long_fact:
+        assert highlight["excerpted"] is True
+        assert len(highlight["text"]) < len(original)
+        assert highlight["excerpt_sha256"] == hashlib.sha256(highlight["text"].encode("utf-8")).hexdigest()
+        assert highlight["excerpt_sha256"] != hit["source_sha256"]
+    else:
+        assert highlight == {"highlight_id": "fact_beacon:r4", "text": original}
+    assert len(canonical(bundle["evidence"]).encode("utf-8")) <= EVIDENCE_BYTE_CAP
+    _assert_bundle_digest(bundle)
+    assert _context([fact], [], query) == bundle
+    assert canonical(fact) == before
+
+
+def test_real_completed_unicode_document_preserves_chunk_and_raw_source_identity(tmp_path):
+    # Existing real persistence/import helpers; no live model or network.
+    from tests.test_control_panel_restricted_runtime import _memory, _panel
+
+    path = tmp_path / "memory.json"
+    # Astral Unicode takes 12 escaped JSON bytes per character. Force an
+    # excerpt from a real 1200-character chunk, not an oversized mock chunk.
+    text = "\U0001f9ed" * 1160 + " Zircon beacon location: Cedar Pier." + "\U0001f9ed" * 35
+    raw = text.encode("utf-8")
+    library = DocumentLibrary(_memory(path))
+    receipt = library.import_bytes("beacon.txt", raw)
+    assert receipt["status"] == "completed"
+    assert receipt["source_id"] == "doc_" + hashlib.sha256(raw).hexdigest()
+    restored = DocumentLibrary(_memory(path))
+    panel = _panel(restored.memory, config={"contained_startup": True})
+    adapter = panel._restricted_adapter()
+    before = path.read_bytes()
+    query = "Zircon beacon location"
+    rows = restored.search(query, context_distinct=True)
+    by_chunk = {row["chunk_id"]: row for row in rows}
+    assert len(by_chunk) >= 2
+    snapshot = canonical(rows)
+    bundle = build_context_from_adapter(adapter, query, {})
+    evidence = bundle["evidence"]
+    assert 0 < len(evidence) <= EVIDENCE_ITEM_CAP
+    assert any(hit["highlights"][0].get("excerpted") is True for hit in evidence)
+    for hit in evidence:
+        source = by_chunk[hit["chunk_id"]]
+        highlight = hit["highlights"][0]
+        assert hit["source_id"] == source["source_id"] == receipt["source_id"]
+        assert hit["source_sha256"] == source["content_sha256"] == hashlib.sha256(source["text"].encode("utf-8")).hexdigest()
+        assert hit["revision"] == 1
+        assert hit["trust"] == "untrusted_document"
+        assert hit["filename"] == source["filename"] and hit["page"] == source["page"]
+        assert highlight["highlight_id"] == source["chunk_id"]
+        if highlight.get("excerpted"):
+            assert "Cedar Pier" in highlight["text"]
+            assert highlight["excerpt_sha256"] == hashlib.sha256(highlight["text"].encode("utf-8")).hexdigest()
+            assert highlight["excerpt_sha256"] != hit["source_sha256"]
+        else:
+            assert highlight["text"] == source["text"]
+            assert "excerpt_sha256" not in highlight
+    assert len(canonical(evidence).encode("utf-8")) <= EVIDENCE_BYTE_CAP
+    _assert_bundle_digest(bundle)
+    assert build_context_from_adapter(adapter, query, {}) == bundle
+    assert canonical(restored.search(query, context_distinct=True)) == snapshot
+    assert path.read_bytes() == before
+    assert (restored.root / receipt["managed_copy"]).read_bytes() == raw

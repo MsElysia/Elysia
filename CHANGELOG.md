@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — OpenAI chat failures are not completions
+
+- `POST /v1/chat/completions` returns a chat completion only when the status server's chat call returns a reply and no error.
+- A model error, a missing server, an invalid body, and an empty user message return an error status and do not include `choices`.
+- `POST /chat` still returns HTTP 200 with an `error` field so the desktop client can show that text.

@@ -307,8 +307,9 @@ def _fit_evidence_item(
             "excerpted": True,
             "original_chars": len(original),
             "excerpt_chars": len(excerpt),
+            # Hash the displayed excerpt without replacing the original source hash.
+            "excerpt_sha256": hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
         }]
-        shrunk["source_sha256"] = hashlib.sha256(excerpt.encode("utf-8")).hexdigest()
         if len(canonical(selected + [shrunk]).encode("utf-8")) <= EVIDENCE_BYTE_CAP:
             return shrunk
     return None

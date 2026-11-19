@@ -9,17 +9,37 @@ from project_guardian.local_memory_chat import EVIDENCE_BYTE_CAP, canonical
 
 def test_tail_excerpt_keeps_answer_and_hash():
     text = "routine " * 1600 + "Zircon beacon location: Cedar Pier."
-    result = _context([], [_doc("tail", text)], "Zircon beacon location")
+    doc = _doc("tail", text)
+    doc["content_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    before = canonical(doc)
+    result = _context([], [doc], "Zircon beacon location")
     hit = result["evidence"][0]
-    excerpt = hit["highlights"][0]["text"]
+    highlight = hit["highlights"][0]
+    excerpt = highlight["text"]
     assert "Cedar Pier" in excerpt
-    assert hit["source_sha256"] == hashlib.sha256(excerpt.encode()).hexdigest()
+    assert highlight["excerpted"] is True
+    assert hit["source_id"] == doc["source_id"]
+    assert hit["chunk_id"] == doc["chunk_id"]
+    assert hit["revision"] == 1
+    assert hit["trust"] == "untrusted_document"
+    assert hit["source_sha256"] == doc["content_sha256"]
+    assert highlight["excerpt_sha256"] == hashlib.sha256(excerpt.encode("utf-8")).hexdigest()
+    assert highlight["excerpt_sha256"] != hit["source_sha256"]
+    assert canonical(doc) == before
 
 
 def test_unicode_evidence_and_byte_boundary():
-    result = _context([], [_doc("unicode", "星空 望远镜 保存在 北塔。" + "背景 " * 6000)], "星空 望远镜")
-    assert "北塔" in result["evidence"][0]["highlights"][0]["text"]
-    assert len(canonical(result["evidence"]).encode()) <= EVIDENCE_BYTE_CAP
+    original = "星空 望远镜 保存在 北塔。" + "背景 " * 6000
+    doc = _doc("unicode", original)
+    doc["content_sha256"] = hashlib.sha256(original.encode("utf-8")).hexdigest()
+    result = _context([], [doc], "星空 望远镜")
+    hit = result["evidence"][0]
+    highlight = hit["highlights"][0]
+    assert "北塔" in highlight["text"]
+    assert highlight["excerpted"] is True
+    assert hit["source_sha256"] == doc["content_sha256"]
+    assert highlight["excerpt_sha256"] == hashlib.sha256(highlight["text"].encode("utf-8")).hexdigest()
+    assert len(canonical(result["evidence"]).encode("utf-8")) <= EVIDENCE_BYTE_CAP
 
 
 def test_diagnostic_stronger_than_personal_evidence():

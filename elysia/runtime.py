@@ -73,6 +73,12 @@ class ElysiaRuntime:
             return
 
         self._start_time = datetime.now(timezone.utc)
+        # Mark running before the heartbeat thread samples status. Starting the
+        # heartbeat first emitted {"running": false} after init, and that sample
+        # could surface after the "started" event, so observers treated a live
+        # runtime as down. This does not change CLI signal handling or allow
+        # stop() during init() before start() is entered.
+        self._running = True
         self._heartbeat_stop.clear()
         self._start_heartbeat()
 
@@ -82,7 +88,6 @@ class ElysiaRuntime:
         if self.webscout:
             self.webscout.start_background_loop()
 
-        self._running = True
         logger.info("ElysiaRuntime started (mode=%s)", self.config.mode)
         self.event_bus.emit("runtime", "started", {"mode": self.config.mode})
 

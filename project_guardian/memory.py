@@ -456,10 +456,22 @@ class MemoryCore:
             List of memory entries with similarity scores
         """
         self.load_if_needed()
+        # A tiny query may be suitable for literal recall, but not for a
+        # pseudo-vector similarity score.
+        try:
+            from .memory_noise import is_low_value_memory_text
+            if is_low_value_memory_text(query, min_chars_for_substantive=22):
+                return self.search_memories(query, limit=limit)
+        except Exception:
+            pass
+        # Without a cached trusted embedding model, preserve truthful lexical recall.
+        # Do not build or search pseudo-vector indexes and label them semantic.
+        if self.vector_search and getattr(self.vector_search, "embedding_degraded", False):
+            return self.search_memories(query, limit=limit)
         # Lazy indexing: build index on first use if not already built
         if self.vector_search and not self._vector_index_built:
             self._build_vector_index()
-        
+
         if not self.vector_search:
             logger.warning("Vector search not enabled, falling back to keyword search")
             return self.search_memories(query, limit=limit)
@@ -471,6 +483,10 @@ class MemoryCore:
                 limit=limit,
                 threshold=threshold
             )
+            # A cached model can fail during encoding. Never return pseudo or
+            # empty 'semantic' evidence instead of available JSON keyword facts.
+            if getattr(self.vector_search, "embedding_degraded", False):
+                return self.search_memories(query, limit=limit)
             
             # Convert to memory format
             results = []

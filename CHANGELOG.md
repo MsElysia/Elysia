@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — status failures are not a live status
+
+- `GET /status` returns HTTP 200 only when status collection returns a JSON object.
+- A missing status system returns HTTP 503. A collector exception, a non-object payload, and a payload that cannot be encoded return HTTP 500 with `status_available: false`.
+- The attach menu prints that error text instead of treating the failure as a successful status page.

@@ -157,17 +157,41 @@ def _make_status_handler():
                         body["checks"]["guardian"] = False
                 self.wfile.write(json.dumps(body).encode())
             elif self.path == "/status":
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                if _status_system:
+                code = 200
+                if not _status_system:
+                    body = {"error": "System not initialized", "status_available": False}
+                    code = 503
+                else:
                     try:
                         body = _status_system.get_status()
                     except Exception as e:
-                        body = {"error": str(e), "status": "degraded"}
-                else:
-                    body = {"error": "System not initialized"}
-                self.wfile.write(json.dumps(body, default=str).encode())
+                        body = {
+                            "error": str(e),
+                            "status": "degraded",
+                            "status_available": False,
+                        }
+                        code = 500
+                    else:
+                        if not isinstance(body, dict):
+                            body = {
+                                "error": "Invalid status format",
+                                "status_available": False,
+                            }
+                            code = 500
+                try:
+                    payload = json.dumps(body, default=str).encode()
+                except Exception as e:
+                    payload = json.dumps(
+                        {
+                            "error": f"Status could not be encoded: {e}",
+                            "status_available": False,
+                        }
+                    ).encode()
+                    code = 500
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(payload)
             else:
                 self.send_response(404)
                 self.end_headers()

@@ -65,12 +65,38 @@ class ElysiaInterface:
     def _fetch_status_from_api(self):
         """Fetch status from running backend (attach mode)."""
         try:
+            import urllib.error
             import urllib.request
             req = urllib.request.Request(f"{STATUS_URL}/status")
             with urllib.request.urlopen(req, timeout=5) as r:
-                return json.loads(r.read().decode())
+                data = json.loads(r.read().decode())
+                if isinstance(data, dict):
+                    return data
+                return {"error": "Invalid status format", "status_available": False}
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8", errors="replace")
+            try:
+                data = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            data.setdefault("error", raw.strip() or str(e))
+            data["status_available"] = False
+            data.setdefault("hint", "Status request failed.")
+            return data
         except Exception as e:
             return {"error": str(e), "hint": "Is elysia.py running?"}
+
+    def _status_problem_text(self, status):
+        """Return a warning headline and hint when status cannot be shown."""
+        if not isinstance(status, dict) or "error" not in status:
+            return None
+        if status.get("status_available") is False:
+            headline = f"Status unavailable: {status.get('error')}"
+        else:
+            headline = f"Could not reach backend: {status.get('error')}"
+        return headline, status.get("hint") or ""
 
     def _fetch_health_from_api(self):
         """Fetch /health JSON from backend (attach mode)."""
@@ -91,9 +117,12 @@ class ElysiaInterface:
         # Attach mode: fetch from status API
         if self.attach_only:
             status = self._fetch_status_from_api()
-            if "error" in status:
-                print(f"\n[WARN] Could not reach backend: {status.get('error')}")
-                print(f"       {status.get('hint', '')}")
+            problem = self._status_problem_text(status)
+            if problem:
+                headline, hint = problem
+                print(f"\n[WARN] {headline}")
+                if hint:
+                    print(f"       {hint}")
             else:
                 print(f"\nUptime: {status.get('uptime', 'N/A')}")
                 print("Components:")
@@ -289,8 +318,12 @@ class ElysiaInterface:
 
         if self.attach_only:
             st = self._fetch_status_from_api()
-            if "error" in st:
-                print(f"\n[WARN] Could not reach backend: {st.get('error')}")
+            problem = self._status_problem_text(st)
+            if problem:
+                headline, hint = problem
+                print(f"\n[WARN] {headline}")
+                if hint:
+                    print(f"       {hint}")
             else:
                 gs = st.get("guardian_status") or {}
                 mem = gs.get("memory") or {}

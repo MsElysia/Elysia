@@ -17,6 +17,7 @@ import os
 import re
 import socket
 import threading
+import unicodedata
 from typing import Any, Dict, Mapping, Optional, Sequence
 from urllib.parse import urlsplit
 
@@ -255,34 +256,53 @@ def _context_tokens(text: str) -> list[str]:
 def _bounded_relevant_excerpt(
     text: str, query_tokens: set[str], *, max_chars: int = 900
 ) -> str:
-    """Keep a contiguous window covering query terms; never return empty if text exists."""
-    if not isinstance(text, str) or not text:
+    """Return a contiguous whole-word-scored source slice, or no usable excerpt."""
+    if not isinstance(text, str) or not text or max_chars <= 0:
         return ""
     if len(text) <= max_chars:
         return text
-    lowered = text.lower()
-    # Prefer the earliest window that contains the densest query-token hits.
-    best_start = 0
-    best_hits = -1
+
+    def word_part(char: str) -> bool:
+        # Protect original word spans and attached marks, including characters
+        # such as U+0345 that become letters only after casefolding. Underscore
+        # and punctuation remain separators as in the chat tokenizer.
+        return (
+            char.isalnum() or unicodedata.category(char).startswith("M")
+            or any(part.isalnum() for part in char.casefold())
+        )
+
+    # Prefer the earliest sampled window with the most complete query terms.
+    # Trim both boundaries inward before scoring AND displaying the same slice.
+    best_start = best_end = 0
+    best_hits = 0
     step = max(80, max_chars // 6)
     last_start = len(text) - max_chars
     starts = set(range(0, last_start + 1, step))
     starts.add(last_start)
     for start in sorted(starts):
-        window = lowered[start : start + max_chars]
-        hits = sum(1 for t in query_tokens if t in window)
+        end = start + max_chars
+        if start and word_part(text[start - 1]) and word_part(text[start]):
+            while start < end and word_part(text[start]):
+                start += 1
+        if end < len(text) and word_part(text[end - 1]) and word_part(text[end]):
+            while end > start and word_part(text[end - 1]):
+                end -= 1
+        if start >= end:
+            continue
+        hits = len(query_tokens.intersection(_context_tokens(text[start:end])))
         if hits > best_hits:
             best_hits = hits
-            best_start = start
+            best_start, best_end = start, end
             if hits >= len(query_tokens):
                 break
-    excerpt = text[best_start : best_start + max_chars].strip()
+    if not best_hits:
+        return ""
+    excerpt = text[best_start:best_end].strip()
     if best_start > 0:
         excerpt = "…" + excerpt
-    if best_start + max_chars < len(text):
-        excerpt = excerpt + "…"
-    return excerpt or text[:max_chars]
-
+    if best_end < len(text):
+        excerpt += "…"
+    return excerpt
 
 def _fit_evidence_item(
     selected: list[dict], item: dict, query_tokens: set[str]
@@ -300,6 +320,8 @@ def _fit_evidence_item(
     # Shrink until the item fits or the excerpt floor is reached.
     for max_chars in (900, 600, 400, 240):
         excerpt = _bounded_relevant_excerpt(original, query_tokens, max_chars=max_chars)
+        if not excerpt:
+            continue
         shrunk = dict(item)
         shrunk["highlights"] = [{
             **highlights[0],

@@ -4,7 +4,10 @@ import hashlib
 import pytest
 
 from tests.test_retrieval_evidence_ranking import _context, _doc, _fact
-from project_guardian.local_memory_chat import EVIDENCE_BYTE_CAP, canonical
+from project_guardian.local_memory_chat import (
+    EVIDENCE_BYTE_CAP, EVIDENCE_ITEM_CAP, _bounded_relevant_excerpt,
+    _fit_evidence_item, canonical,
+)
 
 
 def test_tail_excerpt_keeps_answer_and_hash():
@@ -191,3 +194,164 @@ def test_unfittable_high_ranked_item_does_not_consume_relevance_slot(position):
     assert [row["source_id"] for row in evidence[:2]] == ["fact_A", conflict["source_id"]]
     assert impossible_id not in {row["source_id"] for row in evidence}
     assert len(canonical(evidence).encode()) <= EVIDENCE_BYTE_CAP
+
+
+_BOUNDARY_FILLER = " routine material " * 1000
+
+
+def _boundary_source():
+    prefix = "x" * 147 + " unfixed until further notice. "
+    return (prefix + _BOUNDARY_FILLER[:930-len(prefix)] +
+            " harbor inspection pending. " + _BOUNDARY_FILLER +
+            " Harbor fixture fixed at Cedar Pier.")
+
+
+def _boundary_sha(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _boundary_item(text, terms=("fixed", "harbor")):
+    return {
+        "source_id": "fact-test", "chunk_id": "fact-test", "revision": 4,
+        "source_sha256": _boundary_sha(text), "matched_tokens": list(terms),
+        "score": 1., "highlights": [{"highlight_id": "fact-test:r4", "text": text}],
+    }
+
+
+def test_excerpt_canonical_truncated_unfixed_reproducer():
+    excerpt = _bounded_relevant_excerpt(_boundary_source(), {"fixed", "harbor"})
+    assert "Harbor fixture fixed at Cedar Pier." in excerpt
+
+
+@pytest.mark.parametrize("false_term", ["unfixed", "fixedness", "\u0345fixed"])
+def test_excerpt_ignores_substring_before_complete_term(false_term):
+    text = false_term + " " + _BOUNDARY_FILLER + " fixed at Cedar Pier."
+    assert "fixed at Cedar Pier." in _bounded_relevant_excerpt(text, {"fixed"})
+
+
+def test_excerpt_casefolded_combining_letter_is_not_a_boundary():
+    text = "x" * 149 + "\u0345fixed " + _BOUNDARY_FILLER + " fixed at Cedar Pier."
+    assert "fixed at Cedar Pier." in _bounded_relevant_excerpt(text, {"fixed"})
+
+
+def test_excerpt_display_drops_left_clipped_word_even_with_genuine_hit():
+    prefix = "x" * 147 + " unfixed until further notice. "
+    text = (prefix + _BOUNDARY_FILLER[:930-len(prefix)] +
+            " harbor fixed inspection. " + _BOUNDARY_FILLER)
+    excerpt = _bounded_relevant_excerpt(text, {"fixed", "harbor"})
+    assert "harbor fixed inspection." in excerpt
+    assert not excerpt.startswith("…fixed until")
+    assert excerpt.strip("…") in text
+
+
+def test_excerpt_display_drops_right_clipped_word_even_with_genuine_hit():
+    prefix = "harbor fixed inspection. "
+    text = (prefix + _BOUNDARY_FILLER[:894-len(prefix)] +
+            " fixedness pending. " + _BOUNDARY_FILLER)
+    excerpt = _bounded_relevant_excerpt(text, {"fixed", "harbor"})
+    assert "harbor fixed inspection." in excerpt
+    assert not excerpt.endswith("fixed…")
+    assert excerpt.strip("…") in text
+
+
+@pytest.mark.parametrize("word,query", [
+    ("Straße", "strasse"), ("İSTANBUL", "stanbul"),
+    ("harbor_fixed", "fixed"), ("harbor-fixed", "fixed"),
+])
+def test_excerpt_casefold_and_delimiters_use_original_text(word, query):
+    text = _BOUNDARY_FILLER + " " + word + " at Cedar Pier."
+    excerpt = _bounded_relevant_excerpt(text, {query})
+    assert word + " at Cedar Pier." in excerpt
+    assert excerpt.strip("…") in text
+
+
+@pytest.mark.parametrize("cap", [900, 600, 400, 240])
+def test_excerpt_original_unicode_slice_at_each_fit_size(cap):
+    text = "İ Straße " + _BOUNDARY_FILLER + " Straße marker at Cedar Pier."
+    excerpt = _bounded_relevant_excerpt(text, {"strasse", "marker"}, max_chars=cap)
+    assert "Straße marker at Cedar Pier." in excerpt
+    assert excerpt.strip("…") in text
+    assert len(excerpt) <= cap + 2
+    assert _bounded_relevant_excerpt(text, {"strasse", "marker"}, max_chars=cap) == excerpt
+
+
+def test_excerpt_oversized_unbroken_word_is_not_fabricated_evidence():
+    text = "x" * 14000
+    assert _bounded_relevant_excerpt(text, {text}) == ""
+    assert _fit_evidence_item([], _boundary_item(text), {text}) is None
+
+
+def test_excerpt_fit_keeps_original_and_derived_hashes():
+    text = _boundary_source()
+    item = _boundary_item(text)
+    before = canonical(item)
+    fitted = _fit_evidence_item([], item, {"fixed", "harbor"})
+    highlight = fitted["highlights"][0]
+    assert "Harbor fixture fixed at Cedar Pier." in highlight["text"]
+    assert fitted["source_sha256"] == _boundary_sha(text)
+    assert highlight["excerpt_sha256"] == _boundary_sha(highlight["text"])
+    assert fitted["revision"] == 4 and canonical(item) == before
+    assert len(canonical([fitted]).encode()) <= EVIDENCE_BYTE_CAP
+    assert _fit_evidence_item([], item, {"fixed", "harbor"}) == fitted
+
+
+def test_excerpt_nonoversized_evidence_unchanged():
+    text = "  unfixed at Cedar Pier.  "
+    assert _bounded_relevant_excerpt(text, {"fixed"}) == text
+    item = _boundary_item(text)
+    assert _fit_evidence_item([], item, {"fixed"}) is item
+
+
+@pytest.mark.parametrize("pad,limit", [
+    (0, 900), (8900, 600), (9050, 400), (9200, 240), (9400, 0),
+])
+def test_excerpt_fit_budget_backoff_preserves_source(pad, limit):
+    text = "routine material " * 1200 + " marker at Cedar Pier."
+    item = _boundary_item(text, ("marker",))
+    selected = [{"padding": "x" * pad}] if pad else []
+    before = canonical([selected, item])
+    fitted = _fit_evidence_item(selected, item, {"marker"})
+    if not limit:
+        assert fitted is None
+    else:
+        highlight = fitted["highlights"][0]
+        assert limit - 20 < len(highlight["text"]) <= limit + 2
+        assert "marker at Cedar Pier." in highlight["text"]
+        assert highlight["text"].strip("…") in text
+        assert fitted["source_sha256"] == _boundary_sha(text)
+        assert highlight["excerpt_sha256"] == _boundary_sha(highlight["text"])
+        assert len(canonical(selected + [fitted]).encode()) <= EVIDENCE_BYTE_CAP
+    assert canonical([selected, item]) == before
+
+
+def test_excerpt_earliest_complete_tie_and_no_complete_match():
+    text = "marker at First Pier. " + _BOUNDARY_FILLER + "marker at Last Pier."
+    assert "First Pier" in _bounded_relevant_excerpt(text, {"marker"})
+    assert _bounded_relevant_excerpt("unfixed " + _BOUNDARY_FILLER, {"fixed"}) == ""
+
+
+@pytest.mark.parametrize("kind", ["fact", "document"])
+def test_context_excerpt_boundary_repair_keeps_source_identity(kind):
+    text = _boundary_source()
+    doc = _doc("boundary", text)
+    doc["content_sha256"] = _boundary_sha(text)
+    facts = [_fact("boundary", text, revision=4)] if kind == "fact" else []
+    docs = [doc] if kind == "document" else []
+    before = canonical([facts, docs])
+    bundle = _context(facts, docs, "fixed harbor")
+    assert len(bundle["evidence"]) == 1
+    hit = bundle["evidence"][0]
+    highlight = hit["highlights"][0]
+    assert "Harbor fixture fixed at Cedar Pier." in highlight["text"]
+    assert highlight["text"].strip("…") in text
+    assert highlight["excerpted"] is True
+    assert hit["source_sha256"] == _boundary_sha(text)
+    assert highlight["excerpt_sha256"] == _boundary_sha(highlight["text"])
+    assert hit["revision"] == (4 if kind == "fact" else 1)
+    assert hit["source_id"] == ("boundary" if kind == "fact" else "doc_boundary")
+    assert hit["chunk_id"] == ("boundary" if kind == "fact" else "chunk_boundary")
+    assert len(bundle["evidence"]) <= EVIDENCE_ITEM_CAP
+    assert len(canonical(bundle["evidence"]).encode()) <= EVIDENCE_BYTE_CAP
+    assert _boundary_sha(canonical({k: v for k, v in bundle.items() if k != "bundle_sha256"})) == bundle["bundle_sha256"]
+    assert _context(facts, docs, "fixed harbor") == bundle
+    assert canonical([facts, docs]) == before

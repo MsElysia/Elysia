@@ -557,6 +557,7 @@ class DocumentLibrary:
             # Ordinary document search retains its existing literal vocabulary.
             from project_guardian.retrieval_vocabulary import normalize_retrieval_term
 
+            literal_tokens = tokens
             tokens = {normalize_retrieval_term(w) for w in tokens}
         if not tokens:
             return []
@@ -581,7 +582,13 @@ class DocumentLibrary:
             if overlap:
                 found.append(dict(meta, text=text, score=len(overlap) / len(tokens)))
         if context_distinct:
-            ranked = sorted(found, key=lambda x: (-x['score'], x['source_id'], x['chunk_id']))
+            # Do not let arbitrary source IDs evict stronger literal evidence
+            # when aliases tie at the bounded chat shortlist.
+            ranked = sorted(found, key=lambda x: (
+                -x['score'],
+                -len(literal_tokens & set(re.findall(r'\w{3,}', x['text'].casefold()))),
+                x['source_id'], x['chunk_id'],
+            ))
             # Group only exact original text, not token sets, normalized
             # paraphrases, or untrusted source hash metadata.
             seen = set()

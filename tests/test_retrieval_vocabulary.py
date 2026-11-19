@@ -249,3 +249,118 @@ def test_restricted_fact_retrieve_stays_literal_while_chat_uses_current_revision
     assert "Cedar Pier" not in canonical(bundle["evidence"])
     _assert_bundle(bundle)
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("question,text", [
+    ("prices", "Prices increased yesterday."),
+    ("pricing", "Pricing remains unchanged."),
+    ("vaults", "Vaults contain receipts."),
+    ("cost price", "Cost and price are separate ledger fields."),
+])
+def test_literal_admissibility_survives_family_collapse(question, text):
+    bundle = _context([_fact("target", text, revision=4)], [], question)
+    assert [row["source_id"] for row in bundle["evidence"]] == ["target"]
+    assert bundle["evidence"][0]["source_sha256"] == _sha(text)
+    assert bundle["evidence"][0]["revision"] == 4
+    _assert_bundle(bundle)
+
+
+@pytest.mark.parametrize("question,text", [
+    ("price", "Cost is 47 credits."),
+    ("vault", "Vaults contain receipts."),
+    ("vaults", "Vault contains receipts."),
+])
+def test_single_short_family_with_real_alias_only_evidence(question, text):
+    bundle = _context([_fact("target", text)], [], question)
+    assert [row["source_id"] for row in bundle["evidence"]] == ["target"]
+    _assert_bundle(bundle)
+
+
+@pytest.mark.parametrize("question,text", [
+    ("cost", "cost"), ("fix", "fix"), ("vault", "vault"),
+    ("cost price", "cost"),
+])
+def test_short_literal_or_collapsed_family_is_not_blanket_threshold_exception(question, text):
+    assert _context([_fact("target", text)], [], question)["no_memory_support"] is True
+
+
+def test_equal_normalized_fact_scores_prefer_literal_but_keep_conflict():
+    target = _fact("z_exact", "Opaline mosaic price is 47 credits.")
+    alias = _fact("a_alias", "Opaline mosaic cost estimate is 80 credits.")
+    bundle = _context([alias, target], [], "Opaline mosaic price")
+    assert [row["source_id"] for row in bundle["evidence"]] == ["z_exact", "a_alias"]
+    assert [row["score"] for row in bundle["evidence"]] == [1.0, 1.0]
+    assert _context([target, alias], [], "Opaline mosaic price") == bundle
+    _assert_bundle(bundle)
+
+
+@pytest.mark.parametrize("prefix", [
+    "x" * 147 + " unfixed ",
+    "x" * 894 + " fixedness ",
+    "Straße " * 21 + " unfixed ",
+], ids=["left-clipped", "right-clipped", "unicode-left-clipped"])
+def test_excerpt_ignores_clipped_aliases_and_preserves_original_offsets(prefix):
+    from project_guardian.local_memory_chat import _bounded_relevant_excerpt
+
+    text = prefix + (" routine material " * 800) + " repair completed at Cedar Pier."
+    excerpt = _bounded_relevant_excerpt(text, {"repair"}, max_chars=900)
+    assert "repair completed at Cedar Pier." in excerpt
+    assert excerpt.strip("…") in text
+    assert len(excerpt) <= 902
+    bundle = _context([_fact("target", text, revision=4)], [], "repair")
+    hit = bundle["evidence"][0]
+    highlight = hit["highlights"][0]
+    assert "Cedar Pier" in highlight["text"]
+    assert highlight["text"].strip("…") in text
+    assert hit["source_sha256"] == _sha(text)
+    assert highlight["excerpt_sha256"] == _sha(highlight["text"])
+    _assert_bundle(bundle)
+
+
+def test_completed_exact_document_survives_alias_crowding_before_six_cut(tmp_path):
+    from tests.test_restricted_runtime_adapter import _adapter
+
+    path = tmp_path / "memory.json"
+    library = DocumentLibrary(_adapter(path).memory)
+    sha_raw = lambda raw: hashlib.sha256(raw).hexdigest()
+    target_raw = max(
+        (f"Opaline mosaic price is 47 credits. Receipt batch {i}.".encode()
+         for i in range(32)), key=sha_raw,
+    )
+    target_sha = sha_raw(target_raw)
+    distractors = [
+        raw for i in range(100, 200)
+        if sha_raw(raw := f"Opaline mosaic cost estimate is {i} credits.".encode()) < target_sha
+    ][:8]
+    assert len(distractors) == 8
+    receipts = [
+        library.import_bytes(f"alias-{i}.txt", raw)
+        for i, raw in enumerate(distractors)
+    ]
+    target = library.import_bytes("target.txt", target_raw)
+    assert all(row["status"] == "completed" for row in receipts + [target])
+    assert target["source_id"] == "doc_" + target_sha
+    adapter = _adapter(path)
+    restored = DocumentLibrary(adapter.memory)
+    before = path.read_bytes()
+    question = "Opaline mosaic price"
+    literal = restored.search(question)
+    assert len(literal) == 6 and literal[0]["source_id"] == target["source_id"]
+    shortlist = restored.search(question, context_distinct=True)
+    assert len(shortlist) == 6 and shortlist[0]["source_id"] == target["source_id"]
+    assert shortlist == restored.search(question, context_distinct=True)
+    with patch("project_guardian.capability_awareness.record_capability_success"):
+        bundle = build_context_from_adapter(adapter, question, {})
+        assert build_context_from_adapter(adapter, question, {}) == bundle
+    hit = bundle["evidence"][0]
+    assert hit["source_id"] == target["source_id"]
+    assert hit["chunk_id"] == shortlist[0]["chunk_id"]
+    assert hit["source_sha256"] == shortlist[0]["content_sha256"] == _sha(target_raw.decode())
+    assert hit["highlights"][0]["text"] == target_raw.decode()
+    assert len(bundle["evidence"]) > 1  # retain distinct conflicting estimates
+    assert all(row["trust"] == "untrusted_document" for row in bundle["evidence"])
+    _assert_bundle(bundle)
+    assert restored.search(question) == literal
+    assert path.read_bytes() == before
+    for receipt, raw in zip(receipts + [target], distractors + [target_raw]):
+        assert (restored.root / receipt["managed_copy"]).read_bytes() == raw

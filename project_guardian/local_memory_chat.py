@@ -249,9 +249,13 @@ _CONTEXT_STOPWORDS = frozenset(
 )
 
 
-def _context_tokens(text: str) -> list[str]:
+def _literal_context_tokens(text: str) -> list[str]:
     words = re.findall(r"[^\W_]+", text.casefold())
-    return [normalize_retrieval_term(w) for w in words if w not in _CONTEXT_STOPWORDS and len(w) > 1]
+    return [w for w in words if w not in _CONTEXT_STOPWORDS and len(w) > 1]
+
+
+def _context_tokens(text: str) -> list[str]:
+    return [normalize_retrieval_term(w) for w in _literal_context_tokens(text)]
 
 
 def _bounded_relevant_excerpt(
@@ -270,7 +274,14 @@ def _bounded_relevant_excerpt(
     starts = set(range(0, last_start + 1, step))
     starts.add(last_start)
     for start in sorted(starts):
-        window = text[start : start + max_chars]
+        end = start + max_chars
+        window = text[start:end]
+        # Score only complete original words. Casefold after clipping partial
+        # boundary words, so expansion (e.g. ß) cannot shift source offsets.
+        if start and text[start - 1].isalnum() and text[start].isalnum():
+            window = re.sub(r"^[^\W_]+", "", window)
+        if end < len(text) and text[end - 1].isalnum() and text[end].isalnum():
+            window = re.sub(r"[^\W_]+$", "", window)
         hits = len(set(_context_tokens(window)) & query_tokens)
         if hits > best_hits:
             best_hits = hits
@@ -331,6 +342,7 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
     if not query_tokens:
         raise ChatBoundaryError("query has no content words")
     query_set = set(query_tokens)
+    literal_query = set(_literal_context_tokens(question))
     # Current fact revisions and completed document chunks compete for the same
     # four evidence slots. A generic fact must not hide a specific document.
     # The retrieved documents are still untrusted data, never verified facts.
@@ -417,22 +429,42 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         for term in sorted(query_set)
     }
     denominator = sum(term_weight.values())
+    # Preserve literal admissibility independently of folding several words
+    # into one family. Alias-only rows do not vote in the literal rarity gate.
+    literal_sets = [
+        set(_literal_context_tokens(item["highlights"][0]["text"]))
+        for _, _, item in candidates
+    ]
+    literal_candidates = [tokens for tokens in literal_sets if literal_query & tokens]
+    literal_weight = {
+        term: 1.0 + math.log(
+            (len(literal_candidates) + 1)
+            / (sum(term in tokens for tokens in literal_candidates) + 1)
+        )
+        for term in sorted(literal_query)
+    }
+    literal_denominator = sum(literal_weight.values())
     ranked = []
-    for kind, tokens, item in candidates:
+    for (kind, tokens, item), literal_tokens in zip(candidates, literal_sets):
         overlap = query_set & tokens
         score = sum(term_weight[t] for t in sorted(overlap)) / denominator
-        # Require more than a generic single-word hit unless the long term
-        # itself is sufficiently distinctive. Preserve the existing threshold.
-        if len(overlap) < 2 and not any(len(t) >= 6 for t in overlap):
-            continue
-        if score < 0.22 and len(overlap) < 2:
+        literal_overlap = literal_query & literal_tokens
+        literal_score = sum(literal_weight[t] for t in sorted(literal_overlap)) / literal_denominator
+        literal_ok = len(literal_overlap) >= 2 or (
+            any(len(t) >= 6 for t in literal_overlap) and literal_score >= 0.22
+        )
+        # Count distinct normalized families once. A single family may support
+        # a real alias-only match at the existing score floor, even if its
+        # words are short; an unchanged short literal alone gains no exception.
+        normalized_ok = len(overlap) >= 2 or (not literal_overlap and score >= 0.22)
+        if not (literal_ok or normalized_ok):
             continue
         item["score"] = round(min(1.0, score), 6)
-        # Current durable facts win a genuinely equal relevance score, but
-        # cannot monopolize slots when documents are demonstrably stronger.
+        # Prefer literal evidence on equal normalized relevance; current
+        # durable facts still win when relevance and literal hits are equal.
         ranked.append((score, kind != "fact", str(item["source_id"]),
-                       str(item["chunk_id"]), item, tokens))
-    ranked.sort(key=lambda row: (-row[0], row[1], row[2], row[3]))
+                       str(item["chunk_id"]), item, tokens, len(literal_overlap)))
+    ranked.sort(key=lambda row: (-row[0], -row[6], row[1], row[2], row[3]))
 
     # Protect half of the bounded context for the strongest distinct fitted
     # evidence by relevance. Similar wording can contain a different claim.
@@ -459,7 +491,7 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         if len(selected) >= EVIDENCE_ITEM_CAP // 2:
             remaining.sort(key=lambda pair: (-effective(pair[1]), pair[0]))
         for pos, (_, row) in enumerate(remaining):
-            _, _, _, _, item, tokens = row
+            _, _, _, _, item, tokens, _ = row
             fitted = _fit_evidence_item(selected, item, query_set)
             if fitted is not None:
                 selected.append(fitted)

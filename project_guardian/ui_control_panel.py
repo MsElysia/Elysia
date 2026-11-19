@@ -1190,6 +1190,14 @@ CONTROL_PANEL_TEMPLATE = """
         // Initialize on page load - show UI immediately
         document.addEventListener('DOMContentLoaded', function() {
             try {
+                var chatInput = document.getElementById('api-chat-message');
+                if (chatInput) {
+                    chatInput.addEventListener('keydown', function(event) {
+                        if (event.key !== 'Enter' || event.isComposing || event.repeat) return;
+                        event.preventDefault();
+                        window.sendHomeChat();
+                    });
+                }
                 var drop = document.getElementById('document-drop-zone');
                 drop.addEventListener('dragover', function(e) { e.preventDefault(); });
                 drop.addEventListener('drop', function(e) { e.preventDefault(); window.importSelectedDocuments(e.dataTransfer.files); });
@@ -1205,7 +1213,6 @@ CONTROL_PANEL_TEMPLATE = """
                     document.querySelectorAll('label').forEach(function(label) {
                         if (label.textContent.indexOf('Chat with AI') === 0) label.textContent = 'Chat with durable memory:';
                     });
-                    var chatInput = document.getElementById('api-chat-message');
                     if (chatInput) chatInput.placeholder = 'Ask using words from a saved fact, or ask the local model';
                     var localControls = document.getElementById('local-model-chat-controls');
                     if (localControls) localControls.style.display = 'block';
@@ -3122,8 +3129,8 @@ CONTROL_PANEL_TEMPLATE = """
             if (window._chatPending) return;
             const msg = (document.getElementById('api-chat-message') || {}).value;
             const el = document.getElementById('api-chat-result');
-            const allowCalc = !!(document.getElementById('allow-labor-calculator') || {}).checked;
-            const allowDocs = !!(document.getElementById('allow-documents-search') || {}).checked;
+            const calculatorGrant = document.getElementById('allow-labor-calculator');
+            const documentsGrant = document.getElementById('allow-documents-search');
             const docsFolder = ((document.getElementById('documents-search-folder') || {}).value || '').trim();
             const sel = document.getElementById('conversation-select');
             if (!msg || !msg.trim()) { if (el) el.textContent = 'Enter a message first.'; return; }
@@ -3132,12 +3139,14 @@ CONTROL_PANEL_TEMPLATE = """
             var body = {
                 message: msg,
                 use_local_model: true,
-                allow_calculator: allowCalc,
-                allow_documents_search: allowDocs,
+                allow_calculator: !!(calculatorGrant && calculatorGrant.checked),
+                allow_documents_search: !!(documentsGrant && documentsGrant.checked),
                 documents_folder: docsFolder || null
             };
             var convId = window._activeConversationId || (sel && sel.value) || '';
             if (convId) body.conversation_id = convId;
+            if (calculatorGrant) calculatorGrant.checked = false;
+            if (documentsGrant) documentsGrant.checked = false;
             fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -3173,8 +3182,6 @@ CONTROL_PANEL_TEMPLATE = """
                     var failed = !data.success || !!data.error || res.status >= 400;
                     if (data.conversation_id) { window.loadChatHistory(data.conversation_id); window.refreshConversations(); }
                     addLog(failed ? ('Local model chat failed: ' + (data.error || text)) : 'Local model reply received', failed ? 'error' : 'info');
-                    var docsAuth = document.getElementById('allow-documents-search');
-                    if (docsAuth) docsAuth.checked = false;
                 })
                 .catch(function(err) { if (el) el.textContent = 'Error: ' + err; addLog('Local model chat error: ' + err, 'error'); })
                 .finally(function() { window._chatPending = false; });
@@ -3183,12 +3190,13 @@ CONTROL_PANEL_TEMPLATE = """
         window.runLocalDocumentsSearch = function() {
             const msg = (document.getElementById('api-chat-message') || {}).value;
             const el = document.getElementById('api-chat-result');
-            const allowDocs = !!(document.getElementById('allow-documents-search') || {}).checked;
+            const documentsGrant = document.getElementById('allow-documents-search');
             const docsFolder = ((document.getElementById('documents-search-folder') || {}).value || '').trim();
             if (!docsFolder) { if (el) el.textContent = 'Enter an absolute folder path first.'; return; }
             if (!msg || !msg.trim()) { if (el) el.textContent = 'Enter a search query first.'; return; }
-            if (!allowDocs) { if (el) el.textContent = 'Authorize local.documents.search for this request.'; return; }
+            if (!documentsGrant || !documentsGrant.checked) { if (el) el.textContent = 'Authorize local.documents.search for this request.'; return; }
             if (el) el.textContent = 'Searching authorized folder...';
+            documentsGrant.checked = false;
             fetch('/api/local-documents/search', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -3206,8 +3214,6 @@ CONTROL_PANEL_TEMPLATE = """
                     if (data.match_count != null) text += '\\n\\nmatches: ' + data.match_count;
                     if (data.receipt) text += '\\n\\nreceipt: ' + JSON.stringify(data.receipt, null, 2);
                     if (el) el.textContent = text;
-                    var docsAuth = document.getElementById('allow-documents-search');
-                    if (docsAuth) docsAuth.checked = false;
                 })
                 .catch(function(err) { if (el) el.textContent = 'Error: ' + err; });
         };

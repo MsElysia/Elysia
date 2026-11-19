@@ -3577,3 +3577,45 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — 2026-11-19 status collection failures
+
+**Status:** COMPLETED on this branch. Not on `main`. No PR.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c`
+
+**Implementation commit:** `ad9f08fd8a489d0b8537fb142bef00a44def8cf2`
+
+**Not based on** the earlier product branches, including the 2026-11-18 OpenAI completion branch `origin/cursor/bc-314a701a-233d-4254-a248-6a60e24797ef-1bd6` (`77d6aca`, handoff `c35ef88`).
+
+**Files:**
+- `elysia.py`
+- `elysia_interface.py`
+- `tests/test_status_get_failure.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Behavior:**
+- `GET /status` returns HTTP 200 only when `get_status()` returns a dict that can be encoded as JSON.
+- No status system: HTTP 503 `{"error":"System not initialized","status_available":false}`.
+- A collector exception: HTTP 500 `status: degraded`, `status_available: false`, with the exception text.
+- A non-dict payload: HTTP 500 `Invalid status format`.
+- A dict that cannot be encoded: HTTP 500 `Status could not be encoded: ...`.
+- The attach menu System Status and Memories views print `Status unavailable: <error>` and the hint `Status request failed.` They do not print uptime for that failure.
+
+**Evidence:**
+- Before, live HTTP on the real `elysia.py` handler: no system `200 {"error": "System not initialized"}`; `RuntimeError("fictional-status-failure")` `200 {"error": "fictional-status-failure", "status": "degraded"}`; a list payload `200 ["not-a-status"]`.
+- After: `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_status_get_failure.py -v --tb=short` — 2 passed. The server was `ThreadingHTTPServer` plus the real `_make_status_handler`, urllib, a local status stub, and `ElysiaInterface(attach_only=True)`. No external service and `UnifiedElysiaSystem` was not constructed.
+
+**Left untouched:**
+- `POST /chat` and `POST /v1/chat/completions` still have the `main` behavior on this branch. The OpenAI completion-status fix stays on `origin/cursor/bc-314a701a-233d-4254-a248-6a60e24797ef-1bd6`. `POST /chat` still returns HTTP 200 because `elysia_interface.py` reads chat errors from a 200 body.
+- `GET /health` still returns HTTP 200 `status: ok` when no status system is attached.
+- Did not edit `elysia/api/server.py`, `elysia/agents/implementer.py`, `elysia/core/proposal_system.py`, `elysia/runtime.py`, `elysia/cli.py`, or `project_guardian/ui_control_panel.py`.
+- Application runtime safety today is `cec0f5a` on `origin/cursor/bc-85d0804a-cc90-4d38-89e0-7338d1d0f4f3-0fcb` (`bc-85d0804a`, `elysia/runtime.py` and `tests/test_elysia_runtime_heartbeat_truth.py` only). The prior runtime-safety push remains `fc6bd97` on `origin/cursor/application-runtime-safety-5ad0`.
+- Dashboard drafts #147, #148, #149, #153, and #156 remain open.
+
+**Queue:** `CONTROL.md` `CURRENT_TASK: NONE` on `main` and on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`). `TASKS/TASK-0053.md` remains OPEN, review only. Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb` on `origin/codex/limited-live-activation-wrapper`. Do not implement live memory or vector writes. Leave open drafts through PR #228 to their owners.
+
+Do not open a second copy of this status-collection fix from `main`. Next product run should pick a different unclaimed API or dashboard error path. `GET /health` still reports `ok` with no status system. Re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`. A branch commit is not integrated product readiness.

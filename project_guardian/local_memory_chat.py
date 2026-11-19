@@ -20,6 +20,8 @@ import threading
 from typing import Any, Dict, Mapping, Optional, Sequence
 from urllib.parse import urlsplit
 
+from project_guardian.retrieval_vocabulary import normalize_retrieval_term
+
 REQUEST_DEADLINE_SECONDS = 35
 PROMPT_BYTE_CAP = 18000
 EVIDENCE_BYTE_CAP = 10000
@@ -249,7 +251,7 @@ _CONTEXT_STOPWORDS = frozenset(
 
 def _context_tokens(text: str) -> list[str]:
     words = re.findall(r"[^\W_]+", text.casefold())
-    return [w for w in words if w not in _CONTEXT_STOPWORDS and len(w) > 1]
+    return [normalize_retrieval_term(w) for w in words if w not in _CONTEXT_STOPWORDS and len(w) > 1]
 
 
 def _bounded_relevant_excerpt(
@@ -260,7 +262,6 @@ def _bounded_relevant_excerpt(
         return ""
     if len(text) <= max_chars:
         return text
-    lowered = text.lower()
     # Prefer the earliest window that contains the densest query-token hits.
     best_start = 0
     best_hits = -1
@@ -269,8 +270,8 @@ def _bounded_relevant_excerpt(
     starts = set(range(0, last_start + 1, step))
     starts.add(last_start)
     for start in sorted(starts):
-        window = lowered[start : start + max_chars]
-        hits = sum(1 for t in query_tokens if t in window)
+        window = text[start : start + max_chars]
+        hits = len(set(_context_tokens(window)) & query_tokens)
         if hits > best_hits:
             best_hits = hits
             best_start = start

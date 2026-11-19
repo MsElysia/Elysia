@@ -552,6 +552,12 @@ class DocumentLibrary:
     def search(self, query, limit=6, *, context_distinct=False):
         """Default search keeps source matches; chat can request distinct text."""
         tokens = set(re.findall(r'\w{3,}', query.casefold())) - {'the', 'what', 'which', 'does', 'and', 'from', 'with'}
+        if context_distinct:
+            # Local import keeps standalone extraction workers dependency-free.
+            # Ordinary document search retains its existing literal vocabulary.
+            from project_guardian.retrieval_vocabulary import normalize_retrieval_term
+
+            tokens = {normalize_retrieval_term(w) for w in tokens}
         if not tokens:
             return []
         completed = {r['source_id'] for r in self.receipts() if r['status'] == 'completed'}
@@ -568,7 +574,10 @@ class DocumentLibrary:
             text = entry.get('thought') if context_distinct else entry['thought']
             if context_distinct and not is_context_document(dict(meta, text=text)):
                 continue
-            overlap = tokens & set(re.findall(r'\w{3,}', text.casefold()))
+            document_tokens = set(re.findall(r'\w{3,}', text.casefold()))
+            if context_distinct:
+                document_tokens = {normalize_retrieval_term(w) for w in document_tokens}
+            overlap = tokens & document_tokens
             if overlap:
                 found.append(dict(meta, text=text, score=len(overlap) / len(tokens)))
         if context_distinct:

@@ -36,6 +36,9 @@ def _status(monkeypatch, tmp_path, *, dirty=False, fetch=True,
         porcelain=" M file" if dirty else ""
     ))
     monkeypatch.setattr(sync_check.gitutil, "fetch", lambda path, remote: None)
+    monkeypatch.setattr(sync_check, "_trusted_canonical_origin",
+                        lambda path: "https://github.com/MsElysia/Elysia.git")
+    monkeypatch.setattr(sync_check, "_live_canonical_sha", lambda path: SHA)
     monkeypatch.setattr(sync_check.gitutil, "remote_ref_sha", lambda *args: SHA)
     monkeypatch.setattr(sync_check.gitutil, "ahead_behind", lambda *args: (ahead, behind))
     monkeypatch.setattr(sync_check, "read_release_identity", lambda path: (
@@ -184,6 +187,12 @@ def real_sync(tmp_path, monkeypatch):
     monkeypatch.setattr(sync_check, "release_root", lambda: release)
     monkeypatch.setattr(sync_check, "status_path", lambda: path)
     monkeypatch.setattr(sync_check.gitutil, "fetch", lambda *a: None)
+    monkeypatch.setattr(sync_check, "_trusted_canonical_origin",
+                        lambda path: "https://github.com/MsElysia/Elysia.git")
+    monkeypatch.setattr(sync_check, "_live_canonical_sha",
+                        lambda path: sync_check.gitutil.remote_ref_sha(
+                            path, "origin", "integration/windows-canonical"
+                        ))
 
     def check(do_fetch=True):
         result = sync_check.build_status(do_fetch=do_fetch)
@@ -357,3 +366,171 @@ def test_report_and_cli_return_errors_for_unstable_status(real_sync, monkeypatch
     monkeypatch.setattr(status_report, "build_status", lambda **kwargs: status)
     assert status_report.main(["--json"]) == 2
     assert "changed_during_check" in capsys.readouterr().out
+
+
+
+def _trusted_bare_fixture(tmp_path, monkeypatch):
+    """Test live Git with an isolated bare remote; only trust policy is adapted."""
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    _git(origin, "init", "--bare")
+    dev = tmp_path / "dev-live"
+    dev.mkdir()
+    _git(dev, "init", "-b", "integration/windows-canonical")
+    _git(dev, "config", "user.name", "Synthetic")
+    _git(dev, "config", "user.email", "test@example.invalid")
+    (dev / "example.txt").write_text("Version A", encoding="utf-8")
+    _git(dev, "add", "example.txt")
+    _git(dev, "commit", "-m", "A")
+    a = _git(dev, "rev-parse", "HEAD")
+    _git(dev, "remote", "add", "origin", str(origin))
+    _git(dev, "push", "-u", "origin", "integration/windows-canonical")
+    release = tmp_path / "release-live"
+    subprocess.run(
+        ["git", "clone", "-q", "--branch", "integration/windows-canonical",
+         str(origin), str(release)],
+        check=True,
+    )
+    writer = tmp_path / "writer"
+    subprocess.run(
+        ["git", "clone", "-q", "--branch", "integration/windows-canonical",
+         str(origin), str(writer)],
+        check=True,
+    )
+    _git(writer, "config", "user.name", "Synthetic")
+    _git(writer, "config", "user.email", "test@example.invalid")
+    path = tmp_path / "status-live.json"
+    path.write_text(json.dumps({"last_successful_check_utc": PREVIOUS_CHECK}))
+    monkeypatch.setattr(sync_check, "dev_root", lambda: dev)
+    monkeypatch.setattr(sync_check, "release_root", lambda: release)
+    monkeypatch.setattr(sync_check, "status_path", lambda: path)
+    # Only the trust validator permits this fixture's local bare origin.
+    # Actual gitutil.fetch, Git remote get-url, ls-remote and rev-list execute.
+    monkeypatch.setattr(sync_check, "_canonical_origin",
+                        lambda url: url.strip() == str(origin))
+    return origin, dev, release, writer, a, path
+
+
+def _writer_push(writer, content="Version B"):
+    (writer / "example.txt").write_text(content, encoding="utf-8")
+    _git(writer, "commit", "-am", "update")
+    tip = _git(writer, "rev-parse", "HEAD")
+    _git(writer, "push", "origin", "integration/windows-canonical")
+    return tip
+
+
+def test_actual_git_custom_refspec_does_not_certify_stale_tip(tmp_path, monkeypatch):
+    origin, dev, release, writer, a, state_path = _trusted_bare_fixture(tmp_path, monkeypatch)
+    b = _writer_push(writer)
+    _git(writer, "checkout", "-b", "other-fetched-branch")
+    _git(writer, "push", "origin", "other-fetched-branch")
+    _git(dev, "config", "--unset-all", "remote.origin.fetch")
+    _git(dev, "config", "--add", "remote.origin.fetch",
+         "+refs/heads/other-fetched-branch:refs/remotes/origin/other-fetched-branch")
+    status = sync_check.build_status(do_fetch=True)
+    assert _git(dev, "rev-parse", "refs/remotes/origin/integration/windows-canonical") == a
+    assert _git(dev, "ls-remote", "--exit-code", "origin",
+                "refs/heads/integration/windows-canonical").split()[0] == b
+    assert status["fetch_ok"] is False
+    assert status["synchronization_status"] == "degraded"
+    assert status["github_sha"] is None and status["pending_updates"] is None
+    assert status["last_successful_check_utc"] == PREVIOUS_CHECK
+    assert status["release_verification_status"] != "matches_github_and_dev"
+    assert json.loads(state_path.read_text()) == status
+    assert "http" not in str(status["errors"]).lower()
+
+
+def test_actual_git_canonical_refspec_fetch_gets_new_tip(tmp_path, monkeypatch):
+    origin, dev, release, writer, a, state_path = _trusted_bare_fixture(tmp_path, monkeypatch)
+    b = _writer_push(writer)
+    status = sync_check.build_status(do_fetch=True)
+    assert status["fetch_ok"] is True
+    assert status["remote_observation"] == "freshly_fetched"
+    assert status["github_sha"] == b
+    assert status["synchronization_status"] == "updates_available"
+    assert status["behind"] == 1 and status["ahead"] == 0
+    assert status["pending_updates"] is True
+    assert json.loads(state_path.read_text()) == status
+    assert status["last_successful_check_utc"] != PREVIOUS_CHECK
+
+
+def test_actual_git_stable_clean_authoritative_parity(tmp_path, monkeypatch):
+    origin, dev, release, writer, a, state_path = _trusted_bare_fixture(tmp_path, monkeypatch)
+    status = sync_check.build_status(do_fetch=True)
+    assert status["fetch_ok"] is True
+    assert status["github_sha"] == a
+    assert status["synchronization_status"] == "synchronized"
+    assert status["release_verification_status"] == "matches_github_and_dev"
+    assert status["pending_updates"] is False
+    assert status["last_successful_check_utc"] != PREVIOUS_CHECK
+
+
+def test_actual_git_missing_live_canonical_degrades(tmp_path, monkeypatch):
+    origin, dev, release, writer, a, state_path = _trusted_bare_fixture(tmp_path, monkeypatch)
+    _git(origin, "update-ref", "-d", "refs/heads/integration/windows-canonical")
+    status = sync_check.build_status(do_fetch=True)
+    assert status["synchronization_status"] == "degraded"
+    assert status["github_sha"] is None
+    assert status["fetch_ok"] is False and status["pending_updates"] is None
+    assert status["last_successful_check_utc"] == PREVIOUS_CHECK
+
+
+def test_actual_git_untrusted_origin_stops_before_fetch(tmp_path, monkeypatch):
+    origin, dev, release, writer, a, state_path = _trusted_bare_fixture(tmp_path, monkeypatch)
+    # Restore real allowlist and assert no attempt is made to contact origin.
+    def disallow(_):
+        return False
+    monkeypatch.setattr(sync_check, "_canonical_origin", disallow)
+    monkeypatch.setattr(sync_check.gitutil, "fetch", lambda *a: pytest.fail("fetch contacted bad origin"))
+    status = sync_check.build_status(do_fetch=True)
+    assert status["synchronization_status"] == "degraded"
+    assert status["github_sha"] is None and status["pending_updates"] is None
+    assert status["last_successful_check_utc"] == PREVIOUS_CHECK
+    assert "http" not in str(status["errors"]).lower()
+    assert str(origin) not in str(status["errors"])
+
+
+@pytest.mark.parametrize("url,allowed", [
+    ("https://github.com/MsElysia/Elysia", True),
+    ("https://github.com/MsElysia/Elysia.git", True),
+    ("git@github.com:MsElysia/Elysia.git", True),
+    ("ssh://git@github.com/MsElysia/Elysia", True),
+    ("https://github.com/other/Elysia.git", False),
+    ("https://user@github.com/MsElysia/Elysia.git", False),
+    ("https://github.com/MsElysia/Elysia-other", False),
+    ("https://github.com/MsElysia/Elysia.git.evil.invalid", False),
+])
+def test_authoritative_origin_allowlist_exactness(url, allowed):
+    # Uses the actual production validator, no network traffic.
+    assert sync_check._canonical_origin(url) is allowed
+
+
+def test_actual_git_live_tip_changes_at_final_read(tmp_path, monkeypatch):
+    origin, dev, release, writer, a, state_path = _trusted_bare_fixture(tmp_path, monkeypatch)
+    original = sync_check._live_canonical_sha
+    counter = [0]
+    def update_before_second_read(root):
+        counter[0] += 1
+        if counter[0] == 2:
+            _writer_push(writer)
+        return original(root)
+    monkeypatch.setattr(sync_check, "_live_canonical_sha", update_before_second_read)
+    status = sync_check.build_status(do_fetch=True)
+    assert counter[0] == 2
+    assert status["synchronization_status"] == "changed_during_check"
+    assert status["github_sha"] is None and status["pending_updates"] is None
+    assert status["last_successful_check_utc"] == PREVIOUS_CHECK
+
+
+def test_untrusted_origin_and_failed_fetch_errors_never_echo_urls(real_sync, monkeypatch):
+    dev, release, sha, check = real_sync
+    monkeypatch.setattr(sync_check, "_trusted_canonical_origin",
+                        lambda *args: "https://github.com/MsElysia/Elysia.git")
+    def failed_fetch(*args):
+        raise gitutil.GitError("AUTH_PRIVATE_SENTINEL unavailable")
+    monkeypatch.setattr(sync_check.gitutil, "fetch", failed_fetch)
+    status = check()
+    assert status["synchronization_status"] == "degraded"
+    assert "AUTH_PRIVATE_SENTINEL" not in str(status)
+    assert status["fetch_ok"] is False
+    assert status["last_successful_check_utc"] == PREVIOUS_CHECK

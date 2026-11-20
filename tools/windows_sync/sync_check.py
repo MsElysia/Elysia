@@ -15,6 +15,7 @@ if str(_HERE.parent.parent) not in sys.path:
 from tools.windows_sync import gitutil
 from tools.windows_sync.paths import (
     CANONICAL_BRANCH,
+    GITHUB_REPO,
     REMOTE_NAME,
     OPERATIONAL_DATA_ROOT,
     PRESERVED_PILOT_DATA,
@@ -29,6 +30,51 @@ from tools.windows_sync.paths import (
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+
+def _canonical_origin(url: str) -> bool:
+    """Match the canonical GitHub origin forms used by release preflight."""
+    expected = GITHUB_REPO.lower()
+    allowed = {
+        f"https://github.com/{expected}",
+        f"https://github.com/{expected}.git",
+        f"git@github.com:{expected}.git",
+        f"git@github.com:{expected}",
+        f"ssh://git@github.com/{expected}.git",
+        f"ssh://git@github.com/{expected}",
+    }
+    return url.strip().rstrip("/").lower() in allowed
+
+
+def _trusted_canonical_origin(dev: Path) -> str:
+    """Check configured origin without exposing its URL in status/errors."""
+    result = gitutil.run_git(
+        dev, ["remote", "get-url", REMOTE_NAME],
+        check=False, timeout=25, isolated_env=True,
+    )
+    if result.returncode or not _canonical_origin(result.stdout):
+        raise gitutil.GitError("canonical origin not verified")
+    return result.stdout.strip()
+
+
+def _live_canonical_sha(dev: Path) -> str:
+    """Read the actual canonical tip, never a potentially stale tracking ref."""
+    ref = f"refs/heads/{CANONICAL_BRANCH}"
+    result = gitutil.run_git(
+        dev, ["ls-remote", "--exit-code", REMOTE_NAME, ref],
+        check=False, timeout=25, isolated_env=True,
+    )
+    if result.returncode:
+        raise gitutil.GitError("live canonical branch not verified")
+    rows = result.stdout.strip().splitlines()
+    match = re.fullmatch(
+        rf"([0-9a-fA-F]{{40}})\t{re.escape(ref)}",
+        rows[0] if len(rows) == 1 else "",
+    )
+    if match is None:
+        raise gitutil.GitError("live canonical branch response invalid")
+    return match.group(1).lower()
 
 
 def read_release_identity(root: Path) -> tuple[str | None, str, bool | None]:
@@ -132,14 +178,18 @@ def build_status(*, do_fetch: bool) -> dict:
         save_json(status_path(), status)
         return status
 
+    origin_before = live_sha = None
     if do_fetch:
         try:
+            # Trust check BEFORE touching any remote; a successful generic
+            # fetch can omit the canonical branch under a custom refspec.
+            origin_before = _trusted_canonical_origin(dev)
             gitutil.fetch(dev, REMOTE_NAME)
-            status["fetch_ok"] = True
-            status["remote_observation"] = "freshly_fetched"
-        except gitutil.GitError as exc:
-            status["fetch_error"] = str(exc)
-            status["errors"].append(str(exc))
+            live_sha = _live_canonical_sha(dev)
+        except (gitutil.GitError, OSError, ValueError, TypeError):
+            # Never include URL, credentials, or Git stderr in a report.
+            status["fetch_error"] = "canonical remote refresh unverified"
+            status["errors"].append(status["fetch_error"])
             status["synchronization_status"] = "degraded"
             save_json(status_path(), status)
             return status
@@ -156,6 +206,15 @@ def build_status(*, do_fetch: bool) -> dict:
         status["synchronization_status"] = "degraded"
         save_json(status_path(), status)
         return status
+    if do_fetch:
+        if remote_sha is None or remote_sha.lower() != live_sha:
+            status["fetch_error"] = "canonical tracking ref does not match live tip"
+            status["errors"].append(status["fetch_error"])
+            status["synchronization_status"] = "degraded"
+            save_json(status_path(), status)
+            return status
+        status["fetch_ok"] = True
+        status["remote_observation"] = "freshly_fetched"
     status["github_sha"] = remote_sha
     if remote_sha is None:
         status["notes"].append(
@@ -263,14 +322,17 @@ def build_status(*, do_fetch: bool) -> dict:
         final_wt = gitutil.worktree_state(dev)
         final_remote = gitutil.remote_ref_sha(dev, REMOTE_NAME, CANONICAL_BRANCH)
         final_release = read_release_identity(release)
+        final_origin = _trusted_canonical_origin(dev) if do_fetch else None
+        final_live = _live_canonical_sha(dev) if do_fetch else None
         changed = (
-            (wt.head, wt.branch, wt.dirty, wt.porcelain) !=
+            (do_fetch and (origin_before != final_origin or live_sha != final_live))
+            or (wt.head, wt.branch, wt.dirty, wt.porcelain) !=
             (final_wt.head, final_wt.branch, final_wt.dirty, final_wt.porcelain)
             or remote_sha != final_remote
             or (release_sha, release_evidence, release_dirty) != final_release
         )
     except (gitutil.GitError, OSError, ValueError, TypeError) as exc:
-        status["errors"].append(f"final source identity unavailable: {exc}")
+        status["errors"].append("final source identity unavailable")
         changed = None
     if changed is not False:
         if changed:

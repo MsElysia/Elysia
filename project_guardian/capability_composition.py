@@ -577,25 +577,137 @@ def mark_dependent_steps_stale(
     *,
     changed_step_id: str,
 ) -> List[str]:
-    stale_ids: List[str] = []
+    """Invalidate every transitive consumer while preserving prior evidence.
+
+    Results are returned in dependency-wave order (and plan order within a
+    wave), so callers can project a deterministic next action even when the
+    stored display order is not topological.  Existing execution receipts and
+    history are retained as labor evidence; they are never treated as current
+    verified results after invalidation.
+    """
+    indexed: List[Tuple[str, Dict[str, Any], set]] = []
+    known_ids: set = set()
     for step in steps:
-        if step.get("capability") not in COMPOSITION_CAPABILITIES:
+        step_id = step.get("step_id")
+        if not isinstance(step_id, str):
             continue
+        if step_id in known_ids:
+            raise CompositionError(f"duplicate step_id in dependency graph: {step_id}")
+        known_ids.add(step_id)
         args = step.get("arguments") if isinstance(step.get("arguments"), dict) else {}
-        if changed_step_id not in _dependency_ids(args):
-            continue
+        deps = (
+            _dependency_ids(args)
+            if step.get("capability") in COMPOSITION_CAPABILITIES
+            else set()
+        )
+        indexed.append((step_id, step, deps))
+
+    # Reject cycles formed by known task steps before mutating any receipt.
+    visiting: set = set()
+    visited: set = set()
+
+    def _visit(step_id: str) -> None:
+        if step_id in visiting:
+            raise CompositionError("cycle in composition dependency graph")
+        if step_id in visited:
+            return
+        visiting.add(step_id)
+        deps = next((d for sid, _step, d in indexed if sid == step_id), set())
+        for dep in deps:
+            if dep in known_ids:
+                _visit(dep)
+        visiting.remove(step_id)
+        visited.add(step_id)
+
+    for step_id, _step, _deps in indexed:
+        _visit(step_id)
+
+    stale_ids: List[str] = []
+    affected = {changed_step_id}
+    frontier = {changed_step_id}
+    while frontier:
+        next_frontier: set = set()
+        for step_id, _step, deps in indexed:
+            if step_id in affected or not deps.intersection(frontier):
+                continue
+            stale_ids.append(step_id)
+            affected.add(step_id)
+            next_frontier.add(step_id)
+        frontier = next_frontier
+
+    by_id = {step_id: step for step_id, step, _deps in indexed}
+    for step_id in stale_ids:
+        step = by_id[step_id]
         ref = step.get("result_reference")
         if not isinstance(ref, dict):
             ref = {}
+        prior_ref = dict(ref)
         ref = dict(ref)
         ref["stale"] = True
         ref["stale_reason"] = f"upstream changed: {changed_step_id}"
         step["result_reference"] = ref
         if step.get("status") == "completed":
+            prior_completion = {
+                "completed_utc": step.get("completed_utc"),
+                "completion_source": step.get("completion_source"),
+                "completed_at_revision": step.get("completed_at_revision"),
+                "execution_receipt_id": step.get("execution_receipt_id"),
+                "result_reference": prior_ref,
+            }
+            step["status"] = "pending"
+            step["completed_utc"] = None
+            step["completion_source"] = None
+            step["completed_at_revision"] = None
             step["verification_status"] = "failed"
             step["last_failure_category"] = "upstream_stale"
-        stale_ids.append(str(step.get("step_id")))
+            history = list(step.get("execution_history") or [])
+            history.append(
+                {
+                    "event": "invalidated",
+                    "changed_step_id": changed_step_id,
+                    "prior_completion": prior_completion,
+                    "created_utc": _utc_now(),
+                }
+            )
+            step["execution_history"] = history[-12:]
     return stale_ids
+
+
+def first_ready_pending_step(
+    steps: Sequence[Mapping[str, Any]],
+) -> Optional[Mapping[str, Any]]:
+    """Return the first pending step whose declared inputs are current."""
+    by_id = {
+        step.get("step_id"): step
+        for step in steps
+        if isinstance(step, Mapping) and isinstance(step.get("step_id"), str)
+    }
+    for step in steps:
+        if not isinstance(step, Mapping) or step.get("status") != "pending":
+            continue
+        if step.get("capability") not in COMPOSITION_CAPABILITIES:
+            return step
+        args = (
+            step.get("arguments")
+            if isinstance(step.get("arguments"), Mapping)
+            else {}
+        )
+        ready = True
+        for dep_id in _dependency_ids(args):
+            dep = by_id.get(dep_id)
+            ref = dep.get("result_reference") if isinstance(dep, Mapping) else None
+            if (
+                not isinstance(dep, Mapping)
+                or dep.get("status") != "completed"
+                or dep.get("verification_status") != "verified"
+                or not isinstance(ref, Mapping)
+                or bool(ref.get("stale"))
+            ):
+                ready = False
+                break
+        if ready:
+            return step
+    return None
 
 
 def list_composable_capabilities() -> List[Dict[str, str]]:

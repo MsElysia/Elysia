@@ -550,13 +550,22 @@ def _sync_lists_from_task_steps(record: Dict[str, Any]) -> None:
         s["description"] for s in steps if s.get("status") == "pending"
     ]
     completed = [s["description"] for s in steps if s.get("status") == "completed"]
+    step_descriptions = {s["description"] for s in steps}
     # Preserve any non-step completed_work notes while preferring structured completions.
     prior = [
         c
         for c in (record.get("completed_work") or [])
-        if isinstance(c, str) and c.strip() and c.strip() not in completed
+        if isinstance(c, str) and c.strip() and c.strip() not in step_descriptions
     ]
     record["completed_work"] = (completed + prior)[:20]
+
+
+def _first_ready_pending_step(
+    steps: Sequence[Mapping[str, Any]],
+) -> Optional[Mapping[str, Any]]:
+    from project_guardian.capability_composition import first_ready_pending_step
+
+    return first_ready_pending_step(steps)
 
 
 def _rebuild_pending_steps(
@@ -1276,10 +1285,13 @@ class ConversationStore:
             advanced = False
             needs_review = False
             if linked:
-                if pending:
-                    record["next_safe_action"] = pending[0]["description"]
+                ready = _first_ready_pending_step(steps)
+                if ready is not None:
+                    record["next_safe_action"] = ready["description"]
                     advanced = True
                     needs_review = False
+                elif pending:
+                    needs_review = True
                 else:
                     record["next_safe_action"] = NO_OUTSTANDING_STEPS
                     advanced = True
@@ -2853,10 +2865,15 @@ class ConversationStore:
             advanced = False
             needs_review = False
             if linked:
-                record["next_safe_action"] = (
-                    pending[0]["description"] if pending else NO_OUTSTANDING_STEPS
-                )
-                advanced = True
+                ready = _first_ready_pending_step(steps)
+                if ready is not None:
+                    record["next_safe_action"] = ready["description"]
+                    advanced = True
+                elif pending:
+                    needs_review = True
+                else:
+                    record["next_safe_action"] = NO_OUTSTANDING_STEPS
+                    advanced = True
             else:
                 needs_review = True
             record["advancement_needs_review"] = needs_review
@@ -3069,9 +3086,12 @@ class ConversationStore:
             )
             needs_review = False
             if linked and pending:
-                # Prefer reopened step as next when it is first pending; else first pending.
-                record["next_safe_action"] = pending[0]["description"]
-                needs_review = False
+                ready = _first_ready_pending_step(steps)
+                if ready is not None:
+                    record["next_safe_action"] = ready["description"]
+                    needs_review = False
+                else:
+                    needs_review = True
             elif linked and not pending:
                 record["next_safe_action"] = NO_OUTSTANDING_STEPS
             else:

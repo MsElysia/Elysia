@@ -24,7 +24,146 @@ from project_guardian.capability_composition import (
     parse_model_plan_json,
     validate_proposed_plan,
     verify_synthesize_output,
+    first_ready_pending_step,
+    mark_dependent_steps_stale,
 )
+
+
+def test_transitive_invalidation_preserves_unrelated_verified_receipt():
+    changed = "step_aaaaaaaaaaaa"
+    labor = {
+        "step_id": "step_bbbbbbbbbbbb",
+        "capability": "calculator.labor",
+        "status": "completed",
+        "verification_status": "verified",
+        "execution_receipt_id": "exec_" + "b" * 16,
+        "result_reference": {"amount_usd": "1680.00", "stale": False},
+    }
+    subtotal = {
+        "step_id": "step_cccccccccccc",
+        "capability": "estimate.assemble",
+        "status": "completed",
+        "verification_status": "verified",
+        "execution_receipt_id": "exec_" + "c" * 16,
+        "arguments": {
+            "material_step_id": changed,
+            "labor_step_id": labor["step_id"],
+        },
+        "result_reference": {"amount_usd": "2100.00", "stale": False},
+        "execution_history": [{"execution_id": "exec_" + "c" * 16}],
+    }
+    draft = {
+        "step_id": "step_dddddddddddd",
+        "capability": "estimate.draft",
+        "status": "completed",
+        "verification_status": "verified",
+        "execution_receipt_id": "exec_" + "d" * 16,
+        "arguments": {"assemble_step_id": subtotal["step_id"]},
+        "result_reference": {"draft_sha256": "abc", "stale": False},
+        "execution_history": [{"execution_id": "exec_" + "d" * 16}],
+    }
+
+    # Deliberately reverse dependency order to prove graph traversal is not
+    # coupled to plan display order.
+    steps = [draft, labor, subtotal]
+    stale = mark_dependent_steps_stale(steps, changed_step_id=changed)
+
+    assert stale == [subtotal["step_id"], draft["step_id"]]
+    assert subtotal["status"] == draft["status"] == "pending"
+    assert subtotal["verification_status"] == draft["verification_status"] == "failed"
+    assert subtotal["execution_receipt_id"] == "exec_" + "c" * 16
+    assert draft["execution_receipt_id"] == "exec_" + "d" * 16
+    assert subtotal["execution_history"][0]["execution_id"] == "exec_" + "c" * 16
+    assert draft["execution_history"][0]["execution_id"] == "exec_" + "d" * 16
+    assert labor == {
+        "step_id": "step_bbbbbbbbbbbb",
+        "capability": "calculator.labor",
+        "status": "completed",
+        "verification_status": "verified",
+        "execution_receipt_id": "exec_" + "b" * 16,
+        "result_reference": {"amount_usd": "1680.00", "stale": False},
+    }
+
+
+def test_transitive_invalidation_handles_diamond_once_in_dependency_order():
+    root = "step_aaaaaaaaaaaa"
+    left = {
+        "step_id": "step_bbbbbbbbbbbb",
+        "capability": "compose.extract_fields",
+        "status": "completed",
+        "verification_status": "verified",
+        "arguments": {"source_step_ids": [root]},
+        "result_reference": {"stale": False},
+    }
+    right = {
+        "step_id": "step_cccccccccccc",
+        "capability": "compose.extract_records",
+        "status": "completed",
+        "verification_status": "verified",
+        "arguments": {"source_step_ids": [root]},
+        "result_reference": {"stale": False},
+    }
+    join = {
+        "step_id": "step_dddddddddddd",
+        "capability": "compose.aggregate_usd",
+        "status": "completed",
+        "verification_status": "verified",
+        "arguments": {"source_step_ids": [right["step_id"], left["step_id"]]},
+        "result_reference": {"stale": False},
+    }
+
+    stale = mark_dependent_steps_stale([join, right, left], changed_step_id=root)
+
+    assert stale == [right["step_id"], left["step_id"], join["step_id"]]
+    assert len(stale) == len(set(stale))
+
+
+def test_ready_projection_ignores_display_order_and_rejects_cycle_before_mutation():
+    root = {
+        "step_id": "step_aaaaaaaaaaaa",
+        "capability": "calculator.labor",
+        "status": "completed",
+        "verification_status": "verified",
+        "result_reference": {"amount_usd": "480.00", "stale": False},
+    }
+    direct = {
+        "step_id": "step_bbbbbbbbbbbb",
+        "capability": "compose.aggregate_usd",
+        "status": "pending",
+        "verification_status": "failed",
+        "arguments": {"source_step_ids": [root["step_id"]]},
+        "result_reference": {"stale": True},
+    }
+    downstream = {
+        "step_id": "step_cccccccccccc",
+        "capability": "compose.synthesize",
+        "status": "pending",
+        "verification_status": "failed",
+        "arguments": {"evidence_step_ids": [direct["step_id"]]},
+        "result_reference": {"stale": True},
+    }
+    assert first_ready_pending_step([downstream, direct, root]) is direct
+
+    left = {
+        "step_id": "step_dddddddddddd",
+        "capability": "compose.aggregate_usd",
+        "status": "completed",
+        "verification_status": "verified",
+        "arguments": {"source_step_ids": ["step_eeeeeeeeeeee"]},
+        "result_reference": {"stale": False},
+    }
+    right = {
+        "step_id": "step_eeeeeeeeeeee",
+        "capability": "compose.synthesize",
+        "status": "completed",
+        "verification_status": "verified",
+        "arguments": {"evidence_step_ids": [left["step_id"]]},
+        "result_reference": {"stale": False},
+    }
+    with pytest.raises(CompositionError, match="cycle"):
+        mark_dependent_steps_stale([left, right], changed_step_id=left["step_id"])
+    assert left["result_reference"]["stale"] is False
+    assert right["result_reference"]["stale"] is False
 from project_guardian.conversation_continuity import (
     ContinuityError,
     ConversationStore,

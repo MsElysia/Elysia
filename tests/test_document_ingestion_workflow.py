@@ -308,3 +308,21 @@ def test_context_document_candidates_filter_bad_metadata_before_cap(tmp_path):
     })
     matches = library.search("Veridia beacon location", context_distinct=True)
     assert [row["source_id"] for row in matches] == [legitimate["source_id"]]
+
+def test_document_preview_selection_change_fences_stale_queue():
+    """Execute the actual embedded browser queue code in a minimal DOM."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for the embedded browser queue regression")
+    source = (_ROOT / "project_guardian" / "ui_control_panel.py").read_text(encoding="utf-8")
+    start = source.index("        window._documentPreviewQueue = [];")
+    end = source.index("        window.searchImportedDocuments = function()", start)
+    browser_code = source[start:end]
+    harness = r"""const assert=(v,m)=>{if(!v)throw Error(m)};global.window=global;const e={'document-files':{files:[],disabled:false,addEventListener:(n,f)=>global.changeHandler=f},'document-import-button':{disabled:true},'document-preview-button':{disabled:false},'document-import-status':{textContent:''},'document-preview':{textContent:''}};global.document={getElementById:id=>e[id]||{}};global.FormData=class{append(k,v){if(k==='file')this.file=v}};global.restrictedUploadHeaders=()=>({});window.refreshDocumentLibrary=()=>{};let pending,mode='pending',saved=[];global.fetch=(url,opt)=>{const f=opt.body.file;if(url==='/api/documents/preview'){if(mode==='pending')return new Promise(r=>pending=()=>r({ok:true,status:200,json:async()=>({success:true,preview:{filename:f.name,source_id:'src-'+f.name,chunk_count:1,page_count:1,chunk_settings:{},preview_text:'text'}})}));return Promise.resolve({ok:true,status:200,json:async()=>({success:true,preview:{filename:f.name,source_id:'src-'+f.name,chunk_count:1,page_count:1,chunk_settings:{},preview_text:'text'}})});}if(url==='/api/documents'){saved.push(f.name);return Promise.resolve({ok:true,status:200,json:async()=>({success:true,document:{duplicate:false,source_id:'src-'+f.name,chunk_count:1}})});}throw Error('unexpected')};""" + browser_code + r"""(async()=>{const A={name:'A.txt'},B={name:'B.txt'};assert(typeof changeHandler==='function','BASELINE_RED missing change listener');e['document-files'].files=[A];changeHandler();const p=previewSelectedDocuments();assert(typeof pending==='function','A preview not started');e['document-files'].files=[B];changeHandler();assert(e['document-import-button'].disabled,'Save enabled after selection change');pending();await p;assert(_documentPreviewQueue.length===0,'stale A repopulated queue');mode='immediate';await previewSelectedDocuments();assert(_documentPreviewQueue.length===1&&_documentPreviewQueue[0].file.name==='B.txt','B not pinned');assert(!e['document-import-button'].disabled,'Save not enabled for B');assert(saved.length===0,'chooser cancel mutated storage');await savePreviewedDocuments();assert(JSON.stringify(saved)==='["B.txt"]','wrong saved files '+JSON.stringify(saved));assert(_documentPreviewQueue.length===0,'queue not cleared');console.log('PASS selection fence');})().catch(x=>{console.error(x.message);process.exit(1)});"""
+    result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=15, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS selection fence" in result.stdout
+

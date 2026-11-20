@@ -3577,3 +3577,45 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — 2026-11-20 health is ok only while running
+
+**Status:** COMPLETED on this branch. Not on `main`. No PR.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c`
+
+**Implementation commit:** `b4f536e2f8d2e2575037db9ca34db99bf972b2af`
+
+**Not based on** the earlier product branches, including the 2026-11-19 status-collection branch `origin/cursor/product-workflow-engineering-process-67c6` (`ad9f08f`, handoff `54b0015`).
+
+**Files:**
+- `elysia.py`
+- `elysia_health_check.py`
+- `elysia_interface.py`
+- `tests/test_status_health_unavailable.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Behavior:**
+- `GET /health` returns HTTP 200 `status: ok` only when a status system is attached and `running` is true. The running body keeps the existing checks and `dashboard_url`.
+- No status system: HTTP 503 `status: unavailable`, `health_available: false`, `error: System not initialized`.
+- A stopped system: HTTP 503 `status: stopped`, `error: System is not running`, with the guardian checks and dashboard URL still present.
+- A failure while reading the system: HTTP 500 JSON `health_available: false` and the exception text.
+- `elysia_health_check.py` treats that non-200 body as unhealthy and prints the error text. It does not continue to `/status` for that failure.
+- The attach-mode dashboard opener reads the same body, prints `Health unavailable: <error>`, and still opens `dashboard_url` when the stopped body includes one.
+
+**Evidence:**
+- Before, live HTTP on the real `elysia.py` handler: no system `200 {"status": "ok", "system": "elysia", "checks": {}}`; stopped `200` with `status: ok` and `running: false`; running fictional guardian `200` `status: ok` and `dashboard_url` `http://127.0.0.1:5099`.
+- After: `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_status_health_unavailable.py -v --tb=short` — 2 passed. Live HTTP after: no system `503` `System not initialized`; stopped `503` `System is not running`; running `200` `status: ok` with the same fictional dashboard URL. The server was `ThreadingHTTPServer` plus the real `_make_status_handler`, urllib, a local health stub, `elysia_health_check.check_health()`, and `ElysiaInterface(attach_only=True)`. No external service and `UnifiedElysiaSystem` was not constructed.
+
+**Left untouched:**
+- `GET /status`, `POST /chat`, and `POST /v1/chat/completions` still have the `main` behavior on this branch. The status-collection fix stays on `origin/cursor/product-workflow-engineering-process-67c6`. The OpenAI completion-status fix stays on `origin/cursor/bc-314a701a-233d-4254-a248-6a60e24797ef-1bd6` (`77d6aca`, handoff `c35ef88`).
+- Did not edit `elysia/api/server.py`, `elysia/agents/implementer.py`, `elysia/core/proposal_system.py`, `elysia/runtime.py`, `elysia/cli.py`, or `project_guardian/ui_control_panel.py`.
+- Runtime integrity today is `a2f35f6` on `origin/cursor/bc-6924408d-3a73-4c23-bf85-38202661c1a2-7b65` (`bc-6924408d`, `elysia/cli.py`, `elysia/core/proposal_system.py`, `elysia/runtime.py`, and `tests/test_elysia_runtime_lifecycle.py` only). Application runtime safety remains `cec0f5a` on `origin/cursor/bc-85d0804a-cc90-4d38-89e0-7338d1d0f4f3-0fcb`.
+- Dashboard drafts #147, #148, #149, #153, and #156 remain open. PR #231 owns `project_guardian/ui_control_panel.py` and was not edited.
+
+**Queue:** `CONTROL.md` `CURRENT_TASK: NONE` on `main` and on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`). `TASKS/TASK-0053.md` remains OPEN, review only. Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb` on `origin/codex/limited-live-activation-wrapper`. Do not implement live memory or vector writes. Leave open drafts through PR #231 to their owners.
+
+Do not open a second copy of this health-status fix from `main`. Next product run should pick a different unclaimed API or dashboard error path. `GET /status` on this branch still returns HTTP 200 when status collection fails. Re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`. A branch commit is not integrated product readiness.

@@ -19,6 +19,7 @@ if "project_guardian" not in sys.modules:
 from project_guardian.conversation_continuity import (  # noqa: E402
     ContinuityError,
     ConversationStore,
+    StaleTaskEditError,
     resolve_conversation_root,
 )
 
@@ -168,6 +169,12 @@ class TransitiveInvalidationResumeTests(unittest.TestCase):
                 reopened["conversation"]["next_safe_action"],
                 "Calculate fictional materials",
             )
+            duplicate = store.reopen_operator_step(
+                cid,
+                step_id=material_id,
+                expected_revision=revision(draft),
+            )
+            self.assertTrue(duplicate["idempotent"])
 
             # A fresh store proves pending/current projection survives restart.
             resumed = ConversationStore(root)
@@ -190,6 +197,14 @@ class TransitiveInvalidationResumeTests(unittest.TestCase):
                     "hours_per_day": 1,
                 },
             )
+            with self.assertRaises(StaleTaskEditError):
+                resumed.execute_verified_bound_step(
+                    cid,
+                    step_id=material_id,
+                    expected_revision=revision(reopened),
+                    authorize_calculator=True,
+                    authorize_record_completion=True,
+                )
             with self.assertRaisesRegex(ContinuityError, "not authorized"):
                 resumed.execute_verified_bound_step(
                     cid,

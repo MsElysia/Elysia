@@ -143,6 +143,15 @@ def test_ready_projection_ignores_display_order_and_rejects_cycle_before_mutatio
         "result_reference": {"stale": True},
     }
     assert first_ready_pending_step([downstream, direct, root]) is direct
+    unknown = {
+        "step_id": "step_ffffffffffff",
+        "capability": "compose.aggregate_usd",
+        "status": "pending",
+        "verification_status": "failed",
+        "arguments": {"source_step_ids": ["step_999999999999"]},
+        "result_reference": {"stale": True},
+    }
+    assert first_ready_pending_step([unknown, root]) is None
 
     left = {
         "step_id": "step_dddddddddddd",

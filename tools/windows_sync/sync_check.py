@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,16 +31,36 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def read_release_sha(root: Path) -> str | None:
+def read_release_identity(root: Path) -> tuple[str | None, str, bool | None]:
+    """Read source checkout identity, never claim this proves a live process.
+
+    A RELEASE_SHA.txt marker may assist legacy diagnostics, but is not trusted
+    as Git provenance. Unreadable/corrupt sources are explicitly unverified.
+    """
     if not root.is_dir():
-        return None
+        return None, "missing", None
     try:
-        return gitutil.rev_parse(root, "HEAD")
+        checkout = gitutil.worktree_state(root)
+        checkout_root = gitutil.run_git(root, ["rev-parse", "--show-toplevel"]).stdout.strip()
+        if Path(checkout_root).resolve() != root.resolve():
+            raise gitutil.GitError("release is not its own Git checkout")
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", checkout.head):
+            return None, "unavailable", None
+        return checkout.head.lower(), "git_checkout", checkout.dirty
     except gitutil.GitError:
         marker = root / "RELEASE_SHA.txt"
-        if marker.is_file():
-            return marker.read_text(encoding="utf-8").strip() or None
-        return None
+        try:
+            sha = marker.read_text(encoding="utf-8").strip().lower()
+        except (OSError, UnicodeError):
+            return None, "unavailable", None
+        if re.fullmatch(r"[0-9a-f]{40}", sha):
+            return sha, "marker_unverified", None
+        return None, "invalid_marker", None
+
+
+def read_release_sha(root: Path) -> str | None:
+    """Compatibility API: this is installed *source*, not the running process."""
+    return read_release_identity(root)[0]
 
 
 def build_status(*, do_fetch: bool) -> dict:
@@ -59,28 +80,33 @@ def build_status(*, do_fetch: bool) -> dict:
         "fetch_attempted": do_fetch,
         "fetch_ok": False,
         "fetch_error": None,
+        "remote_observation": "unavailable",
         "github_sha": None,
         "local_development_sha": None,
+        # installed_runtime_sha is a deprecated compatibility alias for
+        # installed_release_source_sha. Neither identifies a running process.
         "installed_runtime_sha": None,
-        "dev_branch": None,
-        "dev_dirty": None,
-        "ahead": None,
-        "behind": None,
-        "divergence": "unknown",
-        "pending_updates": False,
-        "synchronization_status": "unknown",
-        "release_verification_status": "unknown",
-        # This script inspects SHA identities ONLY. read_release_sha() may
-        # fall back to RELEASE_SHA.txt when the release is not a Git worktree.
-        # Neither source is evidence that an installed app actually runs.
+        "installed_release_source_sha": None,
+        "release_source_evidence": "unknown",
+        "release_source_dirty": None,
         "release_verification_scope": "git_head_or_release_marker_comparison_only",
         "operational_verification": {
             "installed_launcher_startup": "not_tested_by_this_check",
             "application_restart_and_memory_recovery": "not_tested_by_this_check",
             "restorable_operational_backup": "not_tested_by_this_check",
         },
+        "running_runtime_sha": None,
+        "running_runtime_verification": "not_checked",
+        "dev_branch": None,
+        "dev_dirty": None,
+        "ahead": None,
+        "behind": None,
+        "divergence": "unknown",
+        "pending_updates": None,
+        "synchronization_status": "unknown",
+        "release_verification_status": "unknown",
         "last_successful_check_utc": None,
-        "notes": [],
+        "notes": ["Source status only; active application process was not verified"],
         "errors": [],
     }
 
@@ -110,6 +136,7 @@ def build_status(*, do_fetch: bool) -> dict:
         try:
             gitutil.fetch(dev, REMOTE_NAME)
             status["fetch_ok"] = True
+            status["remote_observation"] = "freshly_fetched"
         except gitutil.GitError as exc:
             status["fetch_error"] = str(exc)
             status["errors"].append(str(exc))
@@ -117,26 +144,64 @@ def build_status(*, do_fetch: bool) -> dict:
             save_json(status_path(), status)
             return status
     else:
-        status["fetch_ok"] = True  # caller skipped fetch intentionally
-        status["notes"].append("fetch skipped")
+        # Without fetch, origin/* is only the locally cached tracking ref.
+        # Do not mark the latest remote check as successful.
+        status["remote_observation"] = "cached_unverified"
+        status["notes"].append("fetch skipped; GitHub SHA is cached and not freshly verified")
 
-    remote_sha = gitutil.remote_ref_sha(dev, REMOTE_NAME, CANONICAL_BRANCH)
+    try:
+        remote_sha = gitutil.remote_ref_sha(dev, REMOTE_NAME, CANONICAL_BRANCH)
+    except (gitutil.GitError, OSError) as exc:
+        status["errors"].append(f"remote tracking ref unavailable: {exc}")
+        status["synchronization_status"] = "degraded"
+        save_json(status_path(), status)
+        return status
     status["github_sha"] = remote_sha
     if remote_sha is None:
         status["notes"].append(
             f"remote branch {REMOTE_NAME}/{CANONICAL_BRANCH} not present yet — push required"
         )
-        status["divergence"] = "local_only"
-        status["pending_updates"] = False
-        status["synchronization_status"] = "local_ahead_unpushed"
+        status["divergence"] = "local_only" if do_fetch else "unknown"
+        status["pending_updates"] = None
+        status["synchronization_status"] = (
+            "local_ahead_unpushed" if do_fetch else "cached_remote_missing_unverified"
+        )
     else:
-        ahead, behind = gitutil.ahead_behind(dev, wt.head, remote_sha)
-        status["ahead"] = ahead
-        status["behind"] = behind
-        if ahead == 0 and behind == 0:
+        try:
+            ahead, behind = gitutil.ahead_behind(dev, wt.head, remote_sha)
+        except (gitutil.GitError, OSError, ValueError, TypeError) as exc:
+            status["errors"].append(f"cannot compare local and remote history: {exc}")
+            status["synchronization_status"] = "degraded"
+            status["pending_updates"] = None
+            status["github_sha"] = None
+            save_json(status_path(), status)
+            return status
+        if (type(ahead) is not int or type(behind) is not int
+                or ahead < 0 or behind < 0):
+            status["ahead"] = status["behind"] = None
+        else:
+            status["ahead"], status["behind"] = ahead, behind
+        if type(ahead) is not int or type(behind) is not int or ahead < 0 or behind < 0:
+            # gitutil.ahead_behind returns -1 if rev-list fails. Unknown is
+            # not divergence, and must never be reported as verified parity.
+            status["divergence"] = "unknown"
+            status["pending_updates"] = None
+            status["synchronization_status"] = "degraded"
+            status["errors"].append("cannot compare local and remote commit history")
+        elif ahead == 0 and behind == 0:
             status["divergence"] = "identical"
             status["pending_updates"] = False
-            status["synchronization_status"] = "synchronized"
+            if wt.dirty:
+                status["synchronization_status"] = "local_uncommitted_changes"
+                status["notes"].append(
+                    "Commit IDs match, but uncommitted development changes are not on GitHub"
+                )
+            elif wt.branch != CANONICAL_BRANCH:
+                status["synchronization_status"] = "wrong_development_branch"
+            elif not do_fetch:
+                status["synchronization_status"] = "cached_sha_match_unverified"
+            else:
+                status["synchronization_status"] = "synchronized"
         elif ahead > 0 and behind == 0:
             status["divergence"] = "local_ahead"
             status["pending_updates"] = False
@@ -150,21 +215,86 @@ def build_status(*, do_fetch: bool) -> dict:
             status["pending_updates"] = behind > 0
             status["synchronization_status"] = "diverged"
 
-    status["installed_runtime_sha"] = read_release_sha(release)
-    if status["installed_runtime_sha"] is None:
-        status["release_verification_status"] = "not_installed"
-        status["notes"].append("release root missing — run promote_release after tests")
-    elif remote_sha and status["installed_runtime_sha"] == remote_sha and status["divergence"] == "identical":
-        status["release_verification_status"] = "matches_github_and_dev"
-    elif status["installed_runtime_sha"] == status["local_development_sha"]:
-        status["release_verification_status"] = "matches_dev"
+    release_sha, release_evidence, release_dirty = read_release_identity(release)
+    status["installed_release_source_sha"] = release_sha
+    status["installed_runtime_sha"] = release_sha  # legacy alias; not a live PID
+    status["release_source_evidence"] = release_evidence
+    status["release_source_dirty"] = release_dirty
+    # A checked-out SHA, even with clean Git status, cannot prove that the
+    # launched process is using that tree or still alive.
+    status["notes"].append(
+        "Release SHA is source checkout identity only; active process was not verified"
+    )
+    if release_sha is None:
+        status["release_verification_status"] = (
+            "not_installed" if release_evidence == "missing" else
+            "release_source_invalid_marker" if release_evidence == "invalid_marker" else
+            "release_source_unavailable"
+        )
+        status["pending_updates"] = True
+    elif release_evidence != "git_checkout":
+        status["release_verification_status"] = "release_source_unverified_marker"
+        status["pending_updates"] = True
+    elif release_dirty:
+        status["release_verification_status"] = "release_source_dirty"
+        status["pending_updates"] = True
+    elif remote_sha and release_sha == remote_sha and status["divergence"] == "identical":
+        if wt.dirty:
+            status["release_verification_status"] = "source_sha_matches_but_dev_dirty"
+        elif wt.branch != CANONICAL_BRANCH:
+            status["release_verification_status"] = "source_sha_matches_but_wrong_branch"
+        elif not do_fetch:
+            status["release_verification_status"] = "source_sha_matches_cached_remote"
+        else:
+            status["release_verification_status"] = "matches_github_and_dev"
+    elif release_sha == status["local_development_sha"]:
+        status["release_verification_status"] = (
+            "source_sha_matches_but_dev_dirty" if wt.dirty else "matches_dev"
+        )
         if status.get("behind"):
-            status["notes"].append("release matches dirty/outdated local tip relative to GitHub")
+            status["notes"].append("release matches local tip, but local is behind GitHub")
     else:
         status["release_verification_status"] = "stale_or_mismatch"
         status["pending_updates"] = True
 
-    if not status["errors"] and status["fetch_ok"]:
+    # The final check is non-atomic: later or transient ABA edits remain possible.
+    # Still refuse to certify a snapshot known to have changed during this run.
+    try:
+        final_wt = gitutil.worktree_state(dev)
+        final_remote = gitutil.remote_ref_sha(dev, REMOTE_NAME, CANONICAL_BRANCH)
+        final_release = read_release_identity(release)
+        changed = (
+            (wt.head, wt.branch, wt.dirty, wt.porcelain) !=
+            (final_wt.head, final_wt.branch, final_wt.dirty, final_wt.porcelain)
+            or remote_sha != final_remote
+            or (release_sha, release_evidence, release_dirty) != final_release
+        )
+    except (gitutil.GitError, OSError, ValueError, TypeError) as exc:
+        status["errors"].append(f"final source identity unavailable: {exc}")
+        changed = None
+    if changed is not False:
+        if changed:
+            status["errors"].append("source or tracking ref changed during check")
+        status["synchronization_status"] = (
+            "changed_during_check" if changed else "degraded"
+        )
+        status["release_verification_status"] = "source_identity_unstable"
+        status["local_development_sha"] = None
+        status["installed_runtime_sha"] = None
+        status["installed_release_source_sha"] = None
+        status["release_source_evidence"] = "unstable"
+        status["release_source_dirty"] = None
+        status["github_sha"] = None  # prevents sync_integrate using stale ref
+        status["dev_dirty"] = None
+        status["ahead"] = status["behind"] = None
+        status["divergence"] = "unknown"
+        status["pending_updates"] = None
+    elif not do_fetch:
+        status["pending_updates"] = None  # cached ref cannot establish pending changes
+
+    if (not status["errors"] and do_fetch and status["fetch_ok"]
+            and remote_sha and status["ahead"] is not None
+            and status["behind"] is not None):
         status["last_successful_check_utc"] = now
 
     save_json(status_path(), status)

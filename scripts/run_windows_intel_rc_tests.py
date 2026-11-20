@@ -37,6 +37,7 @@ RC_REQUIRED = [
     "tests/test_dashboard_plan_progress.py",
     "tests/test_windows_promotion_preflight.py",
     "tests/test_windows_ops_recovery.py",
+    "tests/test_windows_sync_status.py",
 ]
 
 

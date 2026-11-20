@@ -497,3 +497,11 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — health is ok only while the system is running
+
+- `GET /health` returns HTTP 200 `status: ok` only when a status system is attached and `running` is true.
+- No status system returns HTTP 503 `status: unavailable` and `health_available: false`.
+- A stopped system returns HTTP 503 `status: stopped` and keeps the guardian checks and dashboard URL.
+- A read failure returns HTTP 500 JSON instead of claiming the system is ok.
+- The health-check script and the attach-mode dashboard opener read that error body. A stopped system can still open its dashboard URL.

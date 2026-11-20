@@ -8,7 +8,17 @@ Exit 0 = healthy, 1 = unhealthy (for automation).
 """
 import json
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
+
+def _health_body(response) -> dict:
+    raw = response.read().decode("utf-8", errors="replace")
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else {}
 
 def check_health() -> dict:
     """Check Elysia health. Returns dict with status and subsystem details."""
@@ -20,13 +30,21 @@ def check_health() -> dict:
 
     result = {"healthy": False, "subsystems": {}, "error": None}
     try:
-        import urllib.request
-        # Quick health ping
+        # Quick health ping. A non-200 body is the health result, not a crash.
         req = urllib.request.Request(f"{base}/health", method="GET")
-        with urllib.request.urlopen(req, timeout=5) as r:
-            health = json.loads(r.read().decode())
-            result["subsystems"]["health"] = health.get("status", "ok")
-            result["subsystems"]["running"] = health.get("running", False)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                health = _health_body(r)
+                http_status = getattr(r, "status", 200)
+        except urllib.error.HTTPError as e:
+            health = _health_body(e)
+            http_status = e.code
+        result["subsystems"]["health"] = health.get("status", "unavailable")
+        result["subsystems"]["running"] = health.get("running", False)
+        if http_status != 200 or health.get("status") != "ok" or not health.get("running"):
+            result["error"] = health.get("error") or health.get("status") or f"HTTP {http_status}"
+            result["healthy"] = False
+            return result
 
         # Full status for subsystem details
         req = urllib.request.Request(f"{base}/status", method="GET")

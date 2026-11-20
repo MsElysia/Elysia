@@ -73,12 +73,30 @@ class ElysiaInterface:
             return {"error": str(e), "hint": "Is elysia.py running?"}
 
     def _fetch_health_from_api(self):
-        """Fetch /health JSON from backend (attach mode)."""
+        """Fetch /health JSON from backend (attach mode).
+
+        A non-200 JSON body is returned as that object so a stopped system can
+        still supply dashboard_url. Connection failures stay an error object.
+        """
         try:
+            import urllib.error
             import urllib.request
             req = urllib.request.Request(f"{STATUS_URL}/health")
-            with urllib.request.urlopen(req, timeout=5) as r:
-                return json.loads(r.read().decode())
+            try:
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    parsed = json.loads(r.read().decode())
+            except urllib.error.HTTPError as e:
+                raw = e.read().decode("utf-8", errors="replace")
+                try:
+                    parsed = json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    return {"error": str(e), "status": "unavailable"}
+                if not isinstance(parsed, dict):
+                    return {"error": str(e), "status": "unavailable"}
+                parsed.setdefault("error", str(e))
+            if not isinstance(parsed, dict):
+                return {"error": "Invalid health format", "status": "unavailable"}
+            return parsed
         except Exception as e:
             return {"error": str(e)}
 
@@ -502,6 +520,9 @@ class ElysiaInterface:
                 url = st["dashboard_url"]
             elif isinstance(h, dict) and h.get("dashboard_url"):
                 url = h["dashboard_url"]
+            if isinstance(h, dict) and h.get("status") != "ok":
+                detail = h.get("error") or h.get("status") or "unavailable"
+                print(f"   Health unavailable: {detail}")
             if not url:
                 url = "http://127.0.0.1:5000"
             print(f"   URL: {url}")

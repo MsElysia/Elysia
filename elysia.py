@@ -140,22 +140,65 @@ def _make_status_handler():
                 )
                 self.wfile.write(html.encode("utf-8"))
             elif self.path == "/health":
-                self.send_response(200)
+                code = 200
+                body = {"status": "ok", "system": "elysia", "checks": {}}
+                if not _status_system:
+                    code = 503
+                    body = {
+                        "status": "unavailable",
+                        "system": "elysia",
+                        "running": False,
+                        "checks": {},
+                        "health_available": False,
+                        "error": "System not initialized",
+                    }
+                else:
+                    try:
+                        running = bool(_status_system.running)
+                        body["running"] = running
+                        g = _status_system.guardian
+                        if g:
+                            body["checks"]["guardian"] = True
+                            body["checks"]["memory"] = hasattr(g, "memory") and g.memory is not None
+                            body["checks"]["ui_panel"] = getattr(g, "ui_panel", None) is not None
+                            if body["checks"]["ui_panel"]:
+                                body["dashboard_url"] = (
+                                    f"http://127.0.0.1:{getattr(g.ui_panel, 'port', 5000)}"
+                                )
+                        else:
+                            body["checks"]["guardian"] = False
+                        if not running:
+                            body["status"] = "stopped"
+                            body["error"] = "System is not running"
+                            code = 503
+                    except Exception as e:
+                        code = 500
+                        body = {
+                            "status": "unavailable",
+                            "system": "elysia",
+                            "running": False,
+                            "checks": {},
+                            "health_available": False,
+                            "error": str(e),
+                        }
+                try:
+                    payload = json.dumps(body).encode()
+                except Exception as e:
+                    code = 500
+                    payload = json.dumps(
+                        {
+                            "status": "unavailable",
+                            "system": "elysia",
+                            "running": False,
+                            "checks": {},
+                            "health_available": False,
+                            "error": f"Health could not be encoded: {e}",
+                        }
+                    ).encode()
+                self.send_response(code)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                body = {"status": "ok", "system": "elysia", "checks": {}}
-                if _status_system:
-                    body["running"] = _status_system.running
-                    g = _status_system.guardian
-                    if g:
-                        body["checks"]["guardian"] = True
-                        body["checks"]["memory"] = hasattr(g, "memory") and g.memory is not None
-                        body["checks"]["ui_panel"] = getattr(g, "ui_panel", None) is not None
-                        if body["checks"]["ui_panel"]:
-                            body["dashboard_url"] = f"http://127.0.0.1:{getattr(g.ui_panel, 'port', 5000)}"
-                    else:
-                        body["checks"]["guardian"] = False
-                self.wfile.write(json.dumps(body).encode())
+                self.wfile.write(payload)
             elif self.path == "/status":
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

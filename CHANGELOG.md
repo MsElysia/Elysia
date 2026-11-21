@@ -497,3 +497,11 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — 2026-11-21 status home page
+
+- `GET /` on the unified status server returns HTTP 200 and "Elysia is running" only when a system is attached and `running` is true.
+- No system is HTTP 503 "System not initialized" and does not offer a control panel.
+- A stopped system is HTTP 503 "System is not running". A known panel URL is shown without the running heading.
+- A failure while reading the system is HTTP 500 "Status page unavailable" with the error text.
+- Contract: `tests/test_status_root_page.py`.

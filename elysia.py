@@ -5,6 +5,7 @@ Unified Elysia system. Orchestrates all elysia_sub_* subroutines.
 Run: python elysia.py  (or python -m elysia when packaged)
 """
 import atexit
+import html
 import json
 import os
 import sys
@@ -123,22 +124,7 @@ def _make_status_handler():
 
         def do_GET(self):
             if self.path == "/":
-                # Browser-friendly root: show link to control panel
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                dashboard_url = "http://127.0.0.1:5000"
-                if _status_system and _status_system.guardian and getattr(_status_system.guardian, "ui_panel", None):
-                    dashboard_url = f"http://127.0.0.1:{getattr(_status_system.guardian.ui_panel, 'port', 5000)}"
-                html = (
-                    "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Elysia</title></head><body style='font-family:sans-serif;padding:2rem;'>"
-                    "<h1>Elysia is running</h1>"
-                    "<p><a href='" + dashboard_url + "' style='font-size:1.2rem;'>Open Control Panel</a> (" + dashboard_url + ")</p>"
-                    "<p><a href='/status'>JSON status</a> | <a href='/health'>Health</a></p>"
-                    "<p style='color:#555;font-size:0.9rem;'>Desktop toggle uses <code>POST /shutdown</code> (Bearer token if <code>API_TOKEN</code> is set).</p>"
-                    "</body></html>"
-                )
-                self.wfile.write(html.encode("utf-8"))
+                self._handle_root()
             elif self.path == "/health":
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -171,6 +157,69 @@ def _make_status_handler():
             else:
                 self.send_response(404)
                 self.end_headers()
+
+        def _handle_root(self):
+            """Browser home page. Say the system is running only when it is."""
+            code = 503
+            title = "System not initialized"
+            detail = "The status server has no Elysia system attached."
+            dashboard_url = None
+            try:
+                system = _status_system
+                if system is not None:
+                    running = bool(system.running)
+                    guardian = getattr(system, "guardian", None)
+                    panel = getattr(guardian, "ui_panel", None) if guardian else None
+                    if panel is not None:
+                        dashboard_url = "http://127.0.0.1:%s" % getattr(panel, "port", 5000)
+                    elif running:
+                        dashboard_url = "http://127.0.0.1:5000"
+                    if running:
+                        code = 200
+                        title = "Elysia is running"
+                        detail = "The unified system is running."
+                    else:
+                        code = 503
+                        title = "System is not running"
+                        detail = "The unified system is attached but not running."
+            except Exception as exc:
+                code = 500
+                title = "Status page unavailable"
+                detail = str(exc)
+                dashboard_url = None
+
+            safe_title = html.escape(title)
+            parts = [
+                "<!DOCTYPE html><html><head><meta charset='utf-8'><title>",
+                safe_title,
+                "</title></head><body style='font-family:sans-serif;padding:2rem;'>",
+                "<h1>",
+                safe_title,
+                "</h1><p>",
+                html.escape(detail),
+                "</p>",
+            ]
+            if dashboard_url:
+                safe_url = html.escape(str(dashboard_url), quote=True)
+                if code == 200:
+                    parts.append(
+                        "<p><a href='%s' style='font-size:1.2rem;'>Open Control Panel</a> (%s)</p>"
+                        % (safe_url, safe_url)
+                    )
+                else:
+                    parts.append("<p>Control panel URL: <a href='%s'>%s</a></p>" % (safe_url, safe_url))
+            parts.append(
+                "<p><a href='/status'>JSON status</a> | <a href='/health'>Health</a></p>"
+                "<p style='color:#555;font-size:0.9rem;'>Desktop toggle uses <code>POST /shutdown</code> "
+                "(Bearer token if <code>API_TOKEN</code> is set).</p>"
+                "</body></html>"
+            )
+            body = "".join(parts).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def _check_auth(self):
             """If API_TOKEN is set, require Authorization: Bearer <token>. Return (True, None) or (False, body)."""

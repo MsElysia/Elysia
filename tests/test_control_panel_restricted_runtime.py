@@ -2,6 +2,9 @@
 # Uses the Flask test client. Does not bind a public port or call a provider.
 
 import json
+import re
+import shutil
+import subprocess
 import sys
 import types
 from datetime import datetime, timedelta
@@ -68,6 +71,108 @@ def _auth(panel: UIControlPanel):
         "X-Elysia-Identity": "dashboard-operator",
         "X-Elysia-Token": panel._dashboard_operator_token(),
     }
+
+
+def test_chat_keyboard_and_request_scoped_tool_grants(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to exercise the rendered dashboard JavaScript")
+    panel = _panel(_memory(tmp_path / "memory.json"), config={"contained_startup": True})
+    html = panel.app.test_client().get("/").get_data(as_text=True)
+    script = re.search(r"<script>(.*?)</script>", html, flags=re.S)
+    assert script, "expected the rendered dashboard script"
+    harness = """
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+
+const listeners = {};
+const message = {value: '', addEventListener(name, fn) { listeners[name] = fn; }};
+const calculator = {checked: true};
+const documents = {checked: true};
+const elements = {
+    'api-chat-message': message,
+    'allow-labor-calculator': calculator,
+    'allow-documents-search': documents,
+    'documents-search-folder': {value: 'fixture'},
+    'document-drop-zone': {addEventListener() {}},
+    'learning-status': {style: {}},
+};
+const document = {
+    body: {setAttribute() {}},
+    getElementById: id => elements[id] || null,
+    addEventListener(name, fn) { listeners[name] = fn; },
+    querySelectorAll: () => [],
+};
+const window = {location: {href: 'http://localhost/'}};
+const requests = [];
+let failNext = false;
+function fetch(url, options) {
+    if (options && options.method === 'POST') {
+        requests.push({url, body: JSON.parse(options.body)});
+        if (failNext) {
+            failNext = false;
+            return Promise.reject(new Error('synthetic connection failure'));
+        }
+    }
+    return Promise.resolve({status: 200, json: async () => ({success: true})});
+}
+vm.runInNewContext(fs.readFileSync(0, 'utf8'), {
+    window, document, fetch, localStorage: {getItem: () => null},
+    setTimeout() {}, setInterval() {},
+});
+window.refreshDocumentLibrary = () => {};
+window.refreshConversations = () => {};
+listeners.DOMContentLoaded();
+
+function pressEnter(options = {}) {
+    let handled = false;
+    listeners.keydown({key: 'Enter', ...options, preventDefault() { handled = true; }});
+    return handled;
+}
+const nextTurn = () => new Promise(setImmediate);
+async function check() {
+    pressEnter();
+    assert.equal(requests.length, 0);
+    assert.equal(calculator.checked && documents.checked, true);
+
+    message.value = 'Synthetic question';
+    assert.equal(pressEnter({isComposing: true}), false);
+    assert.equal(pressEnter({repeat: true}), false);
+    assert.equal(pressEnter({key: 'a'}), false);
+    assert.equal(requests.length, 0);
+
+    failNext = true;
+    assert.equal(pressEnter(), true);
+    assert.equal(requests[0].url, '/api/chat');
+    assert.equal(requests[0].body.allow_calculator, true);
+    assert.equal(requests[0].body.allow_documents_search, true);
+    assert.equal(calculator.checked || documents.checked, false);
+    await nextTurn();
+    window.sendHomeChat();
+    assert.equal(requests[1].body.allow_calculator, false);
+    assert.equal(requests[1].body.allow_documents_search, false);
+    await nextTurn();
+
+    calculator.checked = true;
+    documents.checked = true;
+    failNext = true;
+    window.runLocalDocumentsSearch();
+    assert.equal(requests[2].url, '/api/local-documents/search');
+    assert.equal(requests[2].body.authorize_search, true);
+    assert.equal(documents.checked, false);
+    assert.equal(calculator.checked, true);
+    await nextTurn();
+    window.runLocalDocumentsSearch();
+    assert.equal(requests.length, 3);
+}
+check().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run(
+        [node, "-e", harness], input=script.group(1), capture_output=True,
+        text=True, encoding="utf-8", timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 class TestLivePanelRestrictedRoutes:

@@ -3577,3 +3577,44 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## Product workflow — 2026-11-21 status home page
+
+**Status:** COMPLETED on this branch. Not on `main`. No PR.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c`
+
+**Implementation commit:** `0f3fc37a22c905b21462bbb1effec3c5f7dd749b`
+
+**Not based on** the earlier product branches, including the 2026-11-20 health branch `origin/cursor/bc-aa511bd2-883a-48d9-892a-8ffc1d37ce06-9353` (`b4f536e`, handoff `1b663f2`).
+
+**Files:**
+- `elysia.py`
+- `tests/test_status_root_page.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Behavior:**
+- `GET /` returns HTTP 200 and the heading "Elysia is running", with "Open Control Panel", only when a status system is attached and `running` is true.
+- No status system: HTTP 503 "System not initialized". The page does not offer a control panel.
+- A stopped system: HTTP 503 "System is not running". A known panel URL is shown as a control panel URL, without the running heading.
+- A failure while reading `running` or the panel: HTTP 500 "Status page unavailable" with the exception text. Panel text is escaped.
+- A running system with no panel still links to `http://127.0.0.1:5000`.
+
+**Evidence:**
+- Before, live HTTP on the real `elysia.py` handler: no system `200` with `<h1>Elysia is running</h1>` and `Open Control Panel` to `http://127.0.0.1:5000`; stopped fictional panel `200` with the same heading and `http://127.0.0.1:5099`.
+- After: `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_status_root_page.py -v --tb=short` — 1 passed. Live HTTP after: no system `503` "System not initialized"; stopped `503` "System is not running" with `http://127.0.0.1:5099`; running `200` "Elysia is running" and "Open Control Panel" to that same URL. The server was `ThreadingHTTPServer` plus the real `_make_status_handler`, urllib, and a local stub. No external service and `UnifiedElysiaSystem` was not constructed.
+
+**Left untouched:**
+- `GET /health` on this branch still returns HTTP 200 `status: ok` when the system is stopped. That fix stays on `origin/cursor/bc-aa511bd2-883a-48d9-892a-8ffc1d37ce06-9353` (`b4f536e`, handoff `1b663f2`).
+- `GET /status` still returns HTTP 200 when status collection fails. That fix stays on `origin/cursor/product-workflow-engineering-process-67c6` (`ad9f08f`, handoff `54b0015`).
+- `POST /chat` and `POST /v1/chat/completions` are unchanged. The OpenAI completion-status fix stays on `origin/cursor/bc-314a701a-233d-4254-a248-6a60e24797ef-1bd6` (`77d6aca`, handoff `c35ef88`).
+- Did not edit `elysia/api/server.py`, `elysia/agents/implementer.py`, `elysia/core/proposal_system.py`, `elysia/runtime.py`, `elysia/cli.py`, or `project_guardian/ui_control_panel.py`.
+- Functional runtime safety today is `cad25e7` on `origin/cursor/bc-6abfab2e-71dc-4d4c-807f-bc66b435f680-7521` (`bc-6abfab2e`, `elysia/runtime.py` and `tests/test_elysia_runtime_heartbeat_truth.py` only). Runtime integrity remains `a2f35f6` on `origin/cursor/bc-6924408d-3a73-4c23-bf85-38202661c1a2-7b65`.
+- Dashboard drafts #147, #148, #149, #153, #156, and #178 remain open. `origin/codex/elysia-chat-dispatch-20261119` and `origin/auto/staging` also touched the control panel on 2026-11-19. No open PR #231 was found.
+
+**Queue:** `CONTROL.md` `CURRENT_TASK: NONE` on `main` and on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`). `TASKS/TASK-0053.md` remains OPEN, review only. Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb` on `origin/codex/limited-live-activation-wrapper`. Do not implement live memory or vector writes.
+
+Do not open a second copy of this status home page fix from `main`. Next product run should pick a different unclaimed API or dashboard error path. `GET /health` on this branch still reports `ok` when the system is stopped. Re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`. A branch commit is not integrated product readiness.

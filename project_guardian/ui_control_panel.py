@@ -2052,13 +2052,21 @@ CONTROL_PANEL_TEMPLATE = """
                         var response = await fetch('/api/documents', {method: 'POST', headers: restrictedUploadHeaders(), body: form});
                         var data = await response.json();
                         if (!response.ok || !data.success) throw new Error(data.error || ('HTTP ' + response.status));
+                        if (generation !== window._documentPreviewGeneration) {
+                            status.textContent += '\\n' + item.file.name + ':';
+                        }
                         status.textContent += data.document.duplicate
                             ? (' Already indexed (' + data.document.source_id + '); no duplicates created.')
                             : (' Saved · ' + (data.document.chunk_count || 0) + ' chunks'
                                + (data.document.char_count ? (' · ' + data.document.char_count + ' chars') : '')
                                + (data.document.elapsed_ms ? (' · ' + data.document.elapsed_ms + ' ms') : '')
                                + ' · ' + data.document.source_id);
-                    } catch (err) { status.textContent += ' Failed: ' + err.message; }
+                    } catch (err) {
+                        if (generation !== window._documentPreviewGeneration) {
+                            status.textContent += '\\n' + item.file.name + ':';
+                        }
+                        status.textContent += ' Failed: ' + err.message;
+                    }
                     window.refreshDocumentLibrary();
                 }
                 if (generation === window._documentPreviewGeneration) window._documentPreviewQueue = [];
@@ -2069,6 +2077,17 @@ CONTROL_PANEL_TEMPLATE = """
             }
         };
         window.importSelectedDocuments = function(files) {
+            // A real new drop must revoke the old selection even if work is pending.
+            if (window._documentImportBusy) {
+                if (files && files.length) {
+                    var status = document.getElementById('document-import-status');
+                    window.invalidateDocumentPreviewSelection(
+                        (status && status.textContent ? status.textContent + '\\n' : '') +
+                        'New drop rejected while busy. Wait until ready, then drop the desired files again. Old selection cleared.'
+                    );
+                }
+                return;
+            }
             // Drag/drop and legacy callers: extract & preview first (operator still confirms Save).
             return window.previewSelectedDocuments(files);
         };

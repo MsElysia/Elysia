@@ -1956,9 +1956,33 @@ CONTROL_PANEL_TEMPLATE = """
                 });
         };
         window._documentPreviewQueue = [];
+        window._documentPreviewGeneration = 0;
+        window.invalidateDocumentPreviewSelection = function(message) {
+            window._documentPreviewGeneration += 1;
+            window._documentPreviewQueue = [];
+            window._cancelDocumentQueue = true;
+            var saveBtn = document.getElementById('document-import-button');
+            var preview = document.getElementById('document-preview');
+            var status = document.getElementById('document-import-status');
+            if (saveBtn) saveBtn.disabled = true;
+            if (preview) preview.textContent = '';
+            if (status && message) status.textContent = message;
+        };
+        var documentFilesInput = document.getElementById('document-files');
+        if (documentFilesInput) {
+            documentFilesInput.addEventListener('change', function() {
+                window.invalidateDocumentPreviewSelection(
+                    documentFilesInput.files && documentFilesInput.files.length
+                        ? 'Selection changed. Run Extract & preview before saving.'
+                        : 'Selection cleared. Nothing is ready to save.'
+                );
+            });
+        }
         window.previewSelectedDocuments = async function(files) {
             if (window._documentImportBusy) return;
             files = files || document.getElementById('document-files').files;
+            window._documentPreviewGeneration += 1;
+            var generation = window._documentPreviewGeneration;
             window._documentImportBusy = true;
             window._cancelDocumentQueue = false;
             window._documentPreviewQueue = [];
@@ -1972,15 +1996,22 @@ CONTROL_PANEL_TEMPLATE = """
             preview.textContent = '';
             try {
                 for (var file of Array.from(files || [])) {
-                    if (window._cancelDocumentQueue) { status.textContent += '\\nRemaining files cancelled.'; break; }
+                    if (window._cancelDocumentQueue || generation !== window._documentPreviewGeneration) {
+                        status.textContent += '\\nRemaining files cancelled or selection changed.';
+                        break;
+                    }
                     status.textContent += '\\nExtracting ' + file.name + '...';
                     try {
                         var form = new FormData(); form.append('file', file);
                         var response = await fetch('/api/documents/preview', {method: 'POST', headers: restrictedUploadHeaders(), body: form});
                         var data = await response.json();
                         if (!response.ok || !data.success) throw new Error(data.error || ('HTTP ' + response.status));
+                        if (generation !== window._documentPreviewGeneration) {
+                            status.textContent += ' Discarded because the file selection changed.';
+                            break;
+                        }
                         var p = data.preview;
-                        window._documentPreviewQueue.push({file: file, preview: p});
+                        window._documentPreviewQueue.push({file: file, preview: p, generation: generation});
                         status.textContent += ' Ready · ' + p.chunk_count + ' chunks · ' + p.page_count + ' page(s)' + (p.already_imported ? ' · already in memory (reimport will not duplicate)' : '');
                         preview.textContent += '=== ' + p.filename + ' ===\\n' +
                             'source_id=' + p.source_id + ' · chunks=' + p.chunk_count +
@@ -1988,7 +2019,7 @@ CONTROL_PANEL_TEMPLATE = """
                             (p.ocr_note || '') + '\\n--- extracted preview ---\\n' + (p.preview_text || '(empty)') + '\\n\\n';
                     } catch (err) { status.textContent += ' Failed: ' + err.message; }
                 }
-                if (saveBtn) saveBtn.disabled = window._documentPreviewQueue.length === 0;
+                if (saveBtn && generation === window._documentPreviewGeneration) saveBtn.disabled = window._documentPreviewQueue.length === 0;
             } finally {
                 window._documentImportBusy = false;
                 if (previewBtn) previewBtn.disabled = false;
@@ -1996,7 +2027,8 @@ CONTROL_PANEL_TEMPLATE = """
         };
         window.savePreviewedDocuments = async function() {
             if (window._documentImportBusy) return;
-            var queue = window._documentPreviewQueue || [];
+            var generation = window._documentPreviewGeneration;
+            var queue = (window._documentPreviewQueue || []).filter(function(item) { return item.generation === generation; }).slice();
             if (!queue.length) {
                 document.getElementById('document-import-status').textContent = 'Nothing to save. Run Extract & preview first.';
                 return;
@@ -2004,11 +2036,16 @@ CONTROL_PANEL_TEMPLATE = """
             window._documentImportBusy = true;
             window._cancelDocumentQueue = false;
             var saveBtn = document.getElementById('document-import-button');
+            var fileInput = document.getElementById('document-files');
             var status = document.getElementById('document-import-status');
             if (saveBtn) saveBtn.disabled = true;
+            if (fileInput) fileInput.disabled = true;
             try {
                 for (var item of queue) {
-                    if (window._cancelDocumentQueue) { status.textContent += '\\nRemaining saves cancelled.'; break; }
+                    if (window._cancelDocumentQueue || generation !== window._documentPreviewGeneration) {
+                        status.textContent += '\\nRemaining saves cancelled or selection changed.';
+                        break;
+                    }
                     status.textContent += '\\nSaving ' + item.file.name + ' to durable memory...';
                     try {
                         var form = new FormData(); form.append('file', item.file);
@@ -2024,10 +2061,11 @@ CONTROL_PANEL_TEMPLATE = """
                     } catch (err) { status.textContent += ' Failed: ' + err.message; }
                     window.refreshDocumentLibrary();
                 }
-                window._documentPreviewQueue = [];
+                if (generation === window._documentPreviewGeneration) window._documentPreviewQueue = [];
             } finally {
                 window._documentImportBusy = false;
                 if (saveBtn) saveBtn.disabled = true;
+                if (fileInput) fileInput.disabled = false;
             }
         };
         window.importSelectedDocuments = function(files) {

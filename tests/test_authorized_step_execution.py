@@ -21,6 +21,7 @@ if "project_guardian" not in sys.modules:
 from project_guardian.conversation_continuity import (
     ContinuityError,
     ConversationStore,
+    RecoveryRequiredError,
     StaleTaskEditError,
     resolve_conversation_root,
 )
@@ -152,11 +153,10 @@ def test_interrupted_persist_preserves_prior(store: ConversationStore, monkeypat
     good = store.get_checkpoint(cid)
     import project_guardian.conversation_continuity as mod
 
-    calls = {"n": 0}
     real = mod._atomic_write_json
+    eid = "exec_" + "d" * 16
 
     def boom(path, payload):
-        calls["n"] += 1
         # Allow pending receipt write, fail checkpoint write.
         if str(path).endswith(".pending.json"):
             return real(path, payload)
@@ -170,11 +170,27 @@ def test_interrupted_persist_preserves_prior(store: ConversationStore, monkeypat
             expected_revision=rev,
             authorize_calculator=True,
             authorize_record_completion=True,
-            execution_id="exec_" + "d" * 16,
+            execution_id=eid,
         )
+    monkeypatch.setattr(mod, "_atomic_write_json", real)
     loaded = json.loads(store._checkpoint_path(cid).read_text(encoding="utf-8"))
     assert loaded["content_sha256"] == good["content_sha256"]
-    assert store.get(cid)["task_steps"][0]["status"] == "pending"
+    pending = store._conv_dir(cid) / f"{eid}.pending.json"
+    assert pending.is_file()
+    # Unresolved pending evidence fails closed even though revisions still match.
+    with pytest.raises(RecoveryRequiredError, match="unresolved pending"):
+        store.get(cid)
+    with pytest.raises(RecoveryRequiredError):
+        store.execute_verified_bound_step(
+            cid,
+            step_id=step_id,
+            expected_revision=rev,
+            authorize_calculator=True,
+            authorize_record_completion=True,
+            execution_id=eid,
+        )
+    assert pending.is_file()
+    assert json.loads(pending.read_text(encoding="utf-8"))["receipt"]["execution_id"] == eid
 
 
 def test_reopen_preserves_receipt(store: ConversationStore):

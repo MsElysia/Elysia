@@ -2177,8 +2177,20 @@ CONTROL_PANEL_TEMPLATE = """
                 return;
             }
             fetch('/api/conversations/' + encodeURIComponent(conversationId))
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(res) {
+                    var data = (res && res.data) || {};
+                    if (data.recovery_required) {
+                        if (panel) panel.style.display = 'block';
+                        window._setTaskMutationControlsDisabled(true);
+                        if (saveStatus) {
+                            saveStatus.textContent = 'Recovery required: ' +
+                                window._escapeHtml(data.error || 'ambiguous durable state') +
+                                ' · mutation controls disabled; do not resubmit.';
+                        }
+                        return;
+                    }
+                    window._setTaskMutationControlsDisabled(false);
                     if (!data || !data.success) {
                         if (saveStatus) saveStatus.textContent = (data && data.error) || 'Could not load task state';
                         return;
@@ -2606,6 +2618,36 @@ CONTROL_PANEL_TEMPLATE = """
                 .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Bind failed: ' + err; });
         };
 
+        window._newExecutionId = function() {
+            var bytes = new Uint8Array(8);
+            if (window.crypto && window.crypto.getRandomValues) {
+                window.crypto.getRandomValues(bytes);
+            } else {
+                for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+            }
+            var hex = Array.prototype.map.call(bytes, function(b) {
+                return ('0' + b.toString(16)).slice(-2);
+            }).join('');
+            return 'exec_' + hex;
+        };
+
+        window._setTaskMutationControlsDisabled = function(disabled) {
+            ['task-state-outstanding', 'task-state-next-action', 'authorize-step-calculator',
+             'authorize-step-documents', 'authorize-step-assemble', 'authorize-step-draft',
+             'authorize-step-compose-aggregate', 'authorize-step-compose-synthesize',
+             'authorize-step-compose-extract', 'authorize-step-compose-extract-records',
+             'authorize-step-record', 'documents-search-folder'].forEach(function(elId) {
+                var el = document.getElementById(elId);
+                if (el) el.disabled = !!disabled;
+            });
+            var listEl = document.getElementById('task-steps-list');
+            if (listEl) {
+                listEl.querySelectorAll('button').forEach(function(btn) {
+                    btn.disabled = !!disabled;
+                });
+            }
+        };
+
         window.executeBoundStep = function(stepId) {
             var id = window._activeConversationId || ((document.getElementById('conversation-select') || {}).value);
             var saveStatus = document.getElementById('task-state-save-status');
@@ -2629,12 +2671,19 @@ CONTROL_PANEL_TEMPLATE = """
                 if (saveStatus) saveStatus.textContent = 'Document search requires an absolute folder path for this request.';
                 return;
             }
+            if (window._executeInFlight) {
+                if (saveStatus) saveStatus.textContent = 'Execute already in flight; not resubmitting.';
+                return;
+            }
+            var executionId = window._newExecutionId();
+            window._executeInFlight = true;
             if (saveStatus) saveStatus.textContent = 'Executing authorized bound step...';
             fetch('/api/conversations/' + encodeURIComponent(id) + '/task-steps/' + encodeURIComponent(stepId) + '/execute', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     expected_revision: expected,
+                    execution_id: executionId,
                     authorize_calculator: authCalc,
                     authorize_documents_search: authDocs,
                     authorize_estimate_assemble: authAssemble,
@@ -2649,7 +2698,17 @@ CONTROL_PANEL_TEMPLATE = """
             })
                 .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
                 .then(function(res) {
+                    window._executeInFlight = false;
                     var data = res.data || {};
+                    if (data.recovery_required || res.status === 409 && data.recovery_required !== false && (data.error || '').toLowerCase().indexOf('recovery required') >= 0) {
+                        window._setTaskMutationControlsDisabled(true);
+                        if (saveStatus) {
+                            saveStatus.textContent = 'Recovery required (execution_id=' + executionId +
+                                '): ' + window._escapeHtml(data.error || 'ambiguous durable state') +
+                                ' · reload status; do not resubmit.';
+                        }
+                        return;
+                    }
                     if (!data.success || res.status >= 400) {
                         if (saveStatus) saveStatus.textContent = 'Execute rejected: ' + (data.error || res.status);
                         return;
@@ -2663,7 +2722,14 @@ CONTROL_PANEL_TEMPLATE = """
                     window.loadTaskStatePanel(id);
                     window.refreshConversations();
                 })
-                .catch(function(err) { if (saveStatus) saveStatus.textContent = 'Execute failed: ' + err; });
+                .catch(function(err) {
+                    window._executeInFlight = false;
+                    window._setTaskMutationControlsDisabled(true);
+                    if (saveStatus) {
+                        saveStatus.textContent = 'Execute response lost or failed (' + executionId +
+                            '): reload current status; do not auto-resubmit. ' + err;
+                    }
+                });
         };
 
         window.reopenTaskStep = function(stepId) {
@@ -5323,7 +5389,10 @@ class UIControlPanel:
                 return jsonify({"success": False, "error": "forbidden"}), 403
             if not self._contained_startup_active():
                 return jsonify({"success": False, "error": "contained startup required"}), 400
-            from project_guardian.conversation_continuity import ContinuityError
+            from project_guardian.conversation_continuity import (
+                ContinuityError,
+                RecoveryRequiredError,
+            )
 
             try:
                 store = self._conversation_store()
@@ -5350,6 +5419,8 @@ class UIControlPanel:
                     data.pop(banned, None)
                 record = store.update_task_fields(conversation_id, data)
                 return jsonify({"success": True, "conversation": record})
+            except RecoveryRequiredError as exc:
+                return self._recovery_required_response(exc)
             except ContinuityError as exc:
                 return jsonify({"success": False, "error": str(exc)}), 404
 
@@ -5359,12 +5430,17 @@ class UIControlPanel:
                 return jsonify({"success": False, "error": "forbidden"}), 403
             if not self._contained_startup_active():
                 return jsonify({"success": False, "error": "contained startup required"}), 400
-            from project_guardian.conversation_continuity import ContinuityError
+            from project_guardian.conversation_continuity import (
+                ContinuityError,
+                RecoveryRequiredError,
+            )
 
             try:
                 store = self._conversation_store()
                 record = store.get(conversation_id)
                 checkpoint = store.get_checkpoint(conversation_id)
+            except RecoveryRequiredError as exc:
+                return self._recovery_required_response(exc)
             except ContinuityError as exc:
                 return jsonify({"success": False, "error": str(exc)}), 404
             missing = []
@@ -5424,7 +5500,11 @@ class UIControlPanel:
                 return jsonify({"success": False, "error": "forbidden"}), 403
             if not self._contained_startup_active():
                 return jsonify({"success": False, "error": "contained startup required"}), 400
-            from project_guardian.conversation_continuity import ContinuityError, StaleTaskEditError
+            from project_guardian.conversation_continuity import (
+                ContinuityError,
+                RecoveryRequiredError,
+                StaleTaskEditError,
+            )
 
             try:
                 store = self._conversation_store()
@@ -5497,6 +5577,8 @@ class UIControlPanel:
                     "error": str(exc),
                     "stale": True,
                 }), 409
+            except RecoveryRequiredError as exc:
+                return self._recovery_required_response(exc)
             except ContinuityError as exc:
                 return jsonify({
                     "success": False,
@@ -5518,7 +5600,11 @@ class UIControlPanel:
                     "error": "contained startup required",
                     "saved": False,
                 }), 400
-            from project_guardian.conversation_continuity import ContinuityError, StaleTaskEditError
+            from project_guardian.conversation_continuity import (
+                ContinuityError,
+                RecoveryRequiredError,
+                StaleTaskEditError,
+            )
 
             data = request.get_json(silent=True) or {}
             for banned in (
@@ -5565,6 +5651,8 @@ class UIControlPanel:
                     "error": str(exc),
                     "stale": True,
                 }), 409
+            except RecoveryRequiredError as exc:
+                return self._recovery_required_response(exc)
             except ContinuityError as exc:
                 return jsonify({
                     "success": False,
@@ -5586,7 +5674,11 @@ class UIControlPanel:
                     "error": "contained startup required",
                     "saved": False,
                 }), 400
-            from project_guardian.conversation_continuity import ContinuityError, StaleTaskEditError
+            from project_guardian.conversation_continuity import (
+                ContinuityError,
+                RecoveryRequiredError,
+                StaleTaskEditError,
+            )
 
             data = request.get_json(silent=True) or {}
             for banned in (
@@ -5630,6 +5722,8 @@ class UIControlPanel:
                     "error": str(exc),
                     "stale": True,
                 }), 409
+            except RecoveryRequiredError as exc:
+                return self._recovery_required_response(exc)
             except ContinuityError as exc:
                 return jsonify({
                     "success": False,
@@ -5651,7 +5745,11 @@ class UIControlPanel:
                     "error": "contained startup required",
                     "saved": False,
                 }), 400
-            from project_guardian.conversation_continuity import ContinuityError, StaleTaskEditError
+            from project_guardian.conversation_continuity import (
+                ContinuityError,
+                RecoveryRequiredError,
+                StaleTaskEditError,
+            )
 
             data = request.get_json(silent=True) or {}
             authorize_calculator = data.get("authorize_calculator") is True
@@ -5669,6 +5767,7 @@ class UIControlPanel:
                     "success": False,
                     "saved": False,
                     "executed": False,
+                    "executed_this_request": False,
                     "error": "invalid documents_folder",
                 }), 400
             # Never accept auth from stored fields named like tokens.
@@ -5681,6 +5780,7 @@ class UIControlPanel:
                     "success": False,
                     "saved": False,
                     "executed": False,
+                    "executed_this_request": False,
                     "error": "expected_revision is required",
                 }), 400
             execution_id = data.get("execution_id")
@@ -5689,6 +5789,7 @@ class UIControlPanel:
                     "success": False,
                     "saved": False,
                     "executed": False,
+                    "executed_this_request": False,
                     "error": "invalid execution_id",
                 }), 400
             draft_model = None
@@ -5710,6 +5811,7 @@ class UIControlPanel:
                         "success": False,
                         "saved": False,
                         "executed": False,
+                        "executed_this_request": False,
                         "error": "local_model_not_configured",
                     }), 503
                 if model_name:
@@ -5737,6 +5839,7 @@ class UIControlPanel:
                     "success": True,
                     "saved": True,
                     "executed": bool(result.get("executed")),
+                    "executed_this_request": bool(result.get("executed_this_request")),
                     "verified": bool(result.get("verified")),
                     "idempotent": bool(result.get("idempotent")),
                     "advanced": bool(result.get("advanced")),
@@ -5763,9 +5866,12 @@ class UIControlPanel:
                     "success": False,
                     "saved": False,
                     "executed": False,
+                    "executed_this_request": False,
                     "error": str(exc),
                     "stale": True,
                 }), 409
+            except RecoveryRequiredError as exc:
+                return self._recovery_required_response(exc)
             except ContinuityError as exc:
                 detail = str(exc)
                 status = 403 if "not authorized" in detail.casefold() else 400
@@ -5773,6 +5879,7 @@ class UIControlPanel:
                     "success": False,
                     "saved": False,
                     "executed": False,
+                    "executed_this_request": False,
                     "error": detail,
                     "authorization_inherited": False,
                 }), status
@@ -5791,7 +5898,11 @@ class UIControlPanel:
                     "error": "contained startup required",
                     "saved": False,
                 }), 400
-            from project_guardian.conversation_continuity import ContinuityError, StaleTaskEditError
+            from project_guardian.conversation_continuity import (
+                ContinuityError,
+                RecoveryRequiredError,
+                StaleTaskEditError,
+            )
 
             data = request.get_json(silent=True) or {}
             try:
@@ -5826,6 +5937,8 @@ class UIControlPanel:
                     "error": str(exc),
                     "stale": True,
                 }), 409
+            except RecoveryRequiredError as exc:
+                return self._recovery_required_response(exc)
             except ContinuityError as exc:
                 return jsonify({
                     "success": False,
@@ -6988,6 +7101,20 @@ class UIControlPanel:
         if not disposable:
             raise ContinuityError("disposable_root required for conversation continuity")
         return ConversationStore(resolve_conversation_root(disposable))
+
+    def _recovery_required_response(self, exc: BaseException):
+        """Distinct recovery-required payload: do not claim not-executed on uncertainty."""
+        detail = str(exc)
+        return jsonify({
+            "success": False,
+            "saved": False,
+            "recovery_required": True,
+            "error": detail,
+            # Uncertain post-admission outcomes must not advertise executed=False.
+            "executed": None,
+            "executed_this_request": False,
+            "authorization_inherited": False,
+        }), 409
 
     def _deny_privileged_control_if_blocked(self, *, kind: str):
         """

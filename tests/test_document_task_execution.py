@@ -247,10 +247,29 @@ def test_docs_duplicate_and_stale(store: ConversationStore, estimates: Path):
 
 
 def test_docs_interrupted_persist(store: ConversationStore, estimates: Path, monkeypatch):
+    """Interrupted docs persist: one search, pending retained, public get fails closed."""
     cid, step_id, rev = _seed_docs_bound(store, estimates)
     good = store.get_checkpoint(cid)
+    good_conv_bytes = store._conv_path(cid).read_bytes()
+    eid = "exec_" + "d" * 16
     import project_guardian.conversation_continuity as mod
+    import project_guardian.local_documents_search as lds
 
+    calls = {"n": 0}
+    real_search = lds.search_local_documents
+    seen_admit = {"ok": False}
+
+    def spy_search(*a, **k):
+        calls["n"] += 1
+        pending = store._conv_dir(cid) / f"{eid}.pending.json"
+        assert pending.is_file()
+        payload = json.loads(pending.read_text(encoding="utf-8"))
+        assert payload.get("phase") == "ADMITTED"
+        assert payload.get("capability") == "local.documents.search"
+        seen_admit["ok"] = True
+        return real_search(*a, **k)
+
+    monkeypatch.setattr(lds, "search_local_documents", spy_search)
     real = mod._atomic_write_json
 
     def boom(path, payload):
@@ -267,8 +286,45 @@ def test_docs_interrupted_persist(store: ConversationStore, estimates: Path, mon
             authorize_documents_search=True,
             authorize_record_completion=True,
             documents_folder=str(estimates),
-            execution_id="exec_" + "d" * 16,
+            execution_id=eid,
         )
+    monkeypatch.setattr(mod, "_atomic_write_json", real)
+    assert calls["n"] == 1
+    assert seen_admit["ok"] is True
     loaded = json.loads(store._checkpoint_path(cid).read_text(encoding="utf-8"))
     assert loaded["content_sha256"] == good["content_sha256"]
-    assert store.get(cid)["task_steps"][0]["status"] == "pending"
+    assert store._conv_path(cid).read_bytes() == good_conv_bytes
+    pending = store._conv_dir(cid) / f"{eid}.pending.json"
+    assert pending.is_file()
+    pending_payload = json.loads(pending.read_text(encoding="utf-8"))
+    assert pending_payload.get("phase") == "VERIFIED_RECEIPT"
+    assert pending_payload.get("receipt", {}).get("execution_id") == eid
+    original_pending = pending.read_text(encoding="utf-8")
+
+    from project_guardian.conversation_continuity import RecoveryRequiredError
+
+    again = ConversationStore(store.root)
+    with pytest.raises(RecoveryRequiredError, match="unresolved pending"):
+        again.get(cid)
+    with pytest.raises(RecoveryRequiredError):
+        again.execute_verified_bound_step(
+            cid,
+            step_id=step_id,
+            expected_revision=rev,
+            authorize_documents_search=True,
+            authorize_record_completion=True,
+            documents_folder=str(estimates),
+            execution_id=eid,
+        )
+    with pytest.raises(RecoveryRequiredError):
+        again.execute_verified_bound_step(
+            cid,
+            step_id=step_id,
+            expected_revision=rev,
+            authorize_documents_search=True,
+            authorize_record_completion=True,
+            documents_folder=str(estimates),
+            execution_id="exec_" + "e" * 16,
+        )
+    assert calls["n"] == 1
+    assert pending.read_text(encoding="utf-8") == original_pending

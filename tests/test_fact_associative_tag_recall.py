@@ -643,3 +643,97 @@ def test_unscoped_proper_project_name_does_not_silently_filter_other_project(sto
     assert memory["project_ambiguity"] == {
         "requires_clarification": True, "project_ids": ["juniper", "larkspur"],
     }
+
+
+@pytest.mark.parametrize(("continuation", "unknown"), [
+    pytest.param(" and Juniper", None, id="G04-conjoined-and"),
+    pytest.param(" or Juniper", None, id="G05-conjoined-or"),
+    pytest.param(", Juniper", None, id="G06-comma-known-name"),
+    pytest.param(" and Moonbeam", "moonbeam", id="G08-conjoined-unknown"),
+    pytest.param(" or Moonbeam", "moonbeam", id="G08-or-unknown"),
+])
+def test_one_project_cue_must_resolve_coordinated_names_not_silently_filter(
+    store, monkeypatch, continuation, unknown,
+):
+    """Test-only expected-RED grammar contract against pinned existing source.
+
+    Real restricted adapter and persistent synthetic MemoryCore; explicit
+    per-source SHA/revision and model-visible ambiguity must survive retrieval.
+    """
+    from project_guardian.local_memory_chat import LocalOllama, ManualAuthorization, converse_bundle
+
+    path, headers, open_adapter = store
+    adapter = open_adapter()
+    larkspur_text = "Client approved acrylic for the surface."
+    juniper_text = "Client approved oil for the surface."
+    larkspur_id = save(adapter, headers, larkspur_text, [
+        {**TAG, "project_id": "larkspur"},
+    ])
+    juniper_id = save(adapter, headers, juniper_text, [
+        {**TAG, "project_id": "juniper"},
+    ])
+    before = path.read_bytes()
+    question = "Which coating for project Larkspur" + continuation + "?"
+    memory = bundle(store, question)
+    rows = {row["source_id"]: row for row in memory["evidence"]}
+    expected = {
+        larkspur_id: ("larkspur", larkspur_text),
+        juniper_id: ("juniper", juniper_text),
+    }
+    # With multiple or unresolved references, never silently drop B's fact.
+    assert set(rows) == set(expected)
+    for fact_id, (project, statement) in expected.items():
+        row = rows[fact_id]
+        assert row["chunk_id"] == fact_id
+        assert row["revision"] == 1
+        assert row["project_ids"] == [project]
+        assert row["source_sha256"] == hashlib.sha256(statement.encode("utf-8")).hexdigest()
+        assert row["highlights"][0]["text"] == statement
+        assert row["recall_reasons"][0]["type"] == "approved_semantic_tag"
+
+    warning = memory.get("project_ambiguity")
+    assert warning is not None
+    assert warning["requires_clarification"] is True
+    assert warning["project_ids"] == ["juniper", "larkspur"]
+    if unknown is None:
+        # Comma and conjunction of TWO approved identities is not an unknown.
+        assert "unknown_project_hints" not in warning
+    else:
+        assert warning["unknown_project_hints"] == [unknown]
+
+    captured = []
+
+    def fake_generate(model, messages, *, json_mode=False):
+        captured.append(json.loads(messages[-1]["content"]))
+        assert "requires_clarification" in messages[0]["content"]
+        return json.dumps({"answer": "Which project do you mean?"})
+
+    monkeypatch.setattr(LocalOllama, "generate", fake_generate)
+    reply = converse_bundle(memory, question, ManualAuthorization(
+        "req-coordinated-baseline", True, True,
+        frozenset({"local.chat", "memory.read"}),
+    ), LocalOllama("fixture-model"), recent=())
+    visible = captured[0]["context_bundle"]
+    assert {row["source_id"] for row in visible["evidence"]} == set(expected)
+    assert visible["project_ambiguity"] == warning
+    assert reply["tools_executed"] == []
+    assert reply["memory_written"] is False
+    assert path.read_bytes() == before
+
+
+def test_uncertain_conjoined_task_cannot_confidently_select_only_first_project(store):
+    """G09: 'and deck sanding' may be task prose; clarify, never invent a project."""
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    larkspur_id = save(adapter, headers, "Client approved acrylic for the surface.", [
+        {**TAG, "project_id": "larkspur"},
+    ])
+    juniper_id = save(adapter, headers, "Client approved oil for the surface.", [
+        {**TAG, "project_id": "juniper"},
+    ])
+    memory = bundle(store, "Which coating for project Larkspur and deck sanding?")
+    assert {row["source_id"] for row in memory["evidence"]} == {larkspur_id, juniper_id}
+    warning = memory["project_ambiguity"]
+    assert warning["requires_clarification"] is True
+    assert warning["project_ids"] == ["juniper", "larkspur"]
+    assert "deck" not in warning["project_ids"]

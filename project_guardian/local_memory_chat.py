@@ -399,7 +399,23 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         project for project in known_projects
         if _semantic_phrase_present(question, project.replace("_", " "))
     }
-    explicit_project = next(iter(queried_projects)) if len(queried_projects) == 1 else None
+    # A project named by the operator but absent from approved current links is
+    # not evidence for whichever other project happened to match the alias.
+    named_project_hints = {
+        match.group(1) for match in re.finditer(
+            r"\bproject\s+([a-z][a-z0-9_]{1,47})\b", question.casefold()
+        )
+    }
+    unsupported_project_hints = sorted(
+        hint for hint in named_project_hints
+        if hint not in known_projects
+        and not any(project.startswith(hint + "_") for project in known_projects)
+    )
+    explicit_project = (
+        next(iter(queried_projects))
+        if len(queried_projects) == 1 and not unsupported_project_hints
+        else None
+    )
     for fact, rev_n, approved in fact_rows:
         statement, fact_id = fact["statement"], fact["fact_id"]
         fact_tokens = set(_context_tokens(statement))
@@ -411,8 +427,14 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
             if approved and not related and any(link["project_id"] for link in approved):
                 continue
         overlap = query_set & fact_tokens
+        # Keep all valid relevant project identities, not just the first
+        # semantic reason. Lexical matches can be project-bound too.
+        eligible_links = [
+            link for link in approved
+            if not explicit_project or link["project_id"] in (None, explicit_project)
+        ]
         reasons = []
-        for link in approved:
+        for link in eligible_links:
             project = link["project_id"]
             if explicit_project and project not in (None, explicit_project):
                 continue
@@ -443,10 +465,23 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
                 "text": statement,
             }],
         }
+        # An alias-only hit scopes to the matched links. A lexical hit
+        # supports the original statement for every current approved project
+        # attached to that fact, even when no alias was typed in the query.
+        relevant_projects = sorted({
+            link["project_id"] for link in eligible_links
+            if link["project_id"] is not None
+        } if overlap else {
+            reason["project_id"] for reason in reasons
+            if reason["project_id"] is not None
+        })
+        if relevant_projects:
+            item["project_ids"] = relevant_projects
+            # Preserve the legacy singular shape only when actually unique.
+            if len(relevant_projects) == 1:
+                item["project_id"] = relevant_projects[0]
         if reasons:
             item["recall_reasons"] = reasons
-            # Avoid erasing distinct project evidence with identical phrasing.
-            item["project_id"] = explicit_project or reasons[0]["project_id"]
         candidates.append(("fact", fact_tokens, item))
 
     from project_guardian.document_ingestion import DocumentLibrary, is_context_document
@@ -486,8 +521,10 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
     for kind, tokens, item in sorted(
         candidates, key=lambda row: (row[0] != "fact", row[2]["source_id"], row[2]["chunk_id"])
     ):
-        distinct.setdefault((item["highlights"][0]["text"], item.get("project_id")),
-                            (kind, tokens, item))
+        distinct.setdefault(
+            (item["highlights"][0]["text"], tuple(item.get("project_ids", ()))),
+            (kind, tokens, item),
+        )
     candidates = list(distinct.values())
 
     # Query-term rarity among retrieved candidates separates specific answers
@@ -523,6 +560,14 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         ranked.append((score, kind != "fact", str(item["source_id"]),
                        str(item["chunk_id"]), item, tokens))
     ranked.sort(key=lambda row: (-row[0], row[1], row[2], row[3]))
+    # Decide ambiguity from every eligible, validated, relevant current
+    # source BEFORE four-slot/byte-cap selection can hide another project.
+    eligible_project_ids = {
+        project for _, _, _, _, item, _ in ranked
+        for project in item.get("project_ids", ())
+    }
+    if len(queried_projects) > 1:
+        eligible_project_ids.update(queried_projects)
 
     # Protect half of the bounded context for the strongest distinct fitted
     # evidence by relevance. Similar wording can contain a different claim.
@@ -576,16 +621,18 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
             "filepath": store.get("filepath") if isinstance(store, dict) else None,
         },
     }
-    # Two distinct approved project sources without a named target require
-    # clarification, not a silently selected single-project memory claim.
-    selected_projects = sorted({
-        row["project_id"] for row in selected
-        if isinstance(row.get("project_id"), str)
-    })
-    if not explicit_project and len(selected_projects) > 1:
-        bundle["project_ambiguity"] = {
-            "requires_clarification": True, "project_ids": selected_projects,
+    # A missing/unknown named project or conflicting approved projects must
+    # not become an answer simply because the evidence budget selected one.
+    if not explicit_project and (
+        len(eligible_project_ids) > 1 or unsupported_project_hints
+    ):
+        ambiguity = {
+            "requires_clarification": True,
+            "project_ids": sorted(eligible_project_ids),
         }
+        if unsupported_project_hints:
+            ambiguity["unknown_project_hints"] = unsupported_project_hints
+        bundle["project_ambiguity"] = ambiguity
     bundle["bundle_sha256"] = hashlib.sha256(canonical(bundle).encode("utf-8")).hexdigest()
     # Empty/malformed retrieval does not establish operational memory recall.
     if selected:

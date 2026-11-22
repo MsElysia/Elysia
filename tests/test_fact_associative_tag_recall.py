@@ -212,3 +212,153 @@ def test_approved_semantic_links_cannot_authorize_tools(store, monkeypatch):
     assert result["memory_written"] is False
     assert captured[0]["recent_conversation"] == []
     assert captured[0]["context_bundle"]["evidence"][0]["recall_reasons"][0]["type"] == "approved_semantic_tag"
+
+
+def test_single_current_fact_two_approved_projects_both_matched_requires_clarification(store):
+    _, headers, open_adapter = store
+    statement = "Client selected acrylic finish for the work."
+    fact_id = save(open_adapter(), headers, statement, [
+        {**TAG, "project_id": "larkspur"},
+        {"concept": "surface_choice", "aliases": ["coating"],
+         "state": "selected_existing", "project_id": "juniper"},
+    ])
+    result = bundle(store, QUESTION)
+    assert len(result["evidence"]) == 1
+    row = result["evidence"][0]
+    assert row["source_id"] == row["chunk_id"] == fact_id
+    assert row["revision"] == 1
+    assert row["source_sha256"] == hashlib.sha256(statement.encode()).hexdigest()
+    assert row["project_ids"] == ["juniper", "larkspur"]
+    assert "project_id" not in row
+    assert {r["project_id"] for r in row["recall_reasons"]} == {"juniper", "larkspur"}
+    assert result["project_ambiguity"] == {
+        "requires_clarification": True, "project_ids": ["juniper", "larkspur"],
+    }
+
+
+def test_identical_lexical_facts_keep_project_source_provenance_without_alias_hit(store):
+    _, headers, open_adapter = store
+    statement = "The deck finish is acrylic."
+    adapter = open_adapter()
+    first = save(adapter, headers, statement, [{**TAG, "project_id": "larkspur"}])
+    second = save(adapter, headers, statement, [{**TAG, "project_id": "juniper"}])
+    result = bundle(store, "What is the deck finish?")
+    rows = result["evidence"]
+    assert len(rows) == 2
+    assert {r["source_id"] for r in rows} == {first, second}
+    assert {tuple(r["project_ids"]) for r in rows} == {("juniper",), ("larkspur",)}
+    assert all("recall_reasons" not in r for r in rows)
+    assert all(r["source_sha256"] == hashlib.sha256(statement.encode()).hexdigest()
+               and r["revision"] == 1 for r in rows)
+    assert result["project_ambiguity"] == {
+        "requires_clarification": True, "project_ids": ["juniper", "larkspur"],
+    }
+
+
+def test_ambiguity_survives_four_item_and_evidence_byte_capping(store):
+    _, headers, open_adapter = store
+    projects = ["aster", "birch", "cedar", "dogwood", "elm", "fir"]
+    adapter = open_adapter()
+    for i, project in enumerate(projects):
+        statement = f"Record {i} specifies acrylic finish. " + "Z" * 1930
+        assert len(statement) <= 2000
+        save(adapter, headers, statement, [{**TAG, "project_id": project}])
+    result = bundle(store, QUESTION)
+    assert 0 < len(result["evidence"]) < len(projects)
+    assert result["project_ambiguity"] == {
+        "requires_clarification": True, "project_ids": projects,
+    }
+    assert all(r["source_sha256"] == hashlib.sha256(
+        r["highlights"][0]["text"].encode()).hexdigest()
+        for r in result["evidence"] if not r["highlights"][0].get("excerpted"))
+
+
+def test_explicit_project_filters_other_links_and_retains_source(store):
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    same = save(adapter, headers, STATEMENT, [
+        {**TAG, "project_id": "larkspur"},
+        {"concept": "surface_choice", "aliases": ["coating"],
+         "state": "selected_existing", "project_id": "juniper"},
+    ])
+    other = save(adapter, headers, "Juniper project uses an oil finish.",
+                 [{**TAG, "project_id": "juniper"}])
+    result = bundle(store, "Which coating did Larkspur select?")
+    assert [r["source_id"] for r in result["evidence"]] == [same]
+    row = result["evidence"][0]
+    assert row["project_id"] == "larkspur"
+    assert row["project_ids"] == ["larkspur"]
+    assert {r["project_id"] for r in row["recall_reasons"]} == {"larkspur"}
+    assert other not in {r["source_id"] for r in result["evidence"]}
+    assert "project_ambiguity" not in result
+
+
+def test_unknown_named_project_and_multiple_known_projects_never_silent_select(store):
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    save(adapter, headers, STATEMENT, [{**TAG, "project_id": "larkspur"}])
+    unknown = bundle(store, "Which coating for project moonbeam?")
+    assert unknown["project_ambiguity"] == {
+        "requires_clarification": True, "project_ids": ["larkspur"],
+        "unknown_project_hints": ["moonbeam"],
+    }
+    save(adapter, headers, "Other client approved oil finish.",
+         [{**TAG, "project_id": "juniper"}])
+    multiple = bundle(store, "Which coating for Larkspur and Juniper projects?")
+    assert multiple["project_ambiguity"] == {
+        "requires_clarification": True, "project_ids": ["juniper", "larkspur"],
+    }
+
+
+def test_correction_excludes_stale_project_link_and_proposed_project_is_not_scope(store):
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    old = save(adapter, headers, STATEMENT, [{**TAG, "project_id": "larkspur"}])
+    save(adapter, headers, "Future color under consideration.",
+         [{**CANDIDATE, "project_id": "juniper"}])
+    corrected = adapter.handle("POST", f"/api/restricted/v1/facts/{old}/corrections",
+                               headers=headers,
+                               body={"statement": "Client switched to opaque acrylic."})
+    assert corrected.status == 200
+    result = bundle(store, QUESTION)
+    assert result["evidence"] == []
+    assert "project_ambiguity" not in result
+
+
+def test_identical_text_same_project_is_deduplicated_with_verified_identity(store):
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    first = save(adapter, headers, STATEMENT, [{**TAG, "project_id": "larkspur"}])
+    second = save(adapter, headers, STATEMENT, [{**TAG, "project_id": "larkspur"}])
+    result = bundle(store, QUESTION)
+    assert len(result["evidence"]) == 1
+    row = result["evidence"][0]
+    assert row["source_id"] in {first, second}
+    assert row["source_sha256"] == hashlib.sha256(STATEMENT.encode()).hexdigest()
+    assert row["revision"] == 1
+    assert row["project_ids"] == ["larkspur"]
+    assert "project_ambiguity" not in result
+
+
+def test_ambiguous_context_reaches_model_as_untrusted_data_not_tool_authority(store, monkeypatch):
+    from project_guardian.local_memory_chat import LocalOllama, ManualAuthorization, converse_bundle
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    save(adapter, headers, STATEMENT, [{**TAG, "project_id": "larkspur"}])
+    save(adapter, headers, "Client selected oil deck finish.",
+         [{**TAG, "project_id": "juniper"}])
+    memory = bundle(store, QUESTION)
+    captured = []
+
+    def fake_generate(model, messages, *, json_mode=False):
+        captured.append(json.loads(messages[-1]["content"]))
+        return json.dumps({"answer": "Which project do you mean?"})
+
+    monkeypatch.setattr(LocalOllama, "generate", fake_generate)
+    result = converse_bundle(memory, QUESTION, ManualAuthorization(
+        "req-ambiguity", True, True, frozenset({"local.chat", "memory.read"})
+    ), LocalOllama("fixture-model"), recent=())
+    assert captured[0]["context_bundle"]["project_ambiguity"] == {
+        "requires_clarification": True, "project_ids": ["juniper", "larkspur"],
+    }
+    assert result["tools_executed"] == [] and result["memory_written"] is False

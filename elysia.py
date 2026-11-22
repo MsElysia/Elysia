@@ -261,8 +261,21 @@ def _make_status_handler():
             }
             self.wfile.write(json.dumps(out).encode())
 
+        def _write_json(self, status: int, payload: Dict[str, Any]) -> None:
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
         def _handle_chat(self):
-            """Handle POST /chat: body = {"message": "user text"}."""
+            """Handle POST /chat: body = {"message": "user text"}.
+
+            HTTP 200 is only a completed reply. Validation, a missing system,
+            and a chat failure stay JSON errors so clients do not treat them
+            as an assistant response.
+            """
             ok, err_body = self._check_auth()
             if not ok:
                 self.send_response(401)
@@ -272,31 +285,53 @@ def _make_status_handler():
                 return
             try:
                 length = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(length).decode("utf-8", errors="replace")
-                data = json.loads(body) if body else {}
-                message = (data.get("message") or "").strip()
-            except Exception as e:
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            except (TypeError, ValueError):
+                self._write_json(400, {"error": "Content-Length must be an integer"})
                 return
-            reply = ""
-            err = ""
-            if _status_system:
-                try:
-                    reply, err = _status_system.chat_with_llm(message)
-                except Exception as e:
-                    err = str(e)
-            else:
-                err = "System not initialized"
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            out = {"reply": reply} if reply else {}
-            if err:
-                out["error"] = err
-            self.wfile.write(json.dumps(out).encode())
+            if length < 0:
+                self._write_json(400, {"error": "Content-Length must be an integer"})
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
+                data = json.loads(body) if body else {}
+            except Exception as exc:
+                self._write_json(400, {"error": f"Request body is not valid JSON: {exc}"})
+                return
+            if not isinstance(data, dict):
+                self._write_json(400, {"error": "Request body must be a JSON object"})
+                return
+            if "message" not in data:
+                self._write_json(400, {"error": "message is required"})
+                return
+            message = data.get("message")
+            if not isinstance(message, str):
+                self._write_json(400, {"error": "message must be a string"})
+                return
+            message = message.strip()
+            if not message:
+                self._write_json(400, {"error": "message is required"})
+                return
+            if not _status_system:
+                self._write_json(503, {"error": "System not initialized"})
+                return
+            try:
+                result = _status_system.chat_with_llm(message)
+            except Exception as exc:
+                self._write_json(500, {"error": str(exc)})
+                return
+            if (
+                not isinstance(result, tuple)
+                or len(result) != 2
+                or not isinstance(result[0], str)
+                or not isinstance(result[1], str)
+            ):
+                self._write_json(500, {"error": "Chat returned an invalid result"})
+                return
+            reply, err = result
+            if err.strip() or not reply.strip():
+                self._write_json(502, {"error": err.strip() or "Chat returned no reply"})
+                return
+            self._write_json(200, {"reply": reply})
 
     return StatusHandler
 

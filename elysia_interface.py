@@ -207,14 +207,8 @@ class ElysiaInterface:
                         
                         # Attach mode: use backend /chat so AI (API keys) is used
                         if self.attach_only:
-                            reply, err = self._chat_via_backend(user_input)
-                            if reply:
-                                print(f"\nElysia: {reply}\n")
-                            elif err:
-                                print(f"\nElysia: [Could not connect to AI] {err}")
-                                print("         (Make sure elysia.py is running and API keys are in the API keys folder.)\n")
-                            else:
-                                print("\nElysia: No response from backend.\n")
+                            reply, err, connected = self._chat_via_backend(user_input)
+                            print(self._render_chat_result(reply, err, connected), end="")
                         else:
                             # Simple response when not attached
                             print(f"\nElysia: I understand you said '{user_input}'. ")
@@ -263,23 +257,70 @@ class ElysiaInterface:
         except Exception as e:
             print(f"\nElysia: I had trouble recalling memories: {e}\n")
     
-    def _chat_via_backend(self, message: str):
-        """POST message to backend /chat. Returns (reply_text, error_string)."""
-        try:
-            import urllib.request
-            req = urllib.request.Request(
-                f"{STATUS_URL}/chat",
-                data=json.dumps({"message": message}).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
+    def _render_chat_result(self, reply: str, err: str, connected: bool) -> str:
+        """Operator text for one attach-mode chat turn."""
+        if reply:
+            return f"\nElysia: {reply}\n"
+        if not connected:
+            return (
+                f"\nElysia: [Could not connect to AI] {err}\n"
+                "         (Make sure elysia.py is running and API keys are in the API keys folder.)\n"
             )
-            with urllib.request.urlopen(req, timeout=30) as r:
-                data = json.loads(r.read().decode())
-                reply = (data.get("reply") or "").strip()
-                err = (data.get("error") or "").strip()
-                return reply, err
-        except Exception as e:
-            return "", str(e)
+        if err:
+            return f"\nElysia: {err}\n"
+        return "\nElysia: No response from backend.\n"
+
+    def _chat_via_backend(self, message: str):
+        """POST message to backend /chat.
+
+        Returns (reply_text, error_string, connected). ``connected`` is false
+        only when the status server could not be reached. An HTTP error body
+        is a reached server, and its JSON ``error`` is returned as text.
+        """
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            f"{STATUS_URL}/chat",
+            data=json.dumps({"message": message}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            try:
+                data = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                data = {}
+            if isinstance(data, dict):
+                err = str(data.get("error") or "").strip()
+                detail = str(data.get("message") or "").strip()
+                if err and detail and detail != err:
+                    return "", f"{err}: {detail}", True
+                if err:
+                    return "", err, True
+            reason = str(exc.reason or "").strip()
+            return "", f"HTTP {exc.code}" + (f": {reason}" if reason else ""), True
+        except urllib.error.URLError as exc:
+            return "", str(exc), False
+        except Exception as exc:
+            return "", str(exc), False
+        try:
+            data = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            return "", "Chat returned an invalid result", True
+        if not isinstance(data, dict):
+            return "", "Chat returned an invalid result", True
+        reply = data.get("reply") or ""
+        err = data.get("error") or ""
+        if not isinstance(reply, str):
+            reply = str(reply)
+        if not isinstance(err, str):
+            err = str(err)
+        return reply.strip(), err.strip(), True
     
     def view_memories(self):
         """View memories and learning."""

@@ -497,3 +497,10 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## Product workflow — 2026-11-22 desktop chat status
+
+- `POST /chat` on the unified status server returns HTTP 200 with `reply` only when chat returns a non-empty reply and an empty error.
+- A chat error or an empty reply is HTTP 502 with `error` and no `reply`. An exception or an invalid chat result is HTTP 500. No status system is HTTP 503. A bad body or a blank message is HTTP 400 and does not call chat.
+- The attach client reads that JSON error from a non-200 response and prints it. A server that cannot be reached still prints the connection hint.
+- Contract: `tests/test_status_desktop_chat.py`.

@@ -396,22 +396,29 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         if link["project_id"] is not None
     }
     # Resolve project IDs by COMPLETE tokens, preferring the longest approved
-    # name at each position. A partial prefix is never an approved alias:
+    # name at each nonoverlapping position. A partial prefix is never an approved alias:
     # "project moonbeam" must not silently select "moonbeam_court".
     query_words = re.findall(r"[a-z0-9]+", question.casefold())
     project_parts = {
         project: tuple(project.split("_")) for project in known_projects
     }
     project_hits = {}
-    for start in range(len(query_words)):
+    start = 0
+    while start < len(query_words):
         matches = [
             project for project, parts in project_parts.items()
             if query_words[start:start + len(parts)] == list(parts)
         ]
         if matches:
-            project_hits[start] = sorted(
+            named = sorted(
                 matches, key=lambda project: (-len(project_parts[project]), project)
             )[0]
+            project_hits[start] = named
+            # A longer identity owns its entire span, including suffix words
+            # that may independently be another approved project ID.
+            start += len(project_parts[named])
+        else:
+            start += 1
     queried_projects = set(project_hits.values())
 
     # The explicit "project <name>" cue may specify an unknown/partial name.
@@ -425,8 +432,12 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         "where", "when", "please", "the",
     }
     unsupported_project_hints = set()
-    for start, word in enumerate(query_words[:-1]):
+    for start, word in enumerate(query_words):
         if word != "project":
+            continue
+        if start + 1 == len(query_words):
+            # A bare trailing project cue names no approved project.
+            unsupported_project_hints.add("project")
             continue
         named = project_hits.get(start + 1)
         if named is None:

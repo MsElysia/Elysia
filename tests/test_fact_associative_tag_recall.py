@@ -469,3 +469,73 @@ def test_exact_project_scoping_after_correction_and_candidate_quarantine(store):
     partial = bundle(store, "Which coating for project moonbeam?")
     assert partial["project_ambiguity"]["unknown_project_hints"] == ["moonbeam"]
     assert all(row["source_id"] != old for row in partial["evidence"])
+
+
+def test_trailing_bare_project_requires_model_visible_clarification(store, monkeypatch):
+    """Independent RED: a trailing 'project?' is an unresolved scope cue."""
+    from project_guardian.local_memory_chat import LocalOllama, ManualAuthorization, converse_bundle
+
+    _, headers, open_adapter = store
+    statement = "Client approved acrylic for the surface."
+    source_id = save(open_adapter(), headers, statement, [
+        {**TAG, "project_id": "moonbeam_court"},
+    ])
+    q = "Which coating for project?"
+    memory = bundle(store, q)
+    assert [row["source_id"] for row in memory["evidence"]] == [source_id]
+    assert memory["evidence"][0]["source_sha256"] == hashlib.sha256(
+        statement.encode("utf-8")
+    ).hexdigest()
+    assert memory["project_ambiguity"] == {
+        "requires_clarification": True,
+        "project_ids": ["moonbeam_court"],
+        "unknown_project_hints": ["project"],
+    }
+    seen = []
+
+    def fake_generate(model, messages, *, json_mode=False):
+        seen.append(json.loads(messages[-1]["content"]))
+        assert "requires_clarification" in messages[0]["content"]
+        return json.dumps({"answer": "Which project do you mean?"})
+
+    monkeypatch.setattr(LocalOllama, "generate", fake_generate)
+    reply = converse_bundle(memory, q, ManualAuthorization(
+        "req-trailing-project", True, True, frozenset({"local.chat", "memory.read"})
+    ), LocalOllama("fixture-model"), recent=())
+    assert seen[0]["context_bundle"]["project_ambiguity"] == memory["project_ambiguity"]
+    assert reply["tools_executed"] == [] and reply["memory_written"] is False
+
+
+def test_long_project_consumes_suffix_project_without_cross_scope(store, monkeypatch):
+    """Independent RED: moonbeam_court must not also match the project court."""
+    from project_guardian.local_memory_chat import LocalOllama, ManualAuthorization, converse_bundle
+
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    long_text = "Client approved acrylic for the surface."
+    long_id = save(adapter, headers, long_text, [{**TAG, "project_id": "moonbeam_court"}])
+    suffix_id = save(adapter, headers, "Client approved oil for the surface.", [
+        {**TAG, "project_id": "court"},
+    ])
+    seen = []
+
+    def fake_generate(model, messages, *, json_mode=False):
+        seen.append(json.loads(messages[-1]["content"]))
+        return json.dumps({"answer": "The approved surface is acrylic."})
+
+    monkeypatch.setattr(LocalOllama, "generate", fake_generate)
+    for spelling in ("moonbeam court", "moonbeam-court", "moonbeam_court"):
+        q = "Which coating for project " + spelling + "?"
+        memory = bundle(store, q)
+        assert [row["source_id"] for row in memory["evidence"]] == [long_id]
+        row = memory["evidence"][0]
+        assert row["project_ids"] == ["moonbeam_court"]
+        assert row["source_sha256"] == hashlib.sha256(long_text.encode()).hexdigest()
+        assert suffix_id not in {item["source_id"] for item in memory["evidence"]}
+        assert "project_ambiguity" not in memory
+        reply = converse_bundle(memory, q, ManualAuthorization(
+            "req-long-project", True, True, frozenset({"local.chat", "memory.read"})
+        ), LocalOllama("fixture-model"), recent=())
+        assert [item["source_id"] for item in seen[-1]["context_bundle"]["evidence"]] == [long_id]
+        assert "project_ambiguity" not in seen[-1]["context_bundle"]
+        assert reply["tools_executed"] == [] and reply["memory_written"] is False

@@ -362,3 +362,110 @@ def test_ambiguous_context_reaches_model_as_untrusted_data_not_tool_authority(st
         "requires_clarification": True, "project_ids": ["juniper", "larkspur"],
     }
     assert result["tools_executed"] == [] and result["memory_written"] is False
+
+
+
+def test_partial_project_prefix_requires_clarification_in_rendered_bundle(store, monkeypatch):
+    """Original independent RED: moonbeam is NOT moonbeam_court."""
+    from project_guardian.local_memory_chat import LocalOllama, ManualAuthorization, converse_bundle
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    statement = "Client approved acrylic for the surface."
+    source_id = save(adapter, headers, statement, [
+        {**TAG, "project_id": "moonbeam_court"},
+    ])
+    q = "Which coating for project moonbeam?"
+    result = bundle(store, q)
+    assert {row["source_id"] for row in result["evidence"]} == {source_id}
+    assert result["project_ambiguity"] == {
+        "requires_clarification": True,
+        "project_ids": ["moonbeam_court"],
+        "unknown_project_hints": ["moonbeam"],
+    }
+    row = result["evidence"][0]
+    assert row["source_sha256"] == hashlib.sha256(statement.encode()).hexdigest()
+    assert row["revision"] == 1
+    assert row["recall_reasons"][0]["type"] == "approved_semantic_tag"
+    captured = []
+
+    def fake_generate(model, messages, *, json_mode=False):
+        captured.append(json.loads(messages[-1]["content"]))
+        assert "requires_clarification" in messages[0]["content"]
+        return json.dumps({"answer": "Which project do you mean?"})
+
+    monkeypatch.setattr(LocalOllama, "generate", fake_generate)
+    reply = converse_bundle(result, q, ManualAuthorization(
+        "req-partial", True, True, frozenset({"local.chat", "memory.read"})
+    ), LocalOllama("fixture-model"), recent=())
+    assert captured[0]["context_bundle"]["project_ambiguity"] == result["project_ambiguity"]
+    assert reply["tools_executed"] == [] and reply["memory_written"] is False
+
+
+def test_exact_multiword_project_and_shorter_approved_collision(store):
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    short = save(adapter, headers, "Moonbeam exterior approved oil.",
+                 [{**TAG, "project_id": "moonbeam"}])
+    long = save(adapter, headers, "Moonbeam court interior approved acrylic.",
+                [{**TAG, "project_id": "moonbeam_court"}])
+    for name in ("moonbeam court", "moonbeam-court", "moonbeam_court"):
+        result = bundle(store, "Which coating for project " + name + "?")
+        assert [row["source_id"] for row in result["evidence"]] == [long]
+        assert result["evidence"][0]["project_ids"] == ["moonbeam_court"]
+        assert "project_ambiguity" not in result
+    short_result = bundle(store, "Which coating for project moonbeam?")
+    assert [row["source_id"] for row in short_result["evidence"]] == [short]
+    assert "project_ambiguity" not in short_result
+
+
+def test_partial_extension_of_short_name_requires_clarification(store):
+    _, headers, open_adapter = store
+    source_id = save(open_adapter(), headers, "Moonbeam exterior approved oil.",
+                     [{**TAG, "project_id": "moonbeam"}])
+    result = bundle(store, "Which coating for project moonbeam court?")
+    assert {row["source_id"] for row in result["evidence"]} == {source_id}
+    assert result["project_ambiguity"] == {
+        "requires_clarification": True,
+        "project_ids": ["moonbeam"],
+        "unknown_project_hints": ["moonbeam_court"],
+    }
+
+
+def test_project_hints_unknown_single_letter_and_multiple_exact_names(store):
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    one = save(adapter, headers, "Moonbeam exterior approved oil.",
+               [{**TAG, "project_id": "moonbeam"}])
+    two = save(adapter, headers, "Moonbeam court interior approved acrylic.",
+               [{**TAG, "project_id": "moonbeam_court"}])
+    unknown = bundle(store, "Which coating for project x?")
+    assert unknown["project_ambiguity"]["unknown_project_hints"] == ["x"]
+    assert {row["source_id"] for row in unknown["evidence"]} == {one, two}
+    multiple = bundle(store, "Which coating for project moonbeam and project moonbeam court?")
+    assert multiple["project_ambiguity"] == {
+        "requires_clarification": True,
+        "project_ids": ["moonbeam", "moonbeam_court"],
+    }
+    assert {row["source_id"] for row in multiple["evidence"]} == {one, two}
+
+
+def test_exact_project_scoping_after_correction_and_candidate_quarantine(store):
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    current = save(adapter, headers, "Moonbeam court selected acrylic.",
+                   [{**TAG, "project_id": "moonbeam_court"}])
+    old = save(adapter, headers, "Moonbeam selected oil.",
+               [{**TAG, "project_id": "moonbeam"}])
+    endpoint = f"/api/restricted/v1/facts/{old}/corrections"
+    response = adapter.handle("POST", endpoint, headers=headers, body={
+        "statement": "Client withdrew the original decision."
+    })
+    assert response.status == 200
+    save(adapter, headers, "Tentative synthetic coating choice.",
+         [{**CANDIDATE, "project_id": "moonbeam"}])
+    named = bundle(store, "Which coating for project moonbeam court?")
+    assert [row["source_id"] for row in named["evidence"]] == [current]
+    assert "project_ambiguity" not in named
+    partial = bundle(store, "Which coating for project moonbeam?")
+    assert partial["project_ambiguity"]["unknown_project_hints"] == ["moonbeam"]
+    assert all(row["source_id"] != old for row in partial["evidence"])

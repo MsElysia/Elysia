@@ -179,7 +179,7 @@ def test_project_scoping_and_ambiguous_query_preserve_both_sources(store):
                  [dict(TAG, project_id="larkspur")])
     second = save(adapter, headers, "Juniper deck finish is oil.",
                   [dict(TAG, project_id="juniper")])
-    scoped = bundle(store, "What is the Larkspur deck finish?")
+    scoped = bundle(store, "What is the deck finish for project Larkspur?")
     assert [r["source_id"] for r in scoped["evidence"]] == [first]
     ambiguous = bundle(store, QUESTION)
     assert {r["source_id"] for r in ambiguous["evidence"]} == {first, second}
@@ -283,7 +283,7 @@ def test_explicit_project_filters_other_links_and_retains_source(store):
     ])
     other = save(adapter, headers, "Juniper project uses an oil finish.",
                  [{**TAG, "project_id": "juniper"}])
-    result = bundle(store, "Which coating did Larkspur select?")
+    result = bundle(store, "Which coating for project Larkspur?")
     assert [r["source_id"] for r in result["evidence"]] == [same]
     row = result["evidence"][0]
     assert row["project_id"] == "larkspur"
@@ -539,3 +539,107 @@ def test_long_project_consumes_suffix_project_without_cross_scope(store, monkeyp
         assert [item["source_id"] for item in seen[-1]["context_bundle"]["evidence"]] == [long_id]
         assert "project_ambiguity" not in seen[-1]["context_bundle"]
         assert reply["tools_executed"] == [] and reply["memory_written"] is False
+
+
+def test_explicit_project_cue_outranks_incidental_project_topic_word(store, monkeypatch):
+    """RED before correction: deck in 'deck finish' is not a second project cue."""
+    from project_guardian.local_memory_chat import LocalOllama, ManualAuthorization, converse_bundle
+
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    approved = {"concept": "#finish_choice", "aliases": ["finish"], "state": "selected_existing"}
+    deck_id = save(adapter, headers, "Client approved oil for the surface.", [
+        {**approved, "project_id": "deck"},
+    ])
+    larkspur_statement = "Client approved acrylic for the surface."
+    larkspur_id = save(adapter, headers, larkspur_statement, [
+        {**approved, "project_id": "larkspur"},
+    ])
+    q = "What deck finish for project larkspur?"
+    memory = bundle(store, q)
+    assert [item["source_id"] for item in memory["evidence"]] == [larkspur_id]
+    assert memory["evidence"][0]["project_ids"] == ["larkspur"]
+    assert memory["evidence"][0]["source_sha256"] == hashlib.sha256(
+        larkspur_statement.encode("utf-8")
+    ).hexdigest()
+    assert memory["evidence"][0]["revision"] == 1
+    assert deck_id not in {item["source_id"] for item in memory["evidence"]}
+    assert "project_ambiguity" not in memory
+    seen = []
+
+    def fake_generate(model, messages, *, json_mode=False):
+        seen.append(json.loads(messages[-1]["content"]))
+        return json.dumps({"answer": "Larkspur selected acrylic."})
+
+    monkeypatch.setattr(LocalOllama, "generate", fake_generate)
+    reply = converse_bundle(memory, q, ManualAuthorization(
+        "req-explicit-cue", True, True, frozenset({"local.chat", "memory.read"})
+    ), LocalOllama("fixture-model"), recent=())
+    context = seen[0]["context_bundle"]
+    assert [row["source_id"] for row in context["evidence"]] == [larkspur_id]
+    assert "project_ambiguity" not in context
+    assert reply["tools_executed"] == [] and reply["memory_written"] is False
+
+
+def test_unscoped_project_name_colliding_with_alias_keeps_all_sources(store, monkeypatch):
+    """RED before correction: alias 'coating' must not select project coating."""
+    from project_guardian.local_memory_chat import LocalOllama, ManualAuthorization, converse_bundle
+
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    coating_statement = "Client approved oil for the surface."
+    larkspur_statement = "Client approved acrylic for the surface."
+    coating_id = save(adapter, headers, coating_statement, [
+        {**TAG, "project_id": "coating"},
+    ])
+    larkspur_id = save(adapter, headers, larkspur_statement, [
+        {**TAG, "project_id": "larkspur"},
+    ])
+    q = "Which coating did we decide on?"
+    memory = bundle(store, q)
+    rows = memory["evidence"]
+    assert {row["source_id"] for row in rows} == {coating_id, larkspur_id}
+    assert {tuple(row["project_ids"]) for row in rows} == {
+        ("coating",), ("larkspur",),
+    }
+    assert {row["source_sha256"] for row in rows} == {
+        hashlib.sha256(coating_statement.encode("utf-8")).hexdigest(),
+        hashlib.sha256(larkspur_statement.encode("utf-8")).hexdigest(),
+    }
+    assert all(row["revision"] == 1 for row in rows)
+    assert memory["project_ambiguity"] == {
+        "requires_clarification": True, "project_ids": ["coating", "larkspur"],
+    }
+    seen = []
+
+    def fake_generate(model, messages, *, json_mode=False):
+        seen.append(json.loads(messages[-1]["content"]))
+        assert "requires_clarification" in messages[0]["content"]
+        return json.dumps({"answer": "Which project do you mean?"})
+
+    monkeypatch.setattr(LocalOllama, "generate", fake_generate)
+    reply = converse_bundle(memory, q, ManualAuthorization(
+        "req-ambiguous-alias", True, True, frozenset({"local.chat", "memory.read"})
+    ), LocalOllama("fixture-model"), recent=())
+    assert {row["source_id"] for row in seen[0]["context_bundle"]["evidence"]} == {
+        coating_id, larkspur_id,
+    }
+    assert seen[0]["context_bundle"]["project_ambiguity"] == memory["project_ambiguity"]
+    assert reply["tools_executed"] == [] and reply["memory_written"] is False
+
+
+def test_unscoped_proper_project_name_does_not_silently_filter_other_project(store):
+    """Bare project names cannot be distinguished from ordinary topical terms."""
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    one = save(adapter, headers, "Larkspur deck finish is acrylic.", [
+        {**TAG, "project_id": "larkspur"},
+    ])
+    two = save(adapter, headers, "Juniper deck finish is oil.", [
+        {**TAG, "project_id": "juniper"},
+    ])
+    memory = bundle(store, "What is the Larkspur deck finish?")
+    assert {row["source_id"] for row in memory["evidence"]} == {one, two}
+    assert memory["project_ambiguity"] == {
+        "requires_clarification": True, "project_ids": ["juniper", "larkspur"],
+    }

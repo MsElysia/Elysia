@@ -395,60 +395,56 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         link["project_id"] for _, _, links in fact_rows for link in links
         if link["project_id"] is not None
     }
-    # Resolve project IDs by COMPLETE tokens, preferring the longest approved
-    # name at each nonoverlapping position. A partial prefix is never an approved alias:
-    # "project moonbeam" must not silently select "moonbeam_court".
+    # Only an explicit "project <name>" reference may select one project.
+    # A generic task word (such as "coating" or "deck") can also happen to
+    # be a valid project ID; scanning all query words would silently drop
+    # relevant sources or create a false cross-project ambiguity.
     query_words = re.findall(r"[a-z0-9]+", question.casefold())
     project_parts = {
         project: tuple(project.split("_")) for project in known_projects
     }
-    project_hits = {}
-    start = 0
-    while start < len(query_words):
-        matches = [
-            project for project, parts in project_parts.items()
-            if query_words[start:start + len(parts)] == list(parts)
-        ]
-        if matches:
-            named = sorted(
-                matches, key=lambda project: (-len(project_parts[project]), project)
-            )[0]
-            project_hits[start] = named
-            # A longer identity owns its entire span, including suffix words
-            # that may independently be another approved project ID.
-            start += len(project_parts[named])
-        else:
-            start += 1
-    queried_projects = set(project_hits.values())
-
-    # The explicit "project <name>" cue may specify an unknown/partial name.
-    # Even when a different known project matches the coating alias, an
-    # unresolved cue must require clarification. Allow simple query grammar
-    # after an exact name, but NOT an extra name component ("moonbeam court").
     project_name_boundaries = {
         "and", "or", "for", "on", "at", "to", "in", "with", "about",
         "is", "are", "was", "were", "does", "did", "do",
         "has", "have", "had", "before", "after", "which", "what",
         "where", "when", "please", "the",
     }
+    project_hits = {}
     unsupported_project_hints = set()
-    for start, word in enumerate(query_words):
-        if word != "project":
+    position = 0
+    while position < len(query_words):
+        if query_words[position] != "project":
+            position += 1
             continue
-        if start + 1 == len(query_words):
-            # A bare trailing project cue names no approved project.
+        name_start = position + 1
+        if name_start == len(query_words):
             unsupported_project_hints.add("project")
+            break
+        matches = [
+            project for project, parts in project_parts.items()
+            if query_words[name_start:name_start + len(parts)] == list(parts)
+        ]
+        if not matches:
+            unsupported_project_hints.add(query_words[name_start])
+            position += 1
             continue
-        named = project_hits.get(start + 1)
-        if named is None:
-            unsupported_project_hints.add(query_words[start + 1])
-            continue
-        after_name = start + 1 + len(project_parts[named])
+        named = sorted(
+            matches, key=lambda project: (-len(project_parts[project]), project)
+        )[0]
+        after_name = name_start + len(project_parts[named])
         if (after_name < len(query_words)
                 and query_words[after_name] not in project_name_boundaries):
+            # A partial prefix or extra name component is NOT the known ID.
             unsupported_project_hints.add(
-                "_".join(query_words[start + 1:after_name + 1])
+                "_".join(query_words[name_start:after_name + 1])
             )
+            position += 1
+            continue
+        project_hits[name_start] = named
+        # Consume the entire matched name: a nested "project" or suffix
+        # must not be interpreted as a second independent project cue.
+        position = after_name
+    queried_projects = set(project_hits.values())
     unsupported_project_hints = sorted(unsupported_project_hints)
     explicit_project = (
         next(iter(queried_projects))

@@ -3577,3 +3577,48 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+
+---
+
+## Product workflow — 2026-11-22 desktop chat status
+
+**Status:** COMPLETED on this branch. Not on `main`. No PR.
+
+**Base:** `722d8e4fe85d7e42ac34066c2d651849d15e734c`
+
+**Implementation commit:** `a45fc87a0604e033c7b8cdb480a0b707fbc54308`
+
+**Not based on** the earlier product branches, including the 2026-11-21 status home page branch `origin/cursor/bc-9771469c-7aaf-4873-ae3f-00509ac70258-d985` (`0f3fc37`, handoff `297c742`) and the 2026-11-18 OpenAI completion branch `origin/cursor/bc-314a701a-233d-4254-a248-6a60e24797ef-1bd6` (`77d6aca`, handoff `c35ef88`).
+
+**Files:**
+- `elysia.py`
+- `elysia_interface.py`
+- `tests/test_status_desktop_chat.py`
+- `CHANGELOG.md`
+- `REPORTS/AGENT_REPORT.md` (this handoff)
+
+**Behavior:**
+- `POST /chat` returns HTTP 200 with `reply` only when chat returns a non-empty reply and an empty error.
+- A chat error, or a reply that is empty after stripping, is HTTP 502 with `error` and no `reply`. A reply paired with an error is HTTP 502 and does not return the reply.
+- An exception or a result that is not a pair of strings is HTTP 500.
+- No status system is HTTP 503 `System not initialized`.
+- Invalid JSON, a non-object body, a missing or blank message, a non-string message, and a non-integer Content-Length are HTTP 400 and do not call chat.
+- The attach client reads the JSON `error` from a non-200 response and prints that text. A server that cannot be reached still prints `Could not connect to AI` and the existing hint to start `elysia.py`.
+
+**Evidence:**
+- Before, live HTTP on the real `elysia.py` handler: no system `200` `{"error": "System not initialized"}`; fictional model error `200` `{"error": "fictional-model-down"}` after calling chat; `{not-json` `200` with the parser text; blank message `200` and chat was called.
+- After: `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_status_desktop_chat.py -v --tb=short` — 3 passed. Live HTTP after: no system `503`; model error `502` `{"error": "fictional-model-down"}`; bad JSON `400`; blank message `400` and chat was not called; success `200` `{"reply": "fictional-reply"}`. The attach client returned `("", "fictional-model-down", True)` and rendered `Elysia: fictional-model-down`. The server was `ThreadingHTTPServer` plus the real `_make_status_handler`, urllib, and a local chat stub. No external service and `UnifiedElysiaSystem` was not constructed.
+
+**Left untouched:**
+- `POST /v1/chat/completions` on this branch still returns HTTP 200 with a finished completion when chat fails. That fix stays on `origin/cursor/bc-314a701a-233d-4254-a248-6a60e24797ef-1bd6` (`77d6aca`, handoff `c35ef88`).
+- `GET /` still says the system is running when it is stopped. That fix stays on `origin/cursor/bc-9771469c-7aaf-4873-ae3f-00509ac70258-d985` (`0f3fc37`, handoff `297c742`).
+- `GET /health` still returns HTTP 200 `status: ok` when the system is stopped. That fix stays on `origin/cursor/bc-aa511bd2-883a-48d9-892a-8ffc1d37ce06-9353` (`b4f536e`, handoff `1b663f2`).
+- `GET /status` still returns HTTP 200 when status collection fails. That fix stays on `origin/cursor/product-workflow-engineering-process-67c6` (`ad9f08f`, handoff `54b0015`).
+- Did not edit `elysia/api/server.py`, `elysia/agents/implementer.py`, `elysia/core/proposal_system.py`, `elysia/runtime.py`, `elysia/cli.py`, or `project_guardian/ui_control_panel.py`.
+- Application runtime safety today is `a1a49af` on `origin/cursor/bc-7a98a78b-96c6-4a12-aafe-614153eb05d5-b5fc` (`bc-7a98a78b`, `elysia/cli.py`, `elysia/core/proposal_system.py`, `elysia/runtime.py`, and `tests/test_elysia_runtime_lifecycle.py` only).
+- Dashboard drafts #147, #153, #156, and #178 remain open. PR #235 (`fix/task039-ea02-canonical-reconcile`, updated 2026-11-22) owns today's dashboard edits. The panel `POST /api/chat` on `main` still returns HTTP 200 when `success` is false.
+
+**Queue:** `CONTROL.md` `CURRENT_TASK: NONE` on `main` and on `origin/codex/issue95-readonly-brain-bridge` (`bf6c72c`). `TASKS/TASK-0053.md` remains OPEN, review only. Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb` on `origin/codex/limited-live-activation-wrapper`. Do not implement live memory or vector writes.
+
+Do not open a second copy of this desktop chat status fix from `main`. Next product run should pick a different unclaimed API or dashboard error path. Re-check dashboard ownership before editing `project_guardian/ui_control_panel.py`. A branch commit is not integrated product readiness.

@@ -50,6 +50,35 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
 
 
+def _checkpoint_content_sha(checkpoint: Mapping[str, Any]) -> str:
+    content = {
+        key: value
+        for key, value in checkpoint.items()
+        if key not in {"created_utc", "revision", "reason", "content_sha256"}
+    }
+    return hashlib.sha256(_canonical(content).encode("utf-8")).hexdigest()
+
+
+def _validate_checkpoint_payload(
+    checkpoint: Any,
+    *,
+    conversation_id: str,
+) -> Dict[str, Any]:
+    if not isinstance(checkpoint, dict) or checkpoint.get("schema") != SCHEMA_CHECKPOINT:
+        raise ContinuityError("malformed checkpoint")
+    if checkpoint.get("conversation_id") != conversation_id:
+        raise ContinuityError("checkpoint identity mismatch")
+    revision = checkpoint.get("revision")
+    if not isinstance(revision, int) or revision < 1:
+        raise ContinuityError("checkpoint revision invalid")
+    supplied = checkpoint.get("content_sha256")
+    if not isinstance(supplied, str) or not re.fullmatch(r"[a-f0-9]{64}", supplied):
+        raise ContinuityError("checkpoint integrity hash missing")
+    if supplied != _checkpoint_content_sha(checkpoint):
+        raise ContinuityError("checkpoint integrity mismatch")
+    return checkpoint
+
+
 def _new_step_id() -> str:
     return "step_" + uuid.uuid4().hex[:12]
 
@@ -773,12 +802,14 @@ class ConversationStore:
             path = self._checkpoint_path(conversation_id)
             if not path.is_file():
                 return None
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or data.get("schema") != SCHEMA_CHECKPOINT:
-                raise ContinuityError("malformed checkpoint")
-            if data.get("conversation_id") != conversation_id:
-                raise ContinuityError("checkpoint identity mismatch")
-            return data
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ContinuityError("checkpoint unreadable") from exc
+            return _validate_checkpoint_payload(
+                data,
+                conversation_id=conversation_id,
+            )
 
     def update_task_fields(self, conversation_id: str, updates: Mapping[str, Any]) -> Dict[str, Any]:
         """Host-side field merge. Operator-locked next/outstanding cannot be overwritten here."""
@@ -3143,9 +3174,26 @@ class ConversationStore:
         cpath = self._checkpoint_path(conversation_id)
         if cpath.is_file():
             try:
-                existing = json.loads(cpath.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                existing = None
+                raw_checkpoint = json.loads(cpath.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ContinuityError("checkpoint unreadable; mutation refused") from exc
+            existing = _validate_checkpoint_payload(
+                raw_checkpoint,
+                conversation_id=conversation_id,
+            )
+            checkpoint_revision = int(existing["revision"])
+            if checkpoint_revision != current_rev:
+                raise ContinuityError(
+                    "checkpoint/conversation revision mismatch; mutation refused"
+                )
+            checkpoint_steps = _normalize_task_steps(existing.get("task_steps"))
+            record_steps = _normalize_task_steps(record.get("task_steps"))
+            if checkpoint_steps != record_steps:
+                raise ContinuityError(
+                    "checkpoint/conversation task state mismatch; mutation refused"
+                )
+        elif current_rev > 0:
+            raise ContinuityError("checkpoint missing for revised conversation")
         if current_rev == expected_revision + 1 and isinstance(existing, dict):
             if (
                 int(existing.get("revision") or 0) == expected_revision + 1

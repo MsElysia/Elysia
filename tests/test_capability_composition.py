@@ -123,8 +123,23 @@ def test_ready_projection_ignores_display_order_and_rejects_cycle_before_mutatio
         "step_id": "step_aaaaaaaaaaaa",
         "capability": "calculator.labor",
         "status": "completed",
+        "execution_status": "succeeded",
         "verification_status": "verified",
-        "result_reference": {"amount_usd": "480.00", "stale": False},
+        "execution_receipt_id": "exec_" + "a" * 16,
+        "completion_source": "operator_verified_execution",
+        "completed_at_revision": 2,
+        "result_reference": {
+            "execution_id": "exec_" + "a" * 16,
+            "amount_usd": "480.00",
+            "stale": False,
+        },
+        "execution_history": [
+            {
+                "execution_id": "exec_" + "a" * 16,
+                "verified": True,
+                "checkpoint_revision": 2,
+            }
+        ],
     }
     direct = {
         "step_id": "step_bbbbbbbbbbbb",

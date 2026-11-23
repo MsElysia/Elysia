@@ -1,6 +1,7 @@
 """FOA-002 transitive invalidation and restart-safe selective recomputation."""
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import types
@@ -20,6 +21,7 @@ from project_guardian.conversation_continuity import (  # noqa: E402
     ContinuityError,
     ConversationStore,
     StaleTaskEditError,
+    _checkpoint_content_sha,
     resolve_conversation_root,
 )
 
@@ -32,6 +34,145 @@ class _RejectedDraftModel:
 
 
 class TransitiveInvalidationResumeTests(unittest.TestCase):
+    def test_forged_receipt_and_corrupt_checkpoint_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = resolve_conversation_root(Path(tmp))
+            store = ConversationStore(root)
+            conv = store.create(objective="Synthetic receipt admission")
+            cid = conv["conversation_id"]
+            saved = store.commit_operator_task_state(
+                cid,
+                expected_revision=0,
+                outstanding_steps=["Calculate input", "Aggregate input"],
+                next_safe_action="Calculate input",
+            )
+            input_id, aggregate_id = [
+                step["step_id"] for step in saved["conversation"]["task_steps"]
+            ]
+            bound = store.bind_operator_step(
+                cid,
+                step_id=input_id,
+                expected_revision=saved["conversation"]["checkpoint_revision"],
+                capability="calculator.labor",
+                arguments={
+                    "hourly_rate_usd": "420",
+                    "painters": 1,
+                    "days": 1,
+                    "hours_per_day": 1,
+                },
+            )
+            completed = store.execute_verified_bound_step(
+                cid,
+                step_id=input_id,
+                expected_revision=bound["conversation"]["checkpoint_revision"],
+                authorize_calculator=True,
+                authorize_record_completion=True,
+                execution_id="exec_" + "7" * 16,
+            )
+            bound = store.bind_operator_step(
+                cid,
+                step_id=aggregate_id,
+                expected_revision=completed["conversation"]["checkpoint_revision"],
+                capability="compose.aggregate_usd",
+                arguments={"source_step_ids": [input_id]},
+            )
+            revision = bound["conversation"]["checkpoint_revision"]
+            conversation_path = store._conv_path(cid)
+            checkpoint_path = store._checkpoint_path(cid)
+            original_conversation = conversation_path.read_text(encoding="utf-8")
+            original_checkpoint = checkpoint_path.read_text(encoding="utf-8")
+
+            def attempt() -> None:
+                ConversationStore(root).execute_verified_bound_step(
+                    cid,
+                    step_id=aggregate_id,
+                    expected_revision=revision,
+                    authorize_compose_aggregate=True,
+                    authorize_record_completion=True,
+                    execution_id="exec_" + "8" * 16,
+                )
+
+            # A conversation-only receipt forgery disagrees with the durable
+            # checkpoint and is rejected before any downstream execution.
+            forged_conversation = json.loads(original_conversation)
+            forged_input = next(
+                step
+                for step in forged_conversation["task_steps"]
+                if step["step_id"] == input_id
+            )
+            forged_input["execution_receipt_id"] = None
+            forged_input["result_reference"].pop("execution_id", None)
+            forged_input["execution_history"] = []
+            conversation_path.write_text(
+                json.dumps(forged_conversation), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ContinuityError, "task state mismatch"):
+                attempt()
+
+            conversation_path.write_text(original_conversation, encoding="utf-8")
+            corrupt_checkpoint = json.loads(original_checkpoint)
+            corrupt_checkpoint["content_sha256"] = "0" * 64
+            checkpoint_path.write_text(
+                json.dumps(corrupt_checkpoint), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ContinuityError, "integrity mismatch"):
+                attempt()
+
+            checkpoint_path.write_text("{interrupted", encoding="utf-8")
+            with self.assertRaisesRegex(ContinuityError, "checkpoint unreadable"):
+                attempt()
+
+            # Even a structurally valid reconstructed checkpoint cannot make a
+            # missing receipt authoritative: executor admission checks the
+            # step's receipt/reference/history/revision lineage.
+            conversation_path.write_text(
+                json.dumps(forged_conversation), encoding="utf-8"
+            )
+            forged_checkpoint = json.loads(original_checkpoint)
+            forged_checkpoint["task_steps"] = forged_conversation["task_steps"]
+            forged_checkpoint["content_sha256"] = _checkpoint_content_sha(
+                forged_checkpoint
+            )
+            checkpoint_path.write_text(
+                json.dumps(forged_checkpoint), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ContinuityError, "receipt invalid"):
+                attempt()
+
+            # A receipt borrowed from another execution also fails because its
+            # result reference and verified history/revision must agree.
+            forged_receipt = json.loads(original_conversation)
+            forged_input = next(
+                step
+                for step in forged_receipt["task_steps"]
+                if step["step_id"] == input_id
+            )
+            forged_input["execution_receipt_id"] = "exec_" + "f" * 16
+            forged_input["result_reference"]["execution_id"] = "exec_" + "f" * 16
+            conversation_path.write_text(json.dumps(forged_receipt), encoding="utf-8")
+            forged_checkpoint["task_steps"] = forged_receipt["task_steps"]
+            forged_checkpoint["content_sha256"] = _checkpoint_content_sha(
+                forged_checkpoint
+            )
+            checkpoint_path.write_text(
+                json.dumps(forged_checkpoint), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ContinuityError, "receipt invalid"):
+                attempt()
+
+            # Simulate checkpoint-written/conversation-not-written interruption.
+            conversation_path.write_text(original_conversation, encoding="utf-8")
+            ahead_checkpoint = json.loads(original_checkpoint)
+            ahead_checkpoint["revision"] += 1
+            ahead_checkpoint["content_sha256"] = _checkpoint_content_sha(
+                ahead_checkpoint
+            )
+            checkpoint_path.write_text(
+                json.dumps(ahead_checkpoint), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ContinuityError, "revision mismatch"):
+                attempt()
+
     def test_corrected_input_invalidates_chain_and_requires_fresh_authorization(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = resolve_conversation_root(Path(tmp))

@@ -139,6 +139,47 @@ def build_cross_step_link(
     }
 
 
+def verified_step_receipt_error(step: Mapping[str, Any]) -> Optional[str]:
+    """Return why a supposedly verified step lacks authoritative receipt lineage."""
+    receipt_id = step.get("execution_receipt_id")
+    if not isinstance(receipt_id, str) or not re.fullmatch(
+        r"exec_[a-f0-9]{16}", receipt_id
+    ):
+        return "missing or invalid execution receipt id"
+    if step.get("execution_status") != "succeeded":
+        return "execution did not succeed"
+    if step.get("completion_source") != "operator_verified_execution":
+        return "completion source is not verified execution"
+    completed_revision = step.get("completed_at_revision")
+    if not isinstance(completed_revision, int) or completed_revision < 1:
+        return "missing verified completion revision"
+    ref = step.get("result_reference")
+    if not isinstance(ref, Mapping):
+        return "missing verified result reference"
+    if ref.get("execution_id") != receipt_id:
+        return "result reference receipt mismatch"
+    history = step.get("execution_history")
+    if not isinstance(history, list):
+        return "missing execution history"
+    matching = [
+        entry
+        for entry in history
+        if isinstance(entry, Mapping)
+        and entry.get("execution_id") == receipt_id
+        and entry.get("verified") is True
+        and entry.get("checkpoint_revision") == completed_revision
+    ]
+    if len(matching) != 1:
+        return "execution receipt history mismatch"
+    return None
+
+
+def _require_verified_step_receipt(step: Mapping[str, Any], step_id: str) -> None:
+    error = verified_step_receipt_error(step)
+    if error is not None:
+        raise CompositionError(f"upstream step receipt invalid: {step_id}: {error}")
+
+
 def collect_verified_links(
     conversation_id: str,
     steps: Sequence[Mapping[str, Any]],
@@ -150,6 +191,8 @@ def collect_verified_links(
         if step.get("status") != "completed":
             continue
         if step.get("verification_status") != "verified":
+            continue
+        if verified_step_receipt_error(step) is not None:
             continue
         links.append(
             build_cross_step_link(
@@ -176,6 +219,7 @@ def resolve_upstream_amount(
         raise CompositionError(f"upstream step is not completed: {step_id}")
     if target.get("verification_status") != "verified":
         raise CompositionError(f"upstream step is not verified: {step_id}")
+    _require_verified_step_receipt(target, step_id)
     if expected_capability and target.get("capability") != expected_capability:
         raise CompositionError(
             f"upstream step capability mismatch: expected {expected_capability}"
@@ -234,6 +278,7 @@ def resolve_upstream_evidence(
         raise CompositionError(f"upstream step is not completed: {step_id}")
     if target.get("verification_status") != "verified":
         raise CompositionError(f"upstream step is not verified: {step_id}")
+    _require_verified_step_receipt(target, step_id)
     ref = target.get("result_reference") if isinstance(target.get("result_reference"), dict) else {}
     if ref.get("stale"):
         raise CompositionError(f"upstream step result is stale: {step_id}")
@@ -702,6 +747,7 @@ def first_ready_pending_step(
                 or dep.get("verification_status") != "verified"
                 or not isinstance(ref, Mapping)
                 or bool(ref.get("stale"))
+                or verified_step_receipt_error(dep) is not None
             ):
                 ready = False
                 break

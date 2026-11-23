@@ -3577,3 +3577,29 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## 2026-11-23 product workflow — attach dashboard URL
+
+**Status:** COMPLETE on this branch only. Not on `main`. No pull request.
+
+**Branch:** `cursor/bc-3d4604be-d881-479d-8e36-41b2e9350b4c-6aec`
+
+**Base:** `722d8e4` (`main`). Not based on earlier product branches.
+
+**Implementation commit:** `bb2265fa021dbe56159d2ecd43d47976ded83b96`
+
+**Files:** `elysia_interface.py`, `tests/test_attach_dashboard_open.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`
+
+**Behavior:** Attach-mode menu 7, Open Web Dashboard, opens a browser only when `GET /status` or `GET /health` reports a `dashboard_url`. A missing status system, a running system with no panel URL, a refused connection, and a browser open that returns false do not print `[OK]` and do not fall back to `http://127.0.0.1:5000`.
+
+**Before:** Live `elysia.py` status handler with no system returned `GET /status` 200 `{"error":"System not initialized"}` and `GET /health` 200 `{"status":"ok","checks":{}}`. The attach menu then opened `http://127.0.0.1:5000` and printed `[OK] Browser open requested.`
+
+**Evidence:** `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_attach_dashboard_open.py -v --tb=short` — 5 passed. Real `elysia.py` `StatusHandler` on loopback, urllib through `ElysiaInterface`, fictional panel port 5999, no `UnifiedElysiaSystem`, no browser process.
+
+**Left untouched:** `project_guardian/ui_control_panel.py` remains owned by open draft PR #235. Panel `POST /api/chat` on `main` still returns HTTP 200 when `success` is false. `GET /`, `GET /health`, `GET /status`, `POST /chat`, and `POST /v1/chat/completions` are unchanged on this branch. `elysia/runtime.py` is owned today by application runtime stability `050ac88` on `origin/cursor/bc-d8be4cf6-bbaa-4abf-88f0-89c456f1b2d9-1f54`. Memory workflow today is `de06d19` on `origin/cursor/bc-c9ef3dd6-00cb-4b78-aef3-5192311aaedf-753c` (`project_guardian/memory_cleanup.py` only, on top of `c0509d1`).
+
+**Queue:** `CURRENT_TASK: NONE`. `TASK-0053` remains OPEN review-only on the brain-bridge line (`bf6c72c`). Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb`. Do not implement live memory or vector writes.
+
+A branch commit is not integrated product readiness. Next product run should pick a different unclaimed API or dashboard error path and should re-check PR #235 before editing `project_guardian/ui_control_panel.py`.

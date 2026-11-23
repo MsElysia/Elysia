@@ -497,3 +497,8 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## 2026-11-23 attach dashboard URL
+
+- Attach mode "Open Web Dashboard" opens a browser only for a dashboard URL reported by the live status or health response.
+- A missing system, a backend that reports no panel URL, a refused connection, and a browser that does not open no longer print success or fall back to http://127.0.0.1:5000.

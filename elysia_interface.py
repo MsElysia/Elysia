@@ -498,18 +498,31 @@ class ElysiaInterface:
             st = self._fetch_status_from_api()
             h = self._fetch_health_from_api()
             url = None
-            if isinstance(st, dict) and st.get("dashboard_url"):
-                url = st["dashboard_url"]
-            elif isinstance(h, dict) and h.get("dashboard_url"):
-                url = h["dashboard_url"]
+            if isinstance(st, dict) and isinstance(st.get("dashboard_url"), str):
+                url = st["dashboard_url"].strip() or None
+            if not url and isinstance(h, dict) and isinstance(h.get("dashboard_url"), str):
+                url = h["dashboard_url"].strip() or None
             if not url:
-                url = "http://127.0.0.1:5000"
+                if isinstance(st, dict) and st.get("error"):
+                    detail = str(st.get("error"))
+                elif isinstance(h, dict) and h.get("error"):
+                    detail = str(h.get("error"))
+                else:
+                    detail = "backend did not report a dashboard URL"
+                print(f"   Dashboard unavailable: {detail}")
+                print("   No browser was opened.")
+                input("\nPress Enter to continue...")
+                return
             print(f"   URL: {url}")
             try:
-                webbrowser.open(url)
-                print("[OK] Browser open requested.")
+                opened = webbrowser.open(url)
             except Exception as e:
                 print(f"[INFO] Open manually: {url} ({e})")
+            else:
+                if opened:
+                    print("[OK] Browser open requested.")
+                else:
+                    print(f"[INFO] Browser did not open. Open manually: {url}")
             input("\nPress Enter to continue...")
             return
         

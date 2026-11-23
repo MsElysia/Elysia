@@ -581,17 +581,20 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
                 continue
             candidates.append(("document", doc_tokens, item))
 
-    # Exact text duplicates provide no additional evidence or term-frequency
-    # votes. Keep the same deterministic fact-first/source-ID tie break.
-    # Group only full original text (never excerpts or unordered token sets).
+    # Exact-text duplicates must not multiply evidence or term-frequency votes.
+    # Prefer a validated, query-matched alias over an unmatched duplicate;
+    # otherwise retain the deterministic fact-first/source-ID tie break.
+    # Keep the selected source's own provenance and links; never merge identities.
     distinct = {}
     for kind, tokens, item in sorted(
         candidates, key=lambda row: (row[0] != "fact", row[2]["source_id"], row[2]["chunk_id"])
     ):
-        distinct.setdefault(
-            (item["highlights"][0]["text"], tuple(item.get("project_ids", ()))),
-            (kind, tokens, item),
-        )
+        key = (item["highlights"][0]["text"], tuple(item.get("project_ids", ())))
+        previous = distinct.get(key)
+        if previous is None or (
+            item.get("recall_reasons") and not previous[2].get("recall_reasons")
+        ):
+            distinct[key] = (kind, tokens, item)
     candidates = list(distinct.values())
 
     # Query-term rarity among retrieved candidates separates specific answers

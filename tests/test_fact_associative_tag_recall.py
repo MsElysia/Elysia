@@ -340,6 +340,73 @@ def test_identical_text_same_project_is_deduplicated_with_verified_identity(stor
     assert "project_ambiguity" not in result
 
 
+@pytest.mark.parametrize("matching_alias_on_higher_source", [True, False])
+def test_identical_statement_prefers_approved_query_alias_without_identity_merge(
+    store, matching_alias_on_higher_source,
+):
+    """Two current identical facts: the alias match, not ID order, wins."""
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    initial = [
+        save(adapter, headers, f"Draft {index}: {STATEMENT}",
+             [{**TAG, "project_id": "larkspur", "aliases": ["enamel"]}])
+        for index in range(2)
+    ]
+    lower_id, higher_id = sorted(initial)
+    selected = higher_id if matching_alias_on_higher_source else lower_id
+    ignored = lower_id if matching_alias_on_higher_source else higher_id
+    # Corrections legally give both different original facts the same exact
+    # current statement, and deterministically place 'coating' on either ID.
+    for source_id in (lower_id, higher_id):
+        alias = "coating" if source_id == selected else "enamel"
+        revised = adapter.handle(
+            "POST", f"/api/restricted/v1/facts/{source_id}/corrections",
+            headers=headers,
+            body={
+                "statement": STATEMENT,
+                "approved_semantic_links_v1": [
+                    {**TAG, "project_id": "larkspur", "aliases": [alias]}
+                ],
+            },
+        )
+        assert revised.status == 200, revised.body
+        assert revised.body["persistence_verified"] is True
+
+    result = bundle(store, "Which coating for the deck?")
+    assert [row["source_id"] for row in result["evidence"]] == [selected]
+    item = result["evidence"][0]
+    assert item["chunk_id"] == selected
+    assert item["revision"] == 2
+    assert item["source_sha256"] == hashlib.sha256(STATEMENT.encode()).hexdigest()
+    assert item["highlights"][0]["text"] == STATEMENT
+    assert item["project_ids"] == ["larkspur"]
+    assert [reason["matched_alias"] for reason in item["recall_reasons"]] == ["coating"]
+    assert all(reason["type"] == "approved_semantic_tag"
+               and reason["project_id"] == "larkspur"
+               and reason["concept"] == "finish_choice"
+               for reason in item["recall_reasons"])
+    assert ignored not in json.dumps(result["evidence"])
+    assert "project_ambiguity" not in result
+
+    # Without a matching tag, keep the existing lexical/ID tie break.
+    lexical = bundle(store, "What deck finish was selected?")
+    assert len(lexical["evidence"]) == 1
+    assert lexical["evidence"][0]["source_id"] == lower_id
+    assert "recall_reasons" not in lexical["evidence"][0]
+    assert bundle(store, "Which paint for the deck?")["evidence"] == []
+
+    # Corruption must not turn a formerly approved match into a recall vote.
+    adapter.memory.load_if_needed()
+    entry = next(e for e in adapter.memory.memory_log
+                 if isinstance(e, dict)
+                 and e.get("category") == "restricted_fact"
+                 and e.get("metadata", {}).get("fact_id") == selected
+                 and e.get("metadata", {}).get("revision") == 2)
+    entry["metadata"]["approved_semantic_links_v1"][0]["source_sha256"] = "0" * 64
+    adapter.memory._save()
+    assert bundle(store, "Which coating for the deck?")["evidence"] == []
+
+
 def test_ambiguous_context_reaches_model_as_untrusted_data_not_tool_authority(store, monkeypatch):
     from project_guardian.local_memory_chat import LocalOllama, ManualAuthorization, converse_bundle
     _, headers, open_adapter = store

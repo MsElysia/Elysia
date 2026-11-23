@@ -2,6 +2,9 @@
 # Uses the Flask test client. Does not bind a public port or call a provider.
 
 import json
+import re
+import shutil
+import subprocess
 import sys
 import types
 from datetime import datetime, timedelta
@@ -68,6 +71,114 @@ def _auth(panel: UIControlPanel):
         "X-Elysia-Identity": "dashboard-operator",
         "X-Elysia-Token": panel._dashboard_operator_token(),
     }
+
+
+def test_chat_enter_uses_existing_send_handler_with_ime_safety(tmp_path):
+    """Exercise the rendered dashboard JavaScript without a browser or provider."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to exercise the rendered dashboard JavaScript")
+
+    panel = _panel(_memory(tmp_path / "memory.json"), config={"contained_startup": True})
+    html = panel.app.test_client().get("/").get_data(as_text=True)
+    script = re.search(r"<script>(.*?)</script>", html, flags=re.S)
+    assert script, "expected the rendered dashboard script"
+    assert 'type="text" id="api-chat-message"' in html
+    assert 'onclick="sendHomeChat()"' in html
+
+    harness = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+
+const listeners = {};
+const message = {
+    value: '',
+    addEventListener(name, fn) { listeners[name] = fn; },
+};
+const result = {textContent: ''};
+const elements = {
+    'api-chat-message': message,
+    'api-chat-result': result,
+    'allow-labor-calculator': {checked: false},
+    'allow-documents-search': {checked: false},
+    'documents-search-folder': {value: ''},
+    'conversation-select': {value: ''},
+    'document-drop-zone': {addEventListener() {}},
+    'learning-status': {style: {}},
+};
+const document = {
+    body: {setAttribute() {}},
+    getElementById: id => elements[id] || null,
+    addEventListener(name, fn) { listeners[name] = fn; },
+    querySelectorAll: () => [],
+};
+const window = {location: {href: 'http://localhost/'}};
+const requests = [];
+function fetch(url, options) {
+    if (options && options.method === 'POST') {
+        requests.push({url, body: JSON.parse(options.body)});
+    }
+    return Promise.resolve({status: 200, json: async () => ({success: true})});
+}
+vm.runInNewContext(fs.readFileSync(0, 'utf8'), {
+    window, document, fetch, console,
+    localStorage: {getItem: () => null},
+    setTimeout() {}, setInterval() {},
+});
+window.refreshDocumentLibrary = () => {};
+window.refreshConversations = () => {};
+window.loadChatHistory = () => {};
+listeners.DOMContentLoaded();
+
+function pressEnter(options = {}) {
+    let handled = false;
+    listeners.keydown({
+        key: 'Enter', keyCode: 13, shiftKey: false,
+        isComposing: false, repeat: false,
+        ...options,
+        preventDefault() { handled = true; },
+    });
+    return handled;
+}
+const nextTurn = () => new Promise(setImmediate);
+async function check() {
+    message.value = '   ';
+    assert.equal(pressEnter(), false);
+    assert.equal(requests.length, 0);
+
+    message.value = 'Synthetic question';
+    assert.equal(pressEnter({shiftKey: true}), false);
+    assert.equal(pressEnter({isComposing: true}), false);
+    assert.equal(pressEnter({keyCode: 229}), false);
+    assert.equal(pressEnter({repeat: true}), false);
+    assert.equal(requests.length, 0);
+
+    listeners.compositionstart();
+    assert.equal(pressEnter(), false);
+    listeners.compositionend();
+    assert.equal(requests.length, 0);
+
+    assert.equal(pressEnter(), true);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, '/api/chat');
+    assert.equal(requests[0].body.message, 'Synthetic question');
+    assert.equal(pressEnter(), false);
+    assert.equal(requests.length, 1);
+    await nextTurn();
+
+    window.sendHomeChat();
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].url, '/api/chat');
+    await nextTurn();
+}
+check().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    completed = subprocess.run(
+        [node, "-e", harness], input=script.group(1), capture_output=True,
+        text=True, encoding="utf-8", timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 class TestLivePanelRestrictedRoutes:

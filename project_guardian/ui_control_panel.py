@@ -1190,6 +1190,19 @@ CONTROL_PANEL_TEMPLATE = """
         // Initialize on page load - show UI immediately
         document.addEventListener('DOMContentLoaded', function() {
             try {
+                var chatInput = document.getElementById('api-chat-message');
+                if (chatInput) {
+                    var chatComposing = false;
+                    chatInput.addEventListener('compositionstart', function() { chatComposing = true; });
+                    chatInput.addEventListener('compositionend', function() { chatComposing = false; });
+                    chatInput.addEventListener('keydown', function(event) {
+                        if (event.key !== 'Enter' || event.shiftKey || event.isComposing ||
+                                chatComposing || event.keyCode === 229 || event.repeat) return;
+                        if (!chatInput.value || !chatInput.value.trim() || window._chatPending) return;
+                        event.preventDefault();
+                        window.sendHomeChat();
+                    });
+                }
                 var drop = document.getElementById('document-drop-zone');
                 drop.addEventListener('dragover', function(e) { e.preventDefault(); });
                 drop.addEventListener('drop', function(e) { e.preventDefault(); window.importSelectedDocuments(e.dataTransfer.files); });
@@ -1205,7 +1218,6 @@ CONTROL_PANEL_TEMPLATE = """
                     document.querySelectorAll('label').forEach(function(label) {
                         if (label.textContent.indexOf('Chat with AI') === 0) label.textContent = 'Chat with durable memory:';
                     });
-                    var chatInput = document.getElementById('api-chat-message');
                     if (chatInput) chatInput.placeholder = 'Ask using words from a saved fact, or ask the local model';
                     var localControls = document.getElementById('local-model-chat-controls');
                     if (localControls) localControls.style.display = 'block';

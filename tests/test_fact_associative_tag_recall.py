@@ -293,6 +293,105 @@ def test_explicit_project_filters_other_links_and_retains_source(store):
     assert "project_ambiguity" not in result
 
 
+@pytest.mark.parametrize("linked_id_sorts_first", [True, False])
+def test_explicit_project_rejects_unlinked_lexical_homonym(
+    store, linked_id_sorts_first, monkeypatch,
+):
+    """A project name in unlinked text never certifies its project membership."""
+    from project_guardian.local_memory_chat import (
+        LocalOllama, ManualAuthorization, converse_bundle,
+    )
+
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    initial = [
+        save(adapter, headers, f"Initial independent memory {index} placeholder.")
+        for index in range(2)
+    ]
+    lower_id, higher_id = sorted(initial)
+    linked_id = lower_id if linked_id_sorts_first else higher_id
+    unlinked_id = higher_id if linked_id_sorts_first else lower_id
+    linked_statement = "Owner selected acrylic for the job."
+    unlinked_statement = "Larkspur project coating is oil for an unrelated demonstration."
+    for source_id in (lower_id, higher_id):
+        is_linked = source_id == linked_id
+        response = adapter.handle(
+            "POST", f"/api/restricted/v1/facts/{source_id}/corrections",
+            headers=headers,
+            body={
+                "statement": linked_statement if is_linked else unlinked_statement,
+                **({"approved_semantic_links_v1": [
+                    {**TAG, "project_id": "larkspur"}
+                ]} if is_linked else {}),
+            },
+        )
+        assert response.status == 200, response.body
+        assert response.body["persistence_verified"] is True
+
+    question = "Which coating for project Larkspur?"
+    scoped = bundle(store, question)
+    assert [row["source_id"] for row in scoped["evidence"]] == [linked_id]
+    row = scoped["evidence"][0]
+    assert row["chunk_id"] == linked_id and row["revision"] == 2
+    assert row["source_sha256"] == hashlib.sha256(linked_statement.encode()).hexdigest()
+    assert row["highlights"][0]["text"] == linked_statement
+    assert row["project_id"] == "larkspur"
+    assert row["project_ids"] == ["larkspur"]
+    assert [reason["matched_alias"] for reason in row["recall_reasons"]] == ["coating"]
+    assert all(reason["type"] == "approved_semantic_tag"
+               and reason["project_id"] == "larkspur"
+               for reason in row["recall_reasons"])
+    assert unlinked_id not in json.dumps(scoped["evidence"])
+    assert unlinked_statement not in json.dumps(scoped["evidence"])
+    assert "project_ambiguity" not in scoped
+
+    # This is the exact untrusted context forwarded to the local model,
+    # not a promise about an actual Ollama generation.
+    seen = []
+
+    def fake_generate(model, messages, *, json_mode=False):
+        seen.append(json.loads(messages[-1]["content"]))
+        return json.dumps({"answer": "Synthetic citation only."})
+
+    monkeypatch.setattr(LocalOllama, "generate", fake_generate)
+    response = converse_bundle(
+        scoped, question,
+        ManualAuthorization(
+            "req-project-scope", True, True, frozenset({"local.chat", "memory.read"})
+        ),
+        LocalOllama("fixture-model"), recent=(),
+    )
+    assert [row["source_id"] for row in seen[0]["context_bundle"]["evidence"]] == [linked_id]
+    assert unlinked_statement not in json.dumps(seen[0]["context_bundle"]["evidence"])
+    assert response["tools_executed"] == [] and response["memory_written"] is False
+
+    # Unscoped lexical fact retrieval must remain available.
+    unscoped = bundle(store, "Which coating did we decide on?")
+    assert unlinked_id in {row["source_id"] for row in unscoped["evidence"]}
+
+
+def test_explicit_project_with_no_matching_link_excludes_unlinked_homonym(store):
+    """A known project ID alone does not promote any unlinked lexical fact."""
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    anchor_id = save(
+        adapter, headers, "The owner photographed the southern gate yesterday.",
+        [{"concept": "gate_condition", "aliases": ["roofing"],
+          "state": "selected_existing", "project_id": "larkspur"}],
+    )
+    unlinked_statement = "Larkspur project coating is oil for an unrelated demonstration."
+    unlinked_id = save(adapter, headers, unlinked_statement)
+    question = "Which coating for project Larkspur?"
+    scoped = bundle(store, question)
+    assert scoped["evidence"] == []
+    assert scoped["no_memory_support"] is True
+    assert "project_ambiguity" not in scoped
+    # Unscoped retrieval does not require a project link.
+    unscoped = bundle(store, "Which coating did we decide on?")
+    assert unlinked_id in {row["source_id"] for row in unscoped["evidence"]}
+    assert anchor_id not in {row["source_id"] for row in scoped["evidence"]}
+
+
 def test_unknown_named_project_and_multiple_known_projects_never_silent_select(store):
     _, headers, open_adapter = store
     adapter = open_adapter()

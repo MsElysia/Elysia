@@ -487,11 +487,9 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         statement, fact_id = fact["statement"], fact["fact_id"]
         fact_tokens = set(_context_tokens(statement))
         if explicit_project:
-            # In project-scoped questions, omit unscoped or competing facts.
-            related = [link for link in approved if link["project_id"] == explicit_project]
-            if not related and explicit_project not in fact_tokens:
-                continue
-            if approved and not related and any(link["project_id"] for link in approved):
+            # A lexical project-name mention is not an authenticated association.
+            # Named-project fact evidence needs a current validated project link.
+            if not any(link["project_id"] == explicit_project for link in approved):
                 continue
         overlap = query_set & fact_tokens
         # Keep all valid relevant project identities, not just the first

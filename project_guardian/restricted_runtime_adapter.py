@@ -25,6 +25,7 @@ SEMANTIC_LINKS_FIELD = "approved_semantic_links_v1"
 _MAX_SEMANTIC_LINKS = 8
 _MAX_SEMANTIC_ALIASES = 8
 _SEMANTIC_CONCEPT_RE = re.compile(r"^[a-z][a-z0-9_]{1,47}$")
+_PROJECT_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 _SEMANTIC_ALIAS_RE = re.compile(r"^[a-z0-9]+(?: [a-z0-9]+){0,3}$")
 MEMORY_MODULE = "project_guardian.memory.MemoryCore"
 
@@ -191,7 +192,9 @@ def _normalized_project(value: Any) -> Optional[str]:
     if value is None:
         return None
     project = _normalized_concept(value)
-    if project.startswith("fact_"):
+    # Unlike concept labels, project identities cannot contain empty parts.
+    # Existing persisted malformed links are rejected by read-time revalidation.
+    if project.startswith("fact_") or not _PROJECT_ID_RE.fullmatch(project):
         raise ValueError("invalid project identity")
     return project
 

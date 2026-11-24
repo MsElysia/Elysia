@@ -398,7 +398,8 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
     # A project name scopes recall only after an explicit "project" cue.
     # Task nouns and approved aliases alone are never project selectors.
     # Preserve commas so coordinated names cannot be mistaken for one ID.
-    query_words = re.findall(r"[a-z0-9]+|,", question.casefold())
+    query_spans = list(re.finditer(r"[a-z0-9]+|,", question.casefold()))
+    query_words = [match.group() for match in query_spans]
     project_parts = {
         project: tuple(project.split("_")) for project in known_projects
     }
@@ -445,6 +446,21 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
                 position = cursor + 1
                 break
             after_name = cursor + len(project_parts[named])
+            # Match the raw spelling as well as its lexical words. Otherwise
+            # "project moonbeam__court" silently selects moonbeam_court.
+            start_char, end_char = query_spans[cursor].start(), query_spans[after_name - 1].end()
+            leading = question[query_spans[cursor - 1].end():start_char].casefold()
+            spelling = question[start_char:end_char].casefold()
+            suffix = re.match(r"[_-]+", question[end_char:].casefold())
+            if (("_" in leading or "-" in leading)
+                    or not re.fullmatch(
+                        r"[a-z0-9]+(?:(?:_|\s*-\s*|\s+)[a-z0-9]+)*", spelling
+                    ) or suffix is not None):
+                unsupported_project_hints.add(
+                    (leading.strip() + spelling + (suffix.group() if suffix else "")).strip()
+                )
+                position = after_name
+                break
             if (after_name < len(query_words)
                     and query_words[after_name] not in
                     project_name_boundaries | project_connectors):

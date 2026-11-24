@@ -489,6 +489,142 @@ def test_named_project_document_without_approved_link_is_not_scoped_evidence(
     assert unscoped["no_memory_support"] is False
 
 
+@pytest.mark.parametrize("invalid_project", [
+    "moonbeam__court", "moonbeam___court", "moonbeam_court_", "_moonbeam_court",
+])
+def test_empty_project_components_rejected_on_save_and_correction_without_write(
+    store, invalid_project,
+):
+    path, headers, open_adapter = store
+    adapter = open_adapter()
+    current = save(adapter, headers, "Owner approved acrylic for the surface.", [
+        {**TAG, "project_id": "moonbeam_court"}
+    ])
+    before = path.read_bytes()
+    rejected_save = adapter.handle(
+        "POST", "/api/restricted/v1/facts",
+        headers=headers, body={
+            "statement": "Owner approved oil for the surface.",
+            "approved_semantic_links_v1": [{**TAG, "project_id": invalid_project}],
+        },
+    )
+    assert rejected_save.status == 400, rejected_save.body
+    assert path.read_bytes() == before
+    rejected_correction = adapter.handle(
+        "POST", f"/api/restricted/v1/facts/{current}/corrections",
+        headers=headers, body={
+            "statement": "Owner changed the decision to oil.",
+            "approved_semantic_links_v1": [{**TAG, "project_id": invalid_project}],
+        },
+    )
+    assert rejected_correction.status == 400, rejected_correction.body
+    assert path.read_bytes() == before
+    assert [row["source_id"] for row in bundle(
+        store, "Which coating for project moonbeam court?"
+    )["evidence"]] == [current]
+
+
+@pytest.mark.parametrize("name", [
+    "moonbeam__court", "moonbeam___court", "moonbeam_court_",
+    "_moonbeam_court", "moonbeam _ court", "moonbeam court_",
+    "moonbeam--court", "moonbeam-court-",
+])
+def test_malformed_project_spelling_requires_model_visible_clarification(
+    store, name, monkeypatch,
+):
+    from project_guardian.local_memory_chat import (
+        LocalOllama, ManualAuthorization, converse_bundle,
+    )
+
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    approved_statement = "Owner selected acrylic for the surface."
+    approved_id = save(adapter, headers, approved_statement, [
+        {**TAG, "project_id": "moonbeam_court"}
+    ])
+    other_id = save(adapter, headers, "Owner selected oil for the surface.", [
+        {**TAG, "project_id": "juniper"}
+    ])
+    question = "Which coating for project " + name + "?"
+    memory = bundle(store, question)
+    assert memory["project_ambiguity"]["requires_clarification"] is True
+    assert memory["project_ambiguity"]["unknown_project_hints"]
+    assert {row["source_id"] for row in memory["evidence"]} == {approved_id, other_id}
+    assert {row["project_id"] for row in memory["evidence"]} == {
+        "moonbeam_court", "juniper"
+    }
+    assert memory["evidence"][0]["source_sha256"] in {
+        hashlib.sha256(approved_statement.encode()).hexdigest(),
+        hashlib.sha256("Owner selected oil for the surface.".encode()).hexdigest(),
+    }
+    seen = []
+
+    def fake_generate(model, messages, *, json_mode=False):
+        seen.append(json.loads(messages[-1]["content"]))
+        assert "requires_clarification" in messages[0]["content"]
+        return json.dumps({"answer": "Which project do you mean?"})
+
+    monkeypatch.setattr(LocalOllama, "generate", fake_generate)
+    reply = converse_bundle(
+        memory, question,
+        ManualAuthorization("req-project-grammar", True, True,
+                            frozenset({"local.chat", "memory.read"})),
+        LocalOllama("fixture-model"), recent=(),
+    )
+    assert seen[0]["context_bundle"]["project_ambiguity"] == memory["project_ambiguity"]
+    assert reply["tools_executed"] == [] and reply["memory_written"] is False
+
+
+def test_persisted_malformed_project_link_does_not_authorize_recall(store):
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    statement = "Owner approved acrylic for the surface."
+    malformed_id = save(adapter, headers, statement, [
+        {**TAG, "project_id": "moonbeam_court"}
+    ])
+    valid_id = save(adapter, headers, "Owner approved oil for the surface.", [
+        {**TAG, "project_id": "moonbeam_court"}
+    ])
+    adapter.memory.load_if_needed()
+    entry = next(e for e in adapter.memory.memory_log
+                 if isinstance(e, dict)
+                 and e.get("category") == "restricted_fact"
+                 and e.get("metadata", {}).get("fact_id") == malformed_id)
+    entry["metadata"]["approved_semantic_links_v1"][0]["project_id"] = "moonbeam__court"
+    adapter.memory._save()  # disposable synthetic persisted-link corruption
+    named = bundle(store, "Which coating for project moonbeam court?")
+    assert [row["source_id"] for row in named["evidence"]] == [valid_id]
+    assert named["evidence"][0]["revision"] == 1
+    assert named["evidence"][0]["source_sha256"] == hashlib.sha256(
+        "Owner approved oil for the surface.".encode()
+    ).hexdigest()
+    assert named["evidence"][0]["recall_reasons"][0]["matched_alias"] == "coating"
+    assert "project_ambiguity" not in named
+    assert malformed_id not in json.dumps(named["evidence"])
+    assert malformed_id not in {
+        row["source_id"] for row in bundle(store, QUESTION)["evidence"]
+    }
+
+
+@pytest.mark.parametrize("name", [
+    "moonbeam court", "moonbeam-court", "moonbeam_court", "moonbeam - court",
+])
+def test_valid_project_spelling_keeps_original_source_identity(store, name):
+    _, headers, open_adapter = store
+    statement = "Owner approved acrylic for the surface."
+    correct = save(open_adapter(), headers, statement, [
+        {**TAG, "project_id": "moonbeam_court"}
+    ])
+    result = bundle(store, "Which coating for project " + name + "?")
+    assert [row["source_id"] for row in result["evidence"]] == [correct]
+    row = result["evidence"][0]
+    assert row["revision"] == 1
+    assert row["source_sha256"] == hashlib.sha256(statement.encode()).hexdigest()
+    assert row["project_ids"] == ["moonbeam_court"]
+    assert row["recall_reasons"][0]["matched_alias"] == "coating"
+    assert "project_ambiguity" not in result
+
+
 def test_unknown_named_project_and_multiple_known_projects_never_silent_select(store):
     _, headers, open_adapter = store
     adapter = open_adapter()

@@ -3577,3 +3577,29 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+---
+
+## 2026-11-24 product workflow — attach startup status
+
+**Status:** COMPLETE on this branch only. Not on `main`. No pull request.
+
+**Branch:** `cursor/bc-abcbce69-38a5-4498-a7e4-7145566190bc-9744`
+
+**Base:** `722d8e4` (`main`). Not based on earlier product branches.
+
+**Implementation commit:** `a36bd81cc5b274fbad4fd68502385eab9f08c1b4`
+
+**Files:** `elysia_interface.py`, `tests/test_attach_startup_status.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`
+
+**Behavior:** Attach mode opens the menu when `GET /status` answers. A missing system, a status exception, and a non-object body print `Status unavailable` and do not print `[OK] Backend connected`. A closed port still waits and reports that the backend is not reachable. A normal status still prints `[OK] Backend connected`. The status and memories screens use the same distinction.
+
+**Before:** Live `elysia.py` status handler with no system returned `GET /status` 200 `{"error":"System not initialized"}`. With a 2.2s startup wait, attach mode retried six times, printed `Backend still booting` and `Backend not reachable after 2s: System not initialized`, and did not open the menu. Elapsed 2.43s.
+
+**Evidence:** After the change, the same live handler opened the menu in 0.001s and printed `Status unavailable: System not initialized` and `The status server answered. The menu will open.` `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_attach_startup_status.py -v --tb=short` — 6 passed. Real `elysia.py` `StatusHandler` on loopback for the missing-system and exception cases, a loopback handler that returned `[1, 2]`, urllib through `ElysiaInterface`, fictional status `fictional-running`, no `UnifiedElysiaSystem`.
+
+**Left untouched:** `project_guardian/ui_control_panel.py` remains owned by open draft PR #235 (document preview selection) and is also rewritten on `origin/cursor/memory-workflow-reliability-f68b` (`27bdfad`). Panel `POST /api/chat` on `main` still returns HTTP 200 when `success` is false. `GET /`, `GET /health`, `GET /status`, `POST /chat`, and `POST /v1/chat/completions` are unchanged on this branch. Application runtime safety today is `897378b` on `origin/cursor/bc-ff36f7ef-355a-482c-951a-f14bd748aaa4-e7f0` (`elysia/cli.py`, `elysia/core/proposal_system.py`, `elysia/runtime.py`, `tests/test_elysia_runtime_lifecycle.py`).
+
+**Queue:** `CURRENT_TASK: NONE`. `TASK-0053` remains OPEN review-only on the brain-bridge line (`bf6c72c`). Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb`. Do not implement live memory or vector writes.
+
+A branch commit is not integrated product readiness. Next product run should pick a different unclaimed API or dashboard error path and should re-check PR #235 and the memory-workflow panel rewrite before editing `project_guardian/ui_control_panel.py`.

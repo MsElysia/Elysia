@@ -550,7 +550,9 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
         candidates.append(("fact", fact_tokens, item))
 
     from project_guardian.document_ingestion import DocumentLibrary, is_context_document
-    if hasattr(adapter, "memory"):
+    # Imported documents have no authenticated project link. Keep lexical
+    # document recall unscoped; do not certify a document by its project words.
+    if hasattr(adapter, "memory") and not explicit_project:
         for row in DocumentLibrary(adapter.memory).search(question, context_distinct=True):
             # Also check at the final boundary: upstream candidates are untrusted.
             if not is_context_document(row):

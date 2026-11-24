@@ -392,6 +392,103 @@ def test_explicit_project_with_no_matching_link_excludes_unlinked_homonym(store)
     assert anchor_id not in {row["source_id"] for row in scoped["evidence"]}
 
 
+@pytest.mark.parametrize("matching_approved_fact", [True, False])
+def test_named_project_document_without_approved_link_is_not_scoped_evidence(
+    store, matching_approved_fact, monkeypatch,
+):
+    """Real completed document import must not impersonate a named-project fact."""
+    from project_guardian.document_ingestion import DocumentLibrary
+    from project_guardian.local_memory_chat import (
+        LocalOllama, ManualAuthorization, converse_bundle,
+    )
+
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    linked_statement = "Owner selected acrylic for the job."
+    if matching_approved_fact:
+        fact_id = save(adapter, headers, linked_statement, [
+            {**TAG, "project_id": "larkspur"}
+        ])
+    else:
+        # This authentic link establishes the known project, but cannot
+        # substantiate the coating question.
+        fact_id = save(adapter, headers, "The owner photographed the southern gate yesterday.", [
+            {"concept": "gate_condition", "aliases": ["roofing"],
+             "state": "selected_existing", "project_id": "larkspur"}
+        ])
+
+    document_text = "Larkspur project coating is oil for an unrelated demonstration."
+    receipt = DocumentLibrary(adapter.memory).import_bytes(
+        "unrelated-demo.txt", document_text.encode("utf-8")
+    )
+    assert receipt["status"] == "completed", receipt
+    assert receipt["chunk_count"] == 1
+    assert receipt["duplicate"] is False
+    assert receipt["source_id"].startswith("doc_")
+    # Reopen primary store, checking the real completed receipt/chunk search path.
+    persisted = DocumentLibrary(open_adapter().memory)
+    docs = persisted.search("Which coating for project Larkspur?", context_distinct=True)
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc["source_id"] == receipt["source_id"]
+    assert doc["text"] == document_text
+    assert doc["content_sha256"] == hashlib.sha256(document_text.encode()).hexdigest()
+
+    question = "Which coating for project Larkspur?"
+    scoped = bundle(store, question)
+    if matching_approved_fact:
+        assert [row["source_id"] for row in scoped["evidence"]] == [fact_id]
+        row = scoped["evidence"][0]
+        assert row["chunk_id"] == fact_id and row["revision"] == 1
+        assert row["source_sha256"] == hashlib.sha256(linked_statement.encode()).hexdigest()
+        assert row["highlights"][0]["text"] == linked_statement
+        assert row["project_ids"] == ["larkspur"] and row["project_id"] == "larkspur"
+        assert [reason["matched_alias"] for reason in row["recall_reasons"]] == ["coating"]
+        assert all(reason["type"] == "approved_semantic_tag"
+                   and reason["project_id"] == "larkspur"
+                   for reason in row["recall_reasons"])
+    else:
+        assert scoped["evidence"] == []
+        assert scoped["no_memory_support"] is True
+    assert "project_ambiguity" not in scoped
+    assert receipt["source_id"] not in json.dumps(scoped["evidence"])
+    assert document_text not in json.dumps(scoped["evidence"])
+
+    # Inspect exactly what the local model would see, without contacting Ollama.
+    seen = []
+
+    def fake_generate(model, messages, *, json_mode=False):
+        seen.append(json.loads(messages[-1]["content"]))
+        return json.dumps({"answer": "Synthetic fixture response."})
+
+    monkeypatch.setattr(LocalOllama, "generate", fake_generate)
+    reply = converse_bundle(
+        scoped, question,
+        ManualAuthorization("req-doc-project", True, True,
+                            frozenset({"local.chat", "memory.read"})),
+        LocalOllama("fixture-model"), recent=(),
+    )
+    assert seen and seen[0]["context_bundle"] == scoped
+    assert receipt["source_id"] not in json.dumps(seen[0]["context_bundle"]["evidence"])
+    assert reply["tools_executed"] == [] and reply["memory_written"] is False
+
+    # The same completed import remains searchable without a project cue.
+    unscoped = bundle(store, "Which coating did we decide on?")
+    document_rows = [
+        row for row in unscoped["evidence"] if row["source_id"] == receipt["source_id"]
+    ]
+    assert len(document_rows) == 1
+    evidence = document_rows[0]
+    assert evidence["source_id"] == doc["source_id"]
+    assert evidence["chunk_id"] == doc["chunk_id"]
+    assert evidence["source_sha256"] == doc["content_sha256"]
+    assert evidence["highlights"][0]["text"] == document_text
+    assert evidence["filename"] == "unrelated-demo.txt"
+    assert evidence["page"] == 1 and evidence["revision"] == 1
+    assert evidence["trust"] == "untrusted_document"
+    assert unscoped["no_memory_support"] is False
+
+
 def test_unknown_named_project_and_multiple_known_projects_never_silent_select(store):
     _, headers, open_adapter = store
     adapter = open_adapter()

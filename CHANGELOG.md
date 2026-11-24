@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## 2026-11-24 attach startup status
+
+- Attach mode no longer spends the startup wait on a status server that already answered with an error.
+- A missing system, a status exception, and a non-object status body open the menu with "Status unavailable" and do not print "[OK] Backend connected".
+- A closed port still waits and reports that the backend is not reachable. A normal status still reports the backend connected.

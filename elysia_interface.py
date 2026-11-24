@@ -68,9 +68,42 @@ class ElysiaInterface:
             import urllib.request
             req = urllib.request.Request(f"{STATUS_URL}/status")
             with urllib.request.urlopen(req, timeout=5) as r:
-                return json.loads(r.read().decode())
+                raw = r.read().decode()
         except Exception as e:
-            return {"error": str(e), "hint": "Is elysia.py running?"}
+            return {"error": str(e), "hint": "Is elysia.py running?", "reachable": False}
+        try:
+            data = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            return {
+                "error": "Invalid status format",
+                "status_available": False,
+                "reachable": True,
+            }
+        if not isinstance(data, dict):
+            return {
+                "error": "Invalid status format",
+                "status_available": False,
+                "reachable": True,
+            }
+        data = dict(data)
+        data["reachable"] = True
+        if "error" in data and "system" not in data:
+            data["status_available"] = False
+        return data
+
+    def _attach_backend_gate(self, status):
+        """Classify an attach status read as wait, unavailable, or ready.
+
+        A closed port keeps waiting. A status server that answered with an
+        error is unavailable and must not be treated as still booting.
+        """
+        if not isinstance(status, dict) or status.get("reachable") is False:
+            return "wait"
+        if status.get("status_available") is False or (
+            "error" in status and "system" not in status
+        ):
+            return "unavailable"
+        return "ready"
 
     def _fetch_health_from_api(self):
         """Fetch /health JSON from backend (attach mode)."""
@@ -91,9 +124,12 @@ class ElysiaInterface:
         # Attach mode: fetch from status API
         if self.attach_only:
             status = self._fetch_status_from_api()
-            if "error" in status:
+            gate = self._attach_backend_gate(status)
+            if gate == "wait":
                 print(f"\n[WARN] Could not reach backend: {status.get('error')}")
                 print(f"       {status.get('hint', '')}")
+            elif gate == "unavailable":
+                print(f"\n[WARN] Status unavailable: {status.get('error')}")
             else:
                 print(f"\nUptime: {status.get('uptime', 'N/A')}")
                 print("Components:")
@@ -289,8 +325,11 @@ class ElysiaInterface:
 
         if self.attach_only:
             st = self._fetch_status_from_api()
-            if "error" in st:
+            gate = self._attach_backend_gate(st)
+            if gate == "wait":
                 print(f"\n[WARN] Could not reach backend: {st.get('error')}")
+            elif gate == "unavailable":
+                print(f"\n[WARN] Status unavailable: {st.get('error')}")
             else:
                 gs = st.get("guardian_status") or {}
                 mem = gs.get("memory") or {}
@@ -792,7 +831,7 @@ class ElysiaInterface:
             deadline = t_start + max_wait
             attempt = 0
             status = self._fetch_status_from_api()
-            while "error" in status and time.time() < deadline:
+            while self._attach_backend_gate(status) == "wait" and time.time() < deadline:
                 attempt += 1
                 elapsed = time.time() - t_start
                 err = str(status.get("error", ""))
@@ -802,7 +841,8 @@ class ElysiaInterface:
                 )
                 time.sleep(interval)
                 status = self._fetch_status_from_api()
-            if "error" in status:
+            gate = self._attach_backend_gate(status)
+            if gate == "wait":
                 print(f"\n[WARN] Backend not reachable after {max_wait:.0f}s: {status.get('error')}")
                 print(
                     "       Timeout — the backend may still be initializing (memory, vectors, Guardian). "
@@ -811,9 +851,13 @@ class ElysiaInterface:
                 print("       Check the backend console or elysia_unified.log, or increase ELYSIA_STARTUP_WAIT_SEC.")
                 input("Press Enter to exit...")
                 return
-            print("[OK] Backend connected")
-            if isinstance(status, dict) and status.get("startup_phase"):
-                print(f"     startup_phase: {status.get('startup_phase')}")
+            if gate == "unavailable":
+                print(f"\n[WARN] Status unavailable: {status.get('error')}")
+                print("       The status server answered. The menu will open.")
+            else:
+                print("[OK] Backend connected")
+                if isinstance(status, dict) and status.get("startup_phase"):
+                    print(f"     startup_phase: {status.get('startup_phase')}")
             print("[Attach mode] Using remote backend only; local Guardian init skipped")
         else:
             print("\nInitializing...")

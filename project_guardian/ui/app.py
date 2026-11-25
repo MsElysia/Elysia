@@ -2,6 +2,7 @@
 # FastAPI Control Panel for Project Guardian
 # Local-only web UI for status, review queue, and task control
 
+import inspect
 import subprocess
 import json
 import re
@@ -109,6 +110,25 @@ templates_dir = Path(__file__).parent / "templates"
 if FASTAPI_AVAILABLE:
     templates = Jinja2Templates(directory=str(templates_dir))
 
+
+def _render_template(name: str, context: Dict[str, Any], status_code: int = 200):
+    """Render a control-panel page for the installed Starlette.
+
+    Starlette 1.0 takes (request, name, context). Earlier releases take
+    (name, context). requirements-ui.txt allows both.
+    """
+    if not FASTAPI_AVAILABLE:
+        return HTMLResponse("<h1>FastAPI not available</h1>", status_code=503)
+    parameters = list(inspect.signature(templates.TemplateResponse).parameters)
+    if parameters and parameters[0] == "request":
+        return templates.TemplateResponse(
+            context.get("request"),
+            name,
+            context,
+            status_code=status_code,
+        )
+    return templates.TemplateResponse(name, context, status_code=status_code)
+
 # Project root
 project_root = Path(__file__).parent.parent.parent
 
@@ -160,7 +180,7 @@ async def local_only_middleware(request: Request, call_next):
     if not is_loopback(client_host):
         # Reject non-loopback access
         if FASTAPI_AVAILABLE:
-            return templates.TemplateResponse("error.html", {
+            return _render_template("error.html", {
                 "request": request,
                 "error_title": "Local-only UI: remote access denied",
                 "error_message": "This control panel is only accessible from localhost (127.0.0.1). Remote access is blocked for security.",
@@ -675,7 +695,7 @@ async def status_dashboard(request: Request):
     bind_host = os.environ.get("UI_BIND_HOST", "127.0.0.1")
     bind_host_warning = not is_loopback(bind_host) if bind_host else False
     
-    return templates.TemplateResponse("dashboard.html", {
+    return _render_template("dashboard.html", {
         "request": request,
         "current_task": current_task,
         "pending_count": pending_count,
@@ -770,7 +790,7 @@ async def list_reviews(request: Request, status: str = "pending"):
         else:
             counts["pending"] = counts.get("pending", 0) + 1
     
-    return templates.TemplateResponse("reviews.html", {
+    return _render_template("reviews.html", {
         "request": request,
         "reviews": reviews_display,
         "current_status": status,
@@ -803,7 +823,7 @@ async def review_detail(request: Request, request_id: str):
     # Ensure context is JSON-serializable and safe for template
     context_json = json.dumps(redacted_context, indent=2)
     
-    return templates.TemplateResponse("review_detail.html", {
+    return _render_template("review_detail.html", {
         "request": request,
         "review": req,  # Original request (context not mutated)
         "approval": approval,
@@ -1411,7 +1431,7 @@ async def view_acceptance_log(request: Request):
     log_file = project_root / "REPORTS" / "acceptance_last.log"
     
     if not log_file.exists():
-        return templates.TemplateResponse("error.html", {
+        return _render_template("error.html", {
             "request": request,
             "message": "Acceptance log not found"
         })
@@ -1420,13 +1440,13 @@ async def view_acceptance_log(request: Request):
         with open(log_file, 'r', encoding='utf-8') as f:
             log_content = f.read()
         
-        return templates.TemplateResponse("log_viewer.html", {
+        return _render_template("log_viewer.html", {
             "request": request,
             "log_content": log_content,
             "title": "Last Acceptance Run Log"
         })
     except IOError as e:
-        return templates.TemplateResponse("error.html", {
+        return _render_template("error.html", {
             "request": request,
             "message": f"Error reading log: {str(e)}"
         })
@@ -1458,7 +1478,7 @@ async def task_builder(request: Request):
     if not FASTAPI_AVAILABLE:
         return HTMLResponse("<h1>FastAPI not available</h1>")
     
-    return templates.TemplateResponse("task_builder.html", {
+    return _render_template("task_builder.html", {
         "request": request
     })
 
@@ -1526,7 +1546,7 @@ async def mutation_builder(request: Request):
     if not FASTAPI_AVAILABLE:
         return HTMLResponse("<h1>FastAPI not available</h1>")
     
-    return templates.TemplateResponse("mutation_builder.html", {
+    return _render_template("mutation_builder.html", {
         "request": request
     })
 
@@ -1693,7 +1713,7 @@ async def history_list(request: Request):
             except (json.JSONDecodeError, IOError):
                 continue
     
-    return templates.TemplateResponse("history.html", {
+    return _render_template("history.html", {
         "request": request,
         "run_once_files": run_once_files,
         "acceptance_files": acceptance_files,
@@ -1728,7 +1748,7 @@ async def history_run_once_detail(request: Request, filename: str):
     json_str = json.dumps(data, indent=2)
     json_escaped = html.escape(json_str)
     
-    return templates.TemplateResponse("history_detail.html", {
+    return _render_template("history_detail.html", {
         "request": request,
         "filename": filename,
         "data": data,
@@ -1767,7 +1787,7 @@ async def history_acceptance_detail(request: Request, filename: str):
     json_str = json.dumps(data, indent=2)
     json_escaped = html.escape(json_str)
     
-    return templates.TemplateResponse("history_detail.html", {
+    return _render_template("history_detail.html", {
         "request": request,
         "filename": filename,
         "data": data,
@@ -1802,7 +1822,7 @@ async def list_mutations(request: Request):
             except (json.JSONDecodeError, IOError):
                 continue
     
-    return templates.TemplateResponse("mutations.html", {
+    return _render_template("mutations.html", {
         "request": request,
         "mutations": mutations
     })
@@ -1883,7 +1903,7 @@ async def mutation_detail(request: Request, filename: str):
             "status": status
         })
     
-    return templates.TemplateResponse("mutation_detail.html", {
+    return _render_template("mutation_detail.html", {
         "request": request,
         "filename": filename,
         "summary": data.get("summary", "No summary"),
@@ -2010,7 +2030,7 @@ async def diff_viewer(request: Request, mutation: str, path: str):
     import html
     diff_escaped = html.escape(diff_text)
     
-    return templates.TemplateResponse("diff_viewer.html", {
+    return _render_template("diff_viewer.html", {
         "request": request,
         "mutation": mutation,
         "path": path,

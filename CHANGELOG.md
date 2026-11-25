@@ -497,3 +497,10 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+
+## 2026-11-25 product workflow — dashboard page render
+
+- Guardian control-panel HTML now renders on Starlette 1.0 and on the earlier template signature. `_render_template` supplies the request argument when the installed Starlette requires it.
+- `GET /`, `/tasks/new`, `/history`, `/reviews`, `/mutations`, and `/mutations/new` return the page. A non-loopback client receives the 403 local-only page instead of an unhandled template error.
+- Contract: `tests/test_ui_dashboard_pages.py`.

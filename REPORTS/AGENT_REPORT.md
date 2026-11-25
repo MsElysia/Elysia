@@ -3577,3 +3577,30 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+
+---
+
+## 2026-11-25 product workflow — dashboard page render
+
+**Status:** COMPLETE on this branch only. Not on `main`. No pull request.
+
+**Branch:** `cursor/bc-850d1c57-d0bb-4bf5-a069-27fe76b4a85e-5a80`
+
+**Base:** `722d8e4` (`main`). Not based on earlier product branches.
+
+**Implementation commit:** `1357277b42c97e6e71e18bafe6b1cf44408a15e0`
+
+**Files:** `project_guardian/ui/app.py`, `tests/test_ui_dashboard_pages.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`
+
+**Behavior:** Guardian control-panel HTML routes render on Starlette 1.0+, which takes `(request, name, context)`, and still call the earlier `(name, context)` signature when that is what is installed. `GET /`, `/tasks/new`, `/history`, `/reviews`, `/mutations`, and `/mutations/new` return the page. A non-loopback client receives HTTP 403 with the local-only page.
+
+**Before:** Starlette 1.7.0 and FastAPI 0.141.1. `GET /tasks/new` from 127.0.0.1 raised `TypeError: unhashable type: 'dict'` inside Jinja's template cache because the context dict was passed as the template name. `python3 -m uvicorn project_guardian.ui.app:app --host 127.0.0.1 --port 8765` exited 1 with `ModuleNotFoundError: No module named 'project_guardian.module_activity'` from `project_guardian/__init__.py` importing `GuardianCore`.
+
+**Evidence:** `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_ui_dashboard_pages.py -v --tb=short` — 3 passed. The live test served the real FastAPI app with uvicorn on 127.0.0.1 and `GET /tasks/new` returned HTTP 200 containing `Create Task`. A browser on that same app opened `http://127.0.0.1:8765/`, `/tasks/new`, and `/history` as styled pages. Current Task showed NONE. No traceback. `tests/test_ui_smoke.py` still skips at import because of the missing `module_activity` module.
+
+**Left untouched:** `project_guardian/ui_control_panel.py`. Memory workflow today is `a83bc4b` on `origin/cursor/bc-4d934704-3c74-4d0a-bf08-642dd5c40b65-bfc8` and that branch still carries the panel rewrite. Runtime integrity today is `a147b8d` on `origin/cursor/bc-51347cdc-ccd0-4189-95bf-9b0f0528a284-6b82` (`elysia/runtime.py` and `tests/test_elysia_runtime_heartbeat_truth.py` only). Did not edit `elysia/api/server.py`, `elysia/agents/implementer.py`, `elysia/core/proposal_system.py`, `elysia/runtime.py`, or `elysia.py`.
+
+**Queue:** `CURRENT_TASK: NONE`. `TASK-0053` remains OPEN review-only on the brain-bridge line (`bf6c72c`). Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb`. Do not implement live memory or vector writes.
+
+A branch commit is not integrated product readiness. `python -m uvicorn project_guardian.ui.app:app` still cannot start until `project_guardian.module_activity` is importable. `POST /tasks/create` still replaces an existing task file and returns HTTP 200 `created`. Next product run should refuse that overwrite, or pick a different unclaimed API error path, and should re-check the memory-workflow panel branch before editing `project_guardian/ui_control_panel.py`.

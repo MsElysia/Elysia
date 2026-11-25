@@ -308,3 +308,138 @@ def test_context_document_candidates_filter_bad_metadata_before_cap(tmp_path):
     })
     matches = library.search("Veridia beacon location", context_distinct=True)
     assert [row["source_id"] for row in matches] == [legitimate["source_id"]]
+
+def test_document_preview_selection_change_fences_stale_queue():
+    """Execute the actual embedded browser queue code in a minimal DOM."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.fail("Node.js is required for the embedded browser queue regression")
+    source = (_ROOT / "project_guardian" / "ui_control_panel.py").read_text(encoding="utf-8")
+    start = source.index("        window._documentPreviewQueue = [];")
+    end = source.index("        window.searchImportedDocuments = function()", start)
+    browser_code = source[start:end]
+    harness = r"""const assert=(v,m)=>{if(!v)throw Error(m)};global.window=global;const e={'document-files':{files:[],disabled:false,addEventListener:(n,f)=>global.changeHandler=f},'document-import-button':{disabled:true},'document-preview-button':{disabled:false},'document-import-status':{textContent:''},'document-preview':{textContent:''}};global.document={getElementById:id=>e[id]||{}};global.FormData=class{append(k,v){if(k==='file')this.file=v}};global.restrictedUploadHeaders=()=>({});window.refreshDocumentLibrary=()=>{};let pending,mode='pending',saved=[];global.fetch=(url,opt)=>{const f=opt.body.file;if(url==='/api/documents/preview'){if(mode==='pending')return new Promise(r=>pending=()=>r({ok:true,status:200,json:async()=>({success:true,preview:{filename:f.name,source_id:'src-'+f.name,chunk_count:1,page_count:1,chunk_settings:{},preview_text:'text'}})}));return Promise.resolve({ok:true,status:200,json:async()=>({success:true,preview:{filename:f.name,source_id:'src-'+f.name,chunk_count:1,page_count:1,chunk_settings:{},preview_text:'text'}})});}if(url==='/api/documents'){saved.push(f.name);return Promise.resolve({ok:true,status:200,json:async()=>({success:true,document:{duplicate:false,source_id:'src-'+f.name,chunk_count:1}})});}throw Error('unexpected')};""" + browser_code + r"""(async()=>{const A={name:'A.txt'},B={name:'B.txt'};assert(typeof changeHandler==='function','BASELINE_RED missing change listener');e['document-files'].files=[A];changeHandler();const p=previewSelectedDocuments();assert(typeof pending==='function','A preview not started');e['document-files'].files=[B];changeHandler();assert(e['document-import-button'].disabled,'Save enabled after selection change');pending();await p;assert(_documentPreviewQueue.length===0,'stale A repopulated queue');mode='immediate';await previewSelectedDocuments();assert(_documentPreviewQueue.length===1&&_documentPreviewQueue[0].file.name==='B.txt','B not pinned');assert(!e['document-import-button'].disabled,'Save not enabled for B');assert(saved.length===0,'chooser cancel mutated storage');await savePreviewedDocuments();assert(JSON.stringify(saved)==='["B.txt"]','wrong saved files '+JSON.stringify(saved));assert(_documentPreviewQueue.length===0,'queue not cleared');console.log('PASS selection fence');})().catch(x=>{console.error(x.message);process.exit(1)});"""
+    result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=15, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS selection fence" in result.stdout
+
+
+
+def test_document_busy_drop_invalidates_stale_selection_and_preserves_inflight_receipts():
+    """Exercise the actual drag/drop delegate and deferred preview/save responses."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.fail("Node.js is required for the drag/drop selection regression")
+    source = (_ROOT / "project_guardian" / "ui_control_panel.py").read_text(encoding="utf-8")
+    assert "window.importSelectedDocuments(e.dataTransfer.files)" in source
+    start = source.index("        window._documentPreviewQueue = [];")
+    end = source.index("        window.searchImportedDocuments = function()", start)
+    browser_code = source[start:end]
+    harness = r"""
+const assert = (ok, message) => { if (!ok) throw Error(message); };
+const window = {};
+let changeHandler, refreshes = 0, pendingPreview, pendingSave;
+const e = {
+    'document-files': {files: [], disabled: false, addEventListener: (n, f) => { changeHandler = f; }},
+    'document-import-button': {disabled: true},
+    'document-preview-button': {disabled: false},
+    'document-import-status': {textContent: ''},
+    'document-preview': {textContent: ''}
+};
+const document = {getElementById: id => e[id]};
+class FormData { append(k, file) { this.file = file; } }
+const restrictedUploadHeaders = () => ({});
+window.refreshDocumentLibrary = () => { refreshes++; };
+let holdPreview = false, holdSave = false, previews = [], saves = [];
+const previewResponse = file => ({ok: true, json: async () => ({
+    success: true, preview: {filename: file.name, source_id: 'preview-' + file.name,
+    chunk_count: 1, page_count: 1, chunk_settings: {}, preview_text: 'synthetic'}
+})});
+const saveResponse = (file, mode) => ({ok: mode !== 'failure', json: async () => mode === 'failure'
+    ? {success: false, error: 'synthetic failure'}
+    : {success: true, document: {source_id: 'receipt-' + file.name, duplicate: mode === 'duplicate', chunk_count: 1}}});
+const fetch = (url, opts) => {
+    const file = opts.body.file;
+    if (url === '/api/documents/preview') {
+        previews.push(file.name);
+        if (holdPreview) return new Promise(resolve => { pendingPreview = () => resolve(previewResponse(file)); });
+        return Promise.resolve(previewResponse(file));
+    }
+    assert(url === '/api/documents', 'unexpected endpoint');
+    saves.push(file.name);
+    if (holdSave) return new Promise(resolve => { pendingSave = mode => resolve(saveResponse(file, mode)); });
+    return Promise.resolve(saveResponse(file, 'success'));
+};
+""" + browser_code + r"""
+async function run() {
+    const A = {name: 'A.txt'}, B = {name: 'B.txt'}, C = {name: 'C.txt'};
+    const status = () => e['document-import-status'].textContent;
+    const disabled = () => e['document-import-button'].disabled;
+    const drop = files => window.importSelectedDocuments(files);
+    const choose = files => { e['document-files'].files = files; changeHandler(); };
+    const ready = () => !window._documentImportBusy && !e['document-preview-button'].disabled && !e['document-files'].disabled;
+    holdPreview = true;
+    const a = drop([A]);
+    assert(previews.join() === 'A.txt', 'idle drop did not preview A');
+    drop([B]);
+    assert(disabled() && status().includes('New drop rejected while busy'), 'busy drop not explicitly rejected');
+    pendingPreview(); await a;
+    assert(disabled() && window._documentPreviewQueue.length === 0 && ready(), 'late A restored stale selection');
+    assert(status().includes('drop the desired files again'), 'retry guidance lost');
+    await window.savePreviewedDocuments();
+    assert(saves.length === 0, 'stale A uploaded');
+    holdPreview = false;
+    await drop([B]);
+    assert(!disabled() && saves.length === 0, 'idle drop must preview only');
+    await window.savePreviewedDocuments();
+    assert(saves.join() === 'B.txt', 'explicit B save did not save only B');
+    for (const mode of ['success', 'duplicate', 'failure']) {
+        await drop([A, C]);
+        holdSave = true;
+        const before = saves.length, refreshBefore = refreshes;
+        const active = window.savePreviewedDocuments();
+        await window.savePreviewedDocuments();
+        drop([B]);
+        assert(disabled() && window._documentPreviewQueue.length === 0 && status().includes('New drop rejected while busy'), 'busy save drop did not invalidate');
+        pendingSave(mode); await active;
+        holdSave = false;
+        assert(saves.slice(before).join() === 'A.txt', 'undispatched C or duplicate Save sent');
+        assert(refreshes === refreshBefore + 1 && ready() && disabled(), 'receipt refresh or control restoration lost');
+        assert(status().includes('drop the desired files again'), 'retry guidance lost during Save');
+        const expected = mode === 'failure' ? 'A.txt: Failed: synthetic failure'
+            : mode === 'duplicate' ? 'A.txt: Already indexed (receipt-A.txt)'
+            : 'A.txt: Saved';
+        assert(status().includes(expected), 'in-flight outcome mislabeled: ' + status());
+        if (mode === 'failure') assert(!status().includes('Saved ·'), 'fabricated receipt');
+    }
+    choose([A]); holdPreview = true;
+    const mixed = window.previewSelectedDocuments();
+    drop([B]); choose([A]);
+    pendingPreview(); await mixed;
+    assert(disabled() && window._documentPreviewQueue.length === 0, 'mixed A-B-A revived old A');
+    holdPreview = false;
+    await window.previewSelectedDocuments();
+    assert(window._documentPreviewQueue[0].file === A, 'fresh chooser preview not pinned');
+    choose([]);
+    assert(disabled() && window._documentPreviewQueue.length === 0, 'chooser clear retained preview');
+    await drop([B]);
+    assert(!disabled(), 'fresh idle B drop unusable');
+    const before = saves.length;
+    await window.savePreviewedDocuments();
+    assert(saves.slice(before).join() === 'B.txt', 'fresh explicit save failed');
+    return 'PASS busy-drop selection fence, 3 in-flight receipt outcomes, mixed selection, idle drop';
+}
+
+run().then(message => console.log(message)).catch(error => {
+    console.error(error.stack); process.exitCode = 1;
+});
+"""
+    result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=15, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS busy-drop selection fence" in result.stdout

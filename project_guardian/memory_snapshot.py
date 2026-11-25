@@ -37,6 +37,8 @@ class MemorySnapshot:
         self.retention_days = retention_days
         # Outcome of the most recent restore_from_snapshot() call.
         self.last_restore_report: Dict[str, Any] = {}
+        # Outcome of the most recent create_snapshot()/create_daily_snapshot() call.
+        self.last_snapshot_report: Dict[str, Any] = {}
         
         # Ensure directories exist
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -63,34 +65,70 @@ class MemorySnapshot:
             metadata: Optional snapshot metadata
             
         Returns:
-            Snapshot file path
+            Snapshot file path, or "" when no durable snapshot was written.
+
+        Durability contract: the snapshot is serialized fully before any file
+        is created, staged beside its final name, fsynced and renamed into
+        place. A failed write therefore never leaves a partial
+        ``snapshot_*.json`` that ``get_latest_snapshot``/``list_snapshots``
+        (and the error-handler recovery path built on them) would pick over
+        the previous healthy snapshot. Two snapshots within one second get
+        distinct names instead of overwriting each other. The shard copy is a
+        best-effort secondary: its failure is recorded in
+        ``last_snapshot_report`` but does not turn a durable primary snapshot
+        into a reported failure.
         """
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        snapshot_file = self.snapshot_dir / f"snapshot_{timestamp}.json"
-        
+        report = self._new_snapshot_report("snapshot")
+        if not isinstance(memory_data, (list, tuple)):
+            report["error"] = f"memory_data must be a list, got {type(memory_data).__name__}"
+            logger.error("Failed to create snapshot: %s", report["error"])
+            return ""
+        memory_data = list(memory_data)
+        now = datetime.now()
         snapshot_data = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now.isoformat(),
             "memory_count": len(memory_data),
             "memories": memory_data,
             "metadata": metadata or {},
             "vector_index_path": vector_index_path
         }
-        
+        report["memory_count"] = len(memory_data)
+
         try:
-            with open(snapshot_file, 'w', encoding='utf-8') as f:
-                json.dump(snapshot_data, f, indent=2)
-                
-            # Copy to one of the backup shards (round-robin)
-            shard_idx = len(list(self.shard_dirs[0].glob("*.json"))) % self.backup_shards
-            shard_file = self.shard_dirs[shard_idx] / f"snapshot_{timestamp}.json"
-            shutil.copy2(snapshot_file, shard_file)
-            
-            logger.info(f"Snapshot created: {snapshot_file} (backed to shard {shard_idx+1})")
-            return str(snapshot_file)
-            
+            text = json.dumps(snapshot_data, indent=2)
+        except (TypeError, ValueError) as e:
+            report["error"] = f"snapshot not serializable: {e}"[:200]
+            logger.error("Failed to create snapshot: %s", report["error"])
+            return ""
+
+        try:
+            snapshot_file = self._unique_snapshot_path("snapshot_", now.strftime("%Y%m%d_%H%M%S"))
+            self._write_text_durably(snapshot_file, text)
         except Exception as e:
+            report["error"] = f"{type(e).__name__}: {e}"[:200]
             logger.error(f"Failed to create snapshot: {e}")
             return ""
+        report["path"] = str(snapshot_file)
+        report["persisted"] = True
+
+        shard_idx = self._select_backup_shard()
+        if shard_idx is None:
+            logger.info(f"Snapshot created: {snapshot_file} (no backup shards configured)")
+        else:
+            report["shard"] = shard_idx + 1
+            shard_file = self.shard_dirs[shard_idx] / snapshot_file.name
+            try:
+                self._copy_file_durably(snapshot_file, shard_file)
+                report["shard_copied"] = True
+                logger.info(f"Snapshot created: {snapshot_file} (backed to shard {shard_idx+1})")
+            except Exception as e:
+                report["shard_copied"] = False
+                report["error"] = f"shard copy failed: {type(e).__name__}: {e}"[:200]
+                logger.warning(
+                    "Snapshot created: %s but backup copy to shard %d failed: %s",
+                    snapshot_file, shard_idx + 1, e,
+                )
+        return str(snapshot_file)
             
     def create_daily_snapshot(
         self,
@@ -105,38 +143,128 @@ class MemorySnapshot:
             vector_index_path: Optional vector index path
             
         Returns:
-            Snapshot file path
+            Snapshot file path, or "" when no durable snapshot was written.
+
+        The new daily file is written durably first (an atomic replace when
+        today's file already exists); only then are earlier ``daily_*.json``
+        files removed. A failed write leaves the previous daily snapshot
+        intact instead of deleting it and leaving a partial file behind.
         """
-        # Remove old daily snapshot
-        daily_snapshots = list(self.snapshot_dir.glob("daily_*.json"))
-        for old_snapshot in daily_snapshots:
-            try:
-                old_snapshot.unlink()
-            except Exception:
-                pass
-                
-        # Create new daily snapshot
-        timestamp = datetime.now().strftime("%Y%m%d")
-        snapshot_file = self.snapshot_dir / f"daily_{timestamp}.json"
-        
+        report = self._new_snapshot_report("daily")
+        if not isinstance(memory_data, (list, tuple)):
+            report["error"] = f"memory_data must be a list, got {type(memory_data).__name__}"
+            logger.error("Failed to create daily snapshot: %s", report["error"])
+            return ""
+        memory_data = list(memory_data)
+        now = datetime.now()
+        snapshot_file = self.snapshot_dir / f"daily_{now.strftime('%Y%m%d')}.json"
         snapshot_data = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now.isoformat(),
             "memory_count": len(memory_data),
             "memories": memory_data,
             "snapshot_type": "daily",
             "vector_index_path": vector_index_path
         }
-        
+        report["memory_count"] = len(memory_data)
+
         try:
-            with open(snapshot_file, 'w', encoding='utf-8') as f:
-                json.dump(snapshot_data, f, indent=2)
-                
-            logger.info(f"Daily snapshot created: {snapshot_file}")
-            return str(snapshot_file)
-            
+            text = json.dumps(snapshot_data, indent=2)
+        except (TypeError, ValueError) as e:
+            report["error"] = f"snapshot not serializable: {e}"[:200]
+            logger.error("Failed to create daily snapshot: %s", report["error"])
+            return ""
+
+        try:
+            self._write_text_durably(snapshot_file, text)
         except Exception as e:
+            report["error"] = f"{type(e).__name__}: {e}"[:200]
             logger.error(f"Failed to create daily snapshot: {e}")
             return ""
+        report["path"] = str(snapshot_file)
+        report["persisted"] = True
+
+        # Only now is it safe to drop earlier daily snapshots.
+        for old_snapshot in self.snapshot_dir.glob("daily_*.json"):
+            if old_snapshot.name == snapshot_file.name:
+                continue
+            try:
+                old_snapshot.unlink()
+                report["removed_previous"] += 1
+            except Exception as e:
+                logger.warning(f"Failed to remove previous daily snapshot {old_snapshot}: {e}")
+
+        logger.info(f"Daily snapshot created: {snapshot_file}")
+        return str(snapshot_file)
+
+    def _new_snapshot_report(self, kind: str) -> Dict[str, Any]:
+        report: Dict[str, Any] = {
+            "kind": kind,
+            "path": None,
+            "memory_count": None,
+            "persisted": False,
+            "shard": None,
+            "shard_copied": None,
+            "removed_previous": 0,
+            "error": None,
+        }
+        self.last_snapshot_report = report
+        return report
+
+    def _unique_snapshot_path(self, prefix: str, stamp: str) -> Path:
+        """``<prefix><stamp>.json``, with ``_<n>`` inserted if that name is taken.
+
+        Checked against the snapshot dir and every shard so a shard copy never
+        overwrites an earlier snapshot's copy either.
+        """
+        candidate = self.snapshot_dir / f"{prefix}{stamp}.json"
+        n = 1
+        while candidate.exists() or any((d / candidate.name).exists() for d in self.shard_dirs):
+            candidate = self.snapshot_dir / f"{prefix}{stamp}_{n}.json"
+            n += 1
+        return candidate
+
+    def _select_backup_shard(self) -> Optional[int]:
+        """Index of the least-loaded shard (lowest index on ties); None if no shards."""
+        if not self.shard_dirs:
+            return None
+        counts = [len(list(d.glob("snapshot_*.json"))) for d in self.shard_dirs]
+        return counts.index(min(counts))
+
+    @staticmethod
+    def _write_text_durably(target: Path, text: str) -> None:
+        """Stage ``text`` in a temp file next to ``target``, fsync, then rename into place."""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=f".{target.stem}.", suffix=".tmp", dir=str(target.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, target)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    @staticmethod
+    def _copy_file_durably(source: Path, target: Path) -> None:
+        """Copy ``source`` to ``target`` without ever exposing a partial ``target``."""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=f".{target.stem}.", suffix=".tmp", dir=str(target.parent))
+        os.close(fd)
+        try:
+            shutil.copy2(source, tmp_path)
+            with open(tmp_path, "rb+") as handle:
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, target)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
             
     def load_snapshot(self, snapshot_path: str) -> Optional[Dict[str, Any]]:
         """
@@ -194,9 +322,13 @@ class MemorySnapshot:
         for snapshot_file in snapshots[:limit]:
             try:
                 stat = snapshot_file.stat()
+                created = datetime.fromtimestamp(stat.st_mtime).isoformat()
                 snapshot_info.append({
                     "path": str(snapshot_file),
-                    "created": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "created": created,
+                    # Alias consumed by error_handler._recover_memory_error,
+                    # which picks the restore candidate with max("timestamp").
+                    "timestamp": created,
                     "size": stat.st_size
                 })
             except Exception:

@@ -33,6 +33,8 @@ RC_REQUIRED = [
     "tests/test_document_task_execution.py",
     "tests/test_contained_startup.py",
     "tests/test_restricted_runtime_adapter.py",
+    # Disposable expected-RED project grammar baseline, test-only PR.
+    "tests/test_fact_associative_tag_recall.py",
     "tests/test_control_panel_restricted_runtime.py",
     "tests/test_dashboard_plan_progress.py",
     "tests/test_windows_promotion_preflight.py",

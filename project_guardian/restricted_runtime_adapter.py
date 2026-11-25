@@ -21,6 +21,12 @@ API_PREFIX = "/api/restricted/v1"
 FACT_CATEGORY = "restricted_fact"
 FACT_KIND = "restricted_fact"
 FACT_PRIORITY = 0.95
+SEMANTIC_LINKS_FIELD = "approved_semantic_links_v1"
+_MAX_SEMANTIC_LINKS = 8
+_MAX_SEMANTIC_ALIASES = 8
+_SEMANTIC_CONCEPT_RE = re.compile(r"^[a-z][a-z0-9_]{1,47}$")
+_PROJECT_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+_SEMANTIC_ALIAS_RE = re.compile(r"^[a-z0-9]+(?: [a-z0-9]+){0,3}$")
 MEMORY_MODULE = "project_guardian.memory.MemoryCore"
 
 _FACT_ID_RE = re.compile(r"^fact_[a-f0-9]{16}$")
@@ -160,6 +166,128 @@ def _clean_statement(value: Any) -> str:
     return statement
 
 
+def _normalized_concept(value: Any) -> str:
+    if type(value) is not str:
+        raise ValueError("semantic concept must be a string")
+    concept = value.strip().casefold()
+    if concept.startswith("#"):
+        concept = concept[1:]
+    if not _SEMANTIC_CONCEPT_RE.fullmatch(concept):
+        raise ValueError("invalid semantic concept")
+    return concept
+
+
+def _normalized_alias(value: Any) -> str:
+    if type(value) is not str:
+        raise ValueError("semantic alias must be a string")
+    alias = " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+    if (not alias or len(alias) > 56
+            or not _SEMANTIC_ALIAS_RE.fullmatch(alias)
+            or alias in _STOPWORDS):
+        raise ValueError("invalid semantic alias")
+    return alias
+
+
+def _normalized_project(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    project = _normalized_concept(value)
+    # Unlike concept labels, project identities cannot contain empty parts.
+    # Existing persisted malformed links are rejected by read-time revalidation.
+    if project.startswith("fact_") or not _PROJECT_ID_RE.fullmatch(project):
+        raise ValueError("invalid project identity")
+    return project
+
+
+def _prepare_semantic_links(
+    source: Any, *, fact_id: str, revision: int, statement: str, actor: str
+) -> List[Dict[str, Any]]:
+    """Bind explicit authenticated tag decisions to this exact fact event."""
+    if type(source) is not list or len(source) > _MAX_SEMANTIC_LINKS:
+        raise ValueError("semantic links must be a bounded list")
+    if not _FACT_ID_RE.fullmatch(fact_id) or type(revision) is not int or revision < 1:
+        raise ValueError("invalid semantic source identity")
+    if type(statement) is not str or not actor or not _IDENTITY_RE.fullmatch(actor):
+        raise ValueError("invalid semantic approval provenance")
+    seen = set()
+    result = []
+    for raw in source:
+        if type(raw) is not dict or set(raw) not in (
+            {"concept", "aliases", "state"},
+            {"concept", "aliases", "state", "project_id"},
+        ):
+            raise ValueError("invalid semantic link fields")
+        concept = _normalized_concept(raw["concept"])
+        state = raw["state"]
+        if type(state) is not str or state not in ("selected_existing", "candidate_proposed"):
+            raise ValueError("invalid semantic link state")
+        aliases = raw["aliases"]
+        if (type(aliases) is not list or not 1 <= len(aliases) <= _MAX_SEMANTIC_ALIASES):
+            raise ValueError("semantic aliases must be a bounded nonempty list")
+        clean_aliases = sorted({_normalized_alias(word) for word in aliases})
+        if len(clean_aliases) != len(aliases):
+            raise ValueError("duplicate semantic alias")
+        project_id = _normalized_project(raw.get("project_id"))
+        key = (concept, project_id)
+        if key in seen:
+            raise ValueError("duplicate semantic concept/project link")
+        seen.add(key)
+        result.append({
+            "concept": concept,
+            "aliases": clean_aliases,
+            "state": state,
+            "project_id": project_id,
+            "fact_id": fact_id,
+            "revision": revision,
+            "source_sha256": hashlib.sha256(statement.encode("utf-8")).hexdigest(),
+            "approving_actor": actor,
+            "method": "authenticated_operator",
+            "rule_version": "restricted-fact-tags-v1",
+            "confidence": 1.0,
+        })
+    return result
+
+
+def validated_approved_semantic_links(
+    source: Any, *, fact_id: str, revision: int, statement: str, actor: str
+) -> List[Dict[str, Any]]:
+    """Reject malformed/stale/forged associations; never promote candidates."""
+    if type(source) is not list or len(source) > _MAX_SEMANTIC_LINKS:
+        return []
+    required = {
+        "concept", "aliases", "state", "project_id", "fact_id", "revision",
+        "source_sha256", "approving_actor", "method", "rule_version", "confidence",
+    }
+    if any(type(item) is not dict or set(item) != required for item in source):
+        return []
+    if any(
+        type(item["revision"]) is not int
+        or type(item["confidence"]) is not float
+        or type(item["source_sha256"]) is not str
+        or type(item["fact_id"]) is not str
+        or type(item["approving_actor"]) is not str
+        or type(item["method"]) is not str
+        or type(item["rule_version"]) is not str
+        for item in source
+    ):
+        return []
+    try:
+        originals = [
+            {key: item[key] for key in ("concept", "aliases", "state", "project_id")}
+            for item in source
+        ]
+        expected = _prepare_semantic_links(
+            originals, fact_id=fact_id, revision=revision,
+            statement=statement, actor=actor,
+        )
+    except (ValueError, TypeError):
+        return []
+    # The persisted exact format and server-minted binding must both agree.
+    if source != expected:
+        return []
+    return [dict(item) for item in source if item["state"] == "selected_existing"]
+
+
 class RestrictedRuntimeAdapter:
     """
     Local API adapter over one existing MemoryCore.
@@ -222,6 +350,8 @@ class RestrictedRuntimeAdapter:
                     "actor": fact["actor"],
                     "previous_statement": fact["previous_statement"],
                     "current": True,
+                    **({SEMANTIC_LINKS_FIELD: fact[SEMANTIC_LINKS_FIELD]}
+                       if fact.get(SEMANTIC_LINKS_FIELD) else {}),
                 }
                 for fact in self._current_facts()
             ]
@@ -293,6 +423,13 @@ class RestrictedRuntimeAdapter:
             # Malformed requests never establish operational status (no success record).
             return _error(400, "invalid_request", str(exc))
         fact_id = "fact_" + uuid.uuid4().hex[:16]
+        try:
+            links = (_prepare_semantic_links(
+                body[SEMANTIC_LINKS_FIELD], fact_id=fact_id, revision=1,
+                statement=statement, actor=principal.identity,
+            ) if SEMANTIC_LINKS_FIELD in body else None)
+        except ValueError as exc:
+            return _error(400, "invalid_request", str(exc))
         record = self._append_event(
             fact_id=fact_id,
             revision=1,
@@ -300,11 +437,14 @@ class RestrictedRuntimeAdapter:
             operation="save",
             actor=principal.identity,
             previous_statement=None,
+            approved_semantic_links=links,
         )
         # Authoritative readback: HTTP/API success alone is not operational proof.
         verified, fail_category = self._verify_teach_persisted(
             fact_id=fact_id, revision=1, statement=statement
         )
+        if verified and links is not None and not self._verify_semantic_links_write(fact_id, 1, links):
+            verified, fail_category = False, "semantic_links_readback_mismatch"
         if not verified:
             _record_memory_write_failure("memory.teach", fail_category)
             return _error(
@@ -345,6 +485,13 @@ class RestrictedRuntimeAdapter:
             prior_revision = int(current["revision"])
             prior_statement = current["statement"]
             new_revision = prior_revision + 1
+            try:
+                links = (_prepare_semantic_links(
+                    body[SEMANTIC_LINKS_FIELD], fact_id=fact_id, revision=new_revision,
+                    statement=statement, actor=principal.identity,
+                ) if SEMANTIC_LINKS_FIELD in body else None)
+            except ValueError as exc:
+                return _error(400, "invalid_request", str(exc))
             record = self._append_event(
                 fact_id=fact_id,
                 revision=new_revision,
@@ -352,6 +499,7 @@ class RestrictedRuntimeAdapter:
                 operation="correct",
                 actor=principal.identity,
                 previous_statement=prior_statement,
+                approved_semantic_links=links,
                 hold_lock=True,
             )
             verified, fail_category = self._verify_correct_persisted(
@@ -361,6 +509,8 @@ class RestrictedRuntimeAdapter:
                 prior_revision=prior_revision,
                 prior_statement=prior_statement,
             )
+            if verified and links is not None and not self._verify_semantic_links_write(fact_id, new_revision, links):
+                verified, fail_category = False, "semantic_links_readback_mismatch"
         if not verified:
             _record_memory_write_failure("memory.correct", fail_category)
             return _error(
@@ -436,6 +586,21 @@ class RestrictedRuntimeAdapter:
         if current["statement"] == prior_statement:
             return False, "correction_not_applied"
         return True, ""
+
+    def _verify_semantic_links_write(
+        self, fact_id: str, revision: int, expected: List[Dict[str, Any]]
+    ) -> bool:
+        """Read back exact optional metadata from the same authoritative store."""
+        self.memory.load_if_needed()
+        rows = [
+            entry.get("metadata")
+            for entry in self.memory.memory_log if isinstance(entry, dict)
+            and isinstance(entry.get("metadata"), dict)
+            and entry["metadata"].get("kind") == FACT_KIND
+            and entry["metadata"].get("fact_id") == fact_id
+            and entry["metadata"].get("revision") == revision
+        ]
+        return bool(rows) and rows[-1].get(SEMANTIC_LINKS_FIELD) == expected
 
     def _retrieve_facts(self, body: Mapping[str, Any]) -> AdapterResponse:
         query = body.get("query")
@@ -524,17 +689,28 @@ class RestrictedRuntimeAdapter:
             statement = metadata.get("statement")
             if not isinstance(statement, str):
                 continue
-            records.append(
-                {
-                    "fact_id": fact_id,
-                    "revision": revision,
-                    "statement": statement,
-                    "operation": metadata.get("operation") or "save",
-                    "actor": metadata.get("actor") or "",
-                    "previous_statement": metadata.get("previous_statement"),
-                    "time": entry.get("time") or "",
-                }
-            )
+            record = {
+                "fact_id": fact_id,
+                "revision": revision,
+                "statement": statement,
+                "operation": metadata.get("operation") or "save",
+                "actor": metadata.get("actor") or "",
+                "previous_statement": metadata.get("previous_statement"),
+                "time": entry.get("time") or "",
+            }
+            if (SEMANTIC_LINKS_FIELD in metadata
+                    and type(metadata.get("revision")) is int
+                    and entry.get("thought") == (
+                        f"Restricted fact {fact_id} revision {revision}: {statement}"
+                    )):
+                approved = validated_approved_semantic_links(
+                    metadata[SEMANTIC_LINKS_FIELD],
+                    fact_id=fact_id, revision=revision,
+                    statement=statement, actor=record["actor"],
+                )
+                if approved:
+                    record[SEMANTIC_LINKS_FIELD] = approved
+            records.append(record)
         return records
 
     def _append_event(
@@ -546,6 +722,7 @@ class RestrictedRuntimeAdapter:
         operation: str,
         actor: str,
         previous_statement: Optional[str],
+        approved_semantic_links: Optional[List[Dict[str, Any]]] = None,
         hold_lock: bool = False,
     ) -> Dict[str, Any]:
         metadata = {
@@ -557,6 +734,8 @@ class RestrictedRuntimeAdapter:
             "actor": actor,
             "previous_statement": previous_statement,
         }
+        if approved_semantic_links is not None:
+            metadata[SEMANTIC_LINKS_FIELD] = approved_semantic_links
         thought = f"Restricted fact {fact_id} revision {revision}: {statement}"
         entry = {
             "fact_id": fact_id,

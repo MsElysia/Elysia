@@ -625,6 +625,108 @@ def test_valid_project_spelling_keeps_original_source_identity(store, name):
     assert "project_ambiguity" not in result
 
 
+@pytest.mark.parametrize("prefix", ["Straße ﬁnance:", "aﬃnity", "İstanbul Straße"])
+@pytest.mark.parametrize("malformed", [
+    "_moonbeam_court", "moonbeam__court", "moonbeam_court_",
+])
+def test_unicode_prefix_malformed_project_cannot_silently_narrow_context(
+    store, prefix, malformed, monkeypatch,
+):
+    """Casefold expansion before a project cue cannot shift grammar offsets."""
+    from project_guardian.local_memory_chat import (
+        LocalOllama, ManualAuthorization, converse_bundle,
+    )
+
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    correct_statement = "Owner approved acrylic for the surface."
+    other_statement = "Owner approved oil for the surface."
+    correct = save(adapter, headers, correct_statement, [
+        {**TAG, "project_id": "moonbeam_court"},
+    ])
+    other = save(adapter, headers, other_statement, [
+        {**TAG, "project_id": "juniper"},
+    ])
+    question = f"{prefix} Which coating for project {malformed} to select finish?"
+    memory = bundle(store, question)
+    assert memory["project_ambiguity"]["requires_clarification"] is True
+    assert memory["project_ambiguity"]["unknown_project_hints"]
+    assert memory["project_ambiguity"]["project_ids"] == ["juniper", "moonbeam_court"]
+    assert {row["source_id"] for row in memory["evidence"]} == {correct, other}
+    assert {row["source_sha256"] for row in memory["evidence"]} == {
+        hashlib.sha256(correct_statement.encode()).hexdigest(),
+        hashlib.sha256(other_statement.encode()).hexdigest(),
+    }
+    assert all(row["revision"] == 1 for row in memory["evidence"])
+    seen = []
+
+    def fake_generate(model, messages, *, json_mode=False):
+        seen.append(json.loads(messages[-1]["content"]))
+        assert "requires_clarification" in messages[0]["content"]
+        return json.dumps({"answer": "Which project do you mean?"})
+
+    monkeypatch.setattr(LocalOllama, "generate", fake_generate)
+    reply = converse_bundle(
+        memory, question,
+        ManualAuthorization("req-unicode-scope", True, True,
+                            frozenset({"local.chat", "memory.read"})),
+        LocalOllama("fixture-model"), recent=(),
+    )
+    assert seen[0]["context_bundle"]["project_ambiguity"] == memory["project_ambiguity"]
+    assert reply["tools_executed"] == [] and reply["memory_written"] is False
+
+
+@pytest.mark.parametrize("prefix", ["Straße", "aﬃnity", "İstanbul Straße"])
+@pytest.mark.parametrize("valid", [
+    "moonbeam court", "moonbeam-court", "moonbeam_court",
+])
+def test_unicode_prefix_valid_project_preserves_full_name_scope(
+    store, prefix, valid,
+):
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    correct_statement = "Owner approved acrylic for the surface."
+    correct = save(adapter, headers, correct_statement, [
+        {**TAG, "project_id": "moonbeam_court"},
+    ])
+    shorter = save(adapter, headers, "Owner approved teal for the surface.", [
+        {**TAG, "project_id": "moonbeam"},
+    ])
+    other = save(adapter, headers, "Owner approved oil for the surface.", [
+        {**TAG, "project_id": "juniper"},
+    ])
+    question = f"{prefix}: Which coating for project {valid}?"
+    memory = bundle(store, question)
+    assert [row["source_id"] for row in memory["evidence"]] == [correct]
+    row = memory["evidence"][0]
+    assert row["revision"] == 1 and row["chunk_id"] == correct
+    assert row["source_sha256"] == hashlib.sha256(correct_statement.encode()).hexdigest()
+    assert row["project_ids"] == ["moonbeam_court"]
+    assert row["recall_reasons"][0]["matched_alias"] == "coating"
+    assert "project_ambiguity" not in memory
+    assert shorter not in json.dumps(memory["evidence"])
+    assert other not in json.dumps(memory["evidence"])
+
+
+def test_unicode_prefix_coordinated_projects_remain_ambiguous(store):
+    _, headers, open_adapter = store
+    adapter = open_adapter()
+    first = save(adapter, headers, "Owner approved acrylic for the surface.", [
+        {**TAG, "project_id": "moonbeam_court"},
+    ])
+    second = save(adapter, headers, "Owner approved oil for the surface.", [
+        {**TAG, "project_id": "juniper"},
+    ])
+    memory = bundle(
+        store, "Straße ﬁnance: Which coating for project moonbeam court and project juniper?"
+    )
+    assert {row["source_id"] for row in memory["evidence"]} == {first, second}
+    assert memory["project_ambiguity"] == {
+        "requires_clarification": True,
+        "project_ids": ["juniper", "moonbeam_court"],
+    }
+
+
 def test_unknown_named_project_and_multiple_known_projects_never_silent_select(store):
     _, headers, open_adapter = store
     adapter = open_adapter()

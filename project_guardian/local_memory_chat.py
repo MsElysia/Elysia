@@ -398,7 +398,10 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
     # A project name scopes recall only after an explicit "project" cue.
     # Task nouns and approved aliases alone are never project selectors.
     # Preserve commas so coordinated names cannot be mistaken for one ID.
-    query_spans = list(re.finditer(r"[a-z0-9]+|,", question.casefold()))
+    # Span offsets and raw delimiter checks must share this SAME string.
+    # Unicode casefold can expand characters before the project reference.
+    folded_question = question.casefold()
+    query_spans = list(re.finditer(r"[a-z0-9]+|,", folded_question))
     query_words = [match.group() for match in query_spans]
     project_parts = {
         project: tuple(project.split("_")) for project in known_projects
@@ -449,9 +452,9 @@ def build_context_from_adapter(adapter: Any, question: str, headers: Mapping[str
             # Match the raw spelling as well as its lexical words. Otherwise
             # "project moonbeam__court" silently selects moonbeam_court.
             start_char, end_char = query_spans[cursor].start(), query_spans[after_name - 1].end()
-            leading = question[query_spans[cursor - 1].end():start_char].casefold()
-            spelling = question[start_char:end_char].casefold()
-            suffix = re.match(r"[_-]+", question[end_char:].casefold())
+            leading = folded_question[query_spans[cursor - 1].end():start_char]
+            spelling = folded_question[start_char:end_char]
+            suffix = re.match(r"[_-]+", folded_question[end_char:])
             if (("_" in leading or "-" in leading)
                     or not re.fullmatch(
                         r"[a-z0-9]+(?:(?:_|\s*-\s*|\s+)[a-z0-9]+)*", spelling

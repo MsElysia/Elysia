@@ -275,35 +275,110 @@ class MemorySnapshot:
             
         Returns:
             Snapshot data or None if failed
+
+        A snapshot is only "loaded" when it parses to a dict whose
+        ``memories`` is a list. When the named file fails that check, the
+        same-named copies in the backup shards (or in the snapshot dir, if a
+        shard path was given) are tried in order, so a damaged primary copy
+        no longer shadows an intact backup. The damaged file is left as-is.
         """
+        snapshot_data, _source, _reason = self._load_snapshot_with_source(snapshot_path)
+        return snapshot_data
+
+    def _load_snapshot_with_source(
+        self, snapshot_path: str
+    ) -> "tuple[Optional[Dict[str, Any]], Optional[str], Optional[str]]":
+        """``(data, path actually read, reason the requested file was rejected)``.
+
+        ``data``/source are None when no copy is readable; the reason is None
+        when the requested file itself was the one loaded.
+        """
+        requested = Path(snapshot_path)
+        requested_reason: Optional[str] = None
+        for candidate in self._snapshot_copies(requested):
+            snapshot_data, reason = self._read_snapshot_file(candidate)
+            if candidate == requested:
+                requested_reason = reason
+            if snapshot_data is None:
+                continue
+            if candidate != requested:
+                logger.warning(
+                    "Snapshot %s %s; using backup copy %s", snapshot_path, requested_reason, candidate
+                )
+            else:
+                logger.info(f"Snapshot loaded: {snapshot_path}")
+            return snapshot_data, str(candidate), requested_reason
+        logger.error("Failed to load snapshot: no readable copy of %s (%s)", snapshot_path, requested_reason)
+        return None, None, requested_reason
+
+    def _snapshot_copies(self, snapshot_path: Path) -> List[Path]:
+        """``snapshot_path`` first, then every other existing same-named copy.
+
+        Copies live in the snapshot dir and the backup shards; the order is
+        snapshot dir, shard_1, shard_2, ... with the requested path moved to
+        the front.
+        """
+        copies = [snapshot_path]
+        for location in [self.snapshot_dir, *self.shard_dirs]:
+            candidate = location / snapshot_path.name
+            if candidate != snapshot_path and candidate not in copies and candidate.exists():
+                copies.append(candidate)
+        return copies
+
+    @staticmethod
+    def _read_snapshot_file(path: Path) -> "tuple[Optional[Dict[str, Any]], Optional[str]]":
+        """``(data, None)`` for a dict with a ``memories`` list, else ``(None, reason)``."""
         try:
-            with open(snapshot_path, 'r', encoding='utf-8') as f:
+            with open(path, "r", encoding="utf-8") as f:
                 snapshot_data = json.load(f)
-            logger.info(f"Snapshot loaded: {snapshot_path}")
-            return snapshot_data
         except Exception as e:
-            logger.error(f"Failed to load snapshot: {e}")
-            return None
-            
+            reason = f"unreadable: {type(e).__name__}: {e}"[:200]
+            logger.warning("Snapshot copy %s %s", path, reason)
+            return None, reason
+        if not isinstance(snapshot_data, dict) or not isinstance(snapshot_data.get("memories"), list):
+            reason = "snapshot 'memories' is not a list"
+            logger.warning("Snapshot copy %s malformed: %s", path, reason)
+            return None, reason
+        return snapshot_data, None
+
+    def _snapshot_names_newest_first(self, pattern: str, include_shards: bool) -> List[str]:
+        """Distinct file names matching ``pattern`` ordered by the newest existing copy."""
+        newest: Dict[str, float] = {}
+        locations = [self.snapshot_dir, *(self.shard_dirs if include_shards else [])]
+        for location in locations:
+            for path in location.glob(pattern):
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                if mtime > newest.get(path.name, float("-inf")):
+                    newest[path.name] = mtime
+        return sorted(newest, key=lambda name: newest[name], reverse=True)
+
+    def _latest_readable(self, pattern: str, include_shards: bool) -> Optional[str]:
+        for name in self._snapshot_names_newest_first(pattern, include_shards):
+            for candidate in self._snapshot_copies(self.snapshot_dir / name):
+                if not candidate.exists():
+                    continue
+                if self._read_snapshot_file(candidate)[0] is not None:
+                    return str(candidate)
+            logger.warning("Skipping snapshot %s: no readable copy", name)
+        return None
+
     def get_latest_snapshot(self) -> Optional[str]:
-        """Get path to latest snapshot."""
-        snapshots = list(self.snapshot_dir.glob("snapshot_*.json"))
-        if not snapshots:
-            return None
-            
-        # Sort by modification time
-        snapshots.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        return str(snapshots[0])
+        """Path of the newest snapshot that has a readable copy.
+
+        Candidates are ordered by modification time across the snapshot dir
+        and the backup shards. A file that is unreadable or malformed is
+        skipped in favour of its intact shard copy, or failing that the next
+        older snapshot, so a damaged newest backup never masks a good one.
+        The returned path is the copy that was actually verified readable.
+        """
+        return self._latest_readable("snapshot_*.json", include_shards=True)
         
     def get_latest_daily_snapshot(self) -> Optional[str]:
-        """Get path to latest daily snapshot."""
-        daily_snapshots = list(self.snapshot_dir.glob("daily_*.json"))
-        if not daily_snapshots:
-            return None
-            
-        # Sort by modification time
-        daily_snapshots.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        return str(daily_snapshots[0])
+        """Path of the newest readable daily snapshot (daily files have no shard copies)."""
+        return self._latest_readable("daily_*.json", include_shards=False)
         
     def list_snapshots(self, limit: int = 20) -> List[Dict[str, Any]]:
         """
@@ -384,9 +459,11 @@ class MemorySnapshot:
 
         Recovery contract:
 
-        * The snapshot is validated before the target is touched. An
-          unreadable snapshot, or one whose ``memories`` is not a list,
-          leaves the primary store and the target untouched.
+        * The snapshot is validated before the target is touched. When the
+          named file is unreadable or malformed its same-named backup-shard
+          copy is used instead (``last_restore_report["source_path"]`` names
+          the copy actually read). With no readable copy at all, the primary
+          store and the target are left untouched.
         * Entries are restored verbatim (original ``time`` and ``metadata``,
           so provenance and correction links survive); only entries that are
           not a dict with a string ``thought`` are skipped.
@@ -403,6 +480,7 @@ class MemorySnapshot:
         """
         report: Dict[str, Any] = {
             "snapshot_path": snapshot_path,
+            "source_path": None,
             "restored": 0,
             "skipped": 0,
             "truncated": 0,
@@ -413,14 +491,17 @@ class MemorySnapshot:
         }
         self.last_restore_report = report
 
-        snapshot_data = self.load_snapshot(snapshot_path)
+        snapshot_data, source_path, rejected_reason = self._load_snapshot_with_source(snapshot_path)
         if not isinstance(snapshot_data, dict):
-            report["error"] = "snapshot unreadable"
+            report["error"] = f"snapshot unreadable ({rejected_reason or 'missing'})"[:200]
+            logger.error("Snapshot %s has no readable copy; target untouched", snapshot_path)
             return False
+        report["source_path"] = source_path
         memories = snapshot_data.get("memories")
         if not isinstance(memories, list):
+            # Unreachable with the loader above; kept so the method stays
+            # self-contained if the loader contract ever loosens.
             report["error"] = "snapshot 'memories' is not a list"
-            logger.error("Snapshot %s has no memory list; target untouched", snapshot_path)
             return False
 
         json_memory = getattr(target_memory, "json_memory", target_memory)

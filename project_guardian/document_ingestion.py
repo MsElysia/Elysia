@@ -324,6 +324,95 @@ def is_context_document(row):
             and "page" in row)
 
 
+DOCUMENT_ASSOCIATION_FIELD = 'approved_document_association_v1'
+_DOCUMENT_APPROVING_ACTOR = 'dashboard-operator'
+
+
+def _normalized_document_links(links):
+    # Share the existing fact vocabulary and bounds, not fact identity fields.
+    from project_guardian.restricted_runtime_adapter import (
+        _MAX_SEMANTIC_LINKS, _MAX_SEMANTIC_ALIASES,
+        _normalized_concept, _normalized_alias,
+    )
+    if type(links) is not list or not 1 <= len(links) <= _MAX_SEMANTIC_LINKS:
+        raise ImportFailure('Document approval requires a bounded nonempty link list')
+    clean = []
+    seen = set()
+    for link in links:
+        if (type(link) is not dict or set(link) != {'concept', 'aliases', 'state'}
+                or link['state'] != 'selected_existing'):
+            raise ImportFailure('Only explicitly selected, unscoped document links are supported')
+        aliases = link['aliases']
+        if type(aliases) is not list or not 1 <= len(aliases) <= _MAX_SEMANTIC_ALIASES:
+            raise ImportFailure('Document aliases must be a bounded nonempty list')
+        try:
+            concept = _normalized_concept(link['concept'])
+            normalized = sorted({_normalized_alias(alias) for alias in aliases})
+        except ValueError as exc:
+            raise ImportFailure(str(exc)) from exc
+        if concept in seen or len(normalized) != len(aliases):
+            raise ImportFailure('Duplicate document concept or alias')
+        seen.add(concept)
+        clean.append({'concept': concept, 'aliases': normalized, 'state': 'selected_existing'})
+    return clean
+
+
+def _document_association(raw_sha, source, text, meta, links):
+    if (not isinstance(raw_sha, str) or not re.fullmatch(r'[0-9a-f]{64}', raw_sha)
+            or source != 'doc_' + raw_sha
+            or not isinstance(text, str) or not text
+            or meta.get('source_id') != source
+            or meta.get('chunk_id') != f'{source}:{VERSION}:0'
+            or meta.get('processing_version') != VERSION
+            or meta.get('trust') != 'untrusted_document'
+            or meta.get('content_sha256') != digest(text.encode('utf-8'))):
+        raise ImportFailure('Document approval source/chunk/hash mismatch')
+    return {
+        'raw_sha256': raw_sha, 'source_id': source, 'chunk_id': meta['chunk_id'],
+        'content_sha256': meta['content_sha256'], 'approving_actor': _DOCUMENT_APPROVING_ACTOR,
+        'method': 'authenticated_operator', 'rule_version': 'document-tags-v1',
+        'links': _normalized_document_links(links),
+    }
+
+
+def _document_recall_reasons(receipt, row, question):
+    # A completed receipt is the only authority for an association. Never use
+    # tag metadata from imported content, an unfinished receipt, or a chunk.
+    if (not isinstance(receipt, dict) or receipt.get('status') != 'completed'
+            or type(receipt.get('chunk_count')) is not int or receipt['chunk_count'] != 1
+            or type(receipt.get('chunks_written')) is not int or receipt['chunks_written'] != 1
+            or receipt.get('processing_version') != VERSION
+            or receipt.get('file_type') != '.txt'
+            or not receipt.get('completed_at')
+            or receipt.get('filename') != row.get('filename')
+            or not is_context_document(row)):
+        return []
+    association = receipt.get(DOCUMENT_ASSOCIATION_FIELD)
+    if type(association) is not dict:
+        return []
+    try:
+        expected = _document_association(
+            receipt.get('sha256'), receipt.get('source_id'), row['text'], row,
+            association.get('links'),
+        )
+    except (ImportFailure, TypeError, UnicodeError):
+        return []
+    if association != expected:
+        return []
+    from project_guardian.local_memory_chat import _semantic_phrase_present
+    reasons = []
+    for link in expected['links']:
+        matched = next((phrase for phrase in [link['concept'].replace('_', ' ')] + link['aliases']
+                        if _semantic_phrase_present(question, phrase)), None)
+        if matched is not None:
+            reasons.append({
+                'type': 'approved_semantic_tag', 'concept': link['concept'],
+                'matched_alias': matched, 'project_id': None,
+                'method': expected['method'], 'rule_version': expected['rule_version'],
+            })
+    return reasons
+
+
 class DocumentLibrary:
     def __init__(self, memory):
         self.memory = memory
@@ -439,7 +528,7 @@ class DocumentLibrary:
                 'Scanned PDFs without extractable text will fail clearly instead of saving empty text.'
             ),
         }
-    def import_bytes(self, filename, raw):
+    def import_bytes(self, filename, raw, *, approval=None, approving_actor=None):
         if not filename or len(filename) > 180 or '/' in filename or '\\' in filename or ':' in filename or filename in {'.', '..'}:
             raise ImportFailure('Unsafe filename')
         extension = Path(filename).suffix.lower()
@@ -453,6 +542,20 @@ class DocumentLibrary:
         source = 'doc_' + digest(raw)
         with _LOCK:
             previous = next((r for r in self.receipts() if r['source_id'] == source), None)
+            approved_links = None
+            if approval is not None or approving_actor is not None:
+                if (approving_actor != _DOCUMENT_APPROVING_ACTOR or type(approval) is not dict
+                        or set(approval) != {'preview_sha256', 'links'}
+                        or approval['preview_sha256'] != digest(raw)):
+                    raise ImportFailure('Document approval must match authenticated preview SHA-256')
+                if extension != '.txt':
+                    raise ImportFailure('Document approval currently supports single-chunk TXT only')
+                approved_links = _normalized_document_links(approval['links'])
+                if (previous or getattr(self.memory, 'persistence_blocked', False)
+                        or any(e.get('category') == 'document_chunk'
+                               and e.get('metadata', {}).get('source_id') == source
+                               for e in self.memory.memory_log)):
+                    raise ImportFailure('Document approval requires a new source; duplicate or interrupted imports cannot be retagged')
             if previous and previous['status'] == 'completed':
                 return dict(previous, duplicate=True)
             if previous and previous.get('attempt', 0) >= 3:
@@ -473,6 +576,28 @@ class DocumentLibrary:
             except Exception:
                 pass
             original = physical(self.root / (source + extension))
+            approved_payload = None
+            association = None
+            if approved_links is not None:
+                if original.exists():
+                    raise ImportFailure('Document approval cannot retag an existing managed source')
+                # Extract before committing original bytes, chunks or receipts.
+                # Reuse this exact worker payload; no second extraction or
+                # association write outside the completed source receipt.
+                with TemporaryDirectory(prefix='.extract-', dir=self.root) as directory:
+                    staging = Path(directory) / ('input' + extension)
+                    with staging.open('xb') as handle:
+                        handle.write(raw)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    output = Path(directory) / 'output.json'
+                    approved_payload = self._run_extract_worker(staging, extension, output, len(raw))
+                if len(approved_payload['chunks']) != 1:
+                    raise ImportFailure('Document approval requires exactly one extracted chunk')
+                only = approved_payload['chunks'][0]
+                association = _document_association(
+                    digest(raw), source, only['t'], only['m'], approved_links,
+                )
             if original.exists():
                 if digest(original.read_bytes()) != digest(raw):
                     raise ImportFailure('Preserved source hash mismatch')
@@ -492,9 +617,12 @@ class DocumentLibrary:
             self._save('document_source', 'Document import started', receipt.copy())
             _ACTIVE_SOURCES.add(source)
             try:
-                with TemporaryDirectory(prefix='.extract-', dir=self.root) as directory:
-                    output = Path(directory) / 'output.json'
-                    payload = self._run_extract_worker(original, extension, output, len(raw))
+                if approved_payload is not None:
+                    payload = approved_payload
+                else:
+                    with TemporaryDirectory(prefix='.extract-', dir=self.root) as directory:
+                        output = Path(directory) / 'output.json'
+                        payload = self._run_extract_worker(original, extension, output, len(raw))
                 rows = [(c['t'], c['m']) for c in payload['chunks']]
                 existing = {
                     e.get('metadata', {}).get('chunk_id')
@@ -534,9 +662,21 @@ class DocumentLibrary:
                     elapsed_ms=int((time.perf_counter() - started) * 1000),
                     completed_at=now(),
                 )
+                if association is not None:
+                    # For an approved link, require the exact durable chunk, not
+                    # only an ID. Publish approval atomically with completion.
+                    text, meta = rows[0]
+                    matching = [entry for entry in saved
+                                if entry.get('category') == 'document_chunk'
+                                and entry.get('metadata', {}).get('chunk_id') == meta['chunk_id']]
+                    if (len(matching) != 1 or matching[0].get('thought') != text
+                            or matching[0].get('metadata') != dict(meta, filename=filename)):
+                        raise ImportFailure('Durable approved chunk verification failed')
+                    receipt[DOCUMENT_ASSOCIATION_FIELD] = association
                 self._save('document_source', 'Document chunks persisted and verified', receipt.copy())
                 return dict(receipt, duplicate=False)
             except Exception as exc:
+                receipt.pop(DOCUMENT_ASSOCIATION_FIELD, None)
                 detail = str(exc) if isinstance(exc, ImportFailure) else 'Extraction or indexing failed; retry is safe'
                 receipt.update(
                     status='failed',
@@ -549,12 +689,50 @@ class DocumentLibrary:
             finally:
                 _ACTIVE_SOURCES.discard(source)
 
+    def approved_recall_reasons(self, row, question):
+        """Recheck source binding at the model context boundary, not row claims."""
+        with _LOCK:
+            receipt = next((r for r in self.receipts()
+                            if r['source_id'] == row.get('source_id')), None)
+            reasons = _document_recall_reasons(receipt, row, question)
+            if not reasons:
+                return []
+            matching = [entry for entry in self.memory.memory_log
+                        if isinstance(entry, dict) and entry.get('category') == 'document_chunk'
+                        and isinstance(entry.get('metadata'), dict)
+                        and entry['metadata'].get('chunk_id') == row['chunk_id']]
+            if len(matching) != 1 or matching[0].get('thought') != row['text']:
+                return []
+            meta = matching[0].get('metadata', {})
+            if any(meta.get(key) != row.get(key) for key in (
+                    'source_id', 'chunk_id', 'content_sha256', 'processing_version',
+                    'filename', 'trust', 'page')):
+                return []
+            return reasons
+
     def search(self, query, limit=6, *, context_distinct=False):
-        """Default search keeps source matches; chat can request distinct text."""
+        """Default search stays lexical; chat can request approved association recall."""
+        # Import holds the same lock through durable receipt publication.
+        with _LOCK:
+            return self._search(query, limit, context_distinct=context_distinct)
+
+    def _search(self, query, limit, *, context_distinct):
         tokens = set(re.findall(r'\w{3,}', query.casefold())) - {'the', 'what', 'which', 'does', 'and', 'from', 'with'}
-        if not tokens:
+        if not tokens and not context_distinct:
             return []
-        completed = {r['source_id'] for r in self.receipts() if r['status'] == 'completed'}
+        completed = {r['source_id']: r for r in self.receipts() if r['status'] == 'completed'}
+        # Count chunk identities across the entire store before scoring. A
+        # duplicate ID cannot establish the unique binding required by the
+        # final context boundary, even if the other row is malformed.
+        chunk_counts = {}
+        if context_distinct:
+            for entry in self.memory.memory_log:
+                if not isinstance(entry, dict) or entry.get('category') != 'document_chunk':
+                    continue
+                meta = entry.get('metadata')
+                if isinstance(meta, dict) and isinstance(meta.get('chunk_id'), str):
+                    chunk_id = meta['chunk_id']
+                    chunk_counts[chunk_id] = chunk_counts.get(chunk_id, 0) + 1
         found = []
         for entry in self.memory.memory_log:
             if context_distinct and not isinstance(entry, dict):
@@ -569,10 +747,20 @@ class DocumentLibrary:
             if context_distinct and not is_context_document(dict(meta, text=text)):
                 continue
             overlap = tokens & set(re.findall(r'\w{3,}', text.casefold()))
-            if overlap:
-                found.append(dict(meta, text=text, score=len(overlap) / len(tokens)))
+            row = dict(meta, text=text)
+            if context_distinct:
+                row.pop('recall_reasons', None)
+            reasons = (_document_recall_reasons(completed[meta['source_id']], row, query)
+                       if context_distinct and chunk_counts.get(row['chunk_id']) == 1 else [])
+            if overlap or reasons:
+                row['score'] = len(overlap) / max(len(tokens), 1)
+                if reasons:
+                    row['score'] = max(row['score'], 0.85)
+                    row['recall_reasons'] = reasons
+                found.append(row)
         if context_distinct:
-            ranked = sorted(found, key=lambda x: (-x['score'], x['source_id'], x['chunk_id']))
+            ranked = sorted(found, key=lambda x: (
+                -x['score'], not bool(x.get('recall_reasons')), x['source_id'], x['chunk_id']))
             # Group only exact original text, not token sets, normalized
             # paraphrases, or untrusted source hash metadata.
             seen = set()
@@ -585,6 +773,15 @@ class DocumentLibrary:
         else:
             ranked = sorted(found, key=lambda x: (-x['score'], x['chunk_id']))
         matches = ranked[:limit]
+        if (context_distinct and limit > 0 and matches
+                and not any(row.get('recall_reasons') for row in matches)):
+            # Keep one slot for the best validated alias hit when the lexical
+            # prefilter would otherwise exclude all of them. Scores and the
+            # order of other candidates stay unchanged. The final context
+            # ranker still decides what fits within its separate budget.
+            best_association = next((row for row in ranked if row.get('recall_reasons')), None)
+            if best_association is not None:
+                matches[-1] = best_association
         if matches:
             from project_guardian.runtime_activity import record
             record('Document evidence retrieved')

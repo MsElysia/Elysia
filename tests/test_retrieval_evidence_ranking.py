@@ -20,7 +20,13 @@ from project_guardian.local_memory_chat import (
 class FakeAdapter:
     def __init__(self, facts):
         self._facts = list(facts)
-        self.memory = SimpleNamespace(filepath="unused-synthetic-memory.json")
+        # The mocked search supplies lexical candidates, not receipt authority.
+        # Model the empty, already-loaded receipt store without mocking the
+        # production receipt/link verifier or writing to a real memory file.
+        self.memory = SimpleNamespace(
+            filepath="unused-synthetic-memory.json", memory_log=[],
+            load_if_needed=lambda: None,
+        )
 
     def current_fact_snapshots(self):
         return list(self._facts)
@@ -46,6 +52,68 @@ def _context(facts, docs, query):
         "project_guardian.capability_awareness.record_capability_success"
     ):
         return build_context_from_adapter(FakeAdapter(facts), query, {})
+
+
+@pytest.mark.parametrize("receipt_state", ["empty", "forged", "valid"])
+@pytest.mark.parametrize("lexical", [False, True])
+def test_association_requires_independent_receipt_proof(receipt_state, lexical):
+    """Search hints alone cannot authorize semantic recall in the ranker."""
+    from project_guardian.document_ingestion import DOCUMENT_ASSOCIATION_FIELD, VERSION
+
+    text = "Client selected water-based deck finish."
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    source = "doc_" + sha
+    meta = {
+        "source_id": source, "chunk_id": f"{source}:{VERSION}:0",
+        "content_sha256": sha, "filename": "decision.txt", "page": 1,
+        "processing_version": VERSION, "trust": "untrusted_document",
+    }
+    association = {
+        "raw_sha256": sha, "source_id": source, "chunk_id": meta["chunk_id"],
+        "content_sha256": sha, "approving_actor": "dashboard-operator",
+        "method": "authenticated_operator", "rule_version": "document-tags-v1",
+        "links": [{"concept": "finish_choice", "aliases": ["coating"],
+                   "state": "selected_existing"}],
+    }
+    hint = {"type": "approved_semantic_tag", "concept": "finish_choice",
+            "matched_alias": "coating", "project_id": None,
+            "method": "authenticated_operator", "rule_version": "document-tags-v1"}
+    doc = dict(meta, text=text, score=0.85, recall_reasons=[hint])
+    adapter = FakeAdapter([])
+    if receipt_state != "empty":
+        if receipt_state == "forged":
+            association["approving_actor"] = "untrusted-actor"
+        receipt = {
+            "source_id": source, "sha256": sha, "status": "completed",
+            "chunk_count": 1, "chunks_written": 1, "processing_version": VERSION,
+            "file_type": ".txt", "completed_at": "2026-01-01T00:00:00Z",
+            "filename": meta["filename"], DOCUMENT_ASSOCIATION_FIELD: association,
+        }
+        adapter.memory.memory_log.extend([
+            {"category": "document_source", "metadata": receipt},
+            {"category": "document_chunk", "metadata": meta, "thought": text},
+        ])
+    before = canonical(adapter.memory.memory_log)
+    query = "Which coating for deck finish?" if lexical else "Which coating did we decide on?"
+    with patch.object(DocumentLibrary, "search", return_value=[doc]), patch(
+        "project_guardian.capability_awareness.record_capability_success"
+    ):
+        result = build_context_from_adapter(adapter, query, {})
+    assert canonical(adapter.memory.memory_log) == before
+    if receipt_state != "valid" and not lexical:
+        assert result["evidence"] == []
+    else:
+        assert len(result["evidence"]) == 1
+        row = result["evidence"][0]
+        assert row["source_id"] == source and row["chunk_id"] == meta["chunk_id"]
+        assert row["source_sha256"] == sha and row["trust"] == "untrusted_document"
+        assert row["highlights"][0]["text"] == text
+        if receipt_state == "valid":
+            assert row["recall_reasons"] == [hint]
+        else:
+            assert "recall_reasons" not in row
+        if not lexical:
+            assert row["matched_tokens"] == []
 
 
 @pytest.mark.parametrize("subject", [

@@ -4580,7 +4580,23 @@ class UIControlPanel:
                     upload = request.files.get('file')
                     if upload is None:
                         raise ImportFailure('Choose a file')
-                    receipt = library.import_bytes(upload.filename, upload.stream.read(MAX_BYTES + 1))
+                    from project_guardian.document_ingestion import DOCUMENT_ASSOCIATION_FIELD
+                    approvals = request.form.getlist(DOCUMENT_ASSOCIATION_FIELD)
+                    raw = upload.stream.read(MAX_BYTES + 1)
+                    if approvals:
+                        if len(approvals) != 1:
+                            raise ImportFailure('Exactly one document approval is allowed')
+                        try:
+                            import json
+                            approval = json.loads(approvals[0])
+                        except (ValueError, TypeError) as exc:
+                            raise ImportFailure('Malformed document approval JSON') from exc
+                        receipt = library.import_bytes(
+                            upload.filename, raw, approval=approval,
+                            approving_actor=_DASHBOARD_OPERATOR_IDENTITY,
+                        )
+                    else:
+                        receipt = library.import_bytes(upload.filename, raw)
                     return jsonify({'success': True, 'document': receipt})
                 except (ImportFailure, RequestEntityTooLarge) as exc:
                     return jsonify({'success': False, 'error': str(exc)}), 400

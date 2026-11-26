@@ -9,3 +9,42 @@
 - `build_context_from_adapter` validates links again, maps exact locally approved aliases/concepts only, applies optional explicit project label when present, preserves original source/revision/hash and emits typed `recall_reasons`. Nonmatching or candidate aliases never contribute. Unscoped lexical current facts/documents and the four-item and 10,000-byte limits are preserved; tagged context never grants tool or provider permissions. For a recognized explicit project query, only current facts with validated matching project links enter the model context. Imported documents have no approved project-link contract and are omitted from such scoped context even when their text names the project; this intentionally limits project-aware document recall until a separately authorized linkage mechanism exists.
 - Tamper caveat: SHA-256 and record consistency catch stale/mismatched or partially tampered bindings. They are **not an integrity signature** against an actor who can rewrite an entire authoritative MemoryCore file and forge all matching fields; an authenticated/immutable audit source would require separately approved infrastructure.
 - A test suite at `tests/test_fact_associative_tag_recall.py` covers disposable primary-store persistence/reopen, lexical-disjoint tag hit, candidate quarantine, invalid/unprivileged writes, corruption, correction invalidation, project-scope and ambiguity, and tool authorization. The prior document semantic T01 xfail remains unresolved and is not RC enrolled or claimed green. Cross-cloud payload disclosure is not implemented. No remote embeddings, migration or owner data.
+
+
+## EA-11A-B-DOC1 bounded document extension (independent tests pending)
+
+The existing contained, loopback, dashboard-operator authenticated multipart POST
+/api/documents may optionally carry one approved_document_association_v1
+form field, JSON encoded, alongside the file:
+
+    {"preview_sha256":"<exact SHA-256 from document preview>","links":[{"concept":"#finish_choice","aliases":["coating"],"state":"selected_existing"}]}
+
+Only a new single-chunk TXT is eligible. Explicit operator selection is required;
+candidates, project IDs, malformed input, wrong SHA, duplicate or interrupted
+sources and multi-chunk documents cannot attach associations. Ordinary imports
+and default lexical document search retain their existing behavior. No dashboard
+UI is added in this slice. The server binds raw hash, completed source/chunk ID,
+text hash, authenticated actor and normalized tags in the existing completed
+receipt only, after verifying the durable chunk. The chat context revalidates
+the binding and emits an approved_semantic_tag reason; the text remains untrusted
+document evidence, with no tool or provider authority. Recognized explicit project
+queries still exclude all imported documents. Read-time consistency detects
+mismatched records, not coordinated forgery of the authoritative local store.
+No migration, legacy retagging, project-linked documents, cloud model, or installed
+release acceptance is claimed.
+
+
+### Bounded candidate reservation correction
+
+For distinct chat search, validate uniqueness of chunk IDs before treating an
+association as eligible. The existing exact-text dedup and score order retain
+a validated associated source over an identical unassociated source on score
+ties. If a positive candidate limit would exclude every validated query-matched
+association, replace only the last candidate with the strongest such match in
+the existing deterministic rank order; do not change any score. The usual six
+candidate limit remains, ordinary lexical search is unchanged, and final
+four-item/10,000-byte relevance/diversity selection is unchanged. More relevant
+sources than fit are omitted by those existing bounds: one candidate slot is
+reserved, not one final model slot, and not every approved match is guaranteed
+to reach the model. Receipt/chunk hash consistency is checked, not a fresh
+physical managed-source-file rehash; that remains a separate diagnostic gap.

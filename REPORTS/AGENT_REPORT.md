@@ -3577,3 +3577,34 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+
+---
+
+## 2026-11-26 product workflow — task create conflict
+
+**Status:** COMPLETE on this branch only. Not on `main`. No pull request.
+
+**Branch:** `cursor/product-workflow-engineering-process-3b57`
+
+**Base:** `722d8e4` (`main`). Not based on earlier product branches, including the 2026-11-25 dashboard page-render branch.
+
+**Implementation commit:** `fa2f45efa759977e57563fc84dc7b89304b3c309`
+
+**Files:** `project_guardian/ui/app.py`, `tests/test_ui_task_create_conflict.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`
+
+**Behavior:** `POST /tasks/create` returns HTTP 409 `Task <id> already exists` when `TASKS/<id>.md` is already present, including a symlink. The existing bytes stay in place. `activate_now=true` does not rewrite `CONTROL.md` on that conflict. A new id is created with `O_EXCL` and returns HTTP 200 `created`. `activate_now=true` sets `CURRENT_TASK` only after that new file is written. A second create of the new id returns HTTP 409 and leaves both the file and `CONTROL.md` as they were.
+
+**Before:** Live TestClient `POST /tasks/create` for fictional `TASK-FICTIONAL-KEEP` at `/tmp/elysia-before-task-np_4mkm_` returned HTTP 200 `{"status":"created","task_id":"TASK-FICTIONAL-KEEP"}`, replaced `TASK_TYPE: RUN_ACCEPTANCE` with `TASK_TYPE: CLEAR_CURRENT_TASK`, and set `CURRENT_TASK: TASK-FICTIONAL-KEEP`.
+
+**Evidence:** `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_ui_task_create_conflict.py -v --tb=short` — 2 passed. Flask-equivalent TestClient and live uvicorn HTTP on 127.0.0.1, real `project_guardian.ui.app` route, fictional task files in a temporary project root, no external services. The task builder form already alerts `data.detail` when the response is not OK, so a 409 shows `Task <id> already exists` once the page can render.
+
+**Could not verify in the browser:** `GET /tasks/new` on this checkout still raises `TypeError: unhashable type: 'dict'` on Starlette 1.7.0 / FastAPI 0.141.1. That page-render fix stays on `origin/cursor/bc-850d1c57-d0bb-4bf5-a069-27fe76b4a85e-5a80` (`1357277`, handoff `a936c71`). This run did not copy it. `python3 -m uvicorn project_guardian.ui.app:app` still exits because `project_guardian/__init__.py` imports missing `project_guardian.module_activity`. `tests/test_ui_smoke.py` still cannot be collected for that reason.
+
+**Left untouched:** `project_guardian/ui_control_panel.py`. Memory workflow today is `6505afb` on `origin/cursor/bc-75fac187-cc8a-41ef-84b1-1e9b1fe5cca7-e491` and that branch includes the panel. Open draft PR #246 (updated 2026-11-26) also owns `project_guardian/ui_control_panel.py`. Draft PR #235 remains the earlier panel document-preview change. Application runtime safety today is `aabf15e` on `origin/cursor/bc-0fdbbd3b-8d40-460a-9e6a-67a4c726e9a0-f8d3` (`elysia/cli.py`, `elysia/core/proposal_system.py`, `elysia/runtime.py`, `tests/test_elysia_runtime_lifecycle.py`). Did not edit those files, `elysia/api/server.py`, `elysia/agents/implementer.py`, or `elysia.py`.
+
+**Also observed, not changed:** `POST /mutations/create` for existing fictional `MUTATIONS/fictional.json` still returns HTTP 200 `created` and replaces the payload.
+
+**Queue:** `CURRENT_TASK: NONE`. `TASK-0053` remains OPEN review-only on the brain-bridge line (`bf6c72c`). Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb`. Do not implement live memory or vector writes.
+
+A branch commit is not integrated product readiness. Next product run should refuse the mutation-payload overwrite, or pick a different unclaimed API error path. Do not open a second copy of this task-create conflict fix. Do not copy the Starlette page-render fix while it remains on `origin/cursor/bc-850d1c57-d0bb-4bf5-a069-27fe76b4a85e-5a80`. Re-check PR #246 and the memory-workflow branch before editing `project_guardian/ui_control_panel.py`.

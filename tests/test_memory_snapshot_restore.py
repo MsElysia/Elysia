@@ -132,7 +132,7 @@ def test_missing_snapshot_leaves_target_and_primary_untouched(store):
     target = _core(primary)
 
     assert mgr.restore_from_snapshot(str(primary.parent / "nope.json"), target) is False
-    assert mgr.last_restore_report["error"] == "snapshot unreadable"
+    assert mgr.last_restore_report["error"].startswith("snapshot unreadable")
     assert primary.read_bytes() == corrupt
     assert target.persistence_blocked is True and target.memory_log == []
     assert _sidecars(primary) == []

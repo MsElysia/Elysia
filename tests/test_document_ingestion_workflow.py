@@ -492,3 +492,136 @@ def test_tagged_document_does_not_enter_recognized_explicit_project(tmp_path):
     q = 'Which coating for project Larkspur?'
     bundle = build_context_from_adapter(adapter, q, {})
     assert [row['source_id'] for row in bundle['evidence']] == [fact.body['fact']['fact_id']]
+
+
+
+@pytest.mark.parametrize('distractors', [5, 6])
+def test_document_association_survives_lexical_prefilter(tmp_path, monkeypatch, distractors):
+    from project_guardian.local_memory_chat import (
+        EVIDENCE_BYTE_CAP, EVIDENCE_ITEM_CAP, LocalOllama, ManualAuthorization,
+        canonical, converse_bundle,
+    )
+    path = tmp_path / 'memory.json'
+    panel = _panel(_memory(path), config={'contained_startup': True})
+    raw = _DOC_TEXT.encode()
+    preview = panel.app.test_client().post('/api/documents/preview', headers=_auth(panel),
+        data={'file': (io.BytesIO(raw), 'decision.txt')}).get_json()['preview']
+    response = _tagged_upload(panel, raw, {'preview_sha256': preview['sha256'], 'links': [_DOC_LINK]})
+    assert response.status_code == 200, response.get_json()
+    receipt = response.get_json()['document']
+    noise_ids = []
+    for i in range(distractors):
+        noise = f'Which coating did we decide on? Index card {i}: unrelated reference, no selected finish.'
+        response = panel.app.test_client().post('/api/documents', headers=_auth(panel),
+            data={'file': (io.BytesIO(noise.encode()), f'noise-{i}.txt')})
+        assert response.status_code == 200, response.get_json()
+        noise_ids.append(response.get_json()['document']['source_id'])
+    restored = _panel(_memory(path), config={'contained_startup': True})
+    library = DocumentLibrary(restored._runtime_memory_core())
+    before = path.read_bytes()
+    ordinary = library.search(_DOC_QUERY)
+    assert len(ordinary) == distractors
+    assert {row['source_id'] for row in ordinary} == set(noise_ids)
+    hits = library.search(_DOC_QUERY, context_distinct=True)
+    assert len(hits) == 6
+    assert [row['source_id'] for row in hits[:-1]] == sorted(noise_ids)[:5]
+    assert hits[-1]['source_id'] == receipt['source_id']
+    assert hits[-1]['score'] == 0.85
+    assert hits[-1]['recall_reasons'][0]['matched_alias'] == 'coating'
+    assert library.search(_DOC_QUERY, limit=0, context_distinct=True) == []
+    assert [row['source_id'] for row in library.search(
+        _DOC_QUERY, limit=1, context_distinct=True)] == [receipt['source_id']]
+    assert library.search(_DOC_QUERY, limit=1)[0]['source_id'] in noise_ids
+    assert library.search('Where is the telescope?', context_distinct=True) == []
+    bundle = build_context_from_adapter(restored._restricted_adapter(), _DOC_QUERY, {})
+    row = next(row for row in bundle['evidence'] if row['source_id'] == receipt['source_id'])
+    assert row['chunk_id'] == receipt[_DOC_FIELD]['chunk_id']
+    assert row['source_sha256'] == hashlib.sha256(raw).hexdigest()
+    assert row['matched_tokens'] == [] and row['trust'] == 'untrusted_document'
+    assert row['highlights'][0]['text'] == _DOC_TEXT
+    assert row['recall_reasons'][0]['type'] == 'approved_semantic_tag'
+    assert len(bundle['evidence']) <= EVIDENCE_ITEM_CAP
+    assert len(canonical(bundle['evidence']).encode()) <= EVIDENCE_BYTE_CAP
+    captured = []
+    def fake_generate(model, messages, *, json_mode=False):
+        captured.append(json.loads(messages[-1]['content']))
+        return json.dumps({'answer': 'Synthetic source reply.'})
+    monkeypatch.setattr(LocalOllama, 'generate', fake_generate)
+    reply = converse_bundle(bundle, _DOC_QUERY, ManualAuthorization(
+        'doc-reservation-fixture', True, True, frozenset({'local.chat', 'memory.read'})
+    ), LocalOllama('fixture-model'), recent=())
+    assert captured[0]['context_bundle'] == bundle
+    assert reply['tools_executed'] == [] and reply['memory_written'] is False
+    assert path.read_bytes() == before
+
+
+def test_document_reservation_rejects_duplicate_chunk_id_before_exact_text_dedup(tmp_path):
+    # All three uploads decode to the same text, with distinct raw identities.
+    # The invalid association sorts first and must not suppress the valid one.
+    path = tmp_path / 'memory.json'
+    panel = _panel(_memory(path), config={'contained_startup': True})
+    text = 'Which coating did we decide on? Synthetic reference.'
+    variants = sorted([text.encode(), (text + '\n').encode(), ('\ufeff' + text).encode()],
+                      key=lambda raw: hashlib.sha256(raw).hexdigest())
+    invalid_raw, ordinary_raw, valid_raw = variants
+    ids = []
+    for raw in (invalid_raw, valid_raw):
+        response = _tagged_upload(panel, raw, _doc_approval(raw))
+        assert response.status_code == 200, response.get_json()
+        ids.append(response.get_json()['document']['source_id'])
+    library = DocumentLibrary(panel._runtime_memory_core())
+    ordinary = library.import_bytes('ordinary.txt', ordinary_raw)
+    records = json.loads(path.read_text(encoding='utf-8'))
+    duplicate = next(e for e in records if e['category'] == 'document_chunk'
+                     and e['metadata']['source_id'] == ids[0])
+    # The conflicting ID counts even when the extra chunk is otherwise ineligible.
+    conflicting = {**duplicate, 'metadata': {**duplicate['metadata'], 'source_id': ['malformed']}}
+    records.append(conflicting)
+    path.write_text(json.dumps(records), encoding='utf-8')
+    restored = _panel(_memory(path), config={'contained_startup': True})
+    library = DocumentLibrary(restored._runtime_memory_core())
+    before = path.read_bytes()
+    rows = library.search(_DOC_QUERY, limit=1, context_distinct=True)
+    assert [row['source_id'] for row in rows] == [ids[1]]
+    assert rows[0]['recall_reasons'][0]['matched_alias'] == 'coating'
+    assert library.approved_recall_reasons(rows[0], _DOC_QUERY)
+    bundle = build_context_from_adapter(restored._restricted_adapter(), _DOC_QUERY, {})
+    assert [row['source_id'] for row in bundle['evidence']] == [ids[1]]
+    assert bundle['evidence'][0]['recall_reasons']
+    assert ordinary['source_id'] != ids[1]
+    assert path.read_bytes() == before
+
+
+def test_document_reservation_overflow_stays_bounded_and_deterministic(tmp_path):
+    panel = _panel(_memory(tmp_path / 'memory.json'), config={'contained_startup': True})
+    ids = []
+    for i in range(7):
+        raw = f'Client selected water-based deck finish reference {i}.'.encode()
+        response = _tagged_upload(panel, raw, _doc_approval(raw))
+        assert response.status_code == 200, response.get_json()
+        ids.append(response.get_json()['document']['source_id'])
+    library = DocumentLibrary(panel._runtime_memory_core())
+    for limit in (1, 2, 6, 7, 9):
+        hits = library.search(_DOC_QUERY, limit=limit, context_distinct=True)
+        assert [row['source_id'] for row in hits] == sorted(ids)[:limit]
+        assert all(row['score'] == 0.85 and row['recall_reasons'] for row in hits)
+        assert hits == library.search(_DOC_QUERY, limit=limit, context_distinct=True)
+    assert library.search(_DOC_QUERY, context_distinct=False) == []
+    bundle = build_context_from_adapter(panel._restricted_adapter(), _DOC_QUERY, {})
+    assert 0 < len(bundle['evidence']) <= 4
+    assert {row['source_id'] for row in bundle['evidence']} <= set(ids)
+
+
+def test_document_reservation_deduplicates_identical_lexical_distractors(tmp_path):
+    panel = _panel(_memory(tmp_path / 'memory.json'), config={'contained_startup': True})
+    response = _tagged_upload(panel, _DOC_TEXT.encode(), _doc_approval(_DOC_TEXT.encode()))
+    assert response.status_code == 200, response.get_json()
+    target = response.get_json()['document']['source_id']
+    library = DocumentLibrary(panel._runtime_memory_core())
+    noise = 'Which coating did we decide on? Index card: unrelated reference.'
+    for i in range(6):
+        library.import_bytes(f'echo-{i}.txt', (noise + '\n' * i).encode())
+    assert len(library.search(_DOC_QUERY)) == 6
+    hits = library.search(_DOC_QUERY, context_distinct=True)
+    assert len(hits) == 2
+    assert hits[0]['text'] == noise and hits[1]['source_id'] == target

@@ -32,3 +32,19 @@ queries still exclude all imported documents. Read-time consistency detects
 mismatched records, not coordinated forgery of the authoritative local store.
 No migration, legacy retagging, project-linked documents, cloud model, or installed
 release acceptance is claimed.
+
+
+### Bounded candidate reservation correction
+
+For distinct chat search, validate uniqueness of chunk IDs before treating an
+association as eligible. The existing exact-text dedup and score order retain
+a validated associated source over an identical unassociated source on score
+ties. If a positive candidate limit would exclude every validated query-matched
+association, replace only the last candidate with the strongest such match in
+the existing deterministic rank order; do not change any score. The usual six
+candidate limit remains, ordinary lexical search is unchanged, and final
+four-item/10,000-byte relevance/diversity selection is unchanged. More relevant
+sources than fit are omitted by those existing bounds: one candidate slot is
+reserved, not one final model slot, and not every approved match is guaranteed
+to reach the model. Receipt/chunk hash consistency is checked, not a fresh
+physical managed-source-file rehash; that remains a separate diagnostic gap.

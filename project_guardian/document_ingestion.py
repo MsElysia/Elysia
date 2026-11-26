@@ -698,8 +698,9 @@ class DocumentLibrary:
             if not reasons:
                 return []
             matching = [entry for entry in self.memory.memory_log
-                        if entry.get('category') == 'document_chunk'
-                        and entry.get('metadata', {}).get('chunk_id') == row['chunk_id']]
+                        if isinstance(entry, dict) and entry.get('category') == 'document_chunk'
+                        and isinstance(entry.get('metadata'), dict)
+                        and entry['metadata'].get('chunk_id') == row['chunk_id']]
             if len(matching) != 1 or matching[0].get('thought') != row['text']:
                 return []
             meta = matching[0].get('metadata', {})
@@ -720,6 +721,18 @@ class DocumentLibrary:
         if not tokens and not context_distinct:
             return []
         completed = {r['source_id']: r for r in self.receipts() if r['status'] == 'completed'}
+        # Count chunk identities across the entire store before scoring. A
+        # duplicate ID cannot establish the unique binding required by the
+        # final context boundary, even if the other row is malformed.
+        chunk_counts = {}
+        if context_distinct:
+            for entry in self.memory.memory_log:
+                if not isinstance(entry, dict) or entry.get('category') != 'document_chunk':
+                    continue
+                meta = entry.get('metadata')
+                if isinstance(meta, dict) and isinstance(meta.get('chunk_id'), str):
+                    chunk_id = meta['chunk_id']
+                    chunk_counts[chunk_id] = chunk_counts.get(chunk_id, 0) + 1
         found = []
         for entry in self.memory.memory_log:
             if context_distinct and not isinstance(entry, dict):
@@ -738,7 +751,7 @@ class DocumentLibrary:
             if context_distinct:
                 row.pop('recall_reasons', None)
             reasons = (_document_recall_reasons(completed[meta['source_id']], row, query)
-                       if context_distinct else [])
+                       if context_distinct and chunk_counts.get(row['chunk_id']) == 1 else [])
             if overlap or reasons:
                 row['score'] = len(overlap) / max(len(tokens), 1)
                 if reasons:
@@ -760,6 +773,15 @@ class DocumentLibrary:
         else:
             ranked = sorted(found, key=lambda x: (-x['score'], x['chunk_id']))
         matches = ranked[:limit]
+        if (context_distinct and limit > 0 and matches
+                and not any(row.get('recall_reasons') for row in matches)):
+            # Keep one slot for the best validated alias hit when the lexical
+            # prefilter would otherwise exclude all of them. Scores and the
+            # order of other candidates stay unchanged. The final context
+            # ranker still decides what fits within its separate budget.
+            best_association = next((row for row in ranked if row.get('recall_reasons')), None)
+            if best_association is not None:
+                matches[-1] = best_association
         if matches:
             from project_guardian.runtime_activity import record
             record('Document evidence retrieved')

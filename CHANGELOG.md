@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## 2026-11-26 product workflow — task create conflict
+
+- `POST /tasks/create` returns HTTP 409 when `TASKS/<task_id>.md` already exists. The existing file and `CONTROL.md` stay unchanged, including when `activate_now` is true.
+- A new task id is still created. `activate_now=true` sets `CURRENT_TASK` only after that file is written.
+- Contract: `tests/test_ui_task_create_conflict.py`.

@@ -1496,17 +1496,36 @@ async def create_task(
     
     task_content = "\n".join(lines) + "\n"
     
-    # Write task file atomically
+    # Create the task file only when that id is new. os.replace would overwrite
+    # an existing contract and still report success, including when activate_now
+    # rewrites CONTROL.md.
     tasks_dir = project_root / "TASKS"
     tasks_dir.mkdir(exist_ok=True)
     task_file = tasks_dir / f"{task_id}.md"
-    
-    import os
-    tmp_file = task_file.with_suffix('.tmp')
+    if task_file.exists() or task_file.is_symlink():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task {task_id} already exists",
+        )
+
     try:
-        tmp_file.write_text(task_content, encoding='utf-8')
-        os.replace(tmp_file, task_file)
-    except IOError as e:
+        fd = os.open(task_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task {task_id} already exists",
+        )
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Error writing task file: {str(e)}")
+
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(task_content)
+    except OSError as e:
+        try:
+            task_file.unlink()
+        except OSError:
+            pass
         raise HTTPException(status_code=500, detail=f"Error writing task file: {str(e)}")
     
     # Optionally activate task

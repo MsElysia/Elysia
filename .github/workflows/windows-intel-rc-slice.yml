@@ -47,6 +47,13 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-documents.txt reportlab
           python -m pip install "openai>=1.0,<2" "requests>=2.31,<3" "flask-socketio>=5,<6"
 
+      - name: Install pinned native FAISS CPU and NumPy for synthetic acceptance
+        run: |
+          # Wheels only. Missing/incompatible Python 3.12 wheels fail the job.
+          # This does not install any embedding model or send memory to a provider.
+          python -m pip install --only-binary=:all: "numpy==1.26.4" "faiss-cpu==1.12.0"
+          python -c "import faiss, numpy as np; assert callable(faiss.deserialize_index); assert np.__version__ == '1.26.4'; print('REAL FAISS', faiss.__version__, 'NUMPY', np.__version__)"
+
       - name: Run RC-required Windows intelligence tests
         env:
           PYTHONUTF8: "1"

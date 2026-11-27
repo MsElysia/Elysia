@@ -1636,14 +1636,31 @@ async def create_mutation(
         filename = payload_name
     
     mutation_file = mutations_dir / filename
-    
-    import os
-    tmp_file = mutation_file.with_suffix('.tmp')
+    # os.replace would overwrite an existing payload and still report created.
+    if mutation_file.exists() or mutation_file.is_symlink():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Mutation payload {payload_name} already exists",
+        )
+
     try:
-        with open(tmp_file, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, indent=2)
-        os.replace(tmp_file, mutation_file)
-    except IOError as e:
+        fd = os.open(mutation_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Mutation payload {payload_name} already exists",
+        )
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Error writing mutation file: {str(e)}")
+
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+    except OSError as e:
+        try:
+            mutation_file.unlink()
+        except OSError:
+            pass
         raise HTTPException(status_code=500, detail=f"Error writing mutation file: {str(e)}")
     
     return JSONResponse({

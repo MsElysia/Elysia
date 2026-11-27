@@ -497,3 +497,9 @@
 - **Smoke tests**: Added `tests/test_gateways_smoke.py` with behavioral tests (12+ tests across 3 gateways)
 - **Documentation**: Created `SPEC_MODULES/gateways.md` defining gateway contracts, context rules, security constraints
 - **Audit report**: Created `REPORTS/module_audit_gateways.md` documenting findings and gaps
+
+## 2026-11-27 product workflow — mutation create conflict
+
+- `POST /mutations/create` returns HTTP 409 when `MUTATIONS/<payload_name>` already exists, including a symlink. The existing bytes stay unchanged.
+- A new payload name is still created. A second create of that name returns HTTP 409 and leaves the new file unchanged.
+- Contract: `tests/test_ui_mutation_create_conflict.py`.

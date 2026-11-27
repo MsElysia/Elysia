@@ -11,14 +11,22 @@ start the dashboard unless the caller enables ui_config.auto_start.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# One-shot operator consent for replacing an unreadable primary memory store
+# with the latest readable snapshot. Lives beside the store under the
+# disposable root; it is renamed (never silently reused) by the launch that
+# sees it, whatever the outcome.
+RESTORE_MARKER_NAME = "RESTORE_MEMORY_FROM_SNAPSHOT"
 
 _PROVIDER_ENV_VARS = (
     "OPENAI_API_KEY",
@@ -184,6 +192,216 @@ def scrub_provider_env_inplace() -> Dict[str, Optional[str]]:
     return saved
 
 
+def _utc_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _rename_unique(path: Path, suffix: str) -> str:
+    """Rename ``path`` to ``<path>.<suffix>-<UTC stamp>[.n]`` and return the new name."""
+    base = f"{path}.{suffix}-{_utc_stamp()}"
+    target = Path(base)
+    n = 1
+    while target.exists():
+        target = Path(f"{base}.{n}")
+        n += 1
+    os.replace(path, target)
+    return str(target)
+
+
+def _primary_content_readable(memory_filepath: str) -> Tuple[bool, Optional[str]]:
+    """Independent check of the primary bytes, using MemoryCore.load()'s own rule.
+
+    Distinguishes a store whose *content* is unreadable (restore is meaningful)
+    from a fence raised for another reason, e.g. the sidecar lock being held by
+    another process (restore would clobber a healthy store).
+    """
+    try:
+        with open(memory_filepath, "rb") as handle:
+            decoded = json.loads(handle.read().decode("utf-8"))
+    except FileNotFoundError:
+        return True, None
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"[:200]
+    if not isinstance(decoded, list) or any(not isinstance(x, dict) for x in decoded):
+        return False, "ValueError: memory history must be a JSON list of records"
+    return True, None
+
+
+def _snapshot_manager(config: Dict[str, Any]):
+    from project_guardian.memory_snapshot import MemorySnapshot
+
+    snapshot_config = config.get("snapshot_config") or {}
+    return MemorySnapshot(
+        snapshot_dir=snapshot_config.get("snapshot_dir", "memory/snapshots"),
+        backup_shards=int(snapshot_config.get("backup_shards", 3)),
+        retention_days=int(snapshot_config.get("retention_days", 30)),
+    )
+
+
+def _describe_snapshot(path: Optional[str]) -> Dict[str, Any]:
+    info: Dict[str, Any] = {"path": path, "memory_count": None, "timestamp": None}
+    if not path:
+        return info
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        memories = data.get("memories") if isinstance(data, dict) else None
+        info["memory_count"] = len(memories) if isinstance(memories, list) else None
+        info["timestamp"] = data.get("timestamp") if isinstance(data, dict) else None
+    except Exception:
+        pass
+    return info
+
+
+def preflight_memory_store(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Make sure the primary memory store can carry a GuardianCore boot.
+
+    GuardianCore writes startup diagnostics through ``MemoryCore.remember`` while
+    constructing itself; on a fenced (unreadable) primary that raises, so the
+    application cannot start and the operator can never reach the in-app
+    restore. This runs first and reports one of:
+
+    * ``readable`` -- nothing touched.
+    * ``restored`` -- the primary content was unreadable, a readable snapshot
+      exists, and the operator consented by creating ``RESTORE_MARKER_NAME``
+      beside the store. The restore keeps the unreadable bytes as a
+      ``.pre-restore.`` sidecar (``MemorySnapshot.restore_from_snapshot``).
+
+    Otherwise ``ContainedStartupError`` names the store, the load error, the
+    newest readable snapshot (if any) and the exact opt-in, and leaves every
+    file as it was. Nothing is restored automatically: a fence that is not a
+    content problem (for example the sidecar lock held by another process)
+    never triggers a restore and leaves the marker alone. Otherwise the marker
+    is consumed (renamed) by the launch that evaluates it, whatever the result.
+    """
+    from project_guardian.memory import MemoryCore
+
+    memory_filepath = str(config.get("memory_filepath") or config.get("memory_file") or "")
+    if not memory_filepath:
+        raise ContainedStartupError("Contained config has no memory_filepath; cannot check the memory store.")
+    marker = Path(memory_filepath).parent / RESTORE_MARKER_NAME
+    report: Dict[str, Any] = {
+        "status": None,
+        "memory_filepath": memory_filepath,
+        "memory_count": None,
+        "load_error": None,
+        "snapshot": None,
+        "restore": None,
+        "preserved_original": None,
+        "marker": None,
+    }
+
+    probe = MemoryCore(memory_filepath, enable_timeline_logging=False)
+    if not probe.persistence_blocked:
+        report["status"] = "readable"
+        report["memory_count"] = len(probe.memory_log)
+        if marker.exists():
+            report["marker"] = _rename_unique(marker, "ignored")
+            logger.warning(
+                "Memory restore marker %s found but %s is readable (%d memories); marker renamed to %s and ignored",
+                marker, memory_filepath, len(probe.memory_log), report["marker"],
+            )
+        return report
+
+    report["load_error"] = probe.last_load_error
+    content_ok, content_error = _primary_content_readable(memory_filepath)
+    if content_ok:
+        raise ContainedStartupError(
+            f"Memory store {memory_filepath} could not be loaded ({probe.last_load_error}) although its "
+            "content parses. This is not corruption (another process may hold the store lock); "
+            "no restore was attempted and nothing was changed. Stop the other Elysia process and relaunch."
+        )
+
+    manager = _snapshot_manager(config)
+    latest = manager.get_latest_snapshot() or manager.get_latest_daily_snapshot()
+    report["snapshot"] = _describe_snapshot(latest)
+    consent = marker.exists()
+    if consent:
+        report["marker"] = _rename_unique(marker, "consumed")
+
+    if not consent:
+        if latest:
+            snap = report["snapshot"]
+            how = (
+                f"The newest readable snapshot is {latest} ({snap['memory_count']} memories, "
+                f"taken {snap['timestamp']}). To replace the unreadable store with it, create an empty "
+                f"file named {RESTORE_MARKER_NAME} at {marker} and relaunch; the unreadable bytes are kept "
+                f"beside the store as {Path(memory_filepath).name}.pre-restore.<stamp>."
+            )
+        else:
+            how = (
+                f"No readable snapshot exists under {manager.snapshot_dir}, so nothing can be restored "
+                "automatically. Repair or replace the store by hand; the original is left in place."
+            )
+        raise ContainedStartupError(
+            f"Memory store {memory_filepath} is unreadable ({content_error}); the application cannot "
+            f"start on it and no file was changed. {how}"
+        )
+
+    if not latest:
+        raise ContainedStartupError(
+            f"Memory store {memory_filepath} is unreadable ({content_error}) and {RESTORE_MARKER_NAME} was "
+            f"present (renamed to {report['marker']}), but no readable snapshot exists under "
+            f"{manager.snapshot_dir}. Nothing was changed."
+        )
+
+    restored = manager.restore_from_snapshot(latest, probe)
+    report["restore"] = dict(manager.last_restore_report)
+    report["preserved_original"] = report["restore"].get("preserved_original")
+    if not restored or probe.persistence_blocked:
+        raise ContainedStartupError(
+            f"Memory store {memory_filepath} is unreadable ({content_error}); restore from {latest} failed "
+            f"({report['restore'].get('error')}). Marker renamed to {report['marker']}; original store "
+            f"{'kept at ' + str(report['preserved_original']) if report['preserved_original'] else 'left in place'}."
+        )
+    report["status"] = "restored"
+    report["memory_count"] = len(probe.memory_log)
+    logger.warning(
+        "Memory store %s was unreadable (%s); restored %d memories from %s on operator request. "
+        "Unreadable original kept at %s.",
+        memory_filepath, content_error, report["memory_count"],
+        report["restore"].get("source_path") or latest, report["preserved_original"],
+    )
+    return report
+
+
+def snapshot_memory_on_startup(guardian: Any) -> Dict[str, Any]:
+    """Take a memory snapshot after a healthy boot and apply the configured retention.
+
+    This is the only routine producer of snapshots in the contained
+    application; without it the recovery path has nothing to restore from.
+    A failure here is reported, never raised: it must not stop a boot that
+    already has a readable store.
+    """
+    report: Dict[str, Any] = {"path": None, "persisted": False, "skipped": None, "removed_old": 0, "error": None}
+    manager = getattr(guardian, "memory_snapshot", None)
+    create = getattr(guardian, "create_memory_snapshot", None)
+    if manager is None or not callable(create):
+        report["skipped"] = "guardian has no memory snapshot support"
+        return report
+    memory = getattr(guardian, "memory", None)
+    json_memory = getattr(memory, "json_memory", memory)
+    if getattr(json_memory, "persistence_blocked", False):
+        report["skipped"] = f"memory store fenced: {getattr(json_memory, 'last_load_error', None)}"
+        logger.warning("Startup snapshot skipped; %s", report["skipped"])
+        return report
+    try:
+        path = create()
+        last = dict(getattr(manager, "last_snapshot_report", {}) or {})
+        report["path"] = path or None
+        report["persisted"] = bool(path) and bool(last.get("persisted", bool(path)))
+        report["error"] = last.get("error")
+        if report["persisted"]:
+            report["removed_old"] = int(manager.cleanup_old_snapshots() or 0)
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"[:200]
+    if report["persisted"]:
+        logger.info("Startup memory snapshot written: %s (expired %d old)", report["path"], report["removed_old"])
+    else:
+        logger.warning("Startup memory snapshot not written: %s", report["error"])
+    return report
+
+
 def start_contained_guardian(
     disposable_root: Path | str,
     *,
@@ -234,6 +452,10 @@ def start_contained_guardian(
     except Exception as e:
         logger.debug("singleton reset before contained start: %s", e)
 
+    # A fenced primary would make GuardianCore's own startup writes raise deep
+    # inside construction; check (and, only on explicit request, recover) first.
+    config["memory_preflight"] = preflight_memory_store(config)
+
     from elysia_sub_guardian import init_guardian_core
 
     try:
@@ -268,6 +490,8 @@ def start_contained_guardian(
         raise ContainedStartupError(
             f"Provider credential env vars still present after scrub: {present}"
         )
+
+    config["startup_snapshot"] = snapshot_memory_on_startup(guardian)
 
     return guardian, config
 

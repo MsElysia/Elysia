@@ -17,6 +17,7 @@ RC_REQUIRED = [
     "tests/test_memory_write_verification.py",
     "tests/test_conversation_memory_precedence.py",
     "tests/test_document_ingestion_workflow.py",
+    "tests/test_ea11a_local_chat_circuit.py",
     "tests/test_local_memory_chat_pilot.py",
     "tests/test_capability_awareness.py",
     "tests/test_boot_tool_stub_alignment.py",

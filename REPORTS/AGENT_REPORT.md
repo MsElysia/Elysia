@@ -3577,3 +3577,34 @@ python -m pytest -q
 - ✅ Tests comprehensive and passing
 - ✅ Documentation updated (CHANGELOG, AGENT_REPORT)
 - ✅ CONTROL.md reset to NONE
+
+
+---
+
+## 2026-11-27 product workflow — mutation create conflict
+
+**Status:** COMPLETE on this branch only. Not on `main`. No pull request.
+
+**Branch:** `cursor/bc-4b39d6fd-78c2-4e7f-b733-cfa9c6f3e8ba-602a`
+
+**Base:** `722d8e4` (`main`). Not based on earlier product branches, including the 2026-11-26 task-create conflict branch.
+
+**Implementation commit:** `7f286266d9fecca96c0fef262993c6a89f1cbe12`
+
+**Files:** `project_guardian/ui/app.py`, `tests/test_ui_mutation_create_conflict.py`, `CHANGELOG.md`, `REPORTS/AGENT_REPORT.md`
+
+**Behavior:** `POST /mutations/create` returns HTTP 409 `Mutation payload MUTATIONS/<name> already exists` when `MUTATIONS/<name>.json` is already present, including a symlink. The existing bytes stay in place, and a symlink is not followed. A new name is created with `O_EXCL` and returns HTTP 200 `created`. A second create of that name returns HTTP 409 and leaves the new file unchanged.
+
+**Before:** Live TestClient `POST /mutations/create` for fictional `fictional.json` at `/tmp/elysia-before-mutation-gbv8jap5` returned HTTP 200 `{"status":"created","payload_name":"MUTATIONS/fictional.json"}` and replaced `{"summary":"keep-fictional"}` with a payload whose summary is `replacement-fictional`.
+
+**Evidence:** `PYTHONPATH=/agent/repos/elysia python3 -m pytest tests/test_ui_mutation_create_conflict.py -v --tb=short` — 2 passed. TestClient and live uvicorn HTTP on 127.0.0.1, real `project_guardian.ui.app` route, fictional payload files in a temporary project root, no external services. After, the same request at `/tmp/elysia-after-mutation-bxop6k_5` returned HTTP 409 and left `{"summary":"keep-fictional"}` in place. A new name `fictional-new.json` returned HTTP 200 `created`. The mutation builder already alerts `data.detail` when the response is not OK, so a 409 shows that text once the page can render.
+
+**Could not verify in the browser:** `GET /mutations/new` on this checkout still raises `TypeError: unhashable type: 'dict'` on the installed Starlette/FastAPI. That page-render fix stays on `origin/cursor/bc-850d1c57-d0bb-4bf5-a069-27fe76b4a85e-5a80` (`1357277`, handoff `a936c71`). This run did not copy it. `python3 -m uvicorn project_guardian.ui.app:app` still exits because `project_guardian/__init__.py` imports missing `project_guardian.module_activity`. `tests/test_ui_smoke.py` still cannot be collected for that reason.
+
+**Left untouched:** `project_guardian/ui_control_panel.py`. Memory workflow today is `1701c26` on `origin/cursor/bc-f7ee14e4-cb91-473d-8835-a39dd5c05ed8-5327` and that branch includes the panel and `module_activity.py`. It does not change `project_guardian/ui/app.py` relative to `main`. Open draft PR #235 still owns the panel document-preview change. PR #246 merged on 2026-11-26 into `integration/windows-canonical`, not `main`. Application runtime safety today is `5ed1737` on `origin/cursor/bc-30071eab-7787-4550-b548-153da1c72f26-0f3c` (`elysia/runtime.py` and `tests/test_elysia_runtime_heartbeat_truth.py` only). Did not edit those files, `elysia/api/server.py`, `elysia/agents/implementer.py`, or `elysia.py`. `POST /tasks/create` on this branch still overwrites an existing task file. That fix stays on `origin/cursor/product-workflow-engineering-process-3b57` (`fa2f45e`, handoff `ab20d6d`).
+
+**Limitation:** A crash while the exclusive create is still writing can leave a partial file. A later create of that name returns HTTP 409 and does not replace it.
+
+**Queue:** `CURRENT_TASK: NONE`. `TASK-0053` remains OPEN review-only on the brain-bridge line (`bf6c72c`). Do not merge `elysia-local-reconciliation-20260909-1657`. Campaign 41 tip remains `3223ebb`. Do not implement live memory or vector writes.
+
+A branch commit is not integrated product readiness. Next product run should pick a different unclaimed API or dashboard error path. Do not open a second copy of this mutation-payload conflict fix. Do not copy the task-create conflict fix or the Starlette page-render fix. Re-check the memory-workflow branch and PR #235 before editing `project_guardian/ui_control_panel.py`.

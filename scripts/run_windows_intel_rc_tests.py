@@ -31,6 +31,7 @@ RC_REQUIRED = [
     "tests/test_conversation_continuity.py",
     "tests/test_operator_task_state.py",
     "tests/test_task_step_completion.py",
+    "tests/test_durable_revision_fence.py",
     "tests/test_document_task_execution.py",
     "tests/test_contained_startup.py",
     "tests/test_restricted_runtime_adapter.py",

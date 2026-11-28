@@ -39,6 +39,17 @@ def _parse_memory_time(value: Any, fallback: datetime) -> datetime:
     return parsed
 
 
+def _memory_priority(memory: Any, default: float = 0.5) -> float:
+    """Numeric priority of an entry; malformed or missing values rank as ``default``."""
+    try:
+        value = float(memory.get("priority", default))
+    except (TypeError, ValueError, AttributeError):
+        return default
+    if value != value:  # NaN never sorts predictably
+        return default
+    return value
+
+
 def _persist_memory_log(json_mem: Any) -> Optional[bool]:
     """
     Call ``json_mem._save()`` and report the outcome.
@@ -182,10 +193,12 @@ class MemoryCleanup:
             old_low_priority = []
             
             original_log = json_mem.memory_log
+            parsed_time: Dict[int, datetime] = {}
             for memory in original_log:
                 mem_date = _parse_memory_time(memory.get("time", ""), now)
+                parsed_time[id(memory)] = mem_date
                 
-                priority = memory.get("priority", 0.5)
+                priority = _memory_priority(memory)
                 
                 # Keep recent memories (last N days)
                 if mem_date >= cutoff_date:
@@ -199,10 +212,21 @@ class MemoryCleanup:
             # Combine memories to keep
             memories_to_keep = recent_memories + high_priority_memories
             
-            # If still too many, sort by priority and keep top N
+            # If still too many, keep the top N by priority. Ties are broken
+            # by recency (newest first): a stable sort on priority alone kept
+            # the oldest entries of a tier and dropped the newest, so a
+            # session's latest writes -- including a correction over its own
+            # superseded revision -- were the first to be removed.
             if len(memories_to_keep) > max_memories:
-                memories_to_keep.sort(key=lambda x: x.get("priority", 0.5), reverse=True)
-                memories_to_keep = memories_to_keep[:max_memories]
+                memories_to_keep.sort(
+                    key=lambda x: (_memory_priority(x), parsed_time[id(x)]),
+                    reverse=True,
+                )
+                kept_ids = {id(x) for x in memories_to_keep[:max_memories]}
+                # Keep the log in its original (append) order: recall_last and
+                # history readers rely on position, and the old priority-sorted
+                # result left the log scrambled on disk.
+                memories_to_keep = [m for m in original_log if id(m) in kept_ids]
             
             # Update JSON memory log
             removed_count = original_count - len(memories_to_keep)

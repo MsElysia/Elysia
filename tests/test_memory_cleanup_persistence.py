@@ -408,3 +408,183 @@ def test_memory_cleanup_direct_consolidate_matches_core_wrapper(ledger):
     assert result["action"] == "consolidated"
     assert result["persisted"] is True
     assert len(_disk(path)) == 3
+
+
+# --- consolidate_memories: cap tie-break keeps the newest of a tier ----------
+# Fictional example: the Driftwood Harbor Marina slip ledger. Facts share one
+# priority (restricted facts are all 0.95), so when the cap bites the ranking
+# is decided inside a single tier. A stable sort on priority alone kept the
+# OLDEST entries and removed the newest -- today's facts and a correction over
+# its own superseded revision were the first to go.
+
+def _slip_entry(index, stamp, priority=0.95):
+    return {
+        "time": stamp,
+        "thought": f"Slip A-{index:04d} is leased to vessel registration DW{index:04d}",
+        "category": "restricted_fact",
+        "priority": priority,
+        "metadata": {"source": "slip-ledger-2026.csv", "slip": index},
+    }
+
+
+def _recent_stamp(days_ago, minute=0):
+    moment = (datetime.now() - timedelta(days=days_ago)).replace(microsecond=0, second=0)
+    return (moment + timedelta(minutes=minute)).isoformat()
+
+
+def test_cap_within_equal_priority_tier_drops_oldest_not_newest(tmp_path):
+    path = tmp_path / "guardian_memory.json"
+    # 12 same-priority facts, all within keep_recent_days, oldest first.
+    entries = [_slip_entry(i, _recent_stamp(12 - i)) for i in range(12)]
+    _seed(path, entries)
+    memory = _open(path)
+
+    result = memory.consolidate(max_memories=8, keep_recent_days=30)
+
+    assert result["action"] == "consolidated"
+    assert result["removed"] == 4
+    kept = [e["metadata"]["slip"] for e in _disk(path)]
+    # the four OLDEST slips (0..3) go; the newest eight stay, in log order
+    assert kept == [4, 5, 6, 7, 8, 9, 10, 11]
+    assert [e["metadata"]["slip"] for e in memory.memory_log] == kept
+
+
+def test_cap_keeps_log_in_original_order_not_priority_order(tmp_path):
+    path = tmp_path / "guardian_memory.json"
+    entries = [
+        _slip_entry(0, _recent_stamp(5), priority=0.6),
+        _slip_entry(1, _recent_stamp(4), priority=0.95),
+        _slip_entry(2, _recent_stamp(3), priority=0.6),
+        _slip_entry(3, _recent_stamp(2), priority=0.95),
+        _slip_entry(4, _recent_stamp(1), priority=0.6),
+    ]
+    _seed(path, entries)
+    memory = _open(path)
+
+    result = memory.consolidate(max_memories=3, keep_recent_days=30)
+
+    assert result["action"] == "consolidated"
+    # both 0.95 facts, then the newest 0.6 -- written back in append order
+    assert [e["metadata"]["slip"] for e in _disk(path)] == [1, 3, 4]
+    assert _open(path).recall_last(1)[0]["metadata"]["slip"] == 4
+
+
+def test_cap_still_prefers_higher_priority_over_recency(tmp_path):
+    path = tmp_path / "guardian_memory.json"
+    entries = [_slip_entry(0, _old_stamp(200), priority=0.8)]  # old source-linked record
+    entries += [_slip_entry(i, _recent_stamp(6 - i), priority=0.5) for i in range(1, 7)]
+    _seed(path, entries)
+    memory = _open(path)
+
+    result = memory.consolidate(max_memories=4, keep_recent_days=30)
+
+    assert result["action"] == "consolidated"
+    kept = [e["metadata"]["slip"] for e in _disk(path)]
+    assert kept[0] == 0, "old 0.8 record outranks newer 0.5 records"
+    assert kept[1:] == [4, 5, 6], "within the 0.5 tier the newest survive"
+
+
+def test_cap_keeps_correction_over_its_superseded_revision(tmp_path):
+    adapter_mod = pytest.importorskip("project_guardian.restricted_runtime_adapter")
+    path = tmp_path / "guardian_memory.json"
+    # 10 older slip facts at the restricted-fact priority (all recent enough to keep).
+    _seed(path, [_slip_entry(i, _recent_stamp(20 - i)) for i in range(10)])
+    memory = _open(path)
+    headers = {"x-elysia-identity": "harbor-master", "x-elysia-token": "driftwood-token"}
+    adapter = adapter_mod.RestrictedRuntimeAdapter(
+        [adapter_mod.LocalPrincipal(
+            "harbor-master", "driftwood-token",
+            frozenset({"facts.save", "facts.correct", "facts.retrieve", "facts.history"}),
+        )],
+        memory=memory,
+    )
+    prefix = adapter_mod.API_PREFIX
+    saved = adapter.handle("POST", f"{prefix}/facts", headers,
+                           {"statement": "Slip B-12 is assigned to the ketch Meridian"})
+    assert saved.status == 201
+    fact_id = saved.body["fact"]["fact_id"]
+    corrected = adapter.handle("POST", f"{prefix}/facts/{fact_id}/corrections", headers,
+                               {"statement": "Slip B-12 is assigned to the sloop Windlass"})
+    assert corrected.status == 200 and corrected.body["fact"]["revision"] == 2
+    assert len(memory.memory_log) == 12
+
+    result = memory.consolidate(max_memories=8, keep_recent_days=30)
+    assert result["action"] == "consolidated"
+    assert result["removed"] == 4
+
+    # restart: fresh MemoryCore + adapter over the same file
+    restarted = _open(path)
+    restarted.load()
+    adapter2 = adapter_mod.RestrictedRuntimeAdapter(
+        [adapter_mod.LocalPrincipal(
+            "harbor-master", "driftwood-token", frozenset({"facts.retrieve", "facts.history"}),
+        )],
+        memory=restarted,
+    )
+    found = adapter2.handle("POST", f"{prefix}/facts/retrieve", headers, {"query": "slip B-12 assigned"})
+    assert found.status == 200
+    assert [(m["revision"], m["statement"]) for m in found.body["matches"]] == [
+        (2, "Slip B-12 is assigned to the sloop Windlass")
+    ]
+    history = adapter2.handle("GET", f"{prefix}/facts/{fact_id}/history", headers)
+    assert history.status == 200
+    assert [r["revision"] for r in history.body["revisions"]] == [1, 2]
+    assert history.body["revisions"][0]["previous_statement"] is None
+    assert history.body["revisions"][1]["previous_statement"] == "Slip B-12 is assigned to the ketch Meridian"
+
+
+@pytest.mark.parametrize("bad_priority", ["high", None, float("nan"), [0.9]])
+def test_consolidate_tolerates_malformed_priority(tmp_path, bad_priority):
+    path = tmp_path / "guardian_memory.json"
+    entries = [_slip_entry(i, _old_stamp(100 + i), priority=0.4) for i in range(5)]
+    entries[2]["priority"] = bad_priority
+    _seed(path, entries)
+    memory = _open(path)
+    memory.remember("Harbour office opens at 07:30", "restricted_fact", 0.95,
+                    {"source": "slip-ledger-2026.csv"})
+
+    result = memory.consolidate(max_memories=2, keep_recent_days=30)
+
+    # previously: TypeError comparing the malformed priority -> action="error"
+    assert result["action"] == "consolidated"
+    assert result["persisted"] is True
+    kept = _disk(path)
+    assert len(kept) == 1
+    assert kept[0]["thought"] == "Harbour office opens at 07:30"
+
+
+def test_cap_tie_break_treats_unparseable_time_as_recent(tmp_path):
+    path = tmp_path / "guardian_memory.json"
+    entries = [_slip_entry(i, _recent_stamp(10 - i)) for i in range(6)]
+    entries[0]["time"] = "not-a-date"  # malformed stamp on the oldest-positioned entry
+    _seed(path, entries)
+    memory = _open(path)
+
+    result = memory.consolidate(max_memories=4, keep_recent_days=30)
+
+    assert result["action"] == "consolidated"
+    kept = [e["metadata"]["slip"] for e in _disk(path)]
+    # the unparseable stamp is treated as recent (kept), then the three newest
+    assert kept == [0, 3, 4, 5]
+
+
+def test_monitor_pressure_path_keeps_latest_session_writes(tmp_path):
+    path = tmp_path / "guardian_memory.json"
+    _seed(path, [_slip_entry(i, _recent_stamp(25 - i)) for i in range(40)])
+    memory = _open(path)
+    memory.remember("Slip B-12 is assigned to the sloop Windlass (corrected)", "restricted_fact",
+                    0.95, {"source": "slip-ledger-2026.csv", "fact_id": "b12", "revision": 2})
+    monitoring, monitor = _monitor(memory)
+
+    result = monitor._perform_cleanup(
+        memory_threshold=10, reason=monitoring.CLEANUP_REASON_SYSTEM_MEMORY_PRESSURE,
+        system_memory_percent=0.96, consolidation_threshold=10,
+    )
+
+    assert result["outcome"] == monitoring.CLEANUP_OUTCOME_CONSOLIDATED
+    # monitoring clamps the pressure trim target (config pressure_emergency_min_count)
+    assert result["memory_after"] == result["trim_policy"]["trim_target"] < 41
+    restarted = _open(path)
+    latest = restarted.recall_last(1)[0]
+    assert latest["metadata"].get("fact_id") == "b12"
+    assert restarted.search_memories("Windlass", limit=1)[0]["metadata"]["revision"] == 2
